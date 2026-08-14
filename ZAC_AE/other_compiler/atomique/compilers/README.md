@@ -1,0 +1,3 @@
+The baseline GEYSER and FAATriangular are adapted from Geyser: a compilation framework for quantum computing with neutral atoms by Tirthak Patel et al. The code can be found at https://zenodo.org/doi/10.5281/zenodo.6447912. We made necessary modifications to ensure the program can finish in a reasonable time.
+
+The baseline baker is adapted from Exploiting Long-Distance Interactions and Tolerating Atom Loss in Neutral Atom Architectures from ISCA 2021 by Jonathan M. Baker et al. The code can be found at https://github.com/AndrewLitteken/neutral-atom-compilation.

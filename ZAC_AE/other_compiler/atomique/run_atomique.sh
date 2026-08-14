@@ -1,0 +1,1 @@
+python3 run_atomique.py configs/hpca/hpca/fpqac.yml &> ../../atomique.log
