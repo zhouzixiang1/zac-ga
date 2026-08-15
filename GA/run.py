@@ -1,7 +1,12 @@
-"""GA entry point: same flow as ZAC/run.py but instantiates ZAC_GA.
+"""GA 入口（前台）：与 ZAC/run.py 流程相同，仅两点不同——
+    1. 只依赖 GA 文件夹自身（本地 zac/ 副本、本地 benchmark/hardware_spec），
+       整个文件夹可以单独拷走运行；
+    2. 创建的是 ZAC_GA（可通过配置切换 GA / ZAC 原版两种放置器）。
 
-Paths inside the experiment spec are resolved relative to the repo root
-(parent of GA/), so configs stay location-independent.
+用法：
+    ZAC/.venv/bin/python GA/run.py GA/exp_setting/ga_toy.json    # 玩具冒烟
+    ZAC/.venv/bin/python GA/run.py GA/exp_setting/ga_repro.json  # 18 电路全量
+（只需要一个装了 qiskit/scipy/rustworkx/matplotlib 的 Python 3.10 环境）
 """
 from __future__ import annotations
 
@@ -11,16 +16,17 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(ROOT / "ZAC"))
+# GA 文件夹自身：本地 zac/（ZAC 源码副本）和 zga/（GA 包）都从这里找
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
 
-from zac.ds.architecture import Architecture  # noqa: E402
-from zac.simulator.simulator import Simulator  # noqa: E402
-from zga.zac_ga import ZAC_GA  # noqa: E402
+from zac.ds.architecture import Architecture  # noqa: E402  硬件模型（本地副本）
+from zac.simulator.simulator import Simulator  # noqa: E402 保真度模拟器（本地副本）
+from zga.zac_ga import ZAC_GA  # noqa: E402        换过发动机的 ZAC
 
 
 def resolve(p: str) -> str:
+    """把任务单里的相对路径锚到 GA 文件夹——换机器、换目录都不会迷路。"""
     q = Path(p)
     return str(q if q.is_absolute() else ROOT / q)
 
@@ -32,6 +38,7 @@ if __name__ == "__main__":
     with open(args.exp_spec) as f:
         exp_spec = json.load(f)
 
+    # ---- 收集要编译的电路（支持单文件或整个目录）----
     benchmark_set = []
     for name in exp_spec["qasm_list"]:
         name = resolve(name)
@@ -43,11 +50,13 @@ if __name__ == "__main__":
                 if os.path.isfile(fp):
                     benchmark_set.append(fp)
 
+    # 架构对象较重（预处理耗时），同一份 spec 只解析一次、多电路复用
     dict_arch = {}
     for benchmark in benchmark_set:
         print("==============================================")
         print(f"Compile circuit {benchmark}")
-        filename = benchmark.split("/")[-1].split(".")[0]
+        filename = benchmark.split("/")[-1].split(".")[0]   # 电路名（去扩展名）
+
         for zac_setting in exp_spec["zac_setting"]:
             if zac_setting["arch_spec"] in dict_arch:
                 arch, spec = dict_arch[zac_setting["arch_spec"]]
@@ -60,19 +69,20 @@ if __name__ == "__main__":
 
             s = dict(zac_setting)
             s["name"] = filename
-            s["dir"] = resolve(zac_setting.get("dir", "GA/results/")) + "/"
+            s["dir"] = resolve(zac_setting.get("dir", "results/")) + "/"
 
+            # 创建编译器并跑完整流水线（解析→调度→点名→布局(GA在这里)→路由→校验）
             compiler = ZAC_GA()
-            compiler.parse_setting(s)
+            compiler.parse_setting(s)                    # 读开关：placer=ga/zac + GA旋钮
             compiler.set_architecture_spec_path(zac_setting["arch_spec"])
             compiler.set_architecture(arch)
-            compiler.set_program(benchmark)
+            compiler.set_program(benchmark)              # qiskit 解析+重综合
             for sub in ("code", "time", "fidelity"):
                 os.makedirs(s["dir"] + sub, exist_ok=True)
-            code_dict = compiler.solve(save_file=True)
-            with open(compiler.code_filename) as f:
-                json.load(f)
+            code_dict = compiler.solve(save_file=True)   # 主入口；结果落盘 ZAIR JSON
+
             if exp_spec.get("simulation", False):
+                # 用同一套硬件参数给指令流打保真度分（与 ZAC 原版同一把尺子）
                 simulator = Simulator()
                 simulator.set_arch_spec(spec)
                 simulator.parse(compiler.code_filename)
@@ -80,6 +90,8 @@ if __name__ == "__main__":
                 out = s["dir"] + f"fidelity/{filename}_fidelity.json"
                 with open(out, "w") as f:
                     json.dump(fidelity_result, f, indent=2)
+
             if exp_spec.get("animation", False):
+                # 生成原子搬运 mp4 动画（需要 ffmpeg）
                 os.makedirs(s["dir"] + "animation", exist_ok=True)
                 compiler.animate(code_dict, output=s["dir"] + f"animation/{filename}.mp4")
