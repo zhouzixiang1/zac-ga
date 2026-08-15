@@ -21,7 +21,8 @@ def main() -> None:
         if (ROOT / "experiments" / "results" / "qmap_qasmbench.csv").exists() else []
     qmap = {(r["circuit"], int(r["qubits"])): r for r in qmap_rows if r.get("status") == "ok"}
 
-    truth = {r["circuit"]: r for r in csv.DictReader(open(ROOT / "experiments" / "paper_truth" / "qmap_table1.csv"))
+    truth = {(r["circuit"], int(r["qubits"])): r
+             for r in csv.DictReader(open(ROOT / "experiments" / "paper_truth" / "qmap_table1.csv"))
              if r["qubits"] and r["source"] == "qasmbench"}
 
     print("=" * 100)
@@ -34,9 +35,9 @@ def main() -> None:
         base = name.replace("_transpiled", "")
         n = int(base.split("_n")[1])
         bench = base.split("_n")[0]
-        t = truth.get(f"{bench} n{n}")
-        astar_steps = qmap.get((bench, n), {}).get("steps", "–") if t else "–"
-        agn_steps = ""
+        t = truth.get((bench, n))
+        astar_steps = f"{'–':>11s}"
+        agn_steps = f"{'–':>8s}"
         if t:
             agn_steps = f"{t['ra_steps']:>8s}"
             astar_steps = f"{t['rw_steps']:>11s}"
