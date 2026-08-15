@@ -1,0 +1,33 @@
+{
+    "qasm_list": [
+        "benchmark/hpca/qft_n29_transpiled.qasm"
+    ],
+    "zac_setting": [
+        {
+            "qasm_list": [
+                "benchmark/hpca/"
+            ],
+            "arch_spec": "hardware_spec/zac_arch_repro.json",
+            "dependency": true,
+            "routing_strategy": "coloring",
+            "scheduling": "asap",
+            "trivial_placement": false,
+            "dynamic_placement": true,
+            "use_window": true,
+            "window_size": 1000,
+            "reuse": true,
+            "use_verifier": true,
+            "w_batch": 1.0,
+            "use_lookahead": true,
+            "seed": 0,
+            "coloring_exact_threshold": 24,
+            "placer": "batch",
+            "engine": "penalty",
+            "dir": "results/abl_qft_n29_transpiled_lam1_0_dec0_7/",
+            "lambda_penalty": 1.0,
+            "penalty_decay": 0.7
+        }
+    ],
+    "simulation": true,
+    "animation": false
+}

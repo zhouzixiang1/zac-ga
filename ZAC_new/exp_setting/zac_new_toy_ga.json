@@ -1,0 +1,25 @@
+{
+    "qasm_list": ["benchmark/toy_example/toy2.qasm"],
+    "zac_setting": [{
+        "placer": "batch",
+        "engine": "ga",
+        "arch_spec": "hardware_spec/zac_arch_repro.json",
+        "dependency": true,
+        "dir": "results/toy_ga/",
+        "routing_strategy": "coloring",
+        "scheduling": "asap",
+        "trivial_placement": true,
+        "dynamic_placement": false,
+        "use_window": true,
+        "window_size": 1000,
+        "reuse": true,
+        "use_verifier": true,
+        "w_batch": 1.0,
+        "population_size": 6,
+        "iterations": 8,
+        "neighbors_per_solution": 2,
+        "neighbor_sample_size": 24
+    }],
+    "simulation": true,
+    "animation": false
+}
