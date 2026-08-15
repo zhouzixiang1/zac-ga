@@ -59,8 +59,13 @@ class FablePlacer(VertexMatchingPlacer):
         self.neighbors_per_solution: int = params.get("neighbors_per_solution", 2)
         self.neighbor_sample_size: int = params.get("neighbor_sample_size", 24)
         # ---- Fable 评估函数旋钮 ----
-        self.w_conf: float = params.get("w_conf", 1.0)          # 冲突边身价（√μm 单位）
+        # w_conf 默认 0.25：qft_n29 消融标定（0→0.88×，0.25→0.79×，1→1.17×，
+        # 3→1.18×）——冲突边要给"梯度"但不能压过距离项
+        self.w_conf: float = params.get("w_conf", 0.25)
         self.use_lookahead: bool = params.get("use_lookahead", True)  # 复用前瞻项开关
+        # 候选窗口下限：每层门少时窗口公式会给 1（太窄，串行链式电路如 qft
+        # 的下一层搭档常常在窗口外）——此旋钮把窗口垫高一点
+        self.min_expand: int = params.get("min_expand", 1)
         self.search_time = 0.0  # 纯搜索耗时（报告用）
 
     # ------------------------------------------------------------------ utils
@@ -108,7 +113,7 @@ class FablePlacer(VertexMatchingPlacer):
         #                   提交后"家"就搬进了车间，这正是笔记"不调回"的对应物）
 
         # ---- 第 2 步：生成"点菜单"（与 v1a 逐字节相同）------------------
-        expand_factor = math.ceil(math.sqrt(len(list_gate)) / 2)
+        expand_factor = max(self.min_expand, math.ceil(math.sqrt(len(list_gate)) / 2))
         candidates: list[list] = []   # 每件门一个候选表；表项=(工位, d1, d2, 前瞻距离, q1, q2)
         for gate in list_gate:
             q1, q2 = gate

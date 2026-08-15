@@ -42,7 +42,9 @@ def main() -> None:
         for row in csv.DictReader(f):
             truth[row["circuit"]] = (float(row["duration_us"]), float(row["fidelity"]))
 
-    ours = load_fidelity_dir(FABLE_ROOT / "results/repro_fable/fidelity")
+    # 可选参数：换一组本文件夹的结果目录（默认首轮 w_conf=1.0）
+    rel = sys.argv[1] if len(sys.argv) > 1 else "results/repro_fable"
+    ours = load_fidelity_dir(FABLE_ROOT / rel / "fidelity")
     ga = load_fidelity_dir(ZAC_ROOT / "GA/results/repro_ga/fidelity")
 
     notes: dict[str, tuple[float, float, float, float]] = {}

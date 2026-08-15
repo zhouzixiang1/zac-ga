@@ -21,7 +21,8 @@ class ZAC_FABLE(ZAC):
 
     # parse_setting 能识别的搜索旋钮（全部有默认值，见 fplacer.py）
     FABLE_KEYS = ("population_size", "iterations", "neighbors_per_solution",
-                  "neighbor_sample_size", "w_conf", "use_lookahead", "seed")
+                  "neighbor_sample_size", "w_conf", "use_lookahead",
+                  "min_expand", "seed")
 
     def __init__(self):
         super().__init__()
