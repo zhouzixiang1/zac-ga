@@ -235,15 +235,21 @@ def verify(code_path: Path, qasm_path: Path | None = None) -> dict:
                 errors["seat"].append(
                     f"座位{site}: t={t:.1f} 同时占用 {names}（指令{batch[0][3]} 等）")
 
-    # ⑦ 门账本：流内搭档子序列 vs QASM
-    if qasm_path is not None:
+    # ⑦ 门账本：优先与 code JSON 内嵌的重综合门列表对账（编译器实际执行集，
+    # 与路由/放置同一输入）；--qasm 仅在无内嵌账本时使用（注意：直读 QASM
+    # 会差在共享的重综合层——ZAC 真值同样"缺门"，4 电路实证，非编译 bug）
+    embedded = code.get("gate_ledger")
+    if embedded:
+        for q, partners in embedded.items():
+            got = ryd_partner.get(int(q), [])
+            if got != partners:
+                errors["gate_ledger"].append(
+                    f"原子{q}: 编译器搭档序 {partners} ≠ 流内 {got}")
+    elif qasm_path is not None:
         want = qasm_partner_ledger(qasm_path)
         for q, partners in want.items():
             got = ryd_partner.get(q, [])
-            # 子序列判定（流内可能因分区只保留子序列；全电路应严格相等）
-            it = iter(got)
-            ok = all(p in it for p in partners)
-            if not ok or len(got) != len(partners):
+            if got != partners:
                 errors["gate_ledger"].append(
                     f"原子{q}: QASM 搭档序 {partners} ≠ 流内 {got}")
 

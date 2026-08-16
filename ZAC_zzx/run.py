@@ -78,6 +78,18 @@ if __name__ == "__main__":
                 os.makedirs(s["dir"] + sub, exist_ok=True)
             code_dict = compiler.solve(save_file=True)    # 主入口；结果落盘 ZAIR JSON
 
+            # 语义查参照：把重综合后的实际 2q 门列表嵌进 code JSON——
+            # --qasm 直读会差在共享的重综合层（ZAC 真值同样"缺门"，4 电路实证）
+            gate_ledger = {}
+            for g0, g1 in compiler.g_q:
+                gate_ledger.setdefault(g0, []).append(g1)
+                gate_ledger.setdefault(g1, []).append(g0)
+            with open(compiler.code_filename) as f:
+                code_json = json.load(f)
+            code_json["gate_ledger"] = gate_ledger
+            with open(compiler.code_filename, "w") as f:
+                json.dump(code_json, f, indent=1)
+
             # 批次账本落盘：χ 预演（batch 模式=数值行）/ 决策分布（resident 模式=字典行）
             preview = compiler.zzx_placer_preview
             if preview and isinstance(preview[0], (list, tuple)):

@@ -40,7 +40,8 @@ class ZAC_zzx(ZAC):
                     "final_return_home", "stay_horizon",
                     # ---- M3 前瞻/决策层旋钮（提前入白名单防键漂移）----
                     "gamma0", "lambda_seat", "kappa_congestion",
-                    "lookahead_mode", "reseat")
+                    "lookahead_mode", "reseat", "fitness_mode",
+                    "w_resident", "pin_radius", "w_pin")
     # ZAC 原版认识的键（消费断言用； Zac.parse_setting 同步维护）
     ZAC_KEYS = ("dependency", "routing_strategy", "scheduling", "trivial_placement",
                 "dynamic_placement", "use_window", "window_size", "reuse",
