@@ -1,521 +1,239 @@
-# ZAC_zzx 实验全程：按顺序的构建与实验记录（含代码差异对照）
+# ZAC_zzx —— 驻留编译器（改进说明）
 
-> 阅读约定：所有关键改动都用【ZAC】与【ZAC_zzx】两块代码对照给出，
-> **⚠ 标出的行就是两者的实质差异**。三个改进目标（按 2q 拆批次 /
-> 可选不放回 / 图着色引导放置）在过程中依次落地，也依次暴露问题。
-> 总成绩：18 电路 geomean = ZAC 的 **0.867**（ZAC_new 此前最佳 0.959），
-> 验证器 8 查全绿，编译全套 237s。
+从 ZAC（HPCA'25）派生的独立实验文件夹（与 ZAC_new 同级、自包含）。
+核心思想一句话：**做完门不回宿舍（驻留），放置时就算得出要发几趟车（着色计价）**。
 
----
-
-## 第 0 步：搭骨架，先立回归基线（M0）
-
-**做了什么**：拷贝 ZAC_new 为同级文件夹 `ZAC_zzx/`（自带 `zac/` 字节副本、
-benchmark、hardware_spec），包改名 `zzx`，配置键白名单化。
-
-**验收**：`placer="zac"` 回归模式与 ZAC_new 现场重跑的指令流完全一致
-（toy 电路 duration/保真度逐位相同；`diff -r` 证 `zac/` 源码零差异）。
-
-```
-改动的代价为零，收益是后面对照实验的控制变量：任何结果差异都只能来自
-新代码，不来自环境或副本漂移。
-```
+总成绩：18 电路 duration geomean = ZAC 的 **0.867**（ZAC_new 此前最佳 0.959），
+编译全套 237s，验证器 8 查全绿。
 
 ---
 
-## 第 1 步：驻留核心 resident.py（M1）——"不放回"的大脑
+## 问题背景与动机
 
-### 1.1 下次使用表（按 2q 门拆批次的底座）
+ZAC 的流水线里，每轮 Rydberg 阶段结束后，激发区原子**全员强制搬回存储区**
+（vmplacer.py:347），下一轮再全员搬回纠缠区——"刚回宿舍又要出门"。
 
-轮次体系 = ZAC 的 ASAP 2q 门层（每层互不共用比特、每轮一次 rydberg）。
-ZAC_zzx 在其上加一张**下次使用表**——ASAP 调度静态可知，零运行时开销：
+- **痛点一（搬运浪费）**：实测 18 电路，回程搬运占总执行时长的
+  **38.9%～54.2%**（wstate 54.2%、bv_n14 45.5%、ghz_n78 42.8%）。
+- **痛点二（复用太浅）**：ZAC 的复用判定只看**相邻一层**（二分图匹配），
+  跨轮的驻留不存在。
+- **痛点三（放置盲区）**：门放置 = 纯距离最小权匹配，"要发几趟车"是
+  路由贪心剥离的副产品，没有任何阶段对它负责。
 
-```python
-class NextUse:
-    def __init__(self, gate_scheduling: list):
-        self.rounds: dict[int, list[int]] = {}
-        self.partner: dict[tuple[int, int], int] = {}
-        for layer, gates in enumerate(gate_scheduling):
-            for q0, q1 in gates:
-                self.rounds.setdefault(q0, []).append(layer)
-                self.rounds.setdefault(q1, []).append(layer)
-                self.partner[(q0, layer)] = q1
-                self.partner[(q1, layer)] = q0
+三个改进（一一对应下文五个阶段）：
 
-    def next_round(self, q: int, after: int):
-        """r(q)：严格晚于 after 的首个参与轮次；无则 None（死驻留者）。"""
-```
-
-**⚠ 与 ZAC 的差异**：ZAC 的复用判定（`zac.py:256-305`）只在**相邻两层**
-之间做二分图匹配——"下一层马上用"才留；ZAC_zzx 对每个原子知道**任意
-远的下次使用轮次与搭档**，这是跨轮驻留决策的情报来源。
-
-### 1.2 驻留登记簿
-
-```python
-class ResidentRegistry:
-    def __init__(self, architecture, initial_mapping, theta_capacity=0.9):
-        self.zone_seat: dict[int, tuple] = {}     # q -> (slm, r, c) 当前激发区座位
-        self.storage_site: dict[int, tuple] = {}  # q -> 当前存储位
-        self.zone_sites = sum(slm.n_r * slm.n_c        # 区内总座位（容量）
-                              for slm in ... if slm.entanglement_id != -1)
-
-    def anchor(self, q, after, next_use):
-        """下次使用锚点：搭档在区内→其最近存储投影；在存储→原位。"""
-```
-
-### 1.3 惰性决策：默认全留，两类强制回
-
-```python
-def decide_lazy(registry, next_use, layer, next_gates, next_gate_seats, ...):
-    participants = {q for gate in next_gates for q in gate}
-    needed = {seat for pair in next_gate_seats for seat in pair}
-
-    # E2 挡路逐出：非参与者的座位被下一轮门位需要
-    forced = [q for q, seat in registry.zone_seat.items()
-              if q not in participants and seat in needed]
-
-    # 容量阀：保留座位 + 2×门数 > θ·容量时，按下次使用轮次降序逐出（死驻留者最先）
-    evict_order = sorted(
-        (q for q in registry.zone_seat if q not in participants and q not in forced_set),
-        key=lambda q: (next_use.next_round(q, layer) is None,
-                       next_use.next_round(q, layer) or 0), reverse=True)
-    ...
-```
-
-**⚠ 与 ZAC 的差异（本项目的第一核心）**——ZAC 的回位是**无条件全员**：
-
-```python
-# 【ZAC】vmplacer.py:343-348 —— 激发区原子一律放回存储
-for q, mapping in enumerate(last_gate_mapping):
-    array_id = mapping[0]
-    if array_id in is_empty_storage_site:
-        is_empty_storage_site[array_id][mapping[1]][mapping[2]] = False
-    elif (not test_reuse) or (q not in self.list_reuse_qubit[layer]):
-        qubit_to_place.append(q)          # ⚠ 不在"下一层复用"名单 → 强制回宿舍
-```
-
-```python
-# 【ZAC_zzx】decide_lazy —— 默认 STAY（0 条搬运腿），只有 E2/容量才 RETURN
-decisions = {}
-for q, seat in list(registry.zone_seat.items()):
-    if q in sites:
-        decisions[q] = ("RETURN", sites[q])   # 少数被逐出者
-        registry.return_to_storage(q, sites[q])
-    else:
-        decisions[q] = ("STAY", seat)          # ⚠ 默认原地闲放
-```
-
-### 1.4 RETURN 落位：三方案箱式匹配（笔记 :123-131）
-
-回存储不是"回原位"那么简单——原位可能被占。三族候选箱（原位/就近/伙伴）
-∪ 自由位过滤 → 最小权完美匹配：
-
-```python
-def match_return_sites(registry, returners, next_use, after, ...):
-    # C1 原位族 / C2 就近族 / C3 伙伴族 —— 每族扩成 (2·ratio+1)² 自由位箱
-    #（防塌缩：ZAC 的 nearest_storage_site 每半行每列只回一个位，同列驻留者会撞）
-    families = [registry.homes[q], near_current, anchor_loc]
-    ...
-    cost = sqrt(d(激发区座位→候选位)) + alpha * sqrt(d(候选位→锚点))  # 省 now + 省 future
-    # scipy 最小权完美匹配；失败贪心兜底
-```
-
-**单测**：30/30 全绿（下次使用表/登记簿/E2/容量阀/三方案/边界腿格式）。
+1. **按 2q 门拆批次**——轮次 = 2q 门层，一轮一次激光；
+2. **可以选择不放回**——激发区原子默认驻留，不挡路就一直坐；
+3. **图着色引导放置**——GA 搜门位，适应度里直接算批数。
 
 ---
 
-## 第 2 步：接进 ZAC 流水线（M2）——第一次端到端
+## ZAC_zzx
 
-### 2.1 放置器轮循环：整个覆写父类 run()
+### 第一阶段：轮次划分（改进①：按 2q 门拆批次）
 
-```python
-# 【ZAC_zzx】ResidentPlacer.run —— 顺序与原生编译器同构：先定门位，闲人让路
-placement = self._plan_round(0)
-self._commit_round(0, placement)
-for layer in range(n):
-    if layer + 1 < n:
-        placement = self._plan_round(layer + 1)   # 门赢：先放下一轮门位
-        next_seats = [p["seats"] for p in placement]
-    decisions, stats = decide_lazy(...)            # ⚠ 边界决策（默认全留）
-    self._append_boundary(decisions)               # mapping[2L+2]：留座者不动
-    self._commit_round(layer + 1, placement)       # mapping[2L+3]：参与者落门位
-self._assert_contract()   # ⚠ 流契约断言：长度 2n+1 / 拷贝不变式 / 每张映射单射
-```
+**目标**：确定编译的工作节拍——哪个门在哪一轮做、单比特门何时做、
+搬运批次挂在哪。
 
-**⚠ 与 ZAC 的差异**：ZAC 的 `VertexMatchingPlacer.run`（vmplacer.py:19-62）
-每轮先调 `place_qubit` 生成**回存储**的边界映射，再放下轮门位——复用两世界
-`filter_mapping` 只看一个边界。ZAC_zzx 的边界映射里**留座者逐位不动**，
-下游路由见 2.2 自然不搬他们。
+- **策略：轮次 = ASAP 调度的 2q 门层**
 
-**首战**：toy 电路 **0.596**（比 ZAC 快 40%，保真度 0.887→0.916），
-决策账本符合设计：第 1 层门只搬 3 个原子（其余全在车上），末边界零回撤。
+    1. 每层内的门互不共用比特 → **一轮一次 Rydberg 激发**同时执行；
+    2. **单比特门挂靠父门**：跟在父 2q 门那一轮的激发之后执行，原子坐
+       在哪就在哪做，**不为 1q 门发一辆车**；
+    3. 搬运批次只在轮内的两个相位组织：**去程相**（送人进车间）与
+       **回撤相**（赶人回宿舍——驻留模式下大多数为空）。
 
-### 2.2 路由四改（zzx/zac_zzx.py `_route_resident`）
+- **效果**：单比特门彻底退出搬运决策；后续所有决策（放置、驻留、发车）
+  都以轮为节拍对齐。结构与 ZAP 的 **ASAP-Separate 分离调度**同构：
+  2q 门优先排满 Rydberg 阶段，1q 门填空。
 
-```python
-# 【ZAC】router.py:56-61 —— 只看本轮门原子；断言一端必在存储
-remain_graph = []
-for gate in self.gate_scheduling[layer]:
-    for q in gate:
-        if initial_mapping[q] != gate_mapping[q]:
-            assert(initial_mapping[q][0] == 0 or gate_mapping[q][0] == 0)  # ⚠
-            remain_graph.append(q)
-```
+### 第二阶段：逐轮门放置（改进③：图着色引导）
 
-```python
-# 【ZAC_zzx】_route_resident —— 三处差异
-# ① out 相：断言放宽为"两端均为合法 SLM 位"（区内换座 zone→zone 合法化）
-assert self.architecture.is_valid_SLM_position(*initial_mapping[q])
-assert self.architecture.is_valid_SLM_position(*gate_mapping[q])
+**目标**：给本轮每个 2q 门选一对纠缠区工位，使**搬运批次少、腿短**。
 
-# ② back 相 remain_graph 扩为"全部映射增量者"（闲住驻留者的回撤腿也要发车）
-remain_back = [q for q in range(len(gate_mapping))
-               if gate_mapping[q] != final_mapping[q]]        # ⚠ 不再只扫门原子
+- **问题**：纯距离匹配看不见批次。例：原子 b 去第 3 列比第 6 列近，但
+  若与原子 a 的路线**交叉**，就要**多开一班车**——"交叉多一批"是两个门
+  决策之间的二次交互，匹配的边权一次只看一条边，表达不了。
 
-# ③ 依赖账本补丁：非参与者的 qubit_dependency 可能停在数轮之前——
-#    不补会与 rydberg/1q 并行执行（审计实证的洞）
-last_gate_inst = len(self.result_json["instructions"]) - 1
-for q in remain_back:
-    if q not in participants:
-        self.qubit_dependency[q] = last_gate_inst             # ⚠ 压到本轮门指令后
-```
+- **核心：适应度里直接算批数（分相位着色）**
 
----
+    GA 每试一套座位方案，当场把方案诱发的搬运腿建成冲突图、着色：
 
-## 第 3 步：真电路第一课——E2 逐出风暴
+    ```
+    F = 1.57 × (χ去程 + χ回撤)        ← 两张冲突图各自 DSATUR：各相位要发几班车
+      + Σ√(批内最长腿)                  ← 每班车的时间
+      + γ^轮距 × √距离(位置 → 下次搭档锚点)   ← 前瞻层
+    ```
 
-**现象**：ghz_n23 ratio 1.232，决策账本显示 22 个边界**逐出 21 次**。
+    1. **分两图**：去程腿与回撤腿在两个串行时间窗执行，跨相冲突边没有
+       物理意义——混一张图既漏计（跨相合色物理不存在）又多计；
+    2. **1.57 的来历**：每班车有 2×15μs 固定开关开销，折算成 √μm 账本
+       上的 1.57——"少发一班车"与"省一段腿"在同一本账上直接可比；
+    3. **求解闭环**：染色体 = [每门菜单下标] ∪ [闲人 STAY/RETURN 位] →
+       解码成座位表（被占就沿菜单顺延）→ 推出去程/回撤腿 → 两图着色 →
+       计 F → GA 择优。每轮约 1158 次评估；菜单/锚点/回撤落位每轮只算
+       一次当常量缓存，评估只剩查表 + 两次小图着色。
 
-**机理**：链式电路里新门锚点天然落在上一对座位附近，匹配选中被占座位 →
-E2 逐出 → 每轮"逐出一个 + 换座一个 + 接一个"。**先撞再逐**等于每轮多付
-逐出+回接两腿。
+- **关键例子**（两门两原子，a 从第 2 列、b 从第 4 列出发）：
 
-**修复**：菜单生成时就硬排除非参与者驻留者的座位（门绕开闲人）：
+    | 方案 | a 的腿 | b 的腿 | 判定 | 批数 |
+    |---|---|---|---|---|
+    | 距离优先 | 2列→5列 | 4列→3列 | 路线交叉 | 2 批 |
+    | 着色引导 | 2列→5列 | 4列→6列 | 保序兼容 | **1 批** |
 
-```python
-# 【ZAC_zzx】_plan_round —— 硬排除（ZAC 的 place_gate 候选窗无任何占用过滤 ⚠）
-blocked_g = {seat for q, seat in reg.zone_seat.items()
-             if q != q1 and q != q2}
-opts = self._build_opts(set_sites, q1, q2, blocked_g, pin_base)
-#  _build_opts 内：if blocked and (s1 in blocked or s2 in blocked): continue
-```
+- **菜单与钉扎**：
 
-**结果**：E2 21→0，ghz 批数 64→43（优于 ZAC 的 44），但 ratio 仍 1.10——
-引出第 4 步。
+    - 有驻留者参与的门：菜单塌缩成**钉扎窗**（驻留者座位 ±2 列）——
+      "驻留者一步不走、搭档跑全程"（原生编译器 K2 的移植）；
+    - 双方都在存储：锚点展开窗 + ZAC 容量自动扩窗；
+    - **硬排除**：其他原子占着的座位一律不进菜单（原因见第四阶段教训）；
+    - **终检安全网**：选完后按"不压任何他人座位"复查，违例即改选——
+      正确性不依赖菜单层级的表现。
 
----
+- **效果**：解析匹配 A1 geomean 1.139 → **GA A3 0.867**；批数塌缩：
+  ising_n42 22→11、qft_n29 401→217、knn 161→88（均相对 ZAC 原版）。
 
-## 第 4 步：漂移与钉扎的拉锯——解析规则无解的实证
+### 第三阶段：边界决策（改进②：可以选择不放回）
 
-逐轮解剖 ghz（每轮作业时长）发现：**结对座位逐轮漂移**——匹配把门位放在
-"驻留者与新来者"的折中点，驻留者每轮区内长走 ~150μs。
+**目标**：每轮门做完后，决定激发区每个原子**留还是回**。
 
-**尝试三档解析策略**（4 电路冒烟 geomean）：
+- **问题**：留在激发区省两趟车，但可能挡住下一轮的门位；搬回存储区
+  腾了位子，却要付两条腿 + 未来再入区。
 
-| 策略 | ghz | bv | ising | qft | geomean | 病根 |
-|---|---|---|---|---|---|---|
-| 不钉扎 | 1.118 | 1.137 | 0.921 | 1.341 | 1.115 | 门位漂移，驻留者反复长走 |
-| K2 钉扎窗 | 1.533 | 1.372 | 0.815 | 0.763 | 1.095 | 座位锚死，新原子家门逐轮走远：入区腿 157→250μs/轮 线性上涨 |
-| 钉扎+偏移罚 | 1.533 | 1.372 | 0.815 | 1.198 | 1.197 | qft 的多驻留门需要融合 |
+- **决策规则**（每个边界、每个激发区原子）：
 
-```python
-# 【ZAC_zzx】K2 钉扎窗（ZAC place_gate 无此概念 ⚠）：有驻留者参与的门，
-# 菜单塌缩到其座位对 ± pin_radius 列——驻留者一步不走，新来者跑全程
-resident_seats = [reg.zone_seat[q] for q in (q1, q2) if reg.is_resident(q)]
-if resident_seats:
-    for seat in resident_seats:
-        base = self._norm_left(seat)
-        for dc in range(-self.pin_radius, self.pin_radius + 1):
-            ...  # (base[0], base[1], base[2]+dc)
-```
+    | 身份 | 默认 | 何时强制回 |
+    |---|---|---|
+    | 下一轮参与者 | 留（入区腿 = 区内短移到门位） | — |
+    | 非参与者、有后续使用 | **留（0 条搬运腿）** | 容量超压 |
+    | 死驻留者（后续无 2q 门） | **留**（判分模型 idle 项 = 1，闲放零代价） | 仅容量压力 |
+    | 挡路者 | — | 座位被下一轮门位需要 → **强制回** |
 
-**结论（本步最重要的产出）**：链式与并行电路要的**相反**，解析规则
-顾此失彼——"钉不钉"本质是逐门决策，必须交给搜索。这就是第 6 步 GA 层
-存在的直接证据。
+- **回哪：三方案箱式匹配**（回存储不是回原位那么简单，原位可能被占）：
 
----
+    1. **原位族**：初始布局原位 ± 自由位箱（保证可行性）；
+    2. **就近族**：当前座位最近存储位 ± 箱（**省本次搬运**）；
+    3. **伙伴族**：下次搭档位置附近 ± 箱（**省未来搬运**）。
 
-## 第 5 步：座位双订连环案——验证器驱动的三轮追凶
+    三族候选合并后做**最小权完美匹配**，代价 = √d(本次) + α·√d(未来)。
 
-验证器（第 7 步详述）在宽层电路连续抓出真冲突，剥了四层才到根：
+- **实现要点**：
 
-### 5.1 scipy 匹配的"full"只保小侧全覆盖
+    1. **驻留登记簿**：谁在哪个激发区座位/存储位，跨轮线程化维护；
+    2. **下次使用表**：每个原子下次哪轮上场、搭档是谁（ASAP 调度静态
+       可知，零运行时成本）——ZAC 只知道"下一层用不用"，这里知道任意
+       远的未来；
+    3. 改动为何小：ZAC 的回程代码本来就**只搬"落位≠目标"的原子**——
+       放置端把边界映射写成"留座者不动"，回程**自动**不发车。
 
-钉扎窗让 sites < gates 时有门未被匹配，`chosen[col]` 直接 KeyError：
+- **效果**：ghz 22 轮后 23 个原子全在车上、末轮零回撤；**GA 自己学到
+  "永不回撤"**（决策分布 STAY 2630 : RETURN 0）——回撤的两条腿在判分
+  模型下永远买不回收益，驻留的全部价值兑现为门位自由度。
 
-```python
-# 【ZAC_zzx】_match_gates —— 验证全覆盖，否则贪心兜底（ZAC 菜单恒大，无此坑 ⚠）
-if len(chosen) == n_cols:
-    return [...]
-# 落入 greedy()
-```
+### 第四阶段：路由发车与一个架构教训
 
-### 5.2 食堂顺延在耗尽的菜单上原地打转
+**改动**（相对 ZAC 路由三处）：
 
-ising 宽层两个门分到同一 site（顺延循环走完没 break，停在占位上）：
+1. 回撤相扫描对象从"本轮门原子"扩为**所有有位置变化的原子**——
+   闲住驻留者的回撤腿也要发车；
+2. 断言放宽：搬运必有一端在存储 → **两端合法即可**（区内换座合法化）；
+3. **依赖账本补丁**：非参与者回撤腿的账本可能停在数轮之前——不补
+   会与激光并行执行。
 
-```python
-# 【ZAC_zzx】修复：菜单预扩容到至少"门数"个选项（鸽笼保证顺延必有空位）
-if len(opts) < len(list_gate):
-    extra = sorted(..._all_zone_sites() | ..._expanded_sites(...) - seen, key=权重)
-    for site in extra: ...  # 保持硬排除地补足
-```
+- **教训：ZAC 的 site 账本盲区**
 
-### 5.3 根：ZAC 的 site 账本只记"离开"、从不记"到达"
+    - **问题**：ZAC 的座位依赖账本**只记"离开"、从不记"到达"**。原版
+      无害——每轮全员往返，任何"到达"都在同轮内配对"离开"，盲窗最多
+      一轮；驻留一开，原子到达后一直坐，账本指向陈旧的"离开"，新原子
+      落到同座时账本查不到约束 → **真双占**（修复前 ising 8 处、
+      qft 58 处，两原子同座数百微秒）。更深一层：同相位内"驻留者离开"
+      的指令可能后于"新原子到达"发射，账本只能指向先发射者，**原理上
+      表达不了反向约束**——这不是漏记一行，是架构盲区。
+    - **冲突解决**：不修补账本，从构造上禁绝——① 菜单硬排除所有他人
+      座位；② 驻留者保座朝向（配对含自己座位时不动、搭档去另一座）；
+      ③ 终检安全网改选。
 
-```python
-# 【ZAC】router.py process_movement_layer（节选）——账本的天生盲区
-set_site_dependency.add(self.site_dependency[final_mapping[q]])  # 只"读"终点
-self.site_dependency[initial_mapping[q]] = inst_idx              # ⚠ 只"写"起点
-```
+### 第五阶段：正确性验证（8 查独立回放）
 
-原版无害：每轮全员往返，任何"到达"都在同轮内配对"离开"，盲窗 ≤ 一轮。
-**驻留一开**：原子到达后一直坐，账本里它的座位指向陈旧的"离开"——新原子
-落到同座，账本查不到约束 → **真双占**（ising 修复前 8 处、qft 58 处，
-两原子同座几百微秒）。更深一层：就算补记"到达"也没用——同相位里
-"驻留者离开"的指令可能后于"新原子到达"发射，账本只能指向先发射者，
-**原理上表达不了反向约束**。
+**目标**：不信任"由构造保证正确"，把落盘指令流当别人交来的作业回放。
 
-**修复（构造性禁绝，不修补账本）**——三道闸：
+1. **批内兼容**：每个搬运批内原子两两满足 AOD 保序规则；
+2. **位置连续**：每个原子的每段搬运起点 = 上一段终点（反幽灵传送）；
+3. **时序依赖**：依赖前驱的结束 ≤ 本批开始；座位依赖按**取放语义**
+   （座位在"拿起开始"即释放，镜像 ZAC 路由的放行口径）；
+4. **门执行邻接**：CZ 执行时两原子坐在同一纠缠区的成对工位；
+5. **座位独占时间线**：任意时刻任何座位至多一个原子（同一时刻的事件
+   整批结算——ZAC 两段式搬运的"零驻留中转"曾使逐事件处理全部误报）；
+6. **1q 门位置一致**：指令声明位置 = 追踪位置；
+7. **门账本对账**：流内 2q 门序列 = 重综合后的门列表（直读 QASM 会
+   差在共享重综合层，ZAC 真值同样如此，非编译 bug）；
+8. **门-搬运互斥**：原子自己的门没做完之前不能被搬运。
 
-```python
-# 【ZAC_zzx】闸 1：菜单硬排除扩大到"本轮其他参与者"的座位（同相位交接从构造上消失）
-blocked_g = {seat for q, seat in reg.zone_seat.items() if q != q1 and q != q2}
-
-# 【ZAC_zzx】闸 2：_pair_seats 驻留者保座——配对含自己座位时不动、搭档去另一座
-# （堵"同门对座交换"变体：列序朝向会把搭档安排到驻留者旧座上）
-for q, other, mine_first in ((q1, q2, True), (q2, q1, False)):
-    if reg.is_resident(q) and reg.zone_seat[q] in (a, b):
-        mine = reg.zone_seat[q]
-        return (mine, b if mine == a else a) if mine_first else (b if mine == a else a, mine)
-
-# 【ZAC_zzx】闸 3：_repair_placements 终检安全网——选完后按不变式复查，
-# 违例即改选全区过滤域最优工位（正确性不再依赖任何菜单层级的表现）
-if s1 not in others and s2 not in others and p["site"] not in (used - {p["site"]}):
-    out.append(p); continue          # 合法
-... 否则全区挑最优未用工位改选
-```
-
-**结果**：A1 与 A3 全部输出通过 8 查（含座位独占时间线）。
+- **效果**：ZAC 原版 18 电路全过（证校验器自身正确）；7 类损坏注入
+  （搬到已占座/幽灵传送/无视依赖/错位/丢门/1q 造假/门未完先搬）
+  **全部抓到**；ZAC_zzx 全部输出全绿。
 
 ---
 
-## 第 6 步：GA 决策层（M3）——门位求解如何"看见"运送批次
+## 实验结果
 
-回答一个关键问题：**先定下一轮门位时，考虑运送批次数量了吗？** 考虑了，
-而且不是"先放好座位再数批数"——**批数本身长在搜索的目标函数里**。
-GA 每试一套座位方案，当场把这套方案诱发的搬运腿建成冲突图着色一遍，
-"要发几趟车"直接决定这套方案的生死。下面按求解闭环逐步展开。
-
-### 6.1 求解闭环总览（每轮跑一遍）
-
-```
-① 建菜单（每步一次，常量缓存）
-     每门候选 = 钉扎窗(驻留者座位±pin_radius列) ∪ 锚点展开窗(容量自动扩窗)
-     硬排除其他原子座位；预扩容到≥门数个选项（食堂顺延的鸽笼保证）
-② 构造联合染色体
-     染色体 = [每门菜单下标基因…] ++ [有后续使用的非参与者 0=STAY/1=RETURN 基因…]
-③ 解码（每评估一次都跑）
-     门位基因 → 食堂顺延 → 每门具体座位对（被占就沿菜单找空位）
-     决策基因 → 边界决策（STAY 原座 / RETURN 用三方案匹配的预定位）
-④ 推腿集（查表，O(门数)）
-     去程腿 O：每个门两原子"当前位置→指派座位"中距离>0 者
-     回撤腿 B：选 RETURN 的原子"座位→匹配存储位"的腿
-⑤ 两张冲突图、各自着色（每评估一次都跑）
-     图 O 的节点=去程腿，图 B 的节点=回撤腿；边 = compatible_2d 不成立
-     各自 DSATUR 启发式着色 → χ + 色类 → 每类最长腿
-⑥ 适应度
-     F = 1.57×(χB + χO) + Σ√dmax(B) + Σ√dmax(O) + γ0^轮距·Σ√d(位置→下次锚点)
-⑦ GA 择优迭代
-     种群6 × 迭代8 × 邻域采样24 ≈ 1158 次评估/轮，精英保留，zeros 热启动
-     （zeros = 每门选菜单第一个 = 权重最优的解析解，GA 从不比解析差）
-```
-
-### 6.2 真实代码（摘自 `zzx/zplacer.py _ga_step`）
-
-**解码器**——染色体到座位表，冲突靠顺延消解：
-
-```python
-def decode(chrom):
-    used = set()
-    placed = []
-    for col, opts in enumerate(candidates):        # 每门一个候选菜单
-        idx = chrom[col] % len(opts)
-        for step in range(len(opts)):              # 食堂顺延：被占就沿菜单找空位
-            cand = opts[(idx + step) % len(opts)]
-            if cand[0] not in used:
-                break
-        used.add(cand[0])
-        placed.append(cand)
-    return placed
-```
-
-**适应度**——与 ZAC 纯距离匹配权重的本质差异 ⚠：
-
-```python
-# 【ZAC】vmplacer.py:267-270（对照）：w = sqrt(d1) + sqrt(d2)，批次不可见
-# 【ZAC_zzx】fitness：批数通过着色直接进目标
-def fitness(chrom):
-    placed = decode(chrom)
-    legs_out, extra = [], 0.0
-    for col, cand in enumerate(placed):
-        e = gate_cache[col][cand[0]]       # (门,工位) → 两原子的去程腿 + 锚点项（缓存）
-        legs_out.extend(e["legs"]); extra += e["anchor"]
-    legs_back = []
-    for i, q in enumerate(eligible):
-        e = dec_cache[q][chrom[n_gates + i]]   # (原子,STAY/RETURN) → 回撤腿 + 锚点项（缓存）
-        legs_back.extend(e[0]); extra += e[1]
-    if self.fitness_mode == "lumped":          # A3' 消融档：单图混合（跨相合色=物理不存在的省钱）
-        return batch_cost(legs_back + legs_out, w_batch=self.w_batch)[0] + extra
-    cost_b = batch_cost(legs_back, w_batch=self.w_batch)[0]   # ⚠ χ(回撤相)+Σ√dmax
-    cost_o = batch_cost(legs_out,  w_batch=self.w_batch)[0]   # ⚠ χ(去程相)+Σ√dmax
-    return cost_b + cost_o + extra
-```
-
-`batch_cost`（`zcost.py`）内部就是"建冲突图 → DSATUR → 色数与色类"：
-
-```python
-def batch_cost(legs, w_batch=1.0, ...):
-    adj = conflict_graph(legs)                       # O(n²) 两两 compatible_2d
-    n_batches, batches, _ = color_batches(legs)      # DSATUR：饱和度→度数→距离
-    time_cost = sum(sqrt(max(腿长) for 批内))          # 每批时间 = √批内最长腿
-    return w_batch * n_batches + time_cost, n_batches, n_conflicts
-```
-
-**类型感知邻域**——异质基因各用各的算子（原 swap 算子跨类型几乎全空转，
-审计实测）：门位基因 ±1 菜单下标或随机重抽；决策基因 0↔1 翻转：
-
-```python
-def neighbor(chrom):
-    m = list(chrom)
-    if n_gates and (not eligible or self.rng.random() < 0.5):
-        gi = self.rng.randrange(n_gates)
-        m[gi] = self.rng.choice([m[gi] + 1, m[gi] - 1,
-                                 self.rng.randrange(len(candidates[gi]))])
-    else:
-        di = self.rng.randrange(len(eligible))
-        m[n_gates + di] ^= 1
-    return m
-```
-
-**缓存机制**（编译时间的胜负手）：菜单、锚点、RETURN 落位**每步只算一次**
-当常量；`gate_cache[(门,工位)]` 与 `dec_cache[(原子,选项)]` 预存每个基因取值
-对应的腿与锚点贡献——fitness 只剩查表 + 两次小图 DSATUR。全套 18 电路
-编译 237s，反而快于 ZAC_new-A 的 272s。
-
-### 6.3 两分钟例子：一个"更近但要多开一趟车"的抉择
-
-两个门，A 门要搬原子 a（存储第 2 列），B 门要搬原子 b（存储第 4 列）：
-
-| 方案 | a 的腿 | b 的腿 | compatible_2d 判定 | χ | 适应度账 |
-|---|---|---|---|---|---|
-| 座位顺手选 | 2 列→5 列 | 4 列→3 列 | 2<4 但 5>3：**路线交叉** | 2 批 | 2×1.57 + 两批的 √dmax |
-| GA 换 B 的座位 | 2 列→5 列 | 4 列→6 列 | 次序保持：兼容 | **1 批** | **1×1.57 + 一批的 √dmax** |
-
-纯距离匹配（ZAC 的 place_gate）会选第一种——b 去第 3 列明明更近！但
-"交叉要多开一趟车"是**两个门决策之间的二次交互**：匹配的边权一次只看
-一条边，表达不了"门 A 选了这个工位、门 B 选了那个工位、合起来多一批"。
-GA 每次评估**整套**方案，着色把批数后果算出来，第二种胜出。ZAC_new 的
-罚单引擎（B 引擎）用"每门×每工位的冲突条数"做匹配边上的近似罚，zzx 的
-GA 则是每轮 1158 次真实着色精确计价——从"罚单近似"升级到"GA+着色求解"。
-
-### 6.4 搜索与执行的分工
-
-| | 搜索信号（放置 GA 内） | 实际执行（路由内） |
-|---|---|---|
-| 问的问题 | "这套座位**会**要几批？" | "这批腿**实际**怎么分车？" |
-| 着色精度 | 启发式 DSATUR（毫秒级，×1158 次/轮） | 小图（≤24 腿）升级精确分支限界 |
-| 相位结构 | 去程/回撤两张图分开算 | 同样分相位发车 |
-
-ZAC_new 的对账纪律（预演 χ == 实发批数，689/689 层）在 zzx 延续：放置
-算的批数就是路由发的批数，搜索优化的目标与实际付的账单是同一本账。
-
-### 6.5 诚实边界
-
-- **χ 只在轮内起作用，不跨轮**：上一轮的座位选择影响下一轮的腿型，这
-  部分只靠锚点前瞻（γ 项）软性引导——而实测 γ 项不赚反亏（第 8.2 节），
-  所以"跨轮批次联动"目前是缺的。真正要做是 rollout（把下一个换位近似
-  推演一遍再计价，菜单冻结以避开循环依赖），v1.1 实验项；
-- GA 每轮独立求解（轮间只通过登记簿状态耦合），不是全局搜索——种子
-  方差（qft_n29 极差 0.079）就是这一点的代价。
-
-**结果**（冒烟 4 电路）：A1（解析）geomean 1.139 → **A3（GA）0.900**——
-第 4 步预言的"必须搜索"兑现：ising 0.647、qft_n18 0.799、ghz 1.533→1.107。
-批数塌缩是这套闭环的直接产出：ising_n42 22→11、qft_n29 401→217、
-knn 161→88（全部相对 ZAC 原版）。
-
----
-
-## 第 7 步：8 查验证器（M4）——正确性的独立证据链
-
-`verify_batches.py` 把落盘的 ZAIR 指令流当"别人交来的作业"逐条回放：
-
-| 查 | 内容 | 关键实现点（调试中踩出来的） |
-|---|---|---|
-| ① | 批内两两 compatible_2d | rydberg 门字段是 **q0/q1**（按 q/qubits 解析会整体空转） |
-| ② | 位置连续性（反幽灵传送） | 从 init_locs 全程追踪 |
-| ③ | 时序依赖 | site 依赖镜像 router 的 **drop-after-pickup**（座位在"拿起开始"即释放，非拿起完成） |
-| ④ | 门执行邻接（成对工位） | 同 ① 的字段修复后才真正生效 |
-| ⑤ | **座位独占时间线** | **同一时刻的事件整批结算**——ZAC 两段式搬运的零驻留中转（放下与再拿起同一微秒）曾使逐事件处理在 8 个原版电路上全部误报 |
-| ⑥ | 1qGate locs 与追踪一致 | 旧版直接覆写不校验 |
-| ⑦ | **门账本对账** | 与 code JSON 内嵌的**重综合后门列表**对账；直读 QASM 会"缺门"——ZAC 真值 4 电路同差异实证，差异在共享重综合层，非编译 bug |
-| ⑧ | 门-搬运互斥（原子粒度） | 原子自己的门没做完不能被搬；曾按"整块串行"实现，ZAC 原版合法流被误报后修正为原子粒度 |
-
-**验收**：ZAC 原版 18/18 全过（证校验器本身正确）；7 类损坏注入全部抓到
-（搬到已占座/幽灵传送/无视依赖/错位/丢门/1q 造假/门未完先搬）；
-ZAC_zzx 全部输出（主配置+消融+种子）全绿。
-
----
-
-## 第 8 步：18 电路总实验（M5）
-
-### 8.1 主表（分母 = 冻结 ZAC 真值）
+### （一）18 电路主表（分母 = 冻结 ZAC 真值）
 
 | 系统 | geomean | 编译全套 |
 |---|---|---|
 | ZAC 真值 | 1.000 | — |
 | ZAC_new-B（同会话重跑） | 0.959 | — |
 | ZAC_new-A（同会话重跑） | 0.947 | 272s |
-| A1（驻留+解析匹配） | 1.081 | — |
-| **ZAC_zzx（驻留+GA）** | **0.867** | **237s** |
+| A1（驻留 + 解析匹配） | 1.081 | — |
+| **ZAC_zzx（驻留 + GA）** | **0.867** | **237s** |
 
-分电路代表（全表见 results/comparison_table.md）：swap **0.561**、seca
-**0.570**、knn **0.631**（批 161→88）、ising_n42 **0.647**、multiply 0.650、
-qft_n18 **0.799**、**qft_n29 0.777（根治 ZAC_new 的 1.077 回退，批 401→217）**；
-ising_n98 0.870 vs B 0.661（超宽并行层 B 的着色放置仍占优，互补保留）；
-bv/cat/ghz/wstate 链式族 1.0-1.15（几何下限，见 8.3）。
+### （二）三个改进点的分项证据（代表电路）
 
-### 8.2 三个反直觉发现（诚实记录）
+| 电路 | 轮数① | 批数（③着色证据） | 搬运人次（②不放回证据） | duration 比 |
+|---|---|---|---|---|
+| rd84_142 | 110 | 259 → 122 | 314 → 186 | **0.515** |
+| mod8-10_178 | 152 | 280 → 152 | 314 → 162 | **0.594** |
+| ex3_229 | 175 | 320 → 169 | 356 → 183 | **0.565** |
+| ising_n42 | 4 | 22 → 11 | 124 → 82 | **0.647** |
+| qft_n29 | 110 | 401 → 217 | 736 → ~450 | **0.777** |
+| knn_n31 | — | 161 → 88 | — | **0.631** |
 
-1. **GA 学到"永不回撤"**：决策分布 STAY 2630 / RETURN 0。回撤的 2 条腿
-   在判分模型下永远买不回收益（与原生编译器 K5 同构）——驻留的全部价值
-   兑现为门位自由度，RETURN 三方案成为"备而无用的保险"。
-2. **γ0 前瞻项不赚反亏**：哨兵上 γ0=0 → 0.738/0.863/1.028 vs 默认 0.5 →
-   0.777/0.870/1.025（幅度在种子噪声内）。机理：锚点=搭档当前位置是陈旧
-   预测，而成本已由第一层精确计价——结构性部件起作用、权重项平坦，
-   与 ZAC_new 的 w_batch 现象同款。
-3. **种子方差超帽**：qft_n29 极差 0.079 > 0.03 验收线（seed1=0.698 反而
-   优于默认 seed0）；ghz_n78 极差 0。多种子取优是 v1.1 的免费收益。
+（①轮数的证据形态：轮数 = rydberg 指令数 = ASAP 层数，两法一致；
+1q 门全程零额外搬运批次。②人次的下降几乎全部来自回程相消失。）
 
-### 8.3 链式族的几何铁律（未达串行验收线 0.85 的机理说明）
-
-新原子必须与驻留者**同排**落座（配对座位同行），触发 compatible_2d 的
-"同终点 ⇒ 必须同起点"y 维冲突——驻留者只要挪一步，两腿必分两批。
-破法是**预取**（下轮搭档提前入场占位），v1.1 首选。
+### （三）qmap 外部案例（154 个，批量对比进行中——完成后补入）
 
 ---
 
-## 附：与 ZAC 的差异总清单（速查）
+## 关键发现与边界
 
-| 位置 | ZAC | ZAC_zzx | 差异性质 |
+- **钉扎不是免费午餐**（消融，4 电路 geomean）：不钉扎 1.115 / 钉扎
+  1.095 / 偏移罚 1.197——链式电路钉死后新原子家门逐轮走远（入区腿
+  157→250μs/轮线性上涨），不钉则门位漂移。**取舍必须逐门搜索**，
+  这是 GA 层存在的直接证据。
+- **γ 前瞻不赚反亏**：哨兵上 γ=0 → 0.738/0.863/1.028 vs 默认 0.5 →
+  0.777/0.870/1.025（幅度在种子噪声内）。锚点（搭档当前位置）是陈旧
+  预测，而成本已由第一层精确计价——结构性部件起作用，权重项平坦。
+- **种子方差**：qft_n29 极差 0.079（超 0.03 帽；seed1=0.698 反而更好）；
+  多种子取优是后续免费收益。
+- **链式几何铁律**：新原子必须与驻留者同排落座（配对座位同行），
+  触发"同终点 ⇒ 必须同起点"冲突——驻留者只要动、两腿必分两批。
+  bv/cat/ghz/wstate 族 1.0～1.15 由此而来；破法是**预取**（下轮搭档
+  提前入场占位），列为 v1.1 首选。
+- **与 ZAC_new-B 互补**：ising_n98 上 B 0.661 vs zzx 0.870——超宽并行
+  层 B 的着色放置仍占优，合并两者是开放方向。
+- **判分边界**（全系统一致沿用）：idle 项被注释（闲放零代价）、
+  1q 时长 0.625μs/52μs 内部不一致、飞行中路径穿越无检查。
+
+## 与 ZAC 的差异速查
+
+| 位置 | ZAC | ZAC_zzx | 性质 |
 |---|---|---|---|
-| 回位放置 vmplacer.py:343 | 全员强制回存储 | decide_lazy 默认 STAY | **核心行为差异** |
-| 复用 zac.py:256 | 只看相邻一层 | NextUse 全程 + 边界决策 | **核心行为差异** |
-| 门放置 place_gate | 纯距离匹配 | GA + 分相位着色适应度 | **核心行为差异** |
+| 回位放置 vmplacer.py:343 | 全员强制回存储 | 边界决策默认 STAY | **核心** |
+| 复用 zac.py:256 | 只看相邻一层 | 下次使用表全程 + 边界决策 | **核心** |
+| 门放置 place_gate | 纯距离匹配 | GA + 分相位着色适应度 | **核心** |
 | 回程 remain_graph router.py:98 | 只扫本轮门原子 | 全部映射增量者 | 配套 |
-| 路由断言 router.py:60 | 一端必在存储 | 两端合法即可（zone→zone 合法） | 配套 |
+| 路由断言 router.py:60 | 一端必在存储 | 两端合法即可 | 配套 |
 | 依赖账本 | 原样 | 非参与者回撤腿压到门指令后 | 补丁 |
-| 门位候选窗 | 无占用过滤 | 硬排除他人座位 + 保座朝向 + 终检修复 | 补丁 |
-| 验证 | 4 查（内置 2 查） | 8 查独立回放 | 证据链 |
-| 配置 | — | 白名单 + 消费断言（未认识键报错） | 工程保障 |
+| 门位候选窗 | 无占用过滤 | 硬排除 + 保座朝向 + 终检修复 | 补丁 |
+| 验证 | 内置 2 查 | 8 查独立回放 | 证据链 |
