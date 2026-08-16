@@ -301,37 +301,149 @@ if s1 not in others and s2 not in others and p["site"] not in (used - {p["site"]
 
 ---
 
-## 第 6 步：GA 决策层（M3）——着色引导放置 + 联合搜索
+## 第 6 步：GA 决策层（M3）——门位求解如何"看见"运送批次
 
-**染色体**（每步一次联合搜索，门位与驻留决策同盘）：
+回答一个关键问题：**先定下一轮门位时，考虑运送批次数量了吗？** 考虑了，
+而且不是"先放好座位再数批数"——**批数本身长在搜索的目标函数里**。
+GA 每试一套座位方案，当场把这套方案诱发的搬运腿建成冲突图着色一遍，
+"要发几趟车"直接决定这套方案的生死。下面按求解闭环逐步展开。
 
-```python
-# 【ZAC_zzx】_ga_step
-染色体 = [每门菜单下标基因] ++ [有后续使用的非参与者 0=STAY / 1=RETURN 基因]
-# 解码：食堂顺延（被占就沿菜单找空位）→ 门位座位对 + 边界决策
-# 邻域：类型感知——门位基因 ±1/重抽；决策基因 0↔1 翻转
+### 6.1 求解闭环总览（每轮跑一遍）
+
+```
+① 建菜单（每步一次，常量缓存）
+     每门候选 = 钉扎窗(驻留者座位±pin_radius列) ∪ 锚点展开窗(容量自动扩窗)
+     硬排除其他原子座位；预扩容到≥门数个选项（食堂顺延的鸽笼保证）
+② 构造联合染色体
+     染色体 = [每门菜单下标基因…] ++ [有后续使用的非参与者 0=STAY/1=RETURN 基因…]
+③ 解码（每评估一次都跑）
+     门位基因 → 食堂顺延 → 每门具体座位对（被占就沿菜单找空位）
+     决策基因 → 边界决策（STAY 原座 / RETURN 用三方案匹配的预定位）
+④ 推腿集（查表，O(门数)）
+     去程腿 O：每个门两原子"当前位置→指派座位"中距离>0 者
+     回撤腿 B：选 RETURN 的原子"座位→匹配存储位"的腿
+⑤ 两张冲突图、各自着色（每评估一次都跑）
+     图 O 的节点=去程腿，图 B 的节点=回撤腿；边 = compatible_2d 不成立
+     各自 DSATUR 启发式着色 → χ + 色类 → 每类最长腿
+⑥ 适应度
+     F = 1.57×(χB + χO) + Σ√dmax(B) + Σ√dmax(O) + γ0^轮距·Σ√d(位置→下次锚点)
+⑦ GA 择优迭代
+     种群6 × 迭代8 × 邻域采样24 ≈ 1158 次评估/轮，精英保留，zeros 热启动
+     （zeros = 每门选菜单第一个 = 权重最优的解析解，GA 从不比解析差）
 ```
 
-**适应度**——本项目第二核心：**分相位着色**。去程腿与回撤腿在两个串行
-的时间窗执行，跨相冲突边没有物理意义，必须各自建冲突图、各自 DSATUR：
+### 6.2 真实代码（摘自 `zzx/zplacer.py _ga_step`）
+
+**解码器**——染色体到座位表，冲突靠顺延消解：
 
 ```python
-# 【ZAC_zzx】fitness —— 与 ZAC 纯距离匹配权重的本质差异 ⚠
-# 【ZAC】vmplacer.py:267-270（对照）：w = sqrt(d1) + sqrt(d2)（+前瞻），批次不可见
+def decode(chrom):
+    used = set()
+    placed = []
+    for col, opts in enumerate(candidates):        # 每门一个候选菜单
+        idx = chrom[col] % len(opts)
+        for step in range(len(opts)):              # 食堂顺延：被占就沿菜单找空位
+            cand = opts[(idx + step) % len(opts)]
+            if cand[0] not in used:
+                break
+        used.add(cand[0])
+        placed.append(cand)
+    return placed
+```
+
+**适应度**——与 ZAC 纯距离匹配权重的本质差异 ⚠：
+
+```python
+# 【ZAC】vmplacer.py:267-270（对照）：w = sqrt(d1) + sqrt(d2)，批次不可见
+# 【ZAC_zzx】fitness：批数通过着色直接进目标
 def fitness(chrom):
-    legs_out, legs_back = 收集两相位的搬运腿（查表缓存）
-    cost_b = batch_cost(legs_back, w_batch=self.w_batch)[0]   # χ(回撤相) + Σ√dmax
-    cost_o = batch_cost(legs_out, w_batch=self.w_batch)[0]    # χ(去程相) + Σ√dmax
-    extra = Σ γ0^轮距 · √d(决策后位置 → 下次使用锚点)          # 前瞻层
+    placed = decode(chrom)
+    legs_out, extra = [], 0.0
+    for col, cand in enumerate(placed):
+        e = gate_cache[col][cand[0]]       # (门,工位) → 两原子的去程腿 + 锚点项（缓存）
+        legs_out.extend(e["legs"]); extra += e["anchor"]
+    legs_back = []
+    for i, q in enumerate(eligible):
+        e = dec_cache[q][chrom[n_gates + i]]   # (原子,STAY/RETURN) → 回撤腿 + 锚点项（缓存）
+        legs_back.extend(e[0]); extra += e[1]
+    if self.fitness_mode == "lumped":          # A3' 消融档：单图混合（跨相合色=物理不存在的省钱）
+        return batch_cost(legs_back + legs_out, w_batch=self.w_batch)[0] + extra
+    cost_b = batch_cost(legs_back, w_batch=self.w_batch)[0]   # ⚠ χ(回撤相)+Σ√dmax
+    cost_o = batch_cost(legs_out,  w_batch=self.w_batch)[0]   # ⚠ χ(去程相)+Σ√dmax
     return cost_b + cost_o + extra
-# w_batch=1.57 = 每批 2×15μs 固定开销的 √μm 当量（审计标定）
 ```
 
-菜单与缓存每步只算一次（菜单/锚点/RETURN 落位为常量），fitness 只剩
-查表 + 两次小图着色——编译全套 237s，反而快于 ZAC_new-A 的 272s。
+`batch_cost`（`zcost.py`）内部就是"建冲突图 → DSATUR → 色数与色类"：
+
+```python
+def batch_cost(legs, w_batch=1.0, ...):
+    adj = conflict_graph(legs)                       # O(n²) 两两 compatible_2d
+    n_batches, batches, _ = color_batches(legs)      # DSATUR：饱和度→度数→距离
+    time_cost = sum(sqrt(max(腿长) for 批内))          # 每批时间 = √批内最长腿
+    return w_batch * n_batches + time_cost, n_batches, n_conflicts
+```
+
+**类型感知邻域**——异质基因各用各的算子（原 swap 算子跨类型几乎全空转，
+审计实测）：门位基因 ±1 菜单下标或随机重抽；决策基因 0↔1 翻转：
+
+```python
+def neighbor(chrom):
+    m = list(chrom)
+    if n_gates and (not eligible or self.rng.random() < 0.5):
+        gi = self.rng.randrange(n_gates)
+        m[gi] = self.rng.choice([m[gi] + 1, m[gi] - 1,
+                                 self.rng.randrange(len(candidates[gi]))])
+    else:
+        di = self.rng.randrange(len(eligible))
+        m[n_gates + di] ^= 1
+    return m
+```
+
+**缓存机制**（编译时间的胜负手）：菜单、锚点、RETURN 落位**每步只算一次**
+当常量；`gate_cache[(门,工位)]` 与 `dec_cache[(原子,选项)]` 预存每个基因取值
+对应的腿与锚点贡献——fitness 只剩查表 + 两次小图 DSATUR。全套 18 电路
+编译 237s，反而快于 ZAC_new-A 的 272s。
+
+### 6.3 两分钟例子：一个"更近但要多开一趟车"的抉择
+
+两个门，A 门要搬原子 a（存储第 2 列），B 门要搬原子 b（存储第 4 列）：
+
+| 方案 | a 的腿 | b 的腿 | compatible_2d 判定 | χ | 适应度账 |
+|---|---|---|---|---|---|
+| 座位顺手选 | 2 列→5 列 | 4 列→3 列 | 2<4 但 5>3：**路线交叉** | 2 批 | 2×1.57 + 两批的 √dmax |
+| GA 换 B 的座位 | 2 列→5 列 | 4 列→6 列 | 次序保持：兼容 | **1 批** | **1×1.57 + 一批的 √dmax** |
+
+纯距离匹配（ZAC 的 place_gate）会选第一种——b 去第 3 列明明更近！但
+"交叉要多开一趟车"是**两个门决策之间的二次交互**：匹配的边权一次只看
+一条边，表达不了"门 A 选了这个工位、门 B 选了那个工位、合起来多一批"。
+GA 每次评估**整套**方案，着色把批数后果算出来，第二种胜出。ZAC_new 的
+罚单引擎（B 引擎）用"每门×每工位的冲突条数"做匹配边上的近似罚，zzx 的
+GA 则是每轮 1158 次真实着色精确计价——从"罚单近似"升级到"GA+着色求解"。
+
+### 6.4 搜索与执行的分工
+
+| | 搜索信号（放置 GA 内） | 实际执行（路由内） |
+|---|---|---|
+| 问的问题 | "这套座位**会**要几批？" | "这批腿**实际**怎么分车？" |
+| 着色精度 | 启发式 DSATUR（毫秒级，×1158 次/轮） | 小图（≤24 腿）升级精确分支限界 |
+| 相位结构 | 去程/回撤两张图分开算 | 同样分相位发车 |
+
+ZAC_new 的对账纪律（预演 χ == 实发批数，689/689 层）在 zzx 延续：放置
+算的批数就是路由发的批数，搜索优化的目标与实际付的账单是同一本账。
+
+### 6.5 诚实边界
+
+- **χ 只在轮内起作用，不跨轮**：上一轮的座位选择影响下一轮的腿型，这
+  部分只靠锚点前瞻（γ 项）软性引导——而实测 γ 项不赚反亏（第 8.2 节），
+  所以"跨轮批次联动"目前是缺的。真正要做是 rollout（把下一个换位近似
+  推演一遍再计价，菜单冻结以避开循环依赖），v1.1 实验项；
+- GA 每轮独立求解（轮间只通过登记簿状态耦合），不是全局搜索——种子
+  方差（qft_n29 极差 0.079）就是这一点的代价。
 
 **结果**（冒烟 4 电路）：A1（解析）geomean 1.139 → **A3（GA）0.900**——
 第 4 步预言的"必须搜索"兑现：ising 0.647、qft_n18 0.799、ghz 1.533→1.107。
+批数塌缩是这套闭环的直接产出：ising_n42 22→11、qft_n29 401→217、
+knn 161→88（全部相对 ZAC 原版）。
 
 ---
 
