@@ -158,7 +158,8 @@ def _dsatur_exact(n: int, adj: list[list[int]], ub: int,
 
 
 def color_batches(legs: list[tuple], exact_threshold: int = 24,
-                  node_budget: int = 200_000) -> tuple[int, list[list[int]], str]:
+                  node_budget: int = 200_000,
+                  extra_edges=None) -> tuple[int, list[list[int]], str]:
     """主入口：把搬运腿分批，返回 (批数, 每批腿下标列表, 求解方式)。
 
     * n ≤ exact_threshold 时先跑启发式拿上界，再试精确 B&B 求 χ；
@@ -172,6 +173,12 @@ def color_batches(legs: list[tuple], exact_threshold: int = 24,
         return 0, [], "empty"
     dist = [leg[0] for leg in legs]
     adj = conflict_graph(legs)
+    if extra_edges:                      # 鬼点边：两腿同批的组合会撞静止原子
+        for i, j in extra_edges:
+            if j not in adj[i]:
+                adj[i].append(j)
+            if i not in adj[j]:
+                adj[j].append(i)
     colors = _dsatur_heuristic(n, adj, dist)
     n_used = (max(colors) + 1) if colors else 0
     method = "heuristic"

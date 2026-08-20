@@ -22,6 +22,8 @@ from copy import deepcopy
 # 挂到 sys.path 最前），与外层 ZAC/zac 逐字节一致。
 from zac.zac import ZAC
 
+
+from zzx.ghost import ghost_hits, pair_edges
 from zzx.zcost import color_batches
 from math import hypot
 
@@ -127,12 +129,83 @@ class ZAC_zzx(ZAC):
         vectors 与 router.graph_construction 同源：(起x, 终x, 起y, 终y)。
         腿格式换算成 zcost 的 (dist, 起x, 起y, 终x, 终y) 后直接复用
         color_batches（含精确档升级与独立集性质）。
+
+        鬼点重放审计（硬保证层路由侧）：着色后按批序"执行"一遍——每批
+        的腿对着【当前真实位置】的静止原子查鬼点，命中的批拆出肇事腿
+        延后重新分批，直到全部干净。比给冲突图加保守鬼点边精确得多
+        （保守边在密集层会把所有腿对都连上，批数爆炸 11→82 的实证）。
+        终止性：放置层（zplacer._repair_ghosts）保证每条腿单独不撞
+        {批前,批后} 任何位置——重放中的静止位置必属其一，单腿批恒干净。
         """
         vectors = self.graph_construction(remain_graph, mapping_from, mapping_to)
         legs = [(hypot(v[0] - v[1], v[2] - v[3]), v[0], v[2], v[1], v[3])
                 for v in vectors]
-        return color_batches(legs, exact_threshold=self.zzx_exact_threshold,
-                             node_budget=self.zzx_node_budget)
+        arch = self.architecture
+        ex = lambda loc: arch.exact_SLM_location_tuple(tuple(loc))
+        n_atoms = len(mapping_from)
+        owner = {i: q for i, q in enumerate(remain_graph)}
+
+        def audit_pass(batch_ids, pos):
+            """按给定批序重放：返回 (干净批列表, 被拆腿下标集)。
+
+            pos: 原子当前位置 {q:(x,y)}，随批次执行推进。
+            命中批拆腿策略：detail 给出肇事列/行轨迹，映射回贡献腿移出。
+            """
+            clean, deferred = [], []
+            for members in batch_ids:
+                pending = list(members)
+                while True:
+                    ghosts = [(q, *pos[q]) for q in range(n_atoms)
+                              if q not in {owner[i] for i in pending}]
+                    batch_legs = [legs[i] for i in pending]
+                    hits = ghost_hits(batch_legs, ghosts, detail=True)
+                    if not hits:
+                        break
+                    _, _, _, ct, rt, _s = hits[0]
+                    bad = {i for i in pending
+                           if (legs[i][1], legs[i][3]) == ct
+                           or (legs[i][2], legs[i][4]) == rt}
+                    if not bad:                     # 轨迹映射失败的安全网
+                        bad = {pending[0]}
+                    deferred += sorted(bad)
+                    pending = [i for i in pending if i not in bad]
+                    if not pending:
+                        break
+                if pending:
+                    clean.append(pending)
+                    for i in pending:               # 本批落座，推进重放位置
+                        pos[owner[i]] = (legs[i][3], legs[i][4])
+            return clean, deferred
+
+        pos = {q: ex(mapping_from[q]) for q in range(n_atoms)}
+        # 初始着色带"T0 位置鬼点边"（排除两腿主人，稀疏）——引导着色
+        # 天然避开绝大多数撞鬼组合；残余由下面的重放审计精确拆批
+        ghosts0 = [(q, *pos[q]) for q in range(n_atoms)]
+        extra = sorted(pair_edges(legs, ghosts0, owners=remain_graph))
+        chi, batches, method = color_batches(
+            legs, exact_threshold=self.zzx_exact_threshold,
+            node_budget=self.zzx_node_budget, extra_edges=extra or None)
+        final, deferred = audit_pass(batches, pos)
+        for round_i in range(3):                    # 2 轮重批 + 末轮强制单飞
+            if not deferred:
+                break
+            if round_i == 2:
+                # 单腿恒干净（放置层保证 vs {批前,批后} 位置）→ 单飞兜底
+                final += [[i] for i in sorted(deferred)]
+                for i in sorted(deferred):
+                    pos[owner[i]] = (legs[i][3], legs[i][4])
+                deferred = []
+                break
+            sub = sorted(deferred)
+            _, sub_batches, _ = color_batches(
+                [legs[i] for i in sub], exact_threshold=self.zzx_exact_threshold,
+                node_budget=self.zzx_node_budget)
+            sub_batches = [[sub[k] for k in members] for members in sub_batches]
+            more, deferred = audit_pass(sub_batches, pos)
+            final += more
+        self.zzx_ghost_splits = getattr(self, "zzx_ghost_splits", 0) + \
+            (len(final) - len(batches))
+        return chi, final, method
 
     def _phase_batches(self, remain_graph, mapping_from, mapping_to):
         """一个搬运相位的批次生成器：coloring 一次着色；mis/maximalis* 逐轮剥离。

@@ -329,11 +329,14 @@ def decide_lazy(registry: ResidentRegistry, next_use: NextUse, layer: int,
 def boundary_legs(registry_before: dict, decisions: dict, arch) -> list:
     """决策 → 回相腿清单（zcost 格式 (dist, 起x, 起y, 终x, 终y)，dist=0 不上车）。
 
-    registry_before：决策应用前各 RETURN 者的激发区座位 {q: seat}（决策后登记簿已变）。
+    registry_before：决策应用前各搬运决策者的激发区座位 {q: seat}
+    （决策后登记簿已变）。RESEAT 是鬼点修补引入的第三种决策——
+    驻留者区内让座（激发区 → 激发区），与 RETURN 一样发生在边界相位，
+    路由端按映射增量自动带上，无需特殊处理。
     """
     legs = []
     for q, decision in decisions.items():
-        if decision[0] != "RETURN":
+        if decision[0] not in ("RETURN", "RESEAT"):
             continue
         seat = registry_before[q]
         sx, sy = arch.exact_SLM_location_tuple(seat)

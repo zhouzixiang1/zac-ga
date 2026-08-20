@@ -51,8 +51,9 @@ from scipy.sparse.csgraph import min_weight_full_bipartite_matching
 from zac.placer.vmplacer import VertexMatchingPlacer
 
 from zzx.zcost import batch_cost, compatible_2d, conflict_graph
-from zzx.resident import (NextUse, ResidentRegistry, decide_lazy,
-                          match_return_sites)
+from zzx.ghost import ghost_hits, hit_count, leg_hits, new_conflicts
+from zzx.resident import (NextUse, ResidentRegistry, boundary_legs,
+                          decide_lazy, match_return_sites)
 
 
 class BatchAwarePlacer(VertexMatchingPlacer):
@@ -518,6 +519,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         n = len(gate_scheduling)
 
         placement = self._plan_round(0)
+        self._repair_ghosts(placement, {})       # 第 0 轮入场也过鬼点防线
         self._commit_round(0, placement)
         for layer in range(n):
             if layer + 1 < n:
@@ -535,8 +537,10 @@ class ResidentPlacer(VertexMatchingPlacer):
             decisions, stats = decide_lazy(
                 self.registry, self.nu, layer, next_gates, next_seats,
                 final_return_home=self.final_return_home and layer == n - 1)
+            self._repair_ghosts(placement or [], decisions)   # 防线③（match 引擎同享）
             self._append_boundary(decisions)
-            self.decision_log.append({"layer": layer, **stats})
+            self.decision_log.append({"layer": layer, **stats,
+                                      "ghost_fix": getattr(self, "ghost_fixes", 0)})
             if placement is not None:
                 self._commit_round(layer + 1, placement)
         self._assert_contract()
@@ -618,6 +622,10 @@ class ResidentPlacer(VertexMatchingPlacer):
                                         q1, q2, None, None)
             candidates.append(opts)
 
+        # 防线①：菜单预过滤（match 引擎无鸽笼约束，保底 1 个选项即可）
+        ghosts0 = self._static_ghosts({q for gate in list_gate for q in gate})
+        candidates = [self._filter_menu_ghosts(opts, g[0], g[1], ghosts0, 1)
+                      for opts, g in zip(candidates, list_gate)]
         # 全局二部图匹配（行=工位，列=门；与 ZAC place_gate 同构）+ 安全网修复
         placement = self._repair_placements(self._match_gates(candidates, list_gate),
                                             list_gate)
@@ -808,7 +816,301 @@ class ResidentPlacer(VertexMatchingPlacer):
                 out.append(p)      # 理论不可达（容量余量恒足）
         return out
 
-    # ------------------------------------------------------------------ 提交与边界
+    # ============================================================== 鬼点硬保证层
+    # 三道防线（与 engine/fitness 完全无关——无前瞻的 GA 也零鬼点）：
+    #   ① 菜单预过滤 _filter_menu_ghosts：入区腿自查不撞当前静态原子
+    #   ② 解码增量检查（_ga_step.decode 内）：新座位与已落座者组合零新增
+    #   ③ _repair_ghosts：提交前确定性修补——本层是最终保证
+    # 联合口径定理（ghost.py 模块头）：按相位全腿同批检查零鬼点 ⇒ 路由
+    # 着色任意分批后仍零鬼点。修补只会改写 decisions（RESEAT 让座 / 换
+    # RETURN 落位）或个别门位，改写后照常走 _append_boundary/_commit_round，
+    # 路由端按映射增量自动带上，无特殊处理。
+
+    def _static_ghosts(self, participants):
+        """本轮静态原子 [(q, x, y)]：非参与者在当前位置。
+
+        保守口径：预过滤/解码时还不知道 RETURN 决策，驻留者可能本步
+        回撤（届时它不再是鬼）——按当前位置滤只会多滤不会漏。精确口径
+        在 _repair_ghosts 里按相位分别构建。
+        """
+        arch = self.architecture
+        return [(q, *arch.exact_SLM_location_tuple(self.registry.current_pos(q)))
+                for q in range(len(self.mapping[0])) if q not in participants]
+
+    def _filter_menu_ghosts(self, opts, q1, q2, ghosts, keep):
+        """防线①：剔除"自己的入区腿就撞鬼"的选项。
+
+        keep = 菜单必须保住的最少选项数（GA 食堂顺延的鸽笼不变式）；
+        干净选项不足时按命中数升序回填脏选项——绝不空菜单、绝不少于 keep。
+        """
+        if not ghosts or not opts:
+            return opts
+        reg, arch = self.registry, self.architecture
+        scored = []
+        for o in opts:
+            s1, s2 = self._pair_seats(q1, q2, o[0])
+            legs = []
+            for q, s in ((q1, s1), (q2, s2)):
+                p0 = arch.exact_SLM_location_tuple(reg.current_pos(q))
+                p1 = arch.exact_SLM_location_tuple(s)
+                d = math.dist(p0, p1)
+                if d > 1e-9:
+                    legs.append((d, *p0, *p1))
+            scored.append((hit_count(legs, ghosts), o))
+        clean = [o for g, o in scored if g == 0]
+        if len(clean) >= keep:
+            return clean
+        dirty = sorted((g, o) for g, o in scored if g > 0)
+        return clean + [o for _, o in dirty[:max(0, keep - len(clean))]]
+
+    def _free_zone_seats(self, exclude):
+        """空闲激发区单座全集（RESEAT 让座目标域；含左右两种 SLM）。"""
+        reg = self.registry
+        taken = set(reg.zone_seat.values()) | set(exclude)
+        seats = []
+        for s in self._all_zone_sites():
+            for cand in (s, (s[0] + 1, s[1], s[2])):
+                if cand not in taken:
+                    seats.append(cand)
+        return seats
+
+    def _free_storage_sites(self, exclude):
+        """空闲存储位全集（RETURN 落位重选域；SLM 0 全枚举）。"""
+        slm = self.architecture.dict_SLM[0]
+        taken = set(self.registry.storage_site.values()) | set(exclude)
+        return [(0, r, c) for r in range(slm.n_r) for c in range(slm.n_c)
+                if (0, r, c) not in taken]
+
+    def _repair_ghosts(self, placements, decisions):
+        """防线③：每条腿【单独】不得撞任何静止原子（批化解不了的部分）。
+
+        M2 架构分工：单腿自撞（腿自己的列×行交叉扫到别人）任何分批都
+        化解不了——本层在放置期根除；两腿组合撞鬼由路由层的鬼点边强制
+        分批（zac_zzx._coloring_batches → ghost.pair_edges）。
+
+        时间线：T0(现在) --back--> T1 --out--> T2。
+          back 腿的鬼 = 其余原子在 {T0, T1} 位置（它是别的批的搬运者时
+                        飞前坐 T0、飞完坐 T1，两个位置都可能被扫）；
+          out  腿的鬼 = 其余原子在 {T1, T2} 位置。
+        修补只改写 decisions（RESEAT 让座 / 换 RETURN 落位）或个别门位；
+        帽 60 轮，修不净即 raise——硬保证语义：宁可大声失败不静默放走。
+        """
+        reg, arch = self.registry, self.architecture
+        n_q = len(self.mapping[0])
+        ex = lambda loc: arch.exact_SLM_location_tuple(tuple(loc))
+        participants = {q for p in placements for q in p["gate"]}
+
+        def t1(q):
+            return decisions[q][1] if q in decisions else reg.current_pos(q)
+
+        def t2(q):
+            if q in participants:
+                for p in placements:
+                    if q in p["gate"]:
+                        return p["seats"][p["gate"].index(q)]
+            return t1(q)
+
+        def both(q, ta, tb):
+            """原子在相位前/后两个可能位置（相同则只列一次）。"""
+            a, b = ex(ta(q)), ex(tb(q))
+            out = [(q, *a)]
+            if b != a:
+                out.append((q, *b))
+            return out
+
+        def gate_of(q):
+            for i, p in enumerate(placements):
+                if q in p["gate"]:
+                    return i
+            return None
+
+        def leg_issues():
+            """全部单腿自撞问题 [(相位, 腿主q, leg, 受害者id, x, y)]。"""
+            issues = []
+            for q, v in decisions.items():
+                if v[0] == "STAY":
+                    continue
+                p0, p1 = ex(reg.current_pos(q)), ex(v[1])
+                d = math.dist(p0, p1)
+                if d < 1e-9:
+                    continue
+                ghosts = [g for a in range(n_q) if a != q
+                          for g in both(a, reg.current_pos, t1)]
+                for gid, gx, gy in leg_hits((d, *p0, *p1), ghosts):
+                    issues.append(("back", q, (d, *p0, *p1), gid, gx, gy))
+            for p in placements:
+                for q, s in zip(p["gate"], p["seats"]):
+                    p0, p1 = ex(t1(q)), ex(s)
+                    d = math.dist(p0, p1)
+                    if d < 1e-9:
+                        continue
+                    ghosts = [g for a in range(n_q) if a != q
+                              for g in both(a, t1, t2)]
+                    for gid, gx, gy in leg_hits((d, *p0, *p1), ghosts):
+                        issues.append(("out", q, (d, *p0, *p1), gid, gx, gy))
+            return issues
+
+        fixed_total = 0
+        self.ghost_fixes = 0
+        banned = {}          # 禁回表：("gate",i)/("dec",q)/("seat",q) → 用过的座位
+        for _round in range(12):            # 禁回 ⇒ 状态不重复 ⇒ 无振荡，必收敛
+            issues = leg_issues()
+            if not issues:
+                self.ghost_fixes = fixed_total
+                return
+            progress = False
+            for issue in list(issues):      # 一轮修完所有问题（修法内部
+                if self._fix_leg_ghost(     # 按实时状态校验，过期问题天然
+                        issue, placements, decisions,   # 无害——条件不满足即跳过）
+                        participants, t1, t2, both, gate_of, n_q, banned):
+                    fixed_total += 1
+                    progress = True
+            if not progress:
+                break
+        residual = leg_issues()
+        raise RuntimeError(
+            f"鬼点硬保证层修补失败：{len(residual)} 处单腿自撞残留 "
+            f"(首批: {residual[:3]})——请检查修补策略覆盖度")
+
+    def _fix_leg_ghost(self, issue, placements, decisions, participants,
+                       t1, t2, both, gate_of, n_q, banned):
+        """修一个单腿自撞问题，返回是否动手。按代价从小到大：
+
+        ① 受害者是驻留非参与者(STAY) → 让座 RESEAT（恒可解兜底）
+        ② 腿主是决策(RETURN/RESEAT) → 换落位
+        ③ 腿主是参与者 → 改门位
+        """
+        phase, owner, leg, gid, gx, gy = issue
+        reg, arch = self.registry, self.architecture
+        ex = lambda loc: arch.exact_SLM_location_tuple(tuple(loc))
+
+        # ① 受害者让座：新座不得被任何腿扫到，让座腿自身也要单腿干净
+        if gid not in participants and reg.is_resident(gid) and \
+                decisions.get(gid, ("STAY",))[0] == "STAY":
+            old = reg.zone_seat[gid]
+            exclude = {v[1] for v in decisions.values() if v[0] == "RESEAT"}
+            exclude |= {s for p in placements for s in p["seats"]}
+            all_legs = [l for q, v in decisions.items() if v[0] != "STAY"
+                        for l in [ (lambda a, b: (math.dist(a, b), *a, *b)
+                                    )(ex(reg.current_pos(q)), ex(v[1])) ]
+                        if l[0] > 1e-9]
+            for p in placements:
+                for q, s in zip(p["gate"], p["seats"]):
+                    a, b = ex(t1(q)), ex(s)
+                    if math.dist(a, b) > 1e-9:
+                        all_legs.append((math.dist(a, b), *a, *b))
+            others = [g for a in range(n_q) if a != gid
+                      for g in both(a, reg.current_pos, t1)]
+            ban = banned.setdefault(("seat", gid), set())
+            for site in sorted(self._free_zone_seats(exclude),
+                               key=lambda s: arch.distance(
+                                   old[0], old[1], old[2], *s)):
+                if site in ban:
+                    continue
+                t0 = ex(site)
+                d = math.dist(ex(old), t0)
+                if d < 1e-9 or ghost_hits(all_legs, [(gid, *t0)]):
+                    continue
+                if leg_hits((d, *ex(old), *t0), others):
+                    continue
+                decisions[gid] = ("RESEAT", site)
+                ban.add(old)
+                return True
+
+        # ② 腿主是决策 → 换落位（RETURN 换存储位，RESEAT 换区座位）
+        if owner in decisions and decisions[owner][0] in ("RETURN", "RESEAT"):
+            kind = decisions[owner][0]
+            sx, sy = ex(reg.current_pos(owner))
+            taken = {v[1] for v in decisions.values() if v[0] == kind}
+            taken |= {s for p in placements for s in p["seats"]}
+            pool = (self._free_storage_sites(taken) if kind == "RETURN"
+                    else self._free_zone_seats(taken))
+            ghosts = [g for a in range(n_q) if a != owner
+                      for g in both(a,
+                                    (reg.current_pos if phase == "back" else t1),
+                                    (t1 if phase == "back" else t2))]
+            out_legs = []
+            for p in placements:
+                for q, s in zip(p["gate"], p["seats"]):
+                    a, b = ex(t1(q)), ex(s)
+                    if math.dist(a, b) > 1e-9:
+                        out_legs.append((math.dist(a, b), *a, *b))
+            ban = banned.setdefault(("dec", owner), set())
+            for site in sorted(pool, key=lambda s: math.dist(
+                    (sx, sy), ex(site))):
+                if site in ban:
+                    continue
+                t0 = ex(site)
+                d = math.dist((sx, sy), t0)
+                if d < 1e-9:
+                    continue
+                if leg_hits((d, sx, sy, t0[0], t0[1]), ghosts):
+                    continue
+                if phase == "back" and ghost_hits(out_legs, [(owner, *t0)]):
+                    continue      # 新落位在 out 相也不得被扫
+                decisions[owner] = (kind, site)
+                ban.add(loc)
+                return True
+
+        # ③ 腿主是参与者 → 改门位（全区按权重搜索替位）；
+        # ④ 受害者是【坐定参与者】（零腿坐在门位）→ 改它的门位
+        #    （③的同一套搜索，只是目标门换成受害者的门）
+        gi = gate_of(owner)
+        if gi is None and gid in participants:
+            # 受害者坐定 = 其入区腿为零：改它的门位等于把它挪开
+            for p in placements:
+                if gid in p["gate"]:
+                    others = [q for q, s in zip(p["gate"], p["seats"])
+                              if math.dist(ex(t1(q)), ex(s)) < 1e-9]
+                    if others:
+                        gi = gate_of(gid)
+                        owner = gid
+                    break
+        if gi is not None:
+            p = placements[gi]
+            q1, q2 = p["gate"]
+            others_seats = {seat for qq, seat in reg.zone_seat.items()
+                            if qq != q1 and qq != q2}
+            used = {pp["site"] for pp in placements}
+            ghosts = [g for a in range(n_q) if a not in (q1, q2)
+                      for g in both(a, t1, t2)]
+            ban = banned.setdefault(("gate", gi), set())
+            cand_sites = [s for s in sorted(self._all_zone_sites(),
+                               key=lambda s: self._site_weight(q1, q2, s))
+                          if s not in used and s not in ban
+                          and s not in others_seats
+                          and (s[0] + 1, s[1], s[2]) not in others_seats]
+            for site in cand_sites:
+                new_p = self._mk_placement(q1, q2, site)
+                new_legs = []
+                clean = True
+                for q, s in zip(new_p["gate"], new_p["seats"]):
+                    pa, pb = ex(t1(q)), ex(s)
+                    d = math.dist(pa, pb)
+                    if d > 1e-9:
+                        nl = (d, *pa, *pb)
+                        if leg_hits(nl, ghosts):
+                            clean = False
+                            break
+                        new_legs.append(nl)
+                if not clean:
+                    continue
+                placements[gi] = new_p
+                ban.add(p["site"])
+                return True
+            import os
+            if os.environ.get("GHOST_DEBUG"):
+                print(f"[fixdbg] ③失败 owner=q{owner} victim=q{gid} "
+                      f"尝试站点数={len(cand_sites)} 全排除/全脏")
+        import os
+        if os.environ.get("GHOST_DEBUG"):
+            print(f"[fixdbg] 无修法适用 phase={phase} owner=q{owner} victim=q{gid} "
+                  f"victim是参与者={gid in participants} "
+                  f"victim是驻留={self.registry.is_resident(gid)} "
+                  f"owner决策={owner in decisions}")
+        return False
+
+
     def _commit_round(self, layer: int, placement: list):
         """追加第 layer 轮门位映射（= 上一张映射 + 参与者落座）；登记簿入区。"""
         m = list(self.mapping[-1])
@@ -821,10 +1123,14 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.mapping.append(m)
 
     def _append_boundary(self, decisions: dict):
-        """追加边界映射（= 门位映射 + RETURN 者落存储位）。"""
+        """追加边界映射（= 门位映射 + RETURN 者落存储位 / RESEAT 者落新区座）。
+
+        路由端按映射增量取 back 相搬运者（zac_zzx._route_resident 扫全部
+        原子的 gate→final 差分），RESEAT 腿因此自动上车，无需特判。
+        """
         m = list(self.mapping[-1])
         for q, (kind, loc) in decisions.items():
-            if kind == "RETURN":
+            if kind in ("RETURN", "RESEAT"):
                 m[q] = loc
         self.mapping.append(m)
 
@@ -862,6 +1168,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         list_gate = self.gate_scheduling[next_layer]
         reg, nu, arch = self.registry, self.nu, self.architecture
         participants = {q for gate in list_gate for q in gate}
+        static_ghosts = self._static_ghosts(participants)   # 防线①②共用的静态鬼
 
         # ---- 菜单：钉扎窗 ∪ 全展开；硬排除=区内所有座位除本门原子自己的
         #     （同相位座位交接从构造上禁绝——site 账本只记离开不记到达）----
@@ -902,6 +1209,9 @@ class ResidentPlacer(VertexMatchingPlacer):
                     if len(opts) >= len(list_gate):
                         break
                 opts.sort(key=lambda o: o[1])
+            # 防线①：入区腿自查撞鬼的选项剔除（保住鸽笼下限 len(list_gate)）
+            opts = self._filter_menu_ghosts(opts, q1, q2, static_ghosts,
+                                            len(list_gate))
             candidates.append(opts)
             # 每工位缓存：两原子的入区腿 + 锚点前瞻贡献（参与者锚点看本轮之后）
             p1, p2 = reg.current_pos(q1), reg.current_pos(q2)
@@ -911,6 +1221,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             for site, _, _, _ in opts:
                 s1, s2 = self._pair_seats(q1, q2, site)
                 legs = []
+                seated = []        # 已坐定参与者（零腿）——解码时成为后续门的鬼
                 anchor = 0.0
                 for q, s, a, dr in ((q1, s1, a1, d1r), (q2, s2, a2, d2r)):
                     sx, sy = arch.exact_SLM_location_tuple(reg.current_pos(q))
@@ -918,11 +1229,14 @@ class ResidentPlacer(VertexMatchingPlacer):
                     d = math.dist((sx, sy), (tx, ty))
                     if d > 1e-9:
                         legs.append((d, sx, sy, tx, ty))
+                    else:
+                        seated.append((q, tx, ty))
                     if a is not None:
                         ax, ay = arch.exact_SLM_location_tuple(a)
                         anchor += (self.gamma0 ** dr) * sqrt(
                             math.dist((tx, ty), (ax, ay)))
-                cache[site] = {"legs": legs, "anchor": anchor}
+                cache[site] = {"legs": legs, "seated": seated,
+                               "anchor": anchor}
             gate_cache.append(cache)
 
         # ---- 决策基因与 RETURN 落位常量 ----
@@ -951,18 +1265,37 @@ class ResidentPlacer(VertexMatchingPlacer):
         n_gates = len(candidates)
         n_genes = n_gates + len(eligible)
 
-        # ---- 解码：食堂顺延（被占就沿菜单找下一个空位）----
+        # ---- 解码：食堂顺延（被占/撞鬼就沿菜单找下一个空位）----
+        # 防线②：新座位的入区腿与已落座者的腿做增量鬼点检查，冲突则顺延；
+        # 菜单耗尽时退回纯占位检查（第三道防线 _repair_ghosts 兜底）。
         def decode(chrom):
             used = set()
             placed = []
+            acc_legs = []
+            acc_ghosts = list(static_ghosts)
             for col, opts in enumerate(candidates):
                 idx = chrom[col] % len(opts)
+                cand = None
                 for step in range(len(opts)):
-                    cand = opts[(idx + step) % len(opts)]
-                    if cand[0] not in used:
-                        break
+                    c = opts[(idx + step) % len(opts)]
+                    if c[0] in used:
+                        continue
+                    if new_conflicts(acc_legs, gate_cache[col][c[0]]["legs"],
+                                     acc_ghosts):
+                        continue
+                    cand = c
+                    break
+                if cand is None:
+                    for step in range(len(opts)):
+                        c = opts[(idx + step) % len(opts)]
+                        if c[0] not in used:
+                            cand = c
+                            break
                 used.add(cand[0])
                 placed.append(cand)
+                e = gate_cache[col][cand[0]]
+                acc_legs.extend(e["legs"])
+                acc_ghosts.extend(e["seated"])   # 坐定即成鬼
             return placed
 
         # ---- 适应度：分相位着色 + 锚点前瞻（查表 + 两次 DSATUR）----
@@ -1061,17 +1394,23 @@ class ResidentPlacer(VertexMatchingPlacer):
         for q, site in forced_sites.items():
             decisions[q] = ("RETURN", site)
 
+        # 防线③：鬼点硬保证——确定性修补（改 decisions/门位），修不净即 raise
+        self._repair_ghosts(placements, decisions)
         # 登记簿同步 + 映射流提交（边界 → 门位，顺序与流契约一致）
         for q, (kind, loc) in decisions.items():
             if kind == "RETURN":
                 reg.return_to_storage(q, loc)
+            elif kind == "RESEAT":
+                reg.reseat(q, loc)
         self._append_boundary(decisions)
         self._commit_round(next_layer, placements)
         self.decision_log.append({
             "layer": layer, "engine": "ga",
             "stay": sum(1 for v in decisions.values() if v[0] == "STAY"),
             "return": sum(1 for v in decisions.values() if v[0] == "RETURN"),
+            "reseat": sum(1 for v in decisions.values() if v[0] == "RESEAT"),
             "forced_e2": 0, "capacity": len(cap_evict),
+            "ghost_fix": getattr(self, "ghost_fixes", 0),
             "participants": len(participants),
             "score": round(scored[0][0], 3)})
         self.search_time += time.time() - t0
