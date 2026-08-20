@@ -41,7 +41,9 @@ class ZAC_zzx(ZAC):
                     # ---- M3 前瞻/决策层旋钮（提前入白名单防键漂移）----
                     "gamma0", "lambda_seat", "kappa_congestion",
                     "lookahead_mode", "reseat", "fitness_mode",
-                    "w_resident", "pin_radius", "w_pin")
+                    "w_resident", "pin_radius", "w_pin",
+                    # ---- 初始布局引擎（"ga" = GAInitialPlacer 换掉 ZAC 的 SA）----
+                    "init_engine", "init_pop", "init_gens")
     # ZAC 原版认识的键（消费断言用； Zac.parse_setting 同步维护）
     ZAC_KEYS = ("dependency", "routing_strategy", "scheduling", "trivial_placement",
                 "dynamic_placement", "use_window", "window_size", "reuse",
@@ -73,6 +75,25 @@ class ZAC_zzx(ZAC):
             raise ValueError(f"未知设置键（防静默丢参）: {sorted(unknown)}")
 
     # ------------------------------------------------------------ 放置接线
+    def place_qubit_initial(self):
+        """第①道工序：初始布局。init_engine="ga" 时用 GA 替换 ZAC 的 SA。
+
+        ZAC 的 SAPlacer 占编译时间 97-98% 但邻域生成器有缺陷（README·已知
+        边界），GA 版搜索同一目标（层权重搭档会合距离），座位枚举与原版一致。
+        给定映射 / 平凡放置两条路径仍走原版，不掺和。
+        """
+        if (self.zzx_params.get("init_engine", "sa") != "ga"
+                or self.given_initial_mapping is not None
+                or self.trivial_placement):
+            return super().place_qubit_initial()
+        import time
+        from zzx.gainit import GAInitialPlacer
+        t0 = time.time()
+        gp = GAInitialPlacer(self.zzx_params)
+        gp.run(self.architecture, self.n_q, self.gate_scheduling)
+        self.qubit_mapping.append(gp.best_mapping)
+        self.runtime_analysis["initial placement"] = time.time() - t0
+
     def place_qubit_intermedeiate(self):
         """第⑤道工序的入口（ZAC 源码里就是这个拼写）。"""
         if self.placer_kind not in ("batch", "resident"):

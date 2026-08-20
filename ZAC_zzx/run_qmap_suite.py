@@ -40,6 +40,18 @@ CONFIGS = {
         "use_window": True, "window_size": 1000, "reuse": True,
         "seed": 0, "w_batch": 1.57, "gamma0": 0.0,
     },
+    "zzx_ga": {  # 主配置 + GA 初始布局（换掉 SA）
+        "placer": "resident", "engine": "ga", "routing_strategy": "coloring",
+        "trivial_placement": False, "dynamic_placement": True,
+        "use_window": True, "window_size": 1000, "reuse": True,
+        "seed": 0, "w_batch": 1.57, "gamma0": 0.5, "init_engine": "ga",
+    },
+    "zzx_nolook_ga": {  # 无前瞻 + GA 初始布局
+        "placer": "resident", "engine": "ga", "routing_strategy": "coloring",
+        "trivial_placement": False, "dynamic_placement": True,
+        "use_window": True, "window_size": 1000, "reuse": True,
+        "seed": 0, "w_batch": 1.57, "gamma0": 0.0, "init_engine": "ga",
+    },
 }
 
 
