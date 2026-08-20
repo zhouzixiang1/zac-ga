@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -92,8 +93,8 @@ def build_rows(hpca: bool):
                             ["instructions"][0]["init_locs"]),
                 "zac": truth,
                 "qmap": qmap_rows.get(stem),
-                "nolook": zair(ZZX / "results" / "nolook" / "code", stem),
-                "look": zair(ZZX / "results" / "main" / "code", stem)})
+                "nolook": zair(ZZX / f"results/nolook{suffix}" / "code", stem),
+                "look": zair(ZZX / f"results/main{suffix}" / "code", stem)})
     else:
         qmap_rows = {r["name"]: r["qmap"] for r in json.load(open(OUT / "qmap_iccad.json"))}
         for rec in json.load(open(ZZX / "results" / "qmap_suite" / "summary.json")):
@@ -102,8 +103,8 @@ def build_rows(hpca: bool):
                 "name": stem, "q": rec.get("qubits"),
                 "zac": zair(ZZX / "results" / "qmap_suite" / "zac" / "code", stem),
                 "qmap": qmap_rows.get(stem),
-                "nolook": zair(ZZX / "results" / "qmap_suite" / "zzx_nolook" / "code", stem),
-                "look": zair(ZZX / "results" / "qmap_suite" / "zzx" / "code", stem)})
+                "nolook": zair(ZZX / f"results/qmap_suite/zzx_nolook{suffix}" / "code", stem),
+                "look": zair(ZZX / f"results/qmap_suite/zzx{suffix}" / "code" if suffix else ZZX / "results" / "qmap_suite" / "zzx" / "code", stem)})
     return rows
 
 
@@ -190,7 +191,17 @@ def md_summary(rows, title):
 
 
 def main():
-    OUT.mkdir(parents=True, exist_ok=True)
+    # 变体选择：默认 = SA 初始化的 zzx；传 "ga" = GA 初始化（gainit.py 替换 SA 后）
+    ga = len(sys.argv) > 1 and sys.argv[1] == "ga"
+    if ga:
+        global ZZX
+        suffix = "_ga"
+        out_xlsx = OUT / "四方法对比_ga.xlsx"
+        out_md = OUT / "四方法对比_ga.md"
+    else:
+        suffix = ""
+        out_xlsx = OUT / "四方法对比.xlsx"
+        out_md = OUT / "四方法对比.md"
     rows1 = build_rows(hpca=True)
     rows2 = build_rows(hpca=False)
     wb = Workbook()
@@ -198,12 +209,12 @@ def main():
     ws1.title = "ZAC数据集18"
     fill_sheet(ws1, rows1, "ZAC 数据集（hpca 18 电路）")
     fill_sheet(wb.create_sheet("ICCAD数据集"), rows2, "ICCAD 数据集（qmap examples）")
-    wb.save(OUT / "四方法对比.xlsx")
-    with open(OUT / "四方法对比.md", "w") as f:
+    wb.save(out_xlsx)
+    with open(out_md, "w") as f:
         f.write("# 四方法对比（ZAC原始 / ICCAD / 遗传无前瞻 / 遗传前瞻）\n\n")
         f.write(md_summary(rows1, "ZAC 数据集（hpca 18）") + "\n")
         f.write(md_summary(rows2, "ICCAD 数据集（qmap examples）"))
-    print(f"✅ {OUT/'四方法对比.xlsx'} + 四方法对比.md")
+    print(f"✅ {out_xlsx}")
     print(md_summary(rows1, "ZAC数据集"))
     print(md_summary(rows2, "ICCAD数据集"))
 
