@@ -56,19 +56,24 @@ F = w_batch·(χ(back腿) + χ(入区腿)) + Σ√dmax(各相位)
 ZAC/.venv/bin/python ZAC_zzx/run.py ZAC_zzx/exp_setting/zzx_main.json    # 18 电路主配置
 ZAC/.venv/bin/python ZAC_zzx/verify_batches.py results/main/code/X.json \
     --qasm=benchmark/hpca/X.qasm                                          # 8 查校验
-ZAC/.venv/bin/python ZAC_zzx/make_table.py                                # 汇总表+验收清单
 ZAC/.venv/bin/python ZAC_zzx/tests/test_resident.py                       # 单测（30 项）
+.venv_qmap/bin/python ZAC_zzx/fourway_qmap.py                             # ICCAD 计分(move时间/编译)
+ZAC/.venv/bin/python ZAC_zzx/run_qmap_suite.py --tags zzx_nolook          # 154 例无前瞻套件
+.venv_qmap/bin/python ZAC_zzx/fourway_table.py                            # 四方法对比.xlsx
 ```
 
-## 关键实证（18 电路主表；完整见 results/comparison_table.md）
+## 关键实证（主入口 = results/fourway/四方法对比.xlsx：ZAC原始 / ICCAD / 遗传无前瞻 / 遗传前瞻 × 保真度 / move批 / move时间 / 编译时间，双数据集）
 
-| 系统 | geomean | 编译全套 |
-|---|---|---|
-| ZAC 真值 | 1.000 | — |
-| B 重跑（ZAC_new-B 同会话） | 0.959 | — |
-| A 重跑（ZAC_new-A 同会话） | 0.947 | 272s |
-| A1（驻留+解析匹配） | 1.081 | — |
-| **ZAC_zzx 主配置（驻留+GA）** | **0.867** | 237s |
+| 指标（对 ZAC geomean） | ICCAD | 遗传无前瞻 | 遗传前瞻 |
+|---|---|---|---|
+| move 批（hpca18 / 154 例） | 0.859 / 1.064 | **0.746 / 0.566** | 0.745 / 0.563 |
+| move 时间（hpca18 / 154 例） | 0.853 / 1.060 | **0.857 / 0.611** | 0.865 / 0.603 |
+| 编译时间（hpca18 / 154 例） | **0.004 / 0.005** | 1.052 / 1.139 | 1.024 / 1.115 |
+| 平均保真度（hpca18 / 154 例） | 0.428 / 0.412 | **0.504 / 0.477** | 0.504 / 0.477 |
+
+两套数据集上一致：**遗传两变体全面赢执行指标（批/时间/保真度），ICCAD 只赢编译速度
+（快 ~200 倍）**；前瞻项 γ0 在全套数据下与无前瞻持平（收益来自驻留+分相位着色+GA 门位
+搜索这些结构部件）。旧消融表（B/A/A1/gamma/seed）已随原始数据归档至 `archive/`。
 
 **qmap examples 外部套件（154 例）**：三法全成的 119 个公共集上 zzx
 **119/119 全胜、geomean 0.606**（批数降 45%、人次降 47%），无一例超
@@ -105,3 +110,8 @@ sheet `results/three_way/三方对比.xlsx`）：qmap 同尺计分 geomean 1.755
 - 飞行中路径穿越无检查（与 ZAC 同盲区；验证器是端点级）
 - stay_horizon 在本套件不 binding（实测 inter-use 仅 1-2 轮）
 - v1.1 候选：预取（下轮搭档提前入场，破链式两批铁律）、rollout 前瞻档
+- **SA 初始放置实测**（saplacer.py）：占编译时间 97-98%，但邻域生成器有两处缺陷
+  ——行移动是死代码（`randrange(0,1,1)` 恒 0），`new_c` 误用 `old_r`（:291，目标列
+  恒为 99±5 的窗口，bv_n30/n70 初始布局中的 94-99 列即其痕迹）；18 电路里 9 个的
+  初始布局就是平凡顺序（best-of-3 的 trivial 胜出）。换成 GA + 结构化热启动
+  （门图谱排序）是编译时间的主攻点

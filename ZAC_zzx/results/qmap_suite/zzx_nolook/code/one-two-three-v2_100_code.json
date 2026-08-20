@@ -1,0 +1,7300 @@
+{
+ "name": "one-two-three-v2_100",
+ "architecture_spec_path": "hardware_spec/zac_arch_repro.json",
+ "instructions": [
+  {
+   "type": "init",
+   "id": 0,
+   "begin_time": 0,
+   "end_time": 0,
+   "init_locs": [
+    [
+     0,
+     0,
+     99,
+     95
+    ],
+    [
+     1,
+     0,
+     99,
+     97
+    ],
+    [
+     2,
+     0,
+     99,
+     94
+    ],
+    [
+     3,
+     0,
+     99,
+     96
+    ],
+    [
+     4,
+     0,
+     99,
+     98
+    ]
+   ]
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 1,
+   "locs": [
+    [
+     0,
+     0,
+     99,
+     95
+    ],
+    [
+     1,
+     0,
+     99,
+     97
+    ],
+    [
+     3,
+     0,
+     99,
+     96
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 0
+    },
+    {
+     "name": "u2",
+     "q": 1
+    },
+    {
+     "name": "u1",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     0
+    ]
+   },
+   "begin_time": 0,
+   "end_time": 1.875
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 2,
+   "aod_id": 0,
+   "aod_qubits": [
+    1,
+    4
+   ],
+   "begin_locs": [
+    [
+     1,
+     0,
+     99,
+     97
+    ],
+    [
+     4,
+     0,
+     99,
+     98
+    ]
+   ],
+   "end_locs": [
+    [
+     1,
+     1,
+     1,
+     19
+    ],
+    [
+     4,
+     2,
+     1,
+     19
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     0,
+     1
+    ],
+    "site": [],
+    "aod": 0
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      297
+     ],
+     "row_loc": [
+      [
+       0,
+       99
+      ]
+     ],
+     "col_id": [
+      0,
+      1
+     ],
+     "col_x": [
+      291,
+      294
+     ],
+     "col_loc": [
+      [
+       0,
+       97
+      ],
+      [
+       0,
+       98
+      ]
+     ],
+     "id": 0,
+     "begin_time": 1.875,
+     "end_time": 16.875
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      297
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       0,
+       99
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0,
+      1
+     ],
+     "col_x_begin": [
+      291,
+      294
+     ],
+     "col_x_end": [
+      263,
+      265
+     ],
+     "col_loc_begin": [
+      [
+       0,
+       97
+      ],
+      [
+       0,
+       98
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       19
+      ],
+      [
+       2,
+       19
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 1,
+        "x": 291,
+        "y": 297
+       },
+       {
+        "id": 4,
+        "x": 294,
+        "y": 297
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 1,
+        "x": 263,
+        "y": 317
+       },
+       {
+        "id": 4,
+        "x": 265,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 16.875,
+     "end_time": 130.05680050876646
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0,
+      1
+     ],
+     "id": 2,
+     "begin_time": 130.05680050876646,
+     "end_time": 145.05680050876646
+    }
+   ],
+   "begin_time": 1.875,
+   "end_time": 145.05680050876646
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 3,
+   "aod_id": 0,
+   "aod_qubits": [
+    0,
+    2
+   ],
+   "begin_locs": [
+    [
+     0,
+     0,
+     99,
+     95
+    ],
+    [
+     2,
+     0,
+     99,
+     94
+    ]
+   ],
+   "end_locs": [
+    [
+     0,
+     2,
+     0,
+     19
+    ],
+    [
+     2,
+     1,
+     0,
+     19
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     0,
+     1
+    ],
+    "site": [],
+    "aod": 2
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      297
+     ],
+     "row_loc": [
+      [
+       0,
+       99
+      ]
+     ],
+     "col_id": [
+      1,
+      0
+     ],
+     "col_x": [
+      285,
+      282
+     ],
+     "col_loc": [
+      [
+       0,
+       95
+      ],
+      [
+       0,
+       94
+      ]
+     ],
+     "id": 0,
+     "begin_time": 145.05680050876646,
+     "end_time": 160.05680050876646
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      297
+     ],
+     "row_y_end": [
+      307
+     ],
+     "row_loc_begin": [
+      [
+       0,
+       99
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       0
+      ]
+     ],
+     "col_id": [
+      1,
+      0
+     ],
+     "col_x_begin": [
+      285,
+      282
+     ],
+     "col_x_end": [
+      265,
+      263
+     ],
+     "col_loc_begin": [
+      [
+       0,
+       95
+      ],
+      [
+       0,
+       94
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       19
+      ],
+      [
+       1,
+       19
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 0,
+        "x": 285,
+        "y": 297
+       },
+       {
+        "id": 2,
+        "x": 282,
+        "y": 297
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 0,
+        "x": 265,
+        "y": 307
+       },
+       {
+        "id": 2,
+        "x": 263,
+        "y": 307
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 160.05680050876646,
+     "end_time": 250.2297248365125
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0,
+      1
+     ],
+     "id": 2,
+     "begin_time": 250.2297248365125,
+     "end_time": 265.2297248365125
+    }
+   ],
+   "begin_time": 145.05680050876646,
+   "end_time": 265.2297248365125
+  },
+  {
+   "type": "rydberg",
+   "id": 4,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 0,
+     "q0": 0,
+     "q1": 2
+    },
+    {
+     "id": 1,
+     "q0": 1,
+     "q1": 4
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     2,
+     3
+    ],
+    "rydberg": 0
+   },
+   "begin_time": 265.2297248365125,
+   "end_time": 265.5897248365125
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 5,
+   "locs": [
+    [
+     0,
+     2,
+     0,
+     19
+    ],
+    [
+     2,
+     1,
+     0,
+     19
+    ],
+    [
+     1,
+     1,
+     1,
+     19
+    ],
+    [
+     4,
+     2,
+     1,
+     19
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 0
+    },
+    {
+     "name": "u2",
+     "q": 2
+    },
+    {
+     "name": "u3",
+     "q": 1
+    },
+    {
+     "name": "u2",
+     "q": 4
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     4
+    ]
+   },
+   "begin_time": 265.5897248365125,
+   "end_time": 268.0897248365125
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 6,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     0,
+     99,
+     96
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     2,
+     2,
+     19
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     1
+    ],
+    "site": [],
+    "aod": 3
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      297
+     ],
+     "row_loc": [
+      [
+       0,
+       99
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      288
+     ],
+     "col_loc": [
+      [
+       0,
+       96
+      ]
+     ],
+     "id": 0,
+     "begin_time": 265.2297248365125,
+     "end_time": 280.2297248365125
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      297
+     ],
+     "row_y_end": [
+      327
+     ],
+     "row_loc_begin": [
+      [
+       0,
+       99
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      288
+     ],
+     "col_x_end": [
+      265
+     ],
+     "col_loc_begin": [
+      [
+       0,
+       96
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       19
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 288,
+        "y": 297
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 265,
+        "y": 327
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 280.2297248365125,
+     "end_time": 397.47401734015887
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 397.47401734015887,
+     "end_time": 412.47401734015887
+    }
+   ],
+   "begin_time": 265.2297248365125,
+   "end_time": 412.47401734015887
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 7,
+   "aod_id": 0,
+   "aod_qubits": [
+    1
+   ],
+   "begin_locs": [
+    [
+     1,
+     1,
+     1,
+     19
+    ]
+   ],
+   "end_locs": [
+    [
+     1,
+     1,
+     2,
+     19
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     5
+    ],
+    "site": [],
+    "aod": 6
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      263
+     ],
+     "col_loc": [
+      [
+       1,
+       19
+      ]
+     ],
+     "id": 0,
+     "begin_time": 412.47401734015887,
+     "end_time": 427.47401734015887
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      327
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      263
+     ],
+     "col_x_end": [
+      263
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       19
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       19
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 1,
+        "x": 263,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 1,
+        "x": 263,
+        "y": 327
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 427.47401734015887,
+     "end_time": 487.7762862557116
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 487.7762862557116,
+     "end_time": 502.7762862557116
+    }
+   ],
+   "begin_time": 412.47401734015887,
+   "end_time": 502.7762862557116
+  },
+  {
+   "type": "rydberg",
+   "id": 8,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 2,
+     "q0": 1,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     6,
+     7
+    ],
+    "rydberg": 4
+   },
+   "begin_time": 502.7762862557116,
+   "end_time": 503.13628625571164
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 9,
+   "locs": [
+    [
+     1,
+     1,
+     2,
+     19
+    ],
+    [
+     3,
+     2,
+     2,
+     19
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 1
+    },
+    {
+     "name": "u2",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     8
+    ]
+   },
+   "begin_time": 503.13628625571164,
+   "end_time": 504.38628625571164
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 10,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     2,
+     2,
+     19
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     1,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     9
+    ],
+    "site": [],
+    "aod": 7
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      327
+     ],
+     "row_loc": [
+      [
+       2,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      265
+     ],
+     "col_loc": [
+      [
+       2,
+       19
+      ]
+     ],
+     "id": 0,
+     "begin_time": 504.38628625571164,
+     "end_time": 519.3862862557116
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      327
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       2
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      265
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       19
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 265,
+        "y": 327
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 519.3862862557116,
+     "end_time": 598.4826613802974
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 598.4826613802974,
+     "end_time": 613.4826613802974
+    }
+   ],
+   "begin_time": 504.38628625571164,
+   "end_time": 613.4826613802974
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 11,
+   "aod_id": 0,
+   "aod_qubits": [
+    2
+   ],
+   "begin_locs": [
+    [
+     2,
+     1,
+     0,
+     19
+    ]
+   ],
+   "end_locs": [
+    [
+     2,
+     2,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     5
+    ],
+    "site": [],
+    "aod": 10
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      307
+     ],
+     "row_loc": [
+      [
+       1,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      263
+     ],
+     "col_loc": [
+      [
+       1,
+       19
+      ]
+     ],
+     "id": 0,
+     "begin_time": 613.4826613802974,
+     "end_time": 628.4826613802974
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      307
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       0
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      263
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       19
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 2,
+        "x": 263,
+        "y": 307
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 2,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 628.4826613802974,
+     "end_time": 700.1945486254801
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 700.1945486254801,
+     "end_time": 715.1945486254801
+    }
+   ],
+   "begin_time": 613.4826613802974,
+   "end_time": 715.1945486254801
+  },
+  {
+   "type": "rydberg",
+   "id": 12,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 3,
+     "q0": 2,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     10,
+     11
+    ],
+    "rydberg": 8
+   },
+   "begin_time": 715.1945486254801,
+   "end_time": 715.5545486254802
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 13,
+   "locs": [
+    [
+     2,
+     2,
+     1,
+     18
+    ],
+    [
+     3,
+     1,
+     1,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 2
+    },
+    {
+     "name": "u3",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     12
+    ]
+   },
+   "begin_time": 715.5545486254802,
+   "end_time": 716.8045486254802
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 14,
+   "aod_id": 0,
+   "aod_qubits": [
+    2
+   ],
+   "begin_locs": [
+    [
+     2,
+     2,
+     1,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     2,
+     2,
+     2,
+     19
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     13
+    ],
+    "site": [
+     10
+    ],
+    "aod": 11
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      253
+     ],
+     "col_loc": [
+      [
+       2,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 716.8045486254802,
+     "end_time": 731.8045486254802
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      327
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      253
+     ],
+     "col_x_end": [
+      265
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       19
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 2,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 2,
+        "x": 265,
+        "y": 327
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 731.8045486254802,
+     "end_time": 807.1715280161759
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 807.1715280161759,
+     "end_time": 822.1715280161759
+    }
+   ],
+   "begin_time": 716.8045486254802,
+   "end_time": 822.1715280161759
+  },
+  {
+   "type": "rydberg",
+   "id": 15,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 4,
+     "q0": 1,
+     "q1": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     9,
+     14
+    ],
+    "rydberg": 12
+   },
+   "begin_time": 822.1715280161759,
+   "end_time": 822.5315280161759
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 16,
+   "locs": [
+    [
+     2,
+     2,
+     2,
+     19
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     15
+    ]
+   },
+   "begin_time": 822.5315280161759,
+   "end_time": 823.1565280161759
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 17,
+   "aod_id": 0,
+   "aod_qubits": [
+    1
+   ],
+   "begin_locs": [
+    [
+     1,
+     1,
+     2,
+     19
+    ]
+   ],
+   "end_locs": [
+    [
+     1,
+     2,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     15
+    ],
+    "site": [
+     14
+    ],
+    "aod": 14
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      327
+     ],
+     "row_loc": [
+      [
+       1,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      263
+     ],
+     "col_loc": [
+      [
+       1,
+       19
+      ]
+     ],
+     "id": 0,
+     "begin_time": 822.5315280161759,
+     "end_time": 837.5315280161759
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      327
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       2
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      263
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       19
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 1,
+        "x": 263,
+        "y": 327
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 1,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 837.5315280161759,
+     "end_time": 909.2434152613587
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 909.2434152613587,
+     "end_time": 924.2434152613587
+    }
+   ],
+   "begin_time": 822.5315280161759,
+   "end_time": 924.2434152613587
+  },
+  {
+   "type": "rydberg",
+   "id": 18,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 5,
+     "q0": 1,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     17,
+     13
+    ],
+    "rydberg": 15
+   },
+   "begin_time": 924.2434152613587,
+   "end_time": 924.6034152613587
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 19,
+   "locs": [
+    [
+     1,
+     2,
+     1,
+     18
+    ],
+    [
+     3,
+     1,
+     1,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u1",
+     "q": 1
+    },
+    {
+     "name": "u3",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     18
+    ]
+   },
+   "begin_time": 924.6034152613587,
+   "end_time": 925.8534152613587
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 20,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     1,
+     1,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     1,
+     2,
+     19
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     19
+    ],
+    "site": [
+     17
+    ],
+    "aod": 17
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 925.8534152613587,
+     "end_time": 940.8534152613587
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      327
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      263
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       19
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 263,
+        "y": 327
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 940.8534152613587,
+     "end_time": 1016.2203946520544
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 1016.2203946520544,
+     "end_time": 1031.2203946520544
+    }
+   ],
+   "begin_time": 925.8534152613587,
+   "end_time": 1031.2203946520544
+  },
+  {
+   "type": "rydberg",
+   "id": 21,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 6,
+     "q0": 2,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     16,
+     20
+    ],
+    "rydberg": 18
+   },
+   "begin_time": 1031.2203946520544,
+   "end_time": 1031.5803946520543
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 22,
+   "locs": [
+    [
+     3,
+     1,
+     2,
+     19
+    ],
+    [
+     2,
+     2,
+     2,
+     19
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 3
+    },
+    {
+     "name": "u2",
+     "q": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     21
+    ]
+   },
+   "begin_time": 1031.5803946520543,
+   "end_time": 1032.8303946520543
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 23,
+   "aod_id": 0,
+   "aod_qubits": [
+    2
+   ],
+   "begin_locs": [
+    [
+     2,
+     2,
+     2,
+     19
+    ]
+   ],
+   "end_locs": [
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     22
+    ],
+    "site": [
+     20
+    ],
+    "aod": 20
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      327
+     ],
+     "row_loc": [
+      [
+       2,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      265
+     ],
+     "col_loc": [
+      [
+       2,
+       19
+      ]
+     ],
+     "id": 0,
+     "begin_time": 1032.8303946520543,
+     "end_time": 1047.8303946520543
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      327
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       2
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      265
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       19
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 2,
+        "x": 265,
+        "y": 327
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 2,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 1047.8303946520543,
+     "end_time": 1126.92676977664
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 1126.92676977664,
+     "end_time": 1141.92676977664
+    }
+   ],
+   "begin_time": 1032.8303946520543,
+   "end_time": 1141.92676977664
+  },
+  {
+   "type": "rydberg",
+   "id": 24,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 7,
+     "q0": 1,
+     "q1": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     19,
+     23
+    ],
+    "rydberg": 21
+   },
+   "begin_time": 1141.92676977664,
+   "end_time": 1142.2867697766399
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 25,
+   "locs": [
+    [
+     1,
+     2,
+     1,
+     18
+    ],
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 1
+    },
+    {
+     "name": "u2",
+     "q": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     24
+    ]
+   },
+   "begin_time": 1142.2867697766399,
+   "end_time": 1143.5367697766399
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 26,
+   "aod_id": 0,
+   "aod_qubits": [
+    0,
+    1
+   ],
+   "begin_locs": [
+    [
+     0,
+     2,
+     0,
+     19
+    ],
+    [
+     1,
+     2,
+     1,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     0,
+     2,
+     0,
+     18
+    ],
+    [
+     1,
+     1,
+     2,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     25,
+     5
+    ],
+    "site": [],
+    "aod": 23
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      307
+     ],
+     "row_loc": [
+      [
+       2,
+       0
+      ]
+     ],
+     "col_id": [
+      1
+     ],
+     "col_x": [
+      265
+     ],
+     "col_loc": [
+      [
+       2,
+       19
+      ]
+     ],
+     "id": 0,
+     "begin_time": 1143.5367697766399,
+     "end_time": 1158.5367697766399
+    },
+    {
+     "type": "move",
+     "move_type": "after",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      307
+     ],
+     "row_y_end": [
+      308
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       0
+      ]
+     ],
+     "row_loc_end": [
+      [
+       -1,
+       -1
+      ]
+     ],
+     "col_id": [
+      1
+     ],
+     "col_x_begin": [
+      265
+     ],
+     "col_x_end": [
+      266
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       19
+      ]
+     ],
+     "col_loc_end": [
+      [
+       -1,
+       -1
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 0,
+        "x": 265,
+        "y": 307
+       }
+      ],
+      [
+       {
+        "id": 1,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 0,
+        "x": 266,
+        "y": 308
+       }
+      ],
+      [
+       {
+        "id": 1,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 1158.5367697766399,
+     "end_time": 1181.2140596770353
+    },
+    {
+     "type": "activate",
+     "row_id": [
+      1
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      253
+     ],
+     "col_loc": [
+      [
+       2,
+       18
+      ]
+     ],
+     "id": 2,
+     "begin_time": 1181.2140596770353,
+     "end_time": 1196.2140596770353
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0,
+      1
+     ],
+     "row_y_begin": [
+      308,
+      317
+     ],
+     "row_y_end": [
+      307,
+      327
+     ],
+     "row_loc_begin": [
+      [
+       -1,
+       -1
+      ],
+      [
+       2,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       0
+      ],
+      [
+       1,
+       2
+      ]
+     ],
+     "col_id": [
+      1,
+      0
+     ],
+     "col_x_begin": [
+      266,
+      253
+     ],
+     "col_x_end": [
+      253,
+      251
+     ],
+     "col_loc_begin": [
+      [
+       -1,
+       -1
+      ],
+      [
+       2,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ],
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 0,
+        "x": 266,
+        "y": 308
+       }
+      ],
+      [
+       {
+        "id": 1,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 0,
+        "x": 253,
+        "y": 307
+       }
+      ],
+      [
+       {
+        "id": 1,
+        "x": 251,
+        "y": 327
+       }
+      ]
+     ],
+     "id": 3,
+     "begin_time": 1196.2140596770353,
+     "end_time": 1273.441514679319
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0,
+      1
+     ],
+     "col_id": [
+      0,
+      1
+     ],
+     "id": 4,
+     "begin_time": 1273.441514679319,
+     "end_time": 1288.441514679319
+    }
+   ],
+   "begin_time": 1143.5367697766399,
+   "end_time": 1288.441514679319
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 27,
+   "aod_id": 0,
+   "aod_qubits": [
+    2,
+    3
+   ],
+   "begin_locs": [
+    [
+     2,
+     1,
+     1,
+     18
+    ],
+    [
+     3,
+     1,
+     2,
+     19
+    ]
+   ],
+   "end_locs": [
+    [
+     2,
+     1,
+     0,
+     18
+    ],
+    [
+     3,
+     2,
+     2,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     25,
+     22
+    ],
+    "site": [],
+    "aod": 26
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 1288.441514679319,
+     "end_time": 1303.441514679319
+    },
+    {
+     "type": "move",
+     "move_type": "after",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      318
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       -1,
+       -1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      252
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       -1,
+       -1
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 2,
+        "x": 251,
+        "y": 317
+       }
+      ],
+      [
+       {
+        "id": 3,
+        "x": 263,
+        "y": 327
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 2,
+        "x": 252,
+        "y": 318
+       }
+      ],
+      [
+       {
+        "id": 3,
+        "x": 263,
+        "y": 327
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 1303.441514679319,
+     "end_time": 1326.1188045797144
+    },
+    {
+     "type": "activate",
+     "row_id": [
+      1
+     ],
+     "row_y": [
+      327
+     ],
+     "row_loc": [
+      [
+       1,
+       2
+      ]
+     ],
+     "col_id": [
+      1
+     ],
+     "col_x": [
+      263
+     ],
+     "col_loc": [
+      [
+       1,
+       19
+      ]
+     ],
+     "id": 2,
+     "begin_time": 1326.1188045797144,
+     "end_time": 1341.1188045797144
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0,
+      1
+     ],
+     "row_y_begin": [
+      318,
+      327
+     ],
+     "row_y_end": [
+      307,
+      327
+     ],
+     "row_loc_begin": [
+      [
+       -1,
+       -1
+      ],
+      [
+       1,
+       2
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       0
+      ],
+      [
+       2,
+       2
+      ]
+     ],
+     "col_id": [
+      0,
+      1
+     ],
+     "col_x_begin": [
+      252,
+      263
+     ],
+     "col_x_end": [
+      251,
+      253
+     ],
+     "col_loc_begin": [
+      [
+       -1,
+       -1
+      ],
+      [
+       1,
+       19
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ],
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 2,
+        "x": 252,
+        "y": 318
+       }
+      ],
+      [
+       {
+        "id": 3,
+        "x": 263,
+        "y": 327
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 2,
+        "x": 251,
+        "y": 307
+       }
+      ],
+      [
+       {
+        "id": 3,
+        "x": 253,
+        "y": 327
+       }
+      ]
+     ],
+     "id": 3,
+     "begin_time": 1341.1188045797144,
+     "end_time": 1414.6432439236708
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0,
+      1
+     ],
+     "col_id": [
+      0,
+      1
+     ],
+     "id": 4,
+     "begin_time": 1414.6432439236708,
+     "end_time": 1429.6432439236708
+    }
+   ],
+   "begin_time": 1288.441514679319,
+   "end_time": 1429.6432439236708
+  },
+  {
+   "type": "rydberg",
+   "id": 28,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 8,
+     "q0": 1,
+     "q1": 3
+    },
+    {
+     "id": 10,
+     "q0": 0,
+     "q1": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     26,
+     27
+    ],
+    "rydberg": 24
+   },
+   "begin_time": 1429.6432439236708,
+   "end_time": 1430.0032439236707
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 29,
+   "locs": [
+    [
+     1,
+     1,
+     2,
+     18
+    ],
+    [
+     3,
+     2,
+     2,
+     18
+    ],
+    [
+     2,
+     1,
+     0,
+     18
+    ],
+    [
+     0,
+     2,
+     0,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 1
+    },
+    {
+     "name": "u2",
+     "q": 3
+    },
+    {
+     "name": "u2",
+     "q": 2
+    },
+    {
+     "name": "u2",
+     "q": 0
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     28
+    ]
+   },
+   "begin_time": 1430.0032439236707,
+   "end_time": 1432.5032439236707
+  },
+  {
+   "type": "rydberg",
+   "id": 30,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 9,
+     "q0": 1,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     29
+    ],
+    "rydberg": 28
+   },
+   "begin_time": 1432.5032439236707,
+   "end_time": 1432.8632439236706
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 31,
+   "locs": [
+    [
+     1,
+     1,
+     2,
+     18
+    ],
+    [
+     3,
+     2,
+     2,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u1",
+     "q": 1
+    },
+    {
+     "name": "u1",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     30
+    ]
+   },
+   "begin_time": 1432.8632439236706,
+   "end_time": 1434.1132439236706
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 32,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     2,
+     2,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     1,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     31
+    ],
+    "site": [
+     27
+    ],
+    "aod": 27
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      327
+     ],
+     "row_loc": [
+      [
+       2,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      253
+     ],
+     "col_loc": [
+      [
+       2,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 1434.1132439236706,
+     "end_time": 1449.1132439236706
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      327
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       2
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      253
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 253,
+        "y": 327
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 1449.1132439236706,
+     "end_time": 1510.0096956106734
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 1510.0096956106734,
+     "end_time": 1525.0096956106734
+    }
+   ],
+   "begin_time": 1434.1132439236706,
+   "end_time": 1525.0096956106734
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 33,
+   "aod_id": 0,
+   "aod_qubits": [
+    0
+   ],
+   "begin_locs": [
+    [
+     0,
+     2,
+     0,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     0,
+     2,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     29
+    ],
+    "site": [
+     26
+    ],
+    "aod": 32
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      307
+     ],
+     "row_loc": [
+      [
+       2,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      253
+     ],
+     "col_loc": [
+      [
+       2,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 1525.0096956106734,
+     "end_time": 1540.0096956106734
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      307
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       0
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      253
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 0,
+        "x": 253,
+        "y": 307
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 0,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 1540.0096956106734,
+     "end_time": 1600.3119645262261
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 1600.3119645262261,
+     "end_time": 1615.3119645262261
+    }
+   ],
+   "begin_time": 1525.0096956106734,
+   "end_time": 1615.3119645262261
+  },
+  {
+   "type": "rydberg",
+   "id": 34,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 11,
+     "q0": 0,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     32,
+     33
+    ],
+    "rydberg": 30
+   },
+   "begin_time": 1615.3119645262261,
+   "end_time": 1615.671964526226
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 35,
+   "locs": [
+    [
+     0,
+     2,
+     1,
+     18
+    ],
+    [
+     3,
+     1,
+     1,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u3",
+     "q": 0
+    },
+    {
+     "name": "u2",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     34
+    ]
+   },
+   "begin_time": 1615.671964526226,
+   "end_time": 1616.921964526226
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 36,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     1,
+     1,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     2,
+     0,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     35
+    ],
+    "site": [
+     33
+    ],
+    "aod": 33
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 1616.921964526226,
+     "end_time": 1631.921964526226
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      307
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 253,
+        "y": 307
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 1631.921964526226,
+     "end_time": 1692.8184162132288
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 1692.8184162132288,
+     "end_time": 1707.8184162132288
+    }
+   ],
+   "begin_time": 1616.921964526226,
+   "end_time": 1707.8184162132288
+  },
+  {
+   "type": "rydberg",
+   "id": 37,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 12,
+     "q0": 2,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     36,
+     29
+    ],
+    "rydberg": 34
+   },
+   "begin_time": 1707.8184162132288,
+   "end_time": 1708.1784162132287
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 38,
+   "locs": [
+    [
+     3,
+     2,
+     0,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     37
+    ]
+   },
+   "begin_time": 1708.1784162132287,
+   "end_time": 1708.8034162132287
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 39,
+   "aod_id": 0,
+   "aod_qubits": [
+    2
+   ],
+   "begin_locs": [
+    [
+     2,
+     1,
+     0,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     37
+    ],
+    "site": [
+     36
+    ],
+    "aod": 36
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      307
+     ],
+     "row_loc": [
+      [
+       1,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 1708.1784162132287,
+     "end_time": 1723.1784162132287
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      307
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       0
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 2,
+        "x": 251,
+        "y": 307
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 2,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 1723.1784162132287,
+     "end_time": 1783.4806851287815
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 1783.4806851287815,
+     "end_time": 1798.4806851287815
+    }
+   ],
+   "begin_time": 1708.1784162132287,
+   "end_time": 1798.4806851287815
+  },
+  {
+   "type": "rydberg",
+   "id": 40,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 13,
+     "q0": 0,
+     "q1": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     35,
+     39
+    ],
+    "rydberg": 37
+   },
+   "begin_time": 1798.4806851287815,
+   "end_time": 1798.8406851287814
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 41,
+   "locs": [
+    [
+     0,
+     2,
+     1,
+     18
+    ],
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u3",
+     "q": 0
+    },
+    {
+     "name": "u1",
+     "q": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     40
+    ]
+   },
+   "begin_time": 1798.8406851287814,
+   "end_time": 1800.0906851287814
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 42,
+   "aod_id": 0,
+   "aod_qubits": [
+    0
+   ],
+   "begin_locs": [
+    [
+     0,
+     2,
+     1,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     0,
+     1,
+     0,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     41
+    ],
+    "site": [
+     39
+    ],
+    "aod": 39
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      253
+     ],
+     "col_loc": [
+      [
+       2,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 1800.0906851287814,
+     "end_time": 1815.0906851287814
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      307
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      253
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 0,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 0,
+        "x": 251,
+        "y": 307
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 1815.0906851287814,
+     "end_time": 1875.9871368157842
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 1875.9871368157842,
+     "end_time": 1890.9871368157842
+    }
+   ],
+   "begin_time": 1800.0906851287814,
+   "end_time": 1890.9871368157842
+  },
+  {
+   "type": "rydberg",
+   "id": 43,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 14,
+     "q0": 0,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     42,
+     38
+    ],
+    "rydberg": 40
+   },
+   "begin_time": 1890.9871368157842,
+   "end_time": 1891.347136815784
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 44,
+   "locs": [
+    [
+     0,
+     1,
+     0,
+     18
+    ],
+    [
+     3,
+     2,
+     0,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 0
+    },
+    {
+     "name": "u2",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     43
+    ]
+   },
+   "begin_time": 1891.347136815784,
+   "end_time": 1892.597136815784
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 45,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     2,
+     0,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     2,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     44
+    ],
+    "site": [
+     42
+    ],
+    "aod": 42
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      307
+     ],
+     "row_loc": [
+      [
+       2,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      253
+     ],
+     "col_loc": [
+      [
+       2,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 1892.597136815784,
+     "end_time": 1907.597136815784
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      307
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       0
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      253
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 253,
+        "y": 307
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 1907.597136815784,
+     "end_time": 1967.8994057313369
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 1967.8994057313369,
+     "end_time": 1982.8994057313369
+    }
+   ],
+   "begin_time": 1892.597136815784,
+   "end_time": 1982.8994057313369
+  },
+  {
+   "type": "rydberg",
+   "id": 46,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 15,
+     "q0": 2,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     41,
+     45
+    ],
+    "rydberg": 43
+   },
+   "begin_time": 1982.8994057313369,
+   "end_time": 1983.2594057313368
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 47,
+   "locs": [
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     46
+    ]
+   },
+   "begin_time": 1983.2594057313368,
+   "end_time": 1983.8844057313368
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 48,
+   "aod_id": 0,
+   "aod_qubits": [
+    2
+   ],
+   "begin_locs": [
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     2,
+     2,
+     0,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     47
+    ],
+    "site": [
+     45
+    ],
+    "aod": 45
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 1983.8844057313368,
+     "end_time": 1998.8844057313368
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      307
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 2,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 2,
+        "x": 253,
+        "y": 307
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 1998.8844057313368,
+     "end_time": 2059.7808574183396
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 2059.7808574183396,
+     "end_time": 2074.7808574183396
+    }
+   ],
+   "begin_time": 1983.8844057313368,
+   "end_time": 2074.7808574183396
+  },
+  {
+   "type": "rydberg",
+   "id": 49,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 16,
+     "q0": 0,
+     "q1": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     48,
+     44
+    ],
+    "rydberg": 46
+   },
+   "begin_time": 2074.7808574183396,
+   "end_time": 2075.1408574183397
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 50,
+   "locs": [
+    [
+     0,
+     1,
+     0,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u1",
+     "q": 0
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     49
+    ]
+   },
+   "begin_time": 2075.1408574183397,
+   "end_time": 2075.7658574183397
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 51,
+   "aod_id": 0,
+   "aod_qubits": [
+    2
+   ],
+   "begin_locs": [
+    [
+     2,
+     2,
+     0,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     49
+    ],
+    "site": [
+     48
+    ],
+    "aod": 48
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      307
+     ],
+     "row_loc": [
+      [
+       2,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      253
+     ],
+     "col_loc": [
+      [
+       2,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 2075.1408574183397,
+     "end_time": 2090.1408574183397
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      307
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       0
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      253
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 2,
+        "x": 253,
+        "y": 307
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 2,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 2090.1408574183397,
+     "end_time": 2151.0373091053425
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 2151.0373091053425,
+     "end_time": 2166.0373091053425
+    }
+   ],
+   "begin_time": 2075.1408574183397,
+   "end_time": 2166.0373091053425
+  },
+  {
+   "type": "rydberg",
+   "id": 52,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 17,
+     "q0": 2,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     51,
+     46
+    ],
+    "rydberg": 49
+   },
+   "begin_time": 2166.0373091053425,
+   "end_time": 2166.3973091053426
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 53,
+   "locs": [
+    [
+     2,
+     1,
+     1,
+     18
+    ],
+    [
+     3,
+     2,
+     1,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u3",
+     "q": 2
+    },
+    {
+     "name": "u2",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     52
+    ]
+   },
+   "begin_time": 2166.3973091053426,
+   "end_time": 2167.6473091053426
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 54,
+   "aod_id": 0,
+   "aod_qubits": [
+    2
+   ],
+   "begin_locs": [
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     2,
+     2,
+     0,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     53
+    ],
+    "site": [
+     51
+    ],
+    "aod": 51
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 2167.6473091053426,
+     "end_time": 2182.6473091053426
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      307
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 2,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 2,
+        "x": 253,
+        "y": 307
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 2182.6473091053426,
+     "end_time": 2243.5437607923454
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 2243.5437607923454,
+     "end_time": 2258.5437607923454
+    }
+   ],
+   "begin_time": 2167.6473091053426,
+   "end_time": 2258.5437607923454
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 55,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     2,
+     1,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     2,
+     2,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     53
+    ],
+    "site": [
+     32
+    ],
+    "aod": 54
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      253
+     ],
+     "col_loc": [
+      [
+       2,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 2258.5437607923454,
+     "end_time": 2273.5437607923454
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      327
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      253
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 253,
+        "y": 327
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 2273.5437607923454,
+     "end_time": 2333.846029707898
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 2333.846029707898,
+     "end_time": 2348.846029707898
+    }
+   ],
+   "begin_time": 2258.5437607923454,
+   "end_time": 2348.846029707898
+  },
+  {
+   "type": "rydberg",
+   "id": 56,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 18,
+     "q0": 0,
+     "q1": 2
+    },
+    {
+     "id": 19,
+     "q0": 1,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     50,
+     55,
+     54,
+     31
+    ],
+    "rydberg": 52
+   },
+   "begin_time": 2348.846029707898,
+   "end_time": 2349.2060297078983
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 57,
+   "locs": [
+    [
+     2,
+     2,
+     0,
+     18
+    ],
+    [
+     0,
+     1,
+     0,
+     18
+    ],
+    [
+     3,
+     2,
+     2,
+     18
+    ],
+    [
+     1,
+     1,
+     2,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 2
+    },
+    {
+     "name": "u2",
+     "q": 0
+    },
+    {
+     "name": "u2",
+     "q": 3
+    },
+    {
+     "name": "u2",
+     "q": 1
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     56
+    ]
+   },
+   "begin_time": 2349.2060297078983,
+   "end_time": 2351.7060297078983
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 58,
+   "aod_id": 0,
+   "aod_qubits": [
+    1
+   ],
+   "begin_locs": [
+    [
+     1,
+     1,
+     2,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     1,
+     1,
+     1,
+     19
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     57
+    ],
+    "site": [
+     7
+    ],
+    "aod": 55
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      327
+     ],
+     "row_loc": [
+      [
+       1,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 2351.7060297078983,
+     "end_time": 2366.7060297078983
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      327
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       2
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      263
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       19
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 1,
+        "x": 251,
+        "y": 327
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 1,
+        "x": 263,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 2366.7060297078983,
+     "end_time": 2442.073009098594
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 2442.073009098594,
+     "end_time": 2457.073009098594
+    }
+   ],
+   "begin_time": 2351.7060297078983,
+   "end_time": 2457.073009098594
+  },
+  {
+   "type": "rydberg",
+   "id": 59,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 20,
+     "q0": 1,
+     "q1": 4
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     58,
+     5
+    ],
+    "rydberg": 56
+   },
+   "begin_time": 2457.073009098594,
+   "end_time": 2457.433009098594
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 60,
+   "locs": [
+    [
+     1,
+     1,
+     1,
+     19
+    ],
+    [
+     4,
+     2,
+     1,
+     19
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u3",
+     "q": 1
+    },
+    {
+     "name": "u2",
+     "q": 4
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     59
+    ]
+   },
+   "begin_time": 2457.433009098594,
+   "end_time": 2458.683009098594
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 61,
+   "aod_id": 0,
+   "aod_qubits": [
+    4
+   ],
+   "begin_locs": [
+    [
+     4,
+     2,
+     1,
+     19
+    ]
+   ],
+   "end_locs": [
+    [
+     4,
+     1,
+     2,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     60
+    ],
+    "site": [
+     58
+    ],
+    "aod": 58
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      265
+     ],
+     "col_loc": [
+      [
+       2,
+       19
+      ]
+     ],
+     "id": 0,
+     "begin_time": 2458.683009098594,
+     "end_time": 2473.683009098594
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      327
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      265
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       19
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 4,
+        "x": 265,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 4,
+        "x": 251,
+        "y": 327
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 2473.683009098594,
+     "end_time": 2552.77938422318
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 2552.77938422318,
+     "end_time": 2567.77938422318
+    }
+   ],
+   "begin_time": 2458.683009098594,
+   "end_time": 2567.77938422318
+  },
+  {
+   "type": "rydberg",
+   "id": 62,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 21,
+     "q0": 3,
+     "q1": 4
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     57,
+     61
+    ],
+    "rydberg": 59
+   },
+   "begin_time": 2567.77938422318,
+   "end_time": 2568.13938422318
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 63,
+   "locs": [
+    [
+     4,
+     1,
+     2,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 4
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     62
+    ]
+   },
+   "begin_time": 2568.13938422318,
+   "end_time": 2568.76438422318
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 64,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     2,
+     2,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     2,
+     1,
+     19
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     62
+    ],
+    "site": [
+     61
+    ],
+    "aod": 61
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      327
+     ],
+     "row_loc": [
+      [
+       2,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      253
+     ],
+     "col_loc": [
+      [
+       2,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 2568.13938422318,
+     "end_time": 2583.13938422318
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      327
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       2
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      253
+     ],
+     "col_x_end": [
+      265
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       19
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 253,
+        "y": 327
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 265,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 2583.13938422318,
+     "end_time": 2658.5063636138757
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 2658.5063636138757,
+     "end_time": 2673.5063636138757
+    }
+   ],
+   "begin_time": 2568.13938422318,
+   "end_time": 2673.5063636138757
+  },
+  {
+   "type": "rydberg",
+   "id": 65,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 22,
+     "q0": 1,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     64,
+     60
+    ],
+    "rydberg": 62
+   },
+   "begin_time": 2673.5063636138757,
+   "end_time": 2673.866363613876
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 66,
+   "locs": [
+    [
+     3,
+     2,
+     1,
+     19
+    ],
+    [
+     1,
+     1,
+     1,
+     19
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u1",
+     "q": 3
+    },
+    {
+     "name": "u3",
+     "q": 1
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     65
+    ]
+   },
+   "begin_time": 2673.866363613876,
+   "end_time": 2675.116363613876
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 67,
+   "aod_id": 0,
+   "aod_qubits": [
+    1
+   ],
+   "begin_locs": [
+    [
+     1,
+     1,
+     1,
+     19
+    ]
+   ],
+   "end_locs": [
+    [
+     1,
+     2,
+     2,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     66
+    ],
+    "site": [
+     64
+    ],
+    "aod": 64
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      263
+     ],
+     "col_loc": [
+      [
+       1,
+       19
+      ]
+     ],
+     "id": 0,
+     "begin_time": 2675.116363613876,
+     "end_time": 2690.116363613876
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      327
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      263
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       19
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 1,
+        "x": 263,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 1,
+        "x": 253,
+        "y": 327
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 2690.116363613876,
+     "end_time": 2761.8282508590587
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 2761.8282508590587,
+     "end_time": 2776.8282508590587
+    }
+   ],
+   "begin_time": 2675.116363613876,
+   "end_time": 2776.8282508590587
+  },
+  {
+   "type": "rydberg",
+   "id": 68,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 23,
+     "q0": 1,
+     "q1": 4
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     67,
+     63
+    ],
+    "rydberg": 65
+   },
+   "begin_time": 2776.8282508590587,
+   "end_time": 2777.188250859059
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 69,
+   "locs": [
+    [
+     1,
+     2,
+     2,
+     18
+    ],
+    [
+     4,
+     1,
+     2,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 1
+    },
+    {
+     "name": "u2",
+     "q": 4
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     68
+    ]
+   },
+   "begin_time": 2777.188250859059,
+   "end_time": 2778.438250859059
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 70,
+   "aod_id": 0,
+   "aod_qubits": [
+    4
+   ],
+   "begin_locs": [
+    [
+     4,
+     1,
+     2,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     4,
+     1,
+     1,
+     19
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     69
+    ],
+    "site": [
+     67
+    ],
+    "aod": 67
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      327
+     ],
+     "row_loc": [
+      [
+       1,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 2778.438250859059,
+     "end_time": 2793.438250859059
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      327
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       2
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      263
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       19
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 4,
+        "x": 251,
+        "y": 327
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 4,
+        "x": 263,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 2793.438250859059,
+     "end_time": 2868.8052302497545
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 2868.8052302497545,
+     "end_time": 2883.8052302497545
+    }
+   ],
+   "begin_time": 2778.438250859059,
+   "end_time": 2883.8052302497545
+  },
+  {
+   "type": "rydberg",
+   "id": 71,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 24,
+     "q0": 3,
+     "q1": 4
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     66,
+     70
+    ],
+    "rydberg": 68
+   },
+   "begin_time": 2883.8052302497545,
+   "end_time": 2884.1652302497546
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 72,
+   "locs": [
+    [
+     3,
+     2,
+     1,
+     19
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     71
+    ]
+   },
+   "begin_time": 2884.1652302497546,
+   "end_time": 2884.7902302497546
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 73,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     2,
+     1,
+     19
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     1,
+     2,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     72
+    ],
+    "site": [
+     70
+    ],
+    "aod": 70
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      265
+     ],
+     "col_loc": [
+      [
+       2,
+       19
+      ]
+     ],
+     "id": 0,
+     "begin_time": 2884.7902302497546,
+     "end_time": 2899.7902302497546
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      327
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      265
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       19
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 265,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 251,
+        "y": 327
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 2899.7902302497546,
+     "end_time": 2978.8866053743404
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 2978.8866053743404,
+     "end_time": 2993.8866053743404
+    }
+   ],
+   "begin_time": 2884.7902302497546,
+   "end_time": 2993.8866053743404
+  },
+  {
+   "type": "rydberg",
+   "id": 74,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 25,
+     "q0": 1,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     73,
+     69
+    ],
+    "rydberg": 71
+   },
+   "begin_time": 2993.8866053743404,
+   "end_time": 2994.2466053743406
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 75,
+   "locs": [
+    [
+     3,
+     1,
+     2,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u1",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     74
+    ]
+   },
+   "begin_time": 2994.2466053743406,
+   "end_time": 2994.8716053743406
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 76,
+   "aod_id": 0,
+   "aod_qubits": [
+    0
+   ],
+   "begin_locs": [
+    [
+     0,
+     1,
+     0,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     0,
+     2,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     57
+    ],
+    "site": [
+     55
+    ],
+    "aod": 73
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      307
+     ],
+     "row_loc": [
+      [
+       1,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 2993.8866053743404,
+     "end_time": 3008.8866053743404
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      307
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       0
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 0,
+        "x": 251,
+        "y": 307
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 0,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 3008.8866053743404,
+     "end_time": 3069.7830570613432
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 3069.7830570613432,
+     "end_time": 3084.7830570613432
+    }
+   ],
+   "begin_time": 2993.8866053743404,
+   "end_time": 3084.7830570613432
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 77,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     1,
+     2,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     1,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     75
+    ],
+    "site": [
+     54
+    ],
+    "aod": 76
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      327
+     ],
+     "row_loc": [
+      [
+       1,
+       2
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 3084.7830570613432,
+     "end_time": 3099.7830570613432
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      327
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       2
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 251,
+        "y": 327
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 3099.7830570613432,
+     "end_time": 3160.085325976896
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 3160.085325976896,
+     "end_time": 3175.085325976896
+    }
+   ],
+   "begin_time": 3084.7830570613432,
+   "end_time": 3175.085325976896
+  },
+  {
+   "type": "rydberg",
+   "id": 78,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 26,
+     "q0": 0,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     76,
+     77
+    ],
+    "rydberg": 74
+   },
+   "begin_time": 3175.085325976896,
+   "end_time": 3175.445325976896
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 79,
+   "locs": [
+    [
+     0,
+     2,
+     1,
+     18
+    ],
+    [
+     3,
+     1,
+     1,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u3",
+     "q": 0
+    },
+    {
+     "name": "u2",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     78
+    ]
+   },
+   "begin_time": 3175.445325976896,
+   "end_time": 3176.695325976896
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 80,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     1,
+     1,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     1,
+     0,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     79
+    ],
+    "site": [
+     76
+    ],
+    "aod": 77
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 3176.695325976896,
+     "end_time": 3191.695325976896
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      307
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 251,
+        "y": 307
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 3191.695325976896,
+     "end_time": 3251.997594892449
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 3251.997594892449,
+     "end_time": 3266.997594892449
+    }
+   ],
+   "begin_time": 3176.695325976896,
+   "end_time": 3266.997594892449
+  },
+  {
+   "type": "rydberg",
+   "id": 81,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 27,
+     "q0": 2,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     80,
+     57
+    ],
+    "rydberg": 78
+   },
+   "begin_time": 3266.997594892449,
+   "end_time": 3267.357594892449
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 82,
+   "locs": [
+    [
+     3,
+     1,
+     0,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     81
+    ]
+   },
+   "begin_time": 3267.357594892449,
+   "end_time": 3267.982594892449
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 83,
+   "aod_id": 0,
+   "aod_qubits": [
+    2
+   ],
+   "begin_locs": [
+    [
+     2,
+     2,
+     0,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     81
+    ],
+    "site": [
+     80
+    ],
+    "aod": 80
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      307
+     ],
+     "row_loc": [
+      [
+       2,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      253
+     ],
+     "col_loc": [
+      [
+       2,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 3267.357594892449,
+     "end_time": 3282.357594892449
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      307
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       0
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      253
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 2,
+        "x": 253,
+        "y": 307
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 2,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 3282.357594892449,
+     "end_time": 3343.254046579452
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 3343.254046579452,
+     "end_time": 3358.254046579452
+    }
+   ],
+   "begin_time": 3267.357594892449,
+   "end_time": 3358.254046579452
+  },
+  {
+   "type": "rydberg",
+   "id": 84,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 28,
+     "q0": 0,
+     "q1": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     83,
+     79
+    ],
+    "rydberg": 81
+   },
+   "begin_time": 3358.254046579452,
+   "end_time": 3358.614046579452
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 85,
+   "locs": [
+    [
+     0,
+     2,
+     1,
+     18
+    ],
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u3",
+     "q": 0
+    },
+    {
+     "name": "u1",
+     "q": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     84
+    ]
+   },
+   "begin_time": 3358.614046579452,
+   "end_time": 3359.864046579452
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 86,
+   "aod_id": 0,
+   "aod_qubits": [
+    0
+   ],
+   "begin_locs": [
+    [
+     0,
+     2,
+     1,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     0,
+     2,
+     0,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     85
+    ],
+    "site": [
+     83
+    ],
+    "aod": 83
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      253
+     ],
+     "col_loc": [
+      [
+       2,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 3359.864046579452,
+     "end_time": 3374.864046579452
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      307
+     ],
+     "row_loc_begin": [
+      [
+       2,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      253
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       2,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 0,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 0,
+        "x": 253,
+        "y": 307
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 3374.864046579452,
+     "end_time": 3435.1663154950047
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 3435.1663154950047,
+     "end_time": 3450.1663154950047
+    }
+   ],
+   "begin_time": 3359.864046579452,
+   "end_time": 3450.1663154950047
+  },
+  {
+   "type": "rydberg",
+   "id": 87,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 29,
+     "q0": 0,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     82,
+     86
+    ],
+    "rydberg": 84
+   },
+   "begin_time": 3450.1663154950047,
+   "end_time": 3450.526315495005
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 88,
+   "locs": [
+    [
+     0,
+     2,
+     0,
+     18
+    ],
+    [
+     3,
+     1,
+     0,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 0
+    },
+    {
+     "name": "u2",
+     "q": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     87
+    ]
+   },
+   "begin_time": 3450.526315495005,
+   "end_time": 3451.776315495005
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 89,
+   "aod_id": 0,
+   "aod_qubits": [
+    3
+   ],
+   "begin_locs": [
+    [
+     3,
+     1,
+     0,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     3,
+     2,
+     1,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     88
+    ],
+    "site": [
+     86
+    ],
+    "aod": 86
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      307
+     ],
+     "row_loc": [
+      [
+       1,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 3451.776315495005,
+     "end_time": 3466.776315495005
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      307
+     ],
+     "row_y_end": [
+      317
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       0
+      ]
+     ],
+     "row_loc_end": [
+      [
+       2,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      253
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       2,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 3,
+        "x": 251,
+        "y": 307
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 3,
+        "x": 253,
+        "y": 317
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 3466.776315495005,
+     "end_time": 3527.6727671820076
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 3527.6727671820076,
+     "end_time": 3542.6727671820076
+    }
+   ],
+   "begin_time": 3451.776315495005,
+   "end_time": 3542.6727671820076
+  },
+  {
+   "type": "rydberg",
+   "id": 90,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 30,
+     "q0": 2,
+     "q1": 3
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     89,
+     85
+    ],
+    "rydberg": 87
+   },
+   "begin_time": 3542.6727671820076,
+   "end_time": 3543.032767182008
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 91,
+   "locs": [
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     90
+    ]
+   },
+   "begin_time": 3543.032767182008,
+   "end_time": 3543.657767182008
+  },
+  {
+   "type": "rearrangeJob",
+   "id": 92,
+   "aod_id": 0,
+   "aod_qubits": [
+    2
+   ],
+   "begin_locs": [
+    [
+     2,
+     1,
+     1,
+     18
+    ]
+   ],
+   "end_locs": [
+    [
+     2,
+     1,
+     0,
+     18
+    ]
+   ],
+   "dependency": {
+    "qubit": [
+     91
+    ],
+    "site": [
+     89
+    ],
+    "aod": 89
+   },
+   "insts": [
+    {
+     "type": "activate",
+     "row_id": [
+      0
+     ],
+     "row_y": [
+      317
+     ],
+     "row_loc": [
+      [
+       1,
+       1
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x": [
+      251
+     ],
+     "col_loc": [
+      [
+       1,
+       18
+      ]
+     ],
+     "id": 0,
+     "begin_time": 3543.657767182008,
+     "end_time": 3558.657767182008
+    },
+    {
+     "type": "move:big",
+     "move_type": "big",
+     "row_id": [
+      0
+     ],
+     "row_y_begin": [
+      317
+     ],
+     "row_y_end": [
+      307
+     ],
+     "row_loc_begin": [
+      [
+       1,
+       1
+      ]
+     ],
+     "row_loc_end": [
+      [
+       1,
+       0
+      ]
+     ],
+     "col_id": [
+      0
+     ],
+     "col_x_begin": [
+      251
+     ],
+     "col_x_end": [
+      251
+     ],
+     "col_loc_begin": [
+      [
+       1,
+       18
+      ]
+     ],
+     "col_loc_end": [
+      [
+       1,
+       18
+      ]
+     ],
+     "begin_coord": [
+      [
+       {
+        "id": 2,
+        "x": 251,
+        "y": 317
+       }
+      ]
+     ],
+     "end_coord": [
+      [
+       {
+        "id": 2,
+        "x": 251,
+        "y": 307
+       }
+      ]
+     ],
+     "id": 1,
+     "begin_time": 3558.657767182008,
+     "end_time": 3618.9600360975605
+    },
+    {
+     "type": "deactivate",
+     "row_id": [
+      0
+     ],
+     "col_id": [
+      0
+     ],
+     "id": 2,
+     "begin_time": 3618.9600360975605,
+     "end_time": 3633.9600360975605
+    }
+   ],
+   "begin_time": 3543.657767182008,
+   "end_time": 3633.9600360975605
+  },
+  {
+   "type": "rydberg",
+   "id": 93,
+   "zone_id": 0,
+   "gates": [
+    {
+     "id": 31,
+     "q0": 0,
+     "q1": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     88,
+     92
+    ],
+    "rydberg": 90
+   },
+   "begin_time": 3633.9600360975605,
+   "end_time": 3634.3200360975607
+  },
+  {
+   "type": "1qGate",
+   "unitary": "u3",
+   "id": 94,
+   "locs": [
+    [
+     2,
+     1,
+     0,
+     18
+    ]
+   ],
+   "gates": [
+    {
+     "name": "u2",
+     "q": 2
+    }
+   ],
+   "dependency": {
+    "qubit": [
+     93
+    ]
+   },
+   "begin_time": 3634.3200360975607,
+   "end_time": 3634.9450360975607
+  }
+ ],
+ "runtime": 3634.9450360975607,
+ "gate_ledger": {
+  "0": [
+   2,
+   2,
+   3,
+   2,
+   3,
+   2,
+   2,
+   3,
+   2,
+   3,
+   2
+  ],
+  "2": [
+   0,
+   3,
+   1,
+   3,
+   1,
+   0,
+   3,
+   0,
+   3,
+   0,
+   3,
+   0,
+   3,
+   0,
+   3,
+   0
+  ],
+  "1": [
+   4,
+   3,
+   2,
+   3,
+   2,
+   3,
+   3,
+   3,
+   4,
+   3,
+   4,
+   3
+  ],
+  "4": [
+   1,
+   1,
+   3,
+   1,
+   3
+  ],
+  "3": [
+   1,
+   2,
+   1,
+   2,
+   1,
+   1,
+   0,
+   2,
+   0,
+   2,
+   2,
+   1,
+   4,
+   1,
+   4,
+   1,
+   0,
+   2,
+   0,
+   2
+  ]
+ }
+}
