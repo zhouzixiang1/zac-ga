@@ -41,8 +41,7 @@ class ZAC_zzx(ZAC):
                     "theta_capacity", "box_ratio", "alpha_lookahead",
                     "final_return_home", "stay_horizon",
                     # ---- M3 前瞻/决策层旋钮（提前入白名单防键漂移）----
-                    "gamma0", "lambda_seat", "kappa_congestion",
-                    "lookahead_mode", "reseat", "fitness_mode",
+                    "w_ghost", "w_ord", "gamma_batch", "fitness_mode",
                     "w_resident", "pin_radius", "w_pin",
                     # ---- 初始布局引擎（"ga" = GAInitialPlacer 换掉 ZAC 的 SA）----
                     "init_engine", "init_pop", "init_gens")

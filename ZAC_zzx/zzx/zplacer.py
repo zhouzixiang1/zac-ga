@@ -51,7 +51,8 @@ from scipy.sparse.csgraph import min_weight_full_bipartite_matching
 from zac.placer.vmplacer import VertexMatchingPlacer
 
 from zzx.zcost import batch_cost, compatible_2d, conflict_graph
-from zzx.ghost import ghost_hits, hit_count, leg_hits, new_conflicts
+from zzx.ghost import (ghost_hits, hit_count, leg_hits, new_conflicts,
+                       pair_edges)
 from zzx.resident import (NextUse, ResidentRegistry, boundary_legs,
                           decide_lazy, match_return_sites)
 
@@ -478,8 +479,13 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.engine: str = params.get("engine", "match")
         # 每批 2×15μs 固定开销的 √μm 当量（审计标定：1.0 低估 36%）
         self.w_batch: float = params.get("w_batch", 1.57)
-        # 第 2 层前瞻：下次使用锚点按轮次距离折现（γ0=0 关掉即无前瞻对照）
-        self.gamma0: float = params.get("gamma0", 0.5)
+        # ---- 前瞻 v2（用户思路一/二）：软层罚项 ----
+        # 鬼点罚权重：每对"同批组合会撞静止原子"的腿 ≈ 一次被迫分批（批当量）
+        self.w_ghost: float = params.get("w_ghost", 1.0)
+        # 顺序罚权重：未来层存储搭档的进场行碎片化，每多一行 ≈ 多一批
+        self.w_ord: float = params.get("w_ord", 1.0)
+        # 逐批次折现（γ^批距）：越远的窗权重越低；1.0=不折现
+        self.gamma_batch: float = params.get("gamma_batch", 0.5)
         # fitness="phase" 分相位着色（正确）；"lumped" 混合（A3' 消融用）
         self.fitness_mode: str = params.get("fitness_mode", "phase")
         # GA 预算（ZAC_new 引擎 A 同款默认）
@@ -1213,17 +1219,14 @@ class ResidentPlacer(VertexMatchingPlacer):
             opts = self._filter_menu_ghosts(opts, q1, q2, static_ghosts,
                                             len(list_gate))
             candidates.append(opts)
-            # 每工位缓存：两原子的入区腿 + 锚点前瞻贡献（参与者锚点看本轮之后）
-            p1, p2 = reg.current_pos(q1), reg.current_pos(q2)
-            a1, d1r = reg.anchor(q1, next_layer, nu)
-            a2, d2r = reg.anchor(q2, next_layer, nu)
+            # 每工位缓存：两原子的入区腿 + 坐定者（前瞻 v2：锚点项已删——
+            # nolook 对照实证其亏 1%，且"投影到存储位"是回撤世界的遗产假设）
             cache = {}
             for site, _, _, _ in opts:
                 s1, s2 = self._pair_seats(q1, q2, site)
                 legs = []
                 seated = []        # 已坐定参与者（零腿）——解码时成为后续门的鬼
-                anchor = 0.0
-                for q, s, a, dr in ((q1, s1, a1, d1r), (q2, s2, a2, d2r)):
+                for q, s in ((q1, s1), (q2, s2)):
                     sx, sy = arch.exact_SLM_location_tuple(reg.current_pos(q))
                     tx, ty = arch.exact_SLM_location_tuple(s)
                     d = math.dist((sx, sy), (tx, ty))
@@ -1231,12 +1234,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                         legs.append((d, sx, sy, tx, ty))
                     else:
                         seated.append((q, tx, ty))
-                    if a is not None:
-                        ax, ay = arch.exact_SLM_location_tuple(a)
-                        anchor += (self.gamma0 ** dr) * sqrt(
-                            math.dist((tx, ty), (ax, ay)))
-                cache[site] = {"legs": legs, "seated": seated,
-                               "anchor": anchor}
+                cache[site] = {"legs": legs, "seated": seated}
             gate_cache.append(cache)
 
         # ---- 决策基因与 RETURN 落位常量 ----
@@ -1245,22 +1243,14 @@ class ResidentPlacer(VertexMatchingPlacer):
         return_sites = (match_return_sites(reg, eligible, nu, layer,
                                            self.box_ratio, self.alpha_lookahead)
                         if eligible else {})
-        dec_cache: dict = {}             # q → {0: ([B腿], 锚点项), 1: (...)}
+        dec_cache: dict = {}             # q → {0: STAY(无腿), 1: RETURN 腿}
         for q in eligible:
             seat = reg.zone_seat[q]
             sx, sy = arch.exact_SLM_location_tuple(seat)
-            a, dr = reg.anchor(q, layer, nu)
-            ax, ay = (arch.exact_SLM_location_tuple(a) if a is not None
-                      else (None, None))
             site = return_sites.get(q)
             tx, ty = arch.exact_SLM_location_tuple(site) if site else (None, None)
-            stay_anchor = (self.gamma0 ** dr) * sqrt(
-                math.dist((sx, sy), (ax, ay))) if a is not None else 0.0
             ret_leg = (math.dist((sx, sy), (tx, ty)), sx, sy, tx, ty) if site else None
-            ret_anchor = (self.gamma0 ** dr) * sqrt(
-                math.dist((tx, ty), (ax, ay))) if a is not None and site else 0.0
-            dec_cache[q] = {0: ([], stay_anchor),
-                            1: ([ret_leg] if ret_leg else [], ret_anchor)}
+            dec_cache[q] = {0: [], 1: [ret_leg] if ret_leg else []}
 
         n_gates = len(candidates)
         n_genes = n_gates + len(eligible)
@@ -1299,25 +1289,98 @@ class ResidentPlacer(VertexMatchingPlacer):
             return placed
 
         # ---- 适应度：分相位着色 + 锚点前瞻（查表 + 两次 DSATUR）----
-        def fitness(chrom):
-            placed = decode(chrom)
-            legs_out, extra = [], 0.0
+        # ---- 软层（前瞻 v2）：鬼点罚（思路二）+ 顺序罚（思路一），缓存 ----
+        # 鬼点代理 = 本窗两相"同批组合会撞静止原子"的腿对数——每对在路由
+        # 重放审计里≈一次被迫分批，与主项同单位（批）；T0 静止位近似，
+        # 精确性由硬保证层兜底。顺序罚 = 未来层存储搭档的进场行碎片化
+        # （同起点行必同终点行：同批进场者必须落同一行，行数=批数下界）。
+        soft_cache: dict = {}
+
+        def order_penalty(placed):
+            """未来 1-2 层还在宿舍的搭档对数 vs 各行自由对位容量的碎片化。
+
+            罚 = Σ_未来层 γ^批距 × (装下该层宿舍搭档所需行数 − 1)。
+            当前方案的座位占用决定每行剩多少完整空对——占得碎，行数就多。
+            """
+            occupied = set(reg.zone_seat.values())
+            for c in placed:
+                s1, s2 = self._pair_seats(c[2], c[3], c[0])
+                occupied.update((s1, s2))
+            total = 0.0
+            for dl in (1, 2):
+                Lf = next_layer + dl
+                if Lf >= len(self.gate_scheduling):
+                    break
+                m = sum(1 for g in self.gate_scheduling[Lf]
+                        if not reg.is_resident(g[0]) and not reg.is_resident(g[1]))
+                if m == 0:
+                    continue
+                cap = {}
+                for s in self._all_zone_sites():
+                    if s not in occupied and \
+                            (s[0] + 1, s[1], s[2]) not in occupied:
+                        cap[s[1]] = cap.get(s[1], 0) + 1
+                used, need = 0, m
+                for c in sorted(cap.values(), reverse=True):
+                    need -= c
+                    used += 1
+                    if need <= 0:
+                        break
+                if need > 0:
+                    used = m                 # 容量不足极端档：按每对一行计
+                total += (self.gamma_batch ** dl) * max(0, used - 1)
+            return total
+
+        def soft_penalty(placed, chrom):
+            key = (tuple(c[0] for c in placed),
+                   tuple(chrom[n_gates + i] for i in range(len(eligible))))
+            if key in soft_cache:
+                return soft_cache[key]
+            ghosts_t0 = list(static_ghosts)
+            for col, cand in enumerate(placed):
+                ghosts_t0.extend(gate_cache[col][cand[0]]["seated"])
+            legs_out = []
+            for col, cand in enumerate(placed):
+                legs_out.extend(gate_cache[col][cand[0]]["legs"])
+            # owners 与腿一一对齐（gate_cache 腿按 (q1,q2) 顺序跳过零腿）
+            owners_o = []
             for col, cand in enumerate(placed):
                 e = gate_cache[col][cand[0]]
-                legs_out.extend(e["legs"])
-                extra += e["anchor"]
+                q1, q2 = cand[2], cand[3]
+                s1, s2 = self._pair_seats(q1, q2, cand[0])
+                for q, s in ((q1, s1), (q2, s2)):
+                    if math.dist(arch.exact_SLM_location_tuple(reg.current_pos(q)),
+                                 arch.exact_SLM_location_tuple(s)) > 1e-9:
+                        owners_o.append(q)
+            legs_back, owners_b = [], []
+            for i, q in enumerate(eligible):
+                legs_back.extend(dec_cache[q][chrom[n_gates + i]])
+                owners_b.extend([q] * len(dec_cache[q][chrom[n_gates + i]]))
+            g = 0
+            if legs_out:
+                g += len(pair_edges(legs_out, ghosts_t0, owners=owners_o))
+            if legs_back:
+                g += len(pair_edges(legs_back, ghosts_t0, owners=owners_b))
+            r = order_penalty(placed)
+            val = self.w_ghost * g + self.w_ord * r
+            soft_cache[key] = val
+            return val
+
+        def fitness(chrom):
+            placed = decode(chrom)
+            legs_out = []
+            for col, cand in enumerate(placed):
+                legs_out.extend(gate_cache[col][cand[0]]["legs"])
             legs_back = []
             for i, q in enumerate(eligible):
-                e = dec_cache[q][chrom[n_gates + i]]
-                legs_back.extend(e[0])
-                extra += e[1]
+                legs_back.extend(dec_cache[q][chrom[n_gates + i]])
             if self.fitness_mode == "lumped":      # A3' 消融档
                 cost = batch_cost(legs_back + legs_out, w_batch=self.w_batch)[0] \
                     if legs_back or legs_out else 0.0
-                return cost + extra
+                return cost + soft_penalty(placed, chrom)
             cost_b = batch_cost(legs_back, w_batch=self.w_batch)[0] if legs_back else 0.0
             cost_o = batch_cost(legs_out, w_batch=self.w_batch)[0] if legs_out else 0.0
-            return cost_b + cost_o + extra
+            return cost_b + cost_o + soft_penalty(placed, chrom)
 
         # ---- 类型感知邻域：门位基因 ±1/重抽；决策基因翻转 ----
         # 异质染色体不能共用一套算子（审计 F3：原 swap 算子跨类型几乎全空转，
