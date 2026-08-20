@@ -25,7 +25,11 @@ NOTE = ("判分口径：三法同架构（ZAC repro）、同判分器（ZAC simu
         "qmap 列为 ICCAD'25 路由感知编译（astar 优先，失败回落 agnostic，配置见末列），"
         "其调度按 compare_zac 同款顺序时间戳约定计价（job=2×15+√(d/0.00275)，"
         "1q 指令 52μs，rydberg 0.36μs），测量/栅栏操作不入编译；"
-        "时长为顺序保守上界，zzx/ZAC 为真实判分时长。")
+        "时长为顺序保守上界，zzx/ZAC 为真实判分时长。"
+        "批次口径：ZAC/zzx 的 mv=rearrangeJob 摆渡班次数（班内多原子并行、互相过"
+        "compatible_2d 四规则），qmap 的 mv=load…store 搬运作业数（阵列重排式，"
+        "作业少而载客多）——mv 跨系统只作趋势参考；人次=原子乘车总次数（直接对应"
+        "保真度项 0.999^(2×人次)），三方可比；轮数=门批(rydberg/@+cz)条数。")
 
 
 def fill_sheet(ws, rows):
