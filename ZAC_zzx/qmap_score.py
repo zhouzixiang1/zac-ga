@@ -40,6 +40,8 @@ def score(qasm_path: str, config: str = "agnostic") -> dict:
                                   "transfer_time": 15.0}
     arch = ZonedNeutralAtomArchitecture.from_json_string(_json.dumps(spec))
 
+    import time as _time
+    _t0 = _time.time()
     qc = transpile(QuantumCircuit.from_qasm_file(qasm_path),
                    basis_gates=["cz", "u"], optimization_level=1)
     # qmap 不支持 measure/barrier/reset——终端操作，对搬运无影响，剥掉（表注说明）
@@ -97,15 +99,17 @@ def score(qasm_path: str, config: str = "agnostic") -> dict:
     moves = [0] * qc.num_qubits          # 每比特被搬作业数
     jobs: list = []                      # (原子数, dmax)
     dur = 0.0
+    move_dur = 0.0                       # 纯搬运执行时长（不含门/1q）
     n1q_instr = n_cz = 0
 
     def flush():
-        nonlocal dur, job_start
+        nonlocal dur, job_start, move_dur
         if job_start:
             dmax = max(sqrt((loc[a][0] - p[0]) ** 2 + (loc[a][1] - p[1]) ** 2)
                        for a, p in job_start.items())
             jobs.append((len(job_start), dmax))
             dur += 2 * T_TR + sqrt(dmax / ACCEL)
+            move_dur += 2 * T_TR + sqrt(dmax / ACCEL)
             for a in job_start:
                 moves[int(a[4:])] += 1
             job_start = {}
@@ -164,6 +168,8 @@ def score(qasm_path: str, config: str = "agnostic") -> dict:
         busy = T_1Q * n1q[q] + T_RYD * n2q[q] + 2 * T_TR * moves[q]
         coh *= max(0.0, 1 - max(0.0, dur - busy) / T_COH)
     return {"config": config, "duration": round(dur, 1),
+            "move_time": round(move_dur, 1),
+            "compile_ms": round((_time.time() - _t0) * 1000, 1),
             "fidelity": round(f1q * f2q * f_tr * coh, 6),
             "f1q": round(f1q, 4), "f2q": round(f2q, 4),
             "f_trans": round(f_tr, 4), "f_coh": round(coh, 4),

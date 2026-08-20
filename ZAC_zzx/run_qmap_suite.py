@@ -28,11 +28,17 @@ CONFIGS = {
         "trivial_placement": False, "dynamic_placement": True,
         "use_window": True, "window_size": 1000, "reuse": True,
     },
-    "zzx": {  # ZAC_zzx 主配置（驻留 + GA 分相位着色 + 着色路由）
+    "zzx": {  # ZAC_zzx 主配置（驻留 + GA 分相位着色 + 着色路由 + γ0 前瞻锚点）
         "placer": "resident", "engine": "ga", "routing_strategy": "coloring",
         "trivial_placement": False, "dynamic_placement": True,
         "use_window": True, "window_size": 1000, "reuse": True,
         "seed": 0, "w_batch": 1.57, "gamma0": 0.5,
+    },
+    "zzx_nolook": {  # 同主配置但 γ0=0：前瞻锚点项全部归零（不加前瞻消融）
+        "placer": "resident", "engine": "ga", "routing_strategy": "coloring",
+        "trivial_placement": False, "dynamic_placement": True,
+        "use_window": True, "window_size": 1000, "reuse": True,
+        "seed": 0, "w_batch": 1.57, "gamma0": 0.0,
     },
 }
 
@@ -46,6 +52,9 @@ def tier(n2: int) -> int:
 
 
 def main():
+    tags = []
+    if "--tags" in sys.argv:                # 只跑指定配置（如 --tags zzx_nolook）
+        tags = sys.argv[sys.argv.index("--tags") + 1].split(",")
     from qiskit import QuantumCircuit   # 探尺寸（用 qmap venv 外的 ZAC venv 也有 qiskit）
     cases = []
     for f in sorted(QMAP.glob("*.qasm")):
@@ -64,6 +73,8 @@ def main():
     for idx, (f, nq, n2) in enumerate(cases):
         rec = {"name": f.stem, "qubits": nq, "gates2q": n2, "tier": tier(n2)}
         for tag, cfg in CONFIGS.items():
+            if tags and tag not in tags:
+                continue
             tmo = tier(n2) if n2 >= 0 else 30
             d = {"qasm_list": [str(f)], "zac_setting": [dict(
                     cfg, dependency=True, scheduling="asap", use_verifier=True,
@@ -94,13 +105,18 @@ def main():
             except FileNotFoundError:
                 rec[tag]["ok"] = False
         summary.append(rec)
-        z, x = rec.get("zac", {}), rec.get("zzx", {})
-        if z.get("ok") and x.get("ok"):
-            msg = f"ratio={x['duration']/z['duration']:.3f} 批 {z['batches']}→{x['batches']} 人次 {z['transfers']}→{x['transfers']}"
+        if tags:
+            t0rec = next((rec[t] for t in tags if t in rec), {})
+            msg = f"{'+'.join(tags)}={'ok' if t0rec.get('ok') else '失败'} wall={t0rec.get('wall')}"
         else:
-            msg = f"zac={'ok' if z.get('ok') else '失败'} zzx={'ok' if x.get('ok') else '失败'}"
+            z, x = rec.get("zac", {}), rec.get("zzx", {})
+            if z.get("ok") and x.get("ok"):
+                msg = f"ratio={x['duration']/z['duration']:.3f} 批 {z['batches']}→{x['batches']} 人次 {z['transfers']}→{x['transfers']}"
+            else:
+                msg = f"zac={'ok' if z.get('ok') else '失败'} zzx={'ok' if x.get('ok') else '失败'}"
         print(f"[{idx+1:3d}/{len(cases)}] {f.stem:32s} 2q={n2:6d} {msg}", flush=True)
-        with open(out_dir / "summary.json", "w") as fp:
+        summary_name = "summary.json" if not tags else "summary_" + "_".join(tags) + ".json"
+        with open(out_dir / summary_name, "w") as fp:
             json.dump(summary, fp, indent=1)
     print("ALL_DONE", flush=True)
 
