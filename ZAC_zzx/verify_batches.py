@@ -43,6 +43,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from zac.ds.architecture import Architecture       # noqa: E402 本地副本
+from zzx.ghost import ghost_hits                  # noqa: E402 ⑨ 鬼点判据
 from zzx.zcost import compatible_2d               # noqa: E402
 
 T_TRANSFER = 15.0    # μs，与 router/架构的 atom_transfer 常数一致
@@ -93,11 +94,15 @@ def verify(code_path: Path, qasm_path: Path | None = None) -> dict:
     def exact(loc):
         return arch.exact_SLM_location_tuple(loc)   # loc = (a, r, c)
 
+    def ex_tuple(t):
+        return arch.exact_SLM_location_tuple(tuple(t))
+
     where: dict[int, tuple] = {}     # 原子 → 当前 (a, r, c)
     aod_busy: dict[int, list] = {}   # aod_id → [(begin, end, id)]
     site_events: dict[tuple, list] = {}   # (a,r,c) → [(time, +1/-1, atom, id)]
     errors = {"compat": [], "continuity": [], "timing": [], "adjacency": [],
-              "seat": [], "1q_loc": [], "gate_ledger": [], "boundary": []}
+              "seat": [], "1q_loc": [], "gate_ledger": [], "boundary": [],
+              "ghost": []}
     stats = {"jobs": 0, "atoms_moved": 0, "legs": 0}
 
     def site_event(site, t, delta, atom, iid):
@@ -204,6 +209,22 @@ def verify(code_path: Path, qasm_path: Path | None = None) -> dict:
         aod_busy.setdefault(aod_id, []).append(
             (inst["begin_time"], inst["end_time"], inst["id"]))
 
+        # ⑨ 鬼点：本批光束交叉点轨迹 vs 批时静止原子（动 vs 静——两家论文
+        #    声明、两家代码未实现的约束；zzx 产物应恒为 0，ZAC/qmap 产物
+        #    跑出命中属"审计发现"，默认只报告，--strict 才计违例）
+        from math import dist as _dist
+        legs9 = []
+        for q, b, e in zip(inst["aod_qubits"], inst["begin_locs"],
+                           inst["end_locs"]):
+            p0, p1 = ex_tuple(tuple(b[1:])), ex_tuple(tuple(e[1:]))
+            if _dist(p0, p1) > 1e-9:
+                legs9.append((_dist(p0, p1), *p0, *p1))
+        ghosts9 = [(q, *ex_tuple(where[q])) for q in where
+                   if q not in set(inst["aod_qubits"])]
+        for gid, gx, gy in ghost_hits(legs9, ghosts9):
+            errors["ghost"].append(
+                f"指令{inst['id']} 批内光束扫过静止原子 q{gid}@({gx:.0f},{gy:.0f})")
+
         # ⑧ 门-搬运互斥（原子粒度）：原子自己的门没做完之前不能被搬
         for q in inst["aod_qubits"]:
             ge = atom_gate_end.get(q, 0.0)
@@ -253,17 +274,19 @@ def verify(code_path: Path, qasm_path: Path | None = None) -> dict:
                 errors["gate_ledger"].append(
                     f"原子{q}: QASM 搭档序 {partners} ≠ 流内 {got}")
 
+    stats["ghost_hits"] = len(errors["ghost"])
     return {"errors": errors, "stats": stats}
 
 
 def main():
     qasm = None
+    strict = "--strict" in sys.argv
     paths = []
     for a in sys.argv[1:]:
         if a.startswith("--arch=") or a.startswith("--qasm="):
             if a.startswith("--qasm="):
                 qasm = Path(a.split("=", 1)[1])
-        else:
+        elif a != "--strict":
             paths.append(Path(a))
     if not paths:
         print(__doc__)
@@ -273,10 +296,15 @@ def main():
         result = verify(p, qasm)
         errs = result["errors"]
         n_err = sum(len(v) for v in errs.values())
+        if not strict:
+            n_err -= len(errs["ghost"])      # 默认鬼点仅报告；--strict 计违例
         s = result["stats"]
         verdict = "✅ PASS" if n_err == 0 else f"❌ {n_err} 处违例"
+        ghost_note = f", 鬼点={s['ghost_hits']}" + ("" if s["ghost_hits"] == 0
+                                                    else "（--strict 计违例）")
         print(f"{p.name:40s} {verdict}   "
-              f"(批次数={s['jobs']}, 搬运原子人次={s['atoms_moved']}, 有效腿={s['legs']})")
+              f"(批次数={s['jobs']}, 搬运原子人次={s['atoms_moved']}, "
+              f"有效腿={s['legs']}{ghost_note})")
         for kind, msgs in errs.items():
             for m in msgs[:5]:
                 print(f"    [{kind}] {m}")
