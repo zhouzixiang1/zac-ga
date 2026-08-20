@@ -1,8 +1,13 @@
 """M5 结果表生成器：主表 + 验收清单 + 前瞻标定 + 种子稳健性 + 决策分布。
 
 用法：ZAC/.venv/bin/python ZAC_zzx/make_table.py
-（读取 results/{main,a1,b_rerun,a_rerun,gamma_*,lumped,seed_*} 与 ZAC 冻结真值，
-  输出 results/comparison_table.md 与 results/acceptance.md）
+（读取 results/{main,a1,b_rerun,a_rerun,gamma_*,lumped,seed_*} 与 ZAC 冻结真值
+  ZAC/result/zac/repro_fixed，输出 results/ 下三个 md：
+    comparison_table.md  18 电路 × 四系统主表（ZAC_zzx/A1/B重跑/A重跑）
+    acceptance.md        验收清单：回归/验证器/时长门槛/编译帽/保真度分解/决策分布
+    calibration.md       γ0 前瞻标定（0/0.25/0.5 + lumped）+ 3 种子极差
+  分母口径：全部 duration ratio 以冻结 ZAC 真值为分母；B/A 重跑是同会话
+  的 ZAC_new 对照（控制变量：同 venv、同架构、同判分器）。
 """
 from __future__ import annotations
 

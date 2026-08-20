@@ -32,7 +32,16 @@ from scipy.sparse.csgraph import min_weight_full_bipartite_matching
 
 # ---------------------------------------------------------------------- 下次使用表
 class NextUse:
-    """每个原子的"下次上场时刻"：r(q) 与搭档。ASAP 调度静态可知，零运行时开销。"""
+    """每个原子的"下次上场时刻"：r(q) 与搭档。ASAP 调度静态可知，零运行时开销。
+
+    例：调度 [[[0,1],[2,3]], [[1,2]], [[0,3]]] 时
+        rounds   = {0:[0,2], 1:[0,1], 2:[0,1], 3:[0,2]}
+        partner  = {(0,0):1, (1,0):0, (2,0):3, ..., (1,1):2, (2,1):1, ...}
+        next_round(1, after=0) = 1   （原子 1 在第 1 轮还有门）
+        next_round(2, after=1) = None（第 1 轮之后原子 2 再不上场 → 死驻留者）
+    用途：①锚点前瞻（搭档在哪，下次会合成本多少）②容量阀逐出顺序
+    （下次使用越远越先走）③决策基因资格（有后续使用者才有 STAY/RETURN 基因）。
+    """
 
     def __init__(self, gate_scheduling: list):
         # rounds[q] = 该原子参与过的轮次（升序）；partner[(q, round)] = 搭档
@@ -48,7 +57,8 @@ class NextUse:
             self.rounds[q].sort()
 
     def next_round(self, q: int, after: int):
-        """r(q)：严格晚于 after 的首个参与轮次；无则 None（死驻留者）。"""
+        """r(q)：严格晚于 after 的首个参与轮次；无则 None（死驻留者）。
+        轮次列表已升序，顺序扫描第一个 > after 的即可（列表很短，无需二分）。"""
         for r in self.rounds.get(q, ()):
             if r > after:
                 return r
@@ -106,7 +116,11 @@ class ResidentRegistry:
 
     def anchor(self, q: int, after: int, next_use: NextUse):
         """下次使用锚点：搭档当前座位在存储区的投影（搭档在激发区 → 其最近存储位）。
-        返回 (anchor_loc 或 None, 轮次距离)；无下次使用 → (None, None)。"""
+
+        返回 (anchor_loc 或 None, 轮次距离 dr)；无下次使用 → (None, None)。
+        例：原子 q 第 3 轮与 p 配对、p 现坐激发区 (1,4,6) → 锚点 =
+        nearest_storage_site(1,4,6)（p 下次大概率从存储侧来会合的落点），
+        dr = 3 - after。锚点供 GA 适应度的前瞻层使用（γ0^dr 折现）。"""
         r = next_use.next_round(q, after)
         if r is None:
             return None, None
@@ -154,19 +168,28 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
         C3 伙伴族 —— 下次搭档锚点±箱（省未来搬运，vmplacer.py:420 的投影规则）
     代价 = √d(激发区座位→候选位) + alpha·√d(候选位→锚点)   （镜像 vmplacer.py:491）
     匹配一次定终身：调用方把结果当常量缓存，染色体选 RETURN 即用其指派位。
+
+    为什么必须"箱式化"而不能直接用三个点位：ZAC 的 nearest_storage_site
+    按（半行,列）塌缩——激发区同一列两个座位会映射到同一个存储位，两个
+    回返者的 C2/C3 候选撞车，匹配无解；扩成 (2·box_ratio+1)² 的自由位箱
+    后候选池恒够（存储 10000 位 vs ≤98 回返者）。
     """
     arch = registry.arch
+    # 全存储位清单 + 自由位集合（未被任何在储原子占用——occupied 含未来
+    # 参与者仍在存储的家，所以回返者永远不会落到别人头上）
     all_storage = [
         (sid, r, c) for sid in arch.storage_zone
         for r in range(arch.dict_SLM[sid].n_r)
         for c in range(arch.dict_SLM[sid].n_c)]
     free = set(all_storage) - registry.occupied_storage()    # 未被占用的都可用
 
+    # 二部图：行 = 候选存储位（三族箱并集），列 = 回返者
     site_index: dict = {}
     rows_list: list = []
     rows, cols, data = [], [], []
 
     def _add(site):
+        """给候选位编号（建行索引），重复出现的位共用一行。"""
         if site not in site_index:
             site_index[site] = len(rows_list)
             rows_list.append(site)
@@ -175,12 +198,13 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     for i, q in enumerate(returners):
         zone_loc = registry.zone_seat[q]                  # 调用保证 q 当前在激发区
         zx, zy = arch.exact_SLM_location_tuple(zone_loc)
+        # 锚点：有下次使用→搭档投影；死驻留者→原位（微弱拉回家的倾向）
         anchor_loc, _ = registry.anchor(q, after, next_use)
         if anchor_loc is None:
             anchor_loc = registry.homes[q]                # 死驻留者：锚点=原位
         ax, ay = arch.exact_SLM_location_tuple(anchor_loc)
 
-        # C1 原位 / C2 就近 / C3 伙伴 —— 三族候选箱
+        # C1 原位 / C2 就近 / C3 伙伴 —— 三族候选箱（各以中心±box_ratio 展开）
         near_current = arch.nearest_storage_site(zone_loc[0], zone_loc[1], zone_loc[2])
         families = [registry.homes[q], near_current, anchor_loc]
         candidates = set()
@@ -190,6 +214,7 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
         if registry.homes[q] in free:
             candidates.add(registry.homes[q])              # 原位自由时永远给一次机会
 
+        # 每个候选位的代价：省本次（离激发区近）+ 省未来（离锚点近）
         for site in candidates:
             sx, sy = arch.exact_SLM_location_tuple(site)
             cost = sqrt(math.dist((zx, zy), (sx, sy))) + alpha_lookahead * sqrt(
@@ -203,6 +228,7 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     matrix = coo_matrix((np.array(data), (np.array(rows), np.array(cols))),
                         shape=(len(rows_list), len(returners)))
     try:
+        # 最小权完美匹配：所有回返者各得一个互异自由位，总代价最小
         row_ind, col_ind = min_weight_full_bipartite_matching(matrix)
         assignment = {returners[c]: rows_list[r] for r, c in zip(row_ind, col_ind)}
     except ValueError:
@@ -260,18 +286,23 @@ def decide_lazy(registry: ResidentRegistry, next_use: NextUse, layer: int,
                            "return": 0, "participants": 0}
 
     # ---- E2 挡路逐出（只针对非参与者）----
+    # 非参与者 = 本轮不做门的闲住驻留者；他们的座位若被下一轮门位需要，
+    # 必须回存储（否则门放不进 / 依赖账本无法排序同相位交接）。
+    # 参与者本人的座位被需要不算挡路——他要挪去自己的门位，入区腿自理。
     forced = [q for q, seat in registry.zone_seat.items()
               if q not in participants and seat in needed]
     forced_set = set(forced)
 
     # ---- 容量阀逐出（下次使用越远越先走；死驻留者最先）----
+    # 排序键解读：(是否死驻留者, 下次使用轮次) 都降序——死驻留者（r=None）
+    # 排最前先走，活着的按下次使用从远到近逐出，直到 保留+需求 ≤ θ·容量。
     evict_order = sorted(
         (q for q in registry.zone_seat if q not in participants and q not in forced_set),
         key=lambda q: (next_use.next_round(q, layer) is None,
                        next_use.next_round(q, layer) or 0),
         reverse=True)
     retained = len(registry.zone_seat) - len(forced)
-    demand = 2 * len(next_gates)
+    demand = 2 * len(next_gates)                     # 每个门要占一对座位
     capacity_evict = []
     for q in evict_order:
         if retained + demand <= registry.theta * registry.zone_sites:

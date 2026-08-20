@@ -229,7 +229,19 @@ class ZAC_zzx(ZAC):
     # ------------------------------------------------------------ 驻留路由
     def _route_resident(self, layer: int):
         """驻留模式路由：out 相（参与者增量，区内换座合法）→ 门 → back 相
-        （全部映射增量者 = 回撤腿，含闲住驻留者）。"""
+        （全部映射增量者 = 回撤腿，含闲住驻留者）。
+
+        指令流时间顺序（每轮）：out 批次… → rydberg(+1qGate) → back 批次…
+        → 下一轮 out…。与 ZAC 原版的三处差别（都有审计实证背书）：
+        ① out 相断言从"一端必在存储"放宽为"两端合法 SLM 位"——驻留者的
+          入区腿是区内短移（zone→zone），原断言必炸；expand_arrangement/
+          get_duration/aod_assignment 全坐标系化，无存储假设（审计验证）。
+        ② back 相扫描全部原子而非仅本轮门原子——被 E2/容量阀/GA 决策逐出
+          的闲住驻留者不在本轮门里，但其回撤腿必须发车。
+        ③ 依赖账本补丁：闲住驻留者的 qubit_dependency 可能停在数轮之前
+          （router.py:417-420 只更新本轮参与者），不补的话 aod_assignment
+          会让他的回撤车与 rydberg/1q 并行执行——审计 FATAL-1 的洞。
+        """
         initial_mapping = self.qubit_mapping[2 * layer]
         gate_mapping = self.qubit_mapping[2 * layer + 1]
         if layer + 2 < len(self.qubit_mapping):
@@ -237,7 +249,9 @@ class ZAC_zzx(ZAC):
         else:
             final_mapping = None
 
-        # ---- 前半程：本轮参与者中"落位≠门位"者（驻留者换座 = 区内短移）----
+        # ---- 前半程（out 相）：本轮参与者中"落位≠门位"者（驻留者换座 = 区内短移）----
+        # 只扫本轮门原子：非参与者的移动全部发生在 back 相（映射流构造保证），
+        # 两相不混——避免"同一座位 A 离开 B 到达"跨相交错的排序难题。
         remain_graph = []
         for gate in self.gate_scheduling[layer]:
             for q in gate:
@@ -247,28 +261,29 @@ class ZAC_zzx(ZAC):
                     assert self.architecture.is_valid_SLM_position(*initial_mapping[q])
                     assert self.architecture.is_valid_SLM_position(*gate_mapping[q])
                     remain_graph.append(q)
+        # maximalis_sort / coloring 的同款预排序：远腿先上车（router.py:65-67）
         if self.routing_strategy != "mis" and self.routing_strategy != "maximalis":
             remain_graph = self._sorted_by_distance(remain_graph, initial_mapping,
                                                     gate_mapping)
 
-        id_layer_start = len(self.result_json["instructions"])
+        id_layer_start = len(self.result_json["instructions"])   # aod_assignment 的起扫点
         batch = 0
         method = "empty"
         moved = set()
         for set_aod, method in self._phase_batches(remain_graph, initial_mapping,
                                                    gate_mapping):
-            self.process_movement_layer(set_aod, initial_mapping, gate_mapping)
+            self.process_movement_layer(set_aod, initial_mapping, gate_mapping)   # ZAC 原机
             batch += 1
             moved |= set_aod
         self.zzx_route_log.append({"layer": layer, "phase": "out",
                                     "batches": batch, "method": method,
                                     "atoms": len(moved) if batch else 0})
 
-        # ---- 门执行层（原版；同时把本轮门指令的依赖写进账本）----
+        # ---- 门执行层（原版）：一次 rydberg 做完本轮全部 2q 门，1q 挂在后面 ----
         self.process_gate_layer(layer, gate_mapping)
         last_gate_inst = len(self.result_json["instructions"]) - 1
 
-        # ---- 后半程：全部映射增量者（映射流保证 = 回撤者），含闲住驻留者 ----
+        # ---- 后半程（back 相）：全部映射增量者（映射流保证 = 回撤者），含闲住驻留者 ----
         if final_mapping is not None:
             remain_back = [q for q in range(len(gate_mapping))
                            if gate_mapping[q] != final_mapping[q]]
@@ -293,4 +308,5 @@ class ZAC_zzx(ZAC):
             self.zzx_route_log.append({"layer": layer, "phase": "back",
                                         "batches": batch, "method": method,
                                         "atoms": len(moved)})
+            # AOD 分配与时间戳：从本轮第一条指令起统一排时（ZAC 原机）
             self.aod_assignment(id_layer_start)

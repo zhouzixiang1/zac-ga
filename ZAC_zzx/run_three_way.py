@@ -1,8 +1,13 @@
 """三方对比表（ZAC / ICCAD-qmap / ZAC_zzx）驱动：跑 qmap 计分 + 汇总双 sheet xlsx。
 
 Sheet1 = hpca 18 电路（ZAC=冻结真值, zzx=results/main, qmap=astar 优先超时回落 agnostic）
-Sheet2 = qmap examples 全套（ZAC/zzx=results/qmap_suite 套件, qmap 同上策略）
+Sheet2 = qmap examples 全套（ZAC/zzx=results/qmap_suite 套件, qmap 同上策略：
+        仅对 ≤300 门的电路尝试 astar——大电路的 A* 放置在大存储架构上
+        会指数爆炸，早前实测 ising_n42 就要 500s+）
 运行：.venv_qmap/bin/python ZAC_zzx/run_three_way.py  （末尾自动等后台套件 ALL_DONE）
+产出：results/three_way/{sheet1,sheet2}.json → build_xlsx.py 生成 三方对比.xlsx
+口径：qmap 列见 qmap_score.py 模块头（顺序时间戳 + 五项直算，保守上界）；
+      ZAC/zzx 列零处理，直接读各自判分产物。
 """
 from __future__ import annotations
 

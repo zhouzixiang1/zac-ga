@@ -2,6 +2,15 @@
 ZAC vs ZAC_zzx 逐电路对比（q / 时长 / ratio / 保真度 / mv 搬运批 / pulse 轮数 / 1qS 单比特批）。
 
 用法：ZAC/.venv/bin/python ZAC_zzx/compare_table.py [hpca|qmap]
+
+列语义（与用户原生 compare_zac.py 完全同款，便于跨表对读）：
+    q       比特数
+    mv      搬运批次数（rearrangeJob 条数）——着色引导放置的验收读数
+    pulse   轮数 = rydberg 指令数 = 2q 门层数（两法同源，节拍不是变量）
+    1qS     1qGate 指令条数
+    ratio   zzx 时长 ÷ ZAC 时长（同一判分器），越小越好
+分母：hpca 模式用冻结真值（ZAC/result/zac/repro_fixed）；
+      qmap 模式用同会话现场跑的 ZAC（examples 电路无现成真值）。
 """
 from __future__ import annotations
 

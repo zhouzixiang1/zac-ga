@@ -1,9 +1,17 @@
 """ZAC_zzx 入口（前台）：与 GA/FABLE 的 run.py 流程相同，仅创建 ZAC_zzx。
 
 用法：
-    ZAC/.venv/bin/python ZAC_zzx/run.py ZAC_zzx/exp_setting/zac_zzx_toy.json   # 冒烟
-    ZAC/.venv/bin/python ZAC_zzx/run.py ZAC_zzx/exp_setting/zac_zzx_repro.json # 18 电路
+    ZAC/.venv/bin/python ZAC_zzx/run.py ZAC_zzx/exp_setting/zzx_toy_none.json  # 回归冒烟
+    ZAC/.venv/bin/python ZAC_zzx/run.py ZAC_zzx/exp_setting/zzx_main.json      # 18 电路主配置
 （只需要一个装了 qiskit/scipy/rustworkx/matplotlib 的 Python 3.10 环境）
+
+每个电路的产物落盘到 dir/ 下三个子目录：
+    code/      ZAIR 指令流 JSON（内嵌 gate_ledger = 重综合后的实际门列表，
+               供 verify_batches.py ⑦ 语义查对账——直读 QASM 会差在共享
+               重综合层，ZAC 真值同样如此，非编译 bug）
+    fidelity/  ZAC 判分器五项保真度分解 + duration
+    time/      编译耗时分解（SA/GA 放置/路由）+ 批次账本（route_log 每相位
+               的批数与解法；placer_preview = 决策分布统计）
 """
 from __future__ import annotations
 

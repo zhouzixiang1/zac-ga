@@ -1,28 +1,38 @@
-"""发动机：BatchAwarePlacer —— 双引擎"批次感知"门放置（ZAC_zzx 的核心改动）。
+"""发动机（ZAC_zzx 的放置器层）：本文件有两个类，主角在后半部分。
 
-要解决的问题：ZAC 原版 place_gate（vmplacer.py:165）用最小权完美匹配
-给每个门分工位，边权 = √距离 + √距离 + √前瞻——纯距离，且匹配这种
-求解器天然表达不了"门与门之间的批次耦合"（一个门的工位选择改变
-另一个门会不会跟它挡路，这是决策间的二次交互项，边权写不进去）。
+┌─ 阅读指南 ────────────────────────────────────────────────────────────┐
+│ ① BatchAwarePlacer（前半，ZAC_new 的对照引擎，placer="batch" 时用）    │
+│    place_gate 整体替换 ZAC 的门放置：双引擎 penalty（匹配+定向冲突罚单）│
+│    / ga（进化搜索），适应度 = 着色分批代价 w_batch×χ + Σ√dmax。        │
+│    每轮做完门仍全员回存储——它是"批次感知但不驻留"的对照组。             │
+│                                                                       │
+│ ② ResidentPlacer（后半，ZAC_zzx 主角，placer="resident" 时用）        │
+│    驻留编译器：做完门默认不回存储（resident.py 负责决策），门位由       │
+│    engine="match"（A1 解析匹配）或 "ga"（A3 联合搜索）产生。           │
+│    方法地图（按调用顺序）：                                             │
+│      run()                轮循环总控：plan → decide_lazy → commit      │
+│      _plan_round()        A1 门位：菜单三级兜底 + ZAC 距离匹配         │
+│        _zone_anchors()      原子对 → 入区锚点（区内原子锚=自己座位）    │
+│        _expanded_sites()    锚点展开窗 + ZAC 容量自动扩窗              │
+│        _all_zone_sites()    全区左 SLM 工位全集（终极兜底搜索域）      │
+│        _build_opts()        候选集 → (site,w,q1,q2) 菜单 + 硬排除      │
+│        _pair_seats()        工位 → 座位对朝向（驻留者保座优先）         │
+│        _site_weight()       ZAC 权重公式 + 驻留者移动折扣              │
+│        _match_gates()       scipy 最小权匹配 + 贪心兜底                │
+│        _repair_placements() 终检安全网：违例门位改选全区过滤域          │
+│      _ga_step()          A3 联合搜索：门位基因 ∪ STAY/RETURN 基因，    │
+│                          适应度 = 分相位着色 + 锚点前瞻                │
+│      _commit_round()     参与者落门位 + 登记簿入区，追加映射           │
+│      _append_boundary()  RETURN 者落存储位，追加边界映射               │
+│      _assert_contract()  流契约断言：长度 2n+1 / 拷贝不变式 / 单射      │
+└───────────────────────────────────────────────────────────────────────┘
 
-两个引擎（config 里 engine 切换，消融对照）：
-    * "penalty"（主推）—— 保留 ZAC 的匹配机器，外面套"冲突罚单"循环：
-        第 1 轮 = 原版纯距离匹配；对派工单建冲突图着色，按"冲突条数"
-        给涉事 (门, 当前工位) 的边加罚，重解匹配；罚额逐轮衰减，
-        全程记录历史最优。每轮只花一次匹配 + 一次着色，运算量最小。
-    * "ga"（对照）—— FABLE v1a 骨架的进化搜索（种群 6 × 迭代 8 ×
-        邻居采样 24），适应度换成 zcost 的"着色分批"代价。
-
-适应度（两引擎共用，与 FABLE 的差异 100% 集中在"分批器"）：
-    FABLE:     Σ√dmax(贪心 MIS 轮) + w_conf × 冲突边数 + 前瞻
-    ZAC_zzx:   w_batch × χ(着色批数) + Σ√dmax(色类)      + 前瞻
-    着色的色类数 χ ≤ 贪心轮数（贪心剥离是着色的一种粗糙实现），
-    且 χ 直接惩罚批数本身（每批有固定激活/关断开销）。
-
-继承关系（与 GA/FABLE 相同，底盘不动）：
-    BatchAwarePlacer(VertexMatchingPlacer)
-      ├─ 覆写：place_gate()          ← 唯一改动的行为
-      └─ 原样继承：run() / place_qubit() / filter_mapping()
+核心思想（为什么放置要重写而不是改 ZAC 的 place_gate）：
+ZAC 原版（vmplacer.py:165）用最小权完美匹配分工位，边权 = 纯距离——
+匹配的边权表达不了"门与门之间的批次耦合"（一个门的工位选择改变另一个门
+要不要多开一班车，这是决策间的二次交互项）。本文件的解法是把整套座位
+方案放进 GA 染色体，用着色适应度整体计价；驻留语义则要求重写轮循环
+（父类每轮强制全员回存储，vmplacer.py:343-348——驻留在父类里无法表达）。
 """
 from __future__ import annotations
 
@@ -484,6 +494,18 @@ class ResidentPlacer(VertexMatchingPlacer):
     # ------------------------------------------------------------------ 轮循环
     def run(self, architecture, qubit_mapping, gate_scheduling,
             dynamic_placement, reuse_qubit):
+        """轮循环总控：产出与 ZAC 同构的映射流（长度 2n+1）。
+
+        映射流的下标约定（下游 route_qubit_mis 按 2L/2L+1 取用）：
+            mapping[0]      = SA 初始布局（床位）
+            mapping[2L+1]   = 第 L 轮门位映射（参与者落座，非参与者逐位不动）
+            mapping[2L+2]   = 第 L 轮边界映射（RETURN 者已落到存储位）
+        每轮三拍（顺序与原生编译器同构——门赢，闲人让路）：
+            ① plan(L+1)     先定下一轮门位（要用到下一轮座位才能判 E2 挡路）
+            ② decide_lazy   边界决策：默认全 STAY，E2/容量强制 RETURN
+            ③ commit(L+1)   参与者登记入区，两张映射依序入流
+        engine="ga" 时 ①② 合并成一步联合搜索（_ga_step）。
+        """
         self.architecture = architecture
         self.gate_scheduling = gate_scheduling
         # 中和复用机制（双保险：ZAC_zzx 层已置空 self.reuse_qubit）。
@@ -507,6 +529,8 @@ class ResidentPlacer(VertexMatchingPlacer):
                 next_gates = self.gate_scheduling[layer + 1]
                 next_seats = [p["seats"] for p in placement]
             else:
+                # 末边界：没有下一轮门位 → 全员 STAY（native 同款），
+                # 或 final_return_home=True 时全队回存储（实验开关）
                 placement, next_gates, next_seats = None, [], []
             decisions, stats = decide_lazy(
                 self.registry, self.nu, layer, next_gates, next_seats,
@@ -963,6 +987,10 @@ class ResidentPlacer(VertexMatchingPlacer):
             return cost_b + cost_o + extra
 
         # ---- 类型感知邻域：门位基因 ±1/重抽；决策基因翻转 ----
+        # 异质染色体不能共用一套算子（审计 F3：原 swap 算子跨类型几乎全空转，
+        # 浪费一半邻域预算）——按基因类型各用各的：
+        #   门位基因（菜单下标）：±1 走相邻菜（微调）或随机重抽（跳出局部）
+        #   决策基因（0/1）：直接翻转 STAY↔RETURN
         def neighbor(chrom):
             m = list(chrom)
             if n_gates and (not eligible or self.rng.random() < 0.5):
@@ -974,7 +1002,11 @@ class ResidentPlacer(VertexMatchingPlacer):
                 m[n_gates + di] ^= 1
             return m
 
-        # ---- 进化主循环（ZAC_new 引擎 A 骨架，zeros 热启动）----
+        # ---- 进化主循环（ZAC_new 引擎 A 骨架：精英保留 + 邻域采样）----
+        # zeros 热启动 = 每门选菜单第一项（权重最优的解析解）+ 全体 STAY
+        # ——GA 从不比解析差，这是 A1→A3 只升不降的原因。
+        # 每轮每条父本采 neighbor_sample_size 个邻居，取前 neighbors_per_solution
+        # 入子代，合并精英截断到 population_size。默认预算 6×8×24 ≈ 1158 次评估。
         zeros = [0] * n_genes
         population = [zeros]
         for _ in range(self.population_size - 1):
@@ -993,17 +1025,22 @@ class ResidentPlacer(VertexMatchingPlacer):
         # ---- 应用最优解：座位对、边界决策、容量阀兜底、提交 ----
         best_c = scored[0][1]
         placed = decode(best_c)
+        # 终检安全网照跑：GA 的菜单虽已硬排除，但 decode 顺延在极端拥挤层
+        # 仍可能撞座（与 A1 同一不变式，宁可多一道）
         placements = self._repair_placements(
             [self._mk_placement(c[2], c[3], c[0]) for c in placed], list_gate)
 
+        # 按决策基因生成本边界的决策表（GA 模式下菜单已排除他人座位，
+        # 所以理论上不会出现 E2 挡路——forced_e2 恒记 0）
         decisions = {}
         for i, q in enumerate(eligible):
             if best_c[n_gates + i]:
-                decisions[q] = ("RETURN", return_sites[q])
+                decisions[q] = ("RETURN", return_sites[q])   # 落位用每步一次匹配的常量
             else:
                 decisions[q] = ("STAY", reg.zone_seat[q])
 
         # 容量阀：保留座位 + 2×门数超压时按下次使用降序强制 RETURN（死驻留者最先）
+        # （与 decide_lazy 同一规则——GA 只优化"要不要回"，硬约束仍由阀兜底）
         retained = sum(1 for v in decisions.values() if v[0] == "STAY") \
             + sum(1 for q, seat in reg.zone_seat.items()
                   if q not in participants and q not in decisions)
@@ -1024,7 +1061,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         for q, site in forced_sites.items():
             decisions[q] = ("RETURN", site)
 
-        # 登记簿同步 + 映射流提交（边界 → 门位）
+        # 登记簿同步 + 映射流提交（边界 → 门位，顺序与流契约一致）
         for q, (kind, loc) in decisions.items():
             if kind == "RETURN":
                 reg.return_to_storage(q, loc)
