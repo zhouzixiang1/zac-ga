@@ -70,6 +70,14 @@ ZAC/.venv/bin/python ZAC_zzx/tests/test_resident.py                       # 单�
 | A1（驻留+解析匹配） | 1.081 | — |
 | **ZAC_zzx 主配置（驻留+GA）** | **0.867** | 237s |
 
+**qmap examples 外部套件（154 例）**：三法全成的 119 个公共集上 zzx
+**119/119 全胜、geomean 0.606**（批数降 45%、人次降 47%），无一例超
+1.0，最佳 4mod7-v1 0.474。**三方对比**（ZAC / ICCAD-qmap / zzx，双
+sheet `results/three_way/三方对比.xlsx`）：qmap 同尺计分 geomean 1.755
+（hpca18）/ 1.701（公共集，0/119 胜），zzx 0.867 / 0.606；qmap 的真强项
+是编译可行性——其 C++ 把 22 万门的 urf4 都编出来了（ZAC/zzx 在 >1.5
+万门超时）。三方互补：zzx 赢时长、qmap 赢规模、ZAC 是基线。
+
 - 大赢家：swap_test 0.561 / seca 0.570 / knn 0.631 / multiply 0.650 /
   ising_n42 0.647 / qft_n18 0.799 / **qft_n29 0.777（根治 ZAC_new-B 的 1.077
   回退，批数 401→217）**
