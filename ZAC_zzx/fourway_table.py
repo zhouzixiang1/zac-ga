@@ -33,8 +33,11 @@ METHODS = [("zac", "ZAC原始"), ("qmap", "ICCAD"),
 
 NOTE = (
     "四方法×四指标。保真度=五项模型同判分（0.9997^1q × 0.995^2q × 0.999^(2×人次) × Π(1−idle/T)，"
-    "同架构 ZAC repro）。move批=搬运班次数（ZAC/遗传=rearrangeJob 条数；ICCAD=load…store 作业数，"
-    "口径近似，跨方法只作参考）。move时间=纯搬运执行时长，不含门时间（ZAC/遗传=Σ搬送批起止区间；"
+    "同架构 ZAC repro）。move批=重排步数 Num. Rearr. Steps（ICCAD'25 Table I 口径）：一次完整"
+    "的 AOD 重排循环计 1 步——ZAC/遗传=rearrangeJob 条数（activate+move+deactivate），"
+    "ICCAD=load…store 作业数，语义 1:1 对应；qmap 侧计数已对论文 Table I 逐位复现验证"
+    "（seca 112 步=112、12/15 行精确一致），且全产物 26 万班次零空班（无水分计数）。"
+    "move时间=纯搬运执行时长，不含门时间（ZAC/遗传=Σ搬送批起止区间；"
     "ICCAD=Σ作业 2×15μs+√(d/0.00275)）。编译时间=电脑求出该解的耗时（ZAC/遗传=编译流水线 total；"
     "ICCAD=transpile+compile 实测，不含 python 启动）。遗传(前瞻)=γ0=0.5 主配置；遗传(无前瞻)=γ0=0"
     "（下次使用锚点项归零，其余设置全同）。ICCAD 配置=astar 优先、超时回落 agnostic。"
@@ -116,7 +119,7 @@ def complete(row):
 # ---------- 表格与摘要 ----------
 
 FIELDS = [("fidelity", "保真度", "mean"),
-          ("batches", "move批", "sum"),
+          ("batches", "Rearr.Steps", "sum"),
           ("move_time", "move时间μs", "sum"),
           ("compile_s", "编译s", "sum")]
 
@@ -129,7 +132,7 @@ def fill_sheet(ws, rows, title):
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2 + 4 * len(METHODS))
     hdr = ["circuit", "q"]
     for _, label in METHODS:
-        hdr += [f"{label}\n保真度", f"{label}\nmove批", f"{label}\nmove时间μs", f"{label}\n编译s"]
+        hdr += [f"{label}\n保真度", f"{label}\nRearr.Steps", f"{label}\nmove时间μs", f"{label}\n编译s"]
     ws.append(hdr)
     for c in range(1, len(hdr) + 1):
         cell = ws.cell(row=2, column=c)
@@ -157,7 +160,7 @@ def fill_sheet(ws, rows, title):
             line += ["", "", ""]
         ws.append(line[:len(hdr)])
     for field in ("batches", "move_time", "compile_s"):
-        line = [f"geomean /ZAC：{field}", ""]
+        line = [f"geomean /ZAC：{'Rearr.Steps' if field == 'batches' else field}", ""]
         for key, _ in METHODS:
             if key == "zac":
                 line += [1.0, "", "", ""]
@@ -187,7 +190,7 @@ def md_summary(rows, title):
             g = gm([mval(r, key, field) / mval(r, "zac", field) for r in full
                     if mval(r, key, field) and mval(r, "zac", field)])
             cells.append(f"{g:.3f}" if g else "—")
-        out.append(f"| geomean {field}/ZAC | " + " | ".join(cells) + " |")
+        out.append(f"| geomean {'Rearr.Steps' if field == 'batches' else field}/ZAC | " + " | ".join(cells) + " |")
     return "\n".join(out) + "\n"
 
 
