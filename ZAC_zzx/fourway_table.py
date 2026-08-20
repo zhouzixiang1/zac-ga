@@ -79,7 +79,8 @@ def gm(xs):
 
 # ---------- 数据装载 ----------
 
-def build_rows(hpca: bool):
+def build_rows(hpca: bool, suffix: str = ""):
+    """suffix="" → zzx 用 SA 初始化目录；"_ga" → GA 初始化目录。"""
     rows = []
     if hpca:
         qmap_rows = {r["name"]: r["qmap"] for r in json.load(open(OUT / "qmap_hpca.json"))}
@@ -194,7 +195,6 @@ def main():
     # 变体选择：默认 = SA 初始化的 zzx；传 "ga" = GA 初始化（gainit.py 替换 SA 后）
     ga = len(sys.argv) > 1 and sys.argv[1] == "ga"
     if ga:
-        global ZZX
         suffix = "_ga"
         out_xlsx = OUT / "四方法对比_ga.xlsx"
         out_md = OUT / "四方法对比_ga.md"
@@ -202,8 +202,8 @@ def main():
         suffix = ""
         out_xlsx = OUT / "四方法对比.xlsx"
         out_md = OUT / "四方法对比.md"
-    rows1 = build_rows(hpca=True)
-    rows2 = build_rows(hpca=False)
+    rows1 = build_rows(hpca=True, suffix=suffix)
+    rows2 = build_rows(hpca=False, suffix=suffix)
     wb = Workbook()
     ws1 = wb.active
     ws1.title = "ZAC数据集18"
