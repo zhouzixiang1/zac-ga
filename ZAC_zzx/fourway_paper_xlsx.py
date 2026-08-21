@@ -47,21 +47,16 @@ def main():
     # ---- ZAC（论文原程序）----
     z = zac_rows()
     # ---- ICCAD（论文管线）：15 复现 + 3 补跑 ----
+    # qmap 3.2.0（论文版本）全量重采：18 电路 ×2 映射，步数 26/30 与
+    # Table I 精确一致；rearr 原始单位 μs，行构造时 ÷1000 对齐论文 ms
     iccad = {}
-    for r in csv.DictReader(open(ROOT / "experiments/results/qmap_qasmbench.csv")):
-        if r["status"] != "ok":
-            continue
-        key = f"{r['circuit']}_n{r['qubits']}".replace("swaptest_n", "swap_test_n")
-        d = iccad.setdefault(key, {})
-        d[r["config"]] = (int(r["steps"]), float(r["rearr_ms"]),
-                          float(r["total_time"]) if r["total_time"] else None,
-                          int(r["two_qubit_gate_layer"]),
-                          int(r["max_gates_in_layer"]))
-    for r in json.load(open(ROOT / "experiments/results/qmap_extra3.json")):
-        key = f"{r['circuit']}_n{r['qubits']}"
+    for r in json.load(open(ROOT / "experiments/results/qmap_table1_v32.json")):
+        key = f"{r['circuit']}_n{r['qubits']}".replace(
+            "swaptest_n", "swap_test_n")
         iccad.setdefault(key, {})[r["config"]] = (
-            r["steps"], r["rearr_ms"], r["total_ms"],
-            r["layers"], r["max_gates"])
+            int(r["steps"]), float(r["rearr_us"]),
+            r.get("place_ms"), r.get("route_ms"), r.get("total_ms"),
+            int(r["layers"]), int(r["max_gates"]))
     # ---- 论文 Table I 原值 ----
     truth = {}
     for r in csv.DictReader(open(ROOT / "experiments/paper_truth/qmap_table1.csv")):
@@ -91,15 +86,19 @@ def main():
     ws = wb.active
     ws.title = "论文对齐"
     note = ("口径：ZAC 列 = HPCA'25 原程序冻结真值（12/18 与论文逐位一致）；"
-            "ICCAD 列 = 论文复现管线（opt3/u1-u2 预处理、论文参数、论文自己的"
-            " NavizEvaluator 计数；15 电路 13/15 与 Table I 步数精确一致，qft 两例"
-            " 输入电路漂移；bv14/bv19/ghz23 为 Table I 外同管线补跑）；论文不报"
-            " ICCAD 保真度/时长，故无此列。遗传列 = GA初始化+鬼点硬保证层（我们"
-            "的方法，仅供对照）。Table I 原值列供逐行核对。")
+            "ICCAD 列 = **mqt.qmap 3.2.0（论文版本）**论文管线全量重采（opt3/u1-u2 "
+            "预处理、论文参数、NavizEvaluator）：步数 26/30 与 Table I 精确一致"
+            "（qft 两例输入电路漂移），place/route/rearr 为本机 3.2.0 实测"
+            "（rearr 已换算 ms 对齐论文单位）；bv14/bv19/ghz23 为 Table I 外同管线"
+            "补跑。注意 .venv_qmap 当前为 3.5.0（步数漂移 13/30），论文对齐一律"
+            "用 3.2.0。论文不报 ICCAD 保真度，故无此列。遗传列 = GA初始化+鬼点"
+            "硬保证层（我们的方法，仅供对照）。")
     cols = ["circuit", "q", "2q门", "Layers", "Max 2Q/Layer",
             "ZAC Steps", "ZAC move μs", "ZAC 保真度", "ZAC 编译s",
-            "ICCAD Steps(ra/agn)", "ICCAD Steps(rw/astar)", "ICCAD rearr ms", "ICCAD 编译s",
-            "Table I ra_steps", "Table I rw_steps",
+            "ICCAD ra place_ms", "ICCAD ra route_ms", "ICCAD ra Steps", "ICCAD ra rearr_ms",
+            "ICCAD rw place_ms", "ICCAD rw route_ms", "ICCAD rw Steps", "ICCAD rw rearr_ms",
+            "Table I ra_place", "Table I ra_route", "Table I ra_steps", "Table I ra_rearr",
+            "Table I rw_place", "Table I rw_route", "Table I rw_steps", "Table I rw_rearr",
             "遗传(无前瞻) Steps", "遗传(前瞻) Steps", "遗传 保真度", "遗传 编译s"]
     bold = Font(bold=True)
     fill = PatternFill("solid", fgColor="DDEBF7")
@@ -116,13 +115,27 @@ def main():
         ag = iccad[n]["agnostic"]
         asr = iccad[n]["astar"]
         t = truth.get(n)
+        def fnum(v, nd=2):
+            return round(float(v), nd) if v not in (None, "") else "—"
+        # iccad 元组序: [0]steps [1]rearr_ms [2]place_ms [3]route_ms
+        #               [4]total_ms [5]layers [6]max_gates
+        _fill = {"bv_n14": (14, 13), "bv_n19": (19, 18), "ghz_n23": (23, 22)}
+        _q = int(t["qubits"]) if t else _fill.get(n, ("", ""))[0]
+        _g = int(t["two_qubit_gates"]) if t else _fill.get(n, ("", ""))[1]
         ws.append([n,
-                   int(t["qubits"]) if t else "", int(t["two_qubit_gates"]) if t else "",
-                   ag[3], ag[4],
+                   _q, _g,
+                   ag[5], ag[6],
                    z[n][0], z[n][1], z[n][2], z[n][3],
-                   ag[0], asr[0], asr[1],
-                   round(asr[2] / 1000, 3) if asr[2] else "",
-                   int(t["ra_steps"]) if t else "—", int(t["rw_steps"]) if t else "—",
+                   fnum(ag[2]), fnum(ag[3]), ag[0], fnum(ag[1] / 1000, 3),
+                   fnum(asr[2]), fnum(asr[3]), asr[0], fnum(asr[1] / 1000, 3),
+                   fnum(t["ra_place_ms"]) if t else "—",
+                   fnum(t["ra_route_ms"]) if t else "—",
+                   int(t["ra_steps"]) if t else "—",
+                   fnum(t["ra_rearr_ms"]) if t else "—",
+                   fnum(t["rw_place_ms"]) if t else "—",
+                   fnum(t["rw_route_ms"]) if t else "—",
+                   int(t["rw_steps"]) if t else "—",
+                   fnum(t["rw_rearr_ms"]) if t else "—",
                    nl[n][0], lk[n][0], lk[n][1], lk[n][2]])
     ws.column_dimensions["A"].width = 22
     for c in range(2, len(cols) + 1):
