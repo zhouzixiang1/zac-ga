@@ -609,6 +609,43 @@ class TestResidentDecisionMechanics(unittest.TestCase):
         self.assertEqual(decisions[0][0], "RETURN")
         self.assertNotEqual(decisions[0][1], (0, 0, 0))
 
+    def test_commitment_ghost_fallback_restarts_from_pristine_state(self):
+        """Hard ghost safety may break a pin, but only on a clean retry."""
+        initial = [(0, i, 0) for i in range(3)]
+        placer = ResidentPlacer(initial)
+        placements = [{
+            "gate": (0, 1),
+            "site": (1, 0, 0),
+            "seats": ((1, 0, 0), (2, 0, 0)),
+        }]
+        decisions = {}
+        calls = []
+
+        def repair(candidate_placements, candidate_decisions,
+                   pinned_seats=None):
+            calls.append(dict(pinned_seats or {}))
+            if pinned_seats:
+                candidate_placements[0]["site"] = (1, 9, 9)
+                candidate_decisions[2] = ("RESEAT", (1, 8, 8))
+                raise RuntimeError("no pin-preserving straight-leg repair")
+            self.assertEqual(candidate_placements[0]["site"], (1, 0, 0))
+            self.assertEqual(candidate_decisions, {})
+            candidate_placements[0] = {
+                "gate": (0, 1),
+                "site": (1, 1, 0),
+                "seats": ((1, 1, 0), (2, 1, 0)),
+            }
+
+        with patch.object(placer, "_repair_ghosts", side_effect=repair):
+            repaired, used_fallback = \
+                placer._repair_ghosts_with_commitments(
+                    placements, decisions, {0: (1, 0, 0)})
+
+        self.assertEqual(calls, [{0: (1, 0, 0)}, {}])
+        self.assertTrue(used_fallback)
+        self.assertEqual(repaired, {0: (1, 1, 0)})
+        self.assertEqual(decisions, {})
+
     def test_horizon_changes_only_visible_rollout_layers(self):
         initial = [(0, i, 0) for i in range(6)]
 

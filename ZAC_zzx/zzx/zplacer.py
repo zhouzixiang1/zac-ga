@@ -967,7 +967,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         return [(0, r, c) for r in range(slm.n_r) for c in range(slm.n_c)
                 if (0, r, c) not in taken]
 
-    def _repair_ghosts(self, placements, decisions):
+    def _repair_ghosts(self, placements, decisions, pinned_seats=None):
         """防线③：每条腿【单独】不得撞任何静止原子（批化解不了的部分）。
 
         M2 架构分工：单腿自撞（腿自己的列×行交叉扫到别人）任何分批都
@@ -982,6 +982,8 @@ class ResidentPlacer(VertexMatchingPlacer):
         帽 60 轮，修不净即 raise——硬保证语义：宁可大声失败不静默放走。
         """
         reg, arch = self.registry, self.architecture
+        pinned_seats = {
+            int(q): tuple(seat) for q, seat in (pinned_seats or {}).items()}
         n_q = len(self.mapping[0])
         ex = lambda loc: arch.exact_SLM_location_tuple(tuple(loc))
         participants = {q for p in placements for q in p["gate"]}
@@ -1048,7 +1050,8 @@ class ResidentPlacer(VertexMatchingPlacer):
             for issue in list(issues):      # 一轮修完所有问题（修法内部
                 if self._fix_leg_ghost(     # 按实时状态校验，过期问题天然
                         issue, placements, decisions,   # 无害——条件不满足即跳过）
-                        participants, t1, t2, both, gate_of, n_q, banned):
+                        participants, t1, t2, both, gate_of, n_q, banned,
+                        pinned_seats):
                     fixed_total += 1
                     progress = True
             if not progress:
@@ -1058,8 +1061,48 @@ class ResidentPlacer(VertexMatchingPlacer):
             f"鬼点硬保证层修补失败：{len(residual)} 处单腿自撞残留 "
             f"(首批: {residual[:3]})——请检查修补策略覆盖度")
 
+    def _repair_ghosts_with_commitments(
+            self, placements, decisions, pinned_seats):
+        """Repair ghosts transactionally, treating residency pins as preferred.
+
+        A pin records that an atom physically stayed in the zone until this
+        reuse layer.  Hard ghost safety has higher priority than keeping that
+        atom on the exact same gate seat: when no pin-preserving straight-leg
+        schedule exists, retry from the untouched pre-repair state without the
+        seat restriction.  The caller re-scores the actual repaired schedule,
+        so the resulting zone-to-zone move and transfers are never hidden.
+        """
+        pins = {int(q): tuple(seat) for q, seat in pinned_seats.items()}
+
+        def broken_pins():
+            observed = {}
+            for placement in placements:
+                for q, seat in zip(placement["gate"], placement["seats"]):
+                    if q in pins and tuple(seat) != pins[q]:
+                        observed[q] = tuple(seat)
+            return observed
+
+        pristine_placements = deepcopy(placements)
+        pristine_decisions = deepcopy(decisions)
+        if not broken_pins():
+            try:
+                self._repair_ghosts(
+                    placements, decisions, pinned_seats=pins)
+                return {}, False
+            except RuntimeError:
+                placements[:] = deepcopy(pristine_placements)
+                decisions.clear()
+                decisions.update(deepcopy(pristine_decisions))
+
+        # Either the occupancy repair had already displaced a pin or the
+        # pin-preserving ghost repair proved infeasible.  Retry once from the
+        # pristine state with the common hard-safety repair.  Any failure here
+        # still propagates and the attempt remains fail-closed.
+        self._repair_ghosts(placements, decisions)
+        return broken_pins(), True
+
     def _fix_leg_ghost(self, issue, placements, decisions, participants,
-                       t1, t2, both, gate_of, n_q, banned):
+                       t1, t2, both, gate_of, n_q, banned, pinned_seats=None):
         """修一个单腿自撞问题，返回是否动手。按代价从小到大：
 
         ① 受害者是驻留非参与者(STAY) → 让座 RESEAT（恒可解兜底）
@@ -1068,6 +1111,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         """
         phase, owner, leg, gid, gx, gy = issue
         reg, arch = self.registry, self.architecture
+        pinned_seats = pinned_seats or {}
         ex = lambda loc: arch.exact_SLM_location_tuple(tuple(loc))
 
         # ① 受害者让座：新座不得被任何腿扫到，让座腿自身也要单腿干净
@@ -1170,6 +1214,11 @@ class ResidentPlacer(VertexMatchingPlacer):
                           and (s[0] + 1, s[1], s[2]) not in others_seats]
             for site in cand_sites:
                 new_p = self._mk_placement(q1, q2, site)
+                if any(
+                        q in pinned_seats
+                        and tuple(seat) != tuple(pinned_seats[q])
+                        for q, seat in zip(new_p["gate"], new_p["seats"])):
+                    continue
                 new_legs = []
                 clean = True
                 for q, s in zip(new_p["gate"], new_p["seats"]):
@@ -2566,13 +2615,9 @@ class ResidentPlacer(VertexMatchingPlacer):
 
         # Hard repair is method-independent.  The repaired schedule is scored again
         # below, so the ledger never reports the stale pre-repair objective.
-        self._repair_ghosts(placements, decisions)
-        for placement in placements:
-            for q, seat in zip(placement["gate"], placement["seats"]):
-                if q in target_pins and tuple(seat) != tuple(target_pins[q]):
-                    raise RuntimeError(
-                        f"ghost repair broke residency commitment for q{q}: "
-                        f"{seat} != {target_pins[q]}")
+        commitment_repairs, commitment_ghost_fallback = \
+            self._repair_ghosts_with_commitments(
+                placements, decisions, target_pins)
 
         def score_repaired():
             positions_t0 = {
@@ -2682,6 +2727,11 @@ class ResidentPlacer(VertexMatchingPlacer):
             "physical_guard_returns": len(physical_forced_returns),
             "physical_guard": physical_guard_details,
             "committed_target_atoms": len(target_pins),
+            "commitment_ghost_fallback": commitment_ghost_fallback,
+            "commitment_repairs": [
+                {"q": q, "pinned_seat": list(target_pins[q]),
+                 "repaired_seat": list(commitment_repairs[q])}
+                for q in sorted(commitment_repairs)],
             "active_commitments": len(self.residency_commitments),
             "ghost_fix": getattr(self, "ghost_fixes", 0),
             "participants": len(participants),
