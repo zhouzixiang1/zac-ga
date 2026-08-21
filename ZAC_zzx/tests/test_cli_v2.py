@@ -192,6 +192,14 @@ class PlanFixture:
 
 
 class TestCliPlan(unittest.TestCase):
+    def test_registered_truth_tables_resolve_inside_the_versioned_checkout(self):
+        plan = load_experiment_plan(
+            ROOT / "experiments_v2" / "experiment_plan_v2.json")
+        for key in ("zac_truth", "iccad_truth"):
+            path = (plan.path.parent / plan.reproduction[key]).resolve()
+            self.assertTrue(path.is_file())
+            self.assertTrue(path.is_relative_to(ROOT.parent.resolve()))
+
     def test_canonicalize_reexecutes_the_plan_python_once(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = PlanFixture(Path(directory))
