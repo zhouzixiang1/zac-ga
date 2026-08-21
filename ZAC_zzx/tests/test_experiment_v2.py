@@ -15,7 +15,8 @@ REPO = ROOT.parent
 sys.path.insert(0, str(ROOT))
 
 from experiments_v2.canonicalize import (  # noqa: E402
-    canonicalize_circuit, canonicalize_large_circuit_streaming)
+    canonicalize_circuit, canonicalize_large_circuit_streaming,
+    canonicalize_suite)
 from experiments_v2.contracts import (  # noqa: E402
     load_run_manifest,
     repository_snapshot,
@@ -96,6 +97,54 @@ class TestCanonicalisation(unittest.TestCase):
             self.assertNotIn("reset", text)
             self.assertNotIn("cx ", text)
             self.assertNotIn("ccx ", text)
+
+    def test_large_stream_accepts_and_normalizes_qasmbench_register_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "multiplier_n400.qasm"
+            source.write_text(
+                'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q0[3];\n'
+                'creg c0[1];\nx q0[2];\ncx q0[2],q0[1];\n'
+                'ccx q0[2],q0[1],q0[0];\n',
+                encoding="utf-8",
+            )
+            manifest = canonicalize_large_circuit_streaming(
+                source,
+                base / "canonical.qasm",
+                upstream_commit=(
+                    "357b942396d5c2b7cbc1c229c585a6ef5ccaebac"
+                ),
+            )
+            self.assertEqual(manifest.qubits, 3)
+            text = (base / "canonical.qasm").read_text(encoding="utf-8")
+            self.assertIn("qreg q[3];", text)
+            self.assertNotIn("q0[", text)
+
+    def test_canonicalize_suite_failure_leaves_no_partial_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            good = base / "a.qasm"
+            bad = base / "b.qasm"
+            good.write_text(
+                'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\nx q[0];\n',
+                encoding="utf-8",
+            )
+            bad.write_text(
+                'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ny q[0];\n',
+                encoding="utf-8",
+            )
+            destination = base / "suite"
+            with self.assertRaisesRegex(ValueError, "unsupported Large QASM"):
+                canonicalize_suite(
+                    [good, bad],
+                    destination,
+                    canonical_profile="large_qasmbench_expand_only",
+                    upstream_commit=(
+                        "357b942396d5c2b7cbc1c229c585a6ef5ccaebac"
+                    ),
+                )
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(base.glob(".suite.staging-*")), [])
 
 
 class TestAtomicRunner(unittest.TestCase):

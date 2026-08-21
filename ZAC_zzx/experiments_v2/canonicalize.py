@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import tempfile
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable, List, Sequence
 
@@ -19,12 +22,23 @@ FORBIDDEN = frozenset(("reset", "delay", "if_else", "while_loop", "for_loop",
 LARGE_PROFILE = "large_qasmbench_expand_only"
 QASMBENCH_COMMIT = "357b942396d5c2b7cbc1c229c585a6ef5ccaebac"
 
-_QREG = re.compile(r"^qreg\s+q\[(\d+)\]\s*;$", re.IGNORECASE)
-_SINGLE = re.compile(r"^(x|h|s|sdg|t|tdg)\s+q\[(\d+)\]\s*;$", re.IGNORECASE)
-_ROTATION = re.compile(r"^(rz|u1)\s*\((.+)\)\s+q\[(\d+)\]\s*;$", re.IGNORECASE)
-_CX = re.compile(r"^cx\s+q\[(\d+)\]\s*,\s*q\[(\d+)\]\s*;$", re.IGNORECASE)
+_IDENTIFIER = r"([A-Za-z_][A-Za-z0-9_]*)"
+_QREG = re.compile(rf"^qreg\s+{_IDENTIFIER}\[(\d+)\]\s*;$", re.IGNORECASE)
+_SINGLE = re.compile(
+    rf"^(x|h|s|sdg|t|tdg)\s+{_IDENTIFIER}\[(\d+)\]\s*;$",
+    re.IGNORECASE,
+)
+_ROTATION = re.compile(
+    rf"^(rz|u1)\s*\((.+)\)\s+{_IDENTIFIER}\[(\d+)\]\s*;$",
+    re.IGNORECASE,
+)
+_CX = re.compile(
+    rf"^cx\s+{_IDENTIFIER}\[(\d+)\]\s*,\s*{_IDENTIFIER}\[(\d+)\]\s*;$",
+    re.IGNORECASE,
+)
 _CCX = re.compile(
-    r"^ccx\s+q\[(\d+)\]\s*,\s*q\[(\d+)\]\s*,\s*q\[(\d+)\]\s*;$",
+    rf"^ccx\s+{_IDENTIFIER}\[(\d+)\]\s*,\s*"
+    rf"{_IDENTIFIER}\[(\d+)\]\s*,\s*{_IDENTIFIER}\[(\d+)\]\s*;$",
     re.IGNORECASE,
 )
 
@@ -171,6 +185,7 @@ def canonicalize_large_circuit_streaming(
     removed: Counter[str] = Counter()
     gates_1q = gates_2q = 0
     n_qubits: int | None = None
+    quantum_register: str | None = None
     depths: list[int] = []
 
     def clean(raw: str) -> str:
@@ -183,6 +198,15 @@ def canonicalize_large_circuit_streaming(
         def check_qubit(q: int) -> None:
             if n_qubits is None or q < 0 or q >= n_qubits:
                 raise ValueError(f"Large gate references invalid q[{q}]")
+
+        def operand(register: str, q: int) -> int:
+            if quantum_register is None or register != quantum_register:
+                raise ValueError(
+                    "Large gate references an undeclared quantum register: "
+                    f"{register}"
+                )
+            check_qubit(q)
+            return q
 
         def emit_1q(name: str, params: str, q: int) -> None:
             nonlocal gates_1q
@@ -242,8 +266,9 @@ def canonicalize_large_circuit_streaming(
             match = _QREG.fullmatch(line)
             if match:
                 if n_qubits is not None:
-                    raise ValueError("Large QASM must contain exactly one qreg q")
-                n_qubits = int(match.group(1))
+                    raise ValueError("Large QASM must contain exactly one qreg")
+                quantum_register = match.group(1)
+                n_qubits = int(match.group(2))
                 if n_qubits <= 0:
                     raise ValueError("Large qreg must be non-empty")
                 depths = [0] * n_qubits
@@ -265,7 +290,8 @@ def canonicalize_large_circuit_streaming(
                 raise ValueError(f"unsupported Large classical operation at line {line_number}")
             match = _SINGLE.fullmatch(line)
             if match:
-                name, q = match.group(1).lower(), int(match.group(2))
+                name = match.group(1).lower()
+                q = operand(match.group(2), int(match.group(3)))
                 if name == "x":
                     emit_1q("u3", "pi,0,pi", q)
                 elif name == "h":
@@ -277,21 +303,31 @@ def canonicalize_large_circuit_streaming(
                 continue
             match = _ROTATION.fullmatch(line)
             if match:
-                emit_phase(match.group(2).strip(), int(match.group(3)))
+                emit_phase(
+                    match.group(2).strip(),
+                    operand(match.group(3), int(match.group(4))),
+                )
                 continue
             match = _CX.fullmatch(line)
             if match:
-                emit_cx(int(match.group(1)), int(match.group(2)))
+                emit_cx(
+                    operand(match.group(1), int(match.group(2))),
+                    operand(match.group(3), int(match.group(4))),
+                )
                 continue
             match = _CCX.fullmatch(line)
             if match:
-                emit_ccx(*(int(match.group(i)) for i in (1, 2, 3)))
+                emit_ccx(
+                    operand(match.group(1), int(match.group(2))),
+                    operand(match.group(3), int(match.group(4))),
+                    operand(match.group(5), int(match.group(6))),
+                )
                 continue
             raise ValueError(
                 f"unsupported Large QASM statement at {source_path}:{line_number}: {line[:120]}")
 
         if n_qubits is None:
-            raise ValueError("Large QASM has no qreg q declaration")
+            raise ValueError("Large QASM has no qreg declaration")
         output_handle.flush()
         os.fsync(output_handle.fileno())
     os.replace(temporary, output_path)
@@ -323,18 +359,45 @@ def canonicalize_large_circuit_streaming(
 
 def canonicalize_suite(sources: Iterable[str | Path], output_directory: str | Path,
                        **kwargs: object) -> List[CanonicalCircuitManifest]:
+    """Canonicalise a complete suite and publish it as one atomic directory."""
+
     output = Path(output_directory).resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    manifests: List[CanonicalCircuitManifest] = []
-    used_names: set[str] = set()
-    for source in sorted((Path(item).resolve() for item in sources), key=str):
-        if source.stem in used_names:
-            raise ValueError(f"duplicate circuit stem: {source.stem}")
-        used_names.add(source.stem)
-        manifests.append(canonicalize_circuit(source, output / f"{source.stem}.qasm",
-                                              **kwargs))
-    _atomic_json(output / "suite.manifest.json", [item.to_dict() for item in manifests])
-    return manifests
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        if any(output.iterdir()):
+            raise ValueError(f"canonical suite destination is non-empty: {output}")
+        output.rmdir()
+    staging = Path(tempfile.mkdtemp(
+        prefix=f".{output.name}.staging-", dir=output.parent)).resolve()
+    try:
+        staged: List[CanonicalCircuitManifest] = []
+        used_names: set[str] = set()
+        for source in sorted((Path(item).resolve() for item in sources), key=str):
+            if source.stem in used_names:
+                raise ValueError(f"duplicate circuit stem: {source.stem}")
+            used_names.add(source.stem)
+            staged.append(canonicalize_circuit(
+                source, staging / f"{source.stem}.qasm", **kwargs))
+
+        manifests: List[CanonicalCircuitManifest] = []
+        for manifest in staged:
+            final_path = output / Path(manifest.canonical_path).name
+            published = replace(manifest, canonical_path=str(final_path))
+            published.validate()
+            manifests.append(published)
+            staged_manifest_path = (
+                staging / Path(manifest.canonical_path).name
+            ).with_suffix(".qasm.manifest.json")
+            _atomic_json(staged_manifest_path, published.to_dict())
+        _atomic_json(
+            staging / "suite.manifest.json",
+            [item.to_dict() for item in manifests],
+        )
+        os.replace(staging, output)
+        return manifests
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 __all__ = [
