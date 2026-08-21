@@ -94,7 +94,12 @@ def main():
     note = ("Num. Rearr. Steps 为真值（ICCAD'25 Table I 同口径：一次完整 AOD "
             "重排循环=1步；ZAC/遗传=rearrangeJob 条数）。遗传两席=GA初始化+"
             "鬼点硬保证层（前瞻席=鬼点罚 w_ghost=1）；ICCAD=astar 优先回落 "
-            "agnostic；同架构同判分器。")
+            "agnostic；同架构同判分器。注意：本表 ICCAD 列用四方统一预处理"
+            "（qiskit 转译 cz/u 基、opt=1）——与论文 Table I 的复现管线"
+            "（u1/u2 基、opt=3，见 experiments/results/qmap_qasmbench.csv，"
+            "步数 13/15 与论文精确一致）是两种口径；差异全部来自转译层"
+            "（如 ising 论文口径 9 步、本表 8 步；seca 81 vs 89），架构与"
+            "编译器参数逐项核对相同。")
     common = [n for n in zac if n in qm and n in nl and n in lk]
     common.sort()
     rows = []
