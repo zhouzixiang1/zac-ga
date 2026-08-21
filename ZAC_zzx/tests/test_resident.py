@@ -173,4 +173,5 @@ dec, stats = decide_lazy(reg, nu6, 0, [], [])
 check("默认末边界全 STAY（native 同款）", dec[0][0] == "STAY" and boundary_legs(before, dec, arch) == [])
 
 print(f"\n===== test_resident: {PASS} 通过 / {FAIL} 失败 =====")
-sys.exit(1 if FAIL else 0)
+if __name__ == "__main__":
+    sys.exit(1 if FAIL else 0)

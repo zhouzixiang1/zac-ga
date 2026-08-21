@@ -190,6 +190,7 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     site_index: dict = {}
     rows_list: list = []
     rows, cols, data = [], [], []
+    fallback_context = {}
 
     def _add(site):
         """给候选位编号（建行索引），重复出现的位共用一行。"""
@@ -218,6 +219,9 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
         if anchor_loc is None:
             anchor_loc = arch.nearest_storage_site(*zone_loc)
         ax, ay = arch.exact_SLM_location_tuple(anchor_loc)
+        lookahead_weight = (alpha_lookahead
+                            if candidate_mode != "nearest" else 0.0)
+        fallback_context[q] = (zx, zy, ax, ay, lookahead_weight)
 
         # C1 原位 / C2 就近 / C3 伙伴 —— 三族候选箱（各以中心±box_ratio 展开）
         near_current = arch.nearest_storage_site(zone_loc[0], zone_loc[1], zone_loc[2])
@@ -237,8 +241,6 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
         # 每个候选位的代价：省本次（离激发区近）+ 省未来（离锚点近）
         for site in candidates:
             sx, sy = arch.exact_SLM_location_tuple(site)
-            lookahead_weight = (alpha_lookahead
-                                if candidate_mode != "nearest" else 0.0)
             cost = sqrt(math.dist((zx, zy), (sx, sy))) + lookahead_weight * sqrt(
                 math.dist((sx, sy), (ax, ay)))
             rows.append(_add(site))
@@ -249,26 +251,45 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
         return {}
     matrix = coo_matrix((np.array(data), (np.array(rows), np.array(cols))),
                         shape=(len(rows_list), len(returners)))
+    assignment = {}
     try:
         # 最小权完美匹配：所有回返者各得一个互异自由位，总代价最小
         row_ind, col_ind = min_weight_full_bipartite_matching(matrix)
         assignment = {returners[c]: rows_list[r] for r, c in zip(row_ind, col_ind)}
     except ValueError:
-        # 保险丝：候选太稀疏导致无完美匹配 → 贪心兜底（按代价升序逐个拿未占位）
-        assignment = {}
-        taken = set()
-        order = sorted(zip(data, rows, cols))
-        for w, r, c in order:
-            q = returners[c]
-            if q in assignment or rows_list[r] in taken:
-                continue
-            assignment[q] = rows_list[r]
-            taken.add(rows_list[r])
-        for q in returners:                                # 仍漏的：扫全存储自由位
-            if q not in assignment:
-                rest = next(s for s in sorted(free) if s not in taken)
-                assignment[q] = rest
-                taken.add(rest)
+        # A structurally singular sparse matrix is completed below by the same
+        # deterministic fallback used for a partial scipy result.
+        pass
+
+    # scipy's "full" routine covers the smaller bipartite side.  With a sparse
+    # candidate graph it may therefore return normally while leaving one or
+    # more RETURN columns unmatched.  Treat completeness as a hard postcondition
+    # instead of waiting for a later KeyError in the fitness function.
+    taken = set(assignment.values())
+    for i, q in enumerate(returners):
+        if q in assignment:
+            continue
+        local = sorted(
+            (data[k], rows_list[rows[k]])
+            for k, column in enumerate(cols) if column == i)
+        site = next((candidate for _, candidate in local
+                     if candidate not in taken), None)
+        if site is None:
+            zx, zy, ax, ay, lookahead_weight = fallback_context[q]
+
+            def global_cost(candidate):
+                sx, sy = arch.exact_SLM_location_tuple(candidate)
+                return (sqrt(math.dist((zx, zy), (sx, sy)))
+                        + lookahead_weight * sqrt(
+                            math.dist((sx, sy), (ax, ay))), candidate)
+
+            site = min((candidate for candidate in free
+                        if candidate not in taken), key=global_cost)
+        assignment[q] = site
+        taken.add(site)
+    if set(assignment) != set(returners) or \
+            len(set(assignment.values())) != len(returners):
+        raise RuntimeError("RETURN 匹配未形成完整互异存储落位")
     return assignment
 
 

@@ -7,7 +7,7 @@ without importing the full ZAC pipeline.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import log, log1p, sqrt
+from math import dist, log, log1p, sqrt
 from typing import Callable, Iterable, Sequence
 
 from zzx.zcost import greedy_phase_batches, phase_batches
@@ -217,15 +217,69 @@ class PhysicalIncrementalCost:
         else:
             raise ValueError(f"unknown movement batching policy: {batching!r}")
         move_time = sum(
-            2.0 * self.T_TRANSFER_US
-            + sqrt(max(legs[i][0] for i in members) / self.ACCEL_UM_PER_US2)
-            for members in batches)
+            self._expanded_batch_time(legs, members) for members in batches)
         return MovementPhaseCost(
             batches=len(batches),
             move_time_us=move_time,
             total_distance_um=sum(float(leg[0]) for leg in legs),
             movers=len(legs),
         )
+
+    @classmethod
+    def _expanded_batch_time(cls, legs: Sequence[tuple], members) -> float:
+        """Exact ZAC expanded-AOD duration for one compatible leg batch.
+
+        ``Router_mixin.expand_arrangement`` loads source rows sequentially.  A
+        non-final row is parked by one micrometre in both axes before the big
+        move, and every row activation costs a transfer interval.  The former
+        fitness used only the longest direct leg plus two transfer intervals;
+        it therefore underpriced multi-row batches by every intermediate load
+        and parking segment.  This coordinate-only form mirrors the router's
+        expansion and is shared by NL/LK candidate evaluation.
+        """
+        selected = [legs[int(i)] for i in members]
+        if not selected:
+            return 0.0
+        rows: dict[float, list[tuple]] = {}
+        for leg in selected:
+            rows.setdefault(float(leg[2]), []).append(leg)
+        ordered_rows = sorted(rows.items())
+        row_count = len(ordered_rows)
+
+        # Each source row is activated separately; all held atoms are released
+        # together by one final deactivation.
+        duration = (row_count + 1) * cls.T_TRANSFER_US
+        if row_count > 1:
+            parking_distance = dist((0.0, 0.0), (1.0, 1.0))
+            duration += (row_count - 1) * sqrt(
+                parking_distance / cls.ACCEL_UM_PER_US2)
+
+        # At the big move, every non-final source row is parked at y+1.  A
+        # source column remains parked at x+1 iff its final occurrence was in a
+        # non-final row.  ZAC computes the phase makespan over the Cartesian
+        # product of active row and column displacements.
+        row_moves = []
+        last_row_for_x: dict[float, int] = {}
+        target_x_for_source: dict[float, float] = {}
+        for row_index, (source_y, row_legs) in enumerate(ordered_rows):
+            target_y = float(row_legs[0][4])
+            row_moves.append((source_y + (1.0 if row_index < row_count - 1 else 0.0),
+                              target_y))
+            for leg in row_legs:
+                source_x, target_x = float(leg[1]), float(leg[3])
+                last_row_for_x[source_x] = row_index
+                target_x_for_source.setdefault(source_x, target_x)
+        column_moves = [
+            (source_x + (1.0 if last_row_for_x[source_x] < row_count - 1 else 0.0),
+             target_x_for_source[source_x])
+            for source_x in sorted(last_row_for_x)
+        ]
+        longest = max(
+            dist((column_begin, row_begin), (column_end, row_end))
+            for row_begin, row_end in row_moves
+            for column_begin, column_end in column_moves)
+        duration += sqrt(longest / cls.ACCEL_UM_PER_US2)
+        return duration
 
     def score(self, phases: Iterable[MovementPhaseCost], idle_exposures: int,
               chromosome: Sequence[int] = ()) -> tuple[tuple, PhysicalCostBreakdown]:
@@ -308,17 +362,23 @@ def resident_decision_candidates(resident_ids: Iterable[int],
 
 def build_seed_population(gate_domains: Sequence[int], n_decisions: int,
                           greedy_decisions: Sequence[int], population_size: int,
-                          rng, normalize: Callable[[Sequence[int]], Sequence[int]] | None = None):
+                          rng, normalize: Callable[[Sequence[int]], Sequence[int]] | None = None,
+                          greedy_gate_genes: Sequence[int] | None = None):
     """Build deterministic all-STAY/all-RETURN/physical-greedy GA seeds."""
     if len(greedy_decisions) != n_decisions:
         raise ValueError("greedy_decisions 长度与决策基因数不一致")
+    if (greedy_gate_genes is not None and
+            len(greedy_gate_genes) != len(gate_domains)):
+        raise ValueError("greedy_gate_genes 长度与门位基因数不一致")
     if population_size <= 0:
         raise ValueError("population_size 必须为正")
     gate_zero = [0] * len(gate_domains)
+    greedy_gates = (gate_zero if greedy_gate_genes is None else
+                    [int(v) for v in greedy_gate_genes])
     raw = [
         gate_zero + [0] * n_decisions,
         gate_zero + [1] * n_decisions,
-        gate_zero + [int(v) for v in greedy_decisions],
+        greedy_gates + [int(v) for v in greedy_decisions],
     ]
     while len(raw) < population_size * 3:
         raw.append(

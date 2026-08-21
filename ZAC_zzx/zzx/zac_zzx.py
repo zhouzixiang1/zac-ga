@@ -64,11 +64,37 @@ class ZAC_zzx(ZAC):
         self.zzx_route_log: list = []    # 路由账本：每段搬运的 (层, 相位, 批数, 解法)
         self.zzx_placer_preview: list = []   # 放置预演账本（对账用）
         self.zzx_decision_log: list = []     # 驻留决策账本（每层 STAY/RETURN 计数）
+        # A single global 1Q beam executes every authored 1Q gate sequentially.
+        # ZAC's atom-local dependency ledger alone lets disjoint 1Q blocks
+        # overlap, which is outside the frozen Schema-2 physical model.
+        self._last_global_1q_instruction = None
         # The phase replay validates batches in emitted route order.  Preserve
         # that order when the single AOD timeline is assigned; duration-based
         # reordering would move previously audited ghosts before/after a batch.
         self.strict_aod_route_order = True
         self._zzx_waypoint_plan: dict = {}
+
+    def write_initial_instruction(self):
+        """Reset the global 1Q resource before building a fresh native trace."""
+        self._last_global_1q_instruction = None
+        return super().write_initial_instruction()
+
+    def write_1q_gate_instruction(self, inst_idx, result_gate, dependency,
+                                  gate_mapping):
+        """Serialize disjoint 1Q blocks on the frozen global 1Q resource.
+
+        Per-qubit dependencies still enforce circuit causality.  The additional
+        predecessor models the single global beam required by the experiment
+        contract and therefore applies identically to formal M1, M3, and M4.
+        """
+        previous = self._last_global_1q_instruction
+        if previous is not None and previous != inst_idx:
+            qubit_dependencies = dependency.setdefault("qubit", [])
+            if previous not in qubit_dependencies:
+                qubit_dependencies.append(previous)
+        super().write_1q_gate_instruction(
+            inst_idx, result_gate, dependency, gate_mapping)
+        self._last_global_1q_instruction = inst_idx
 
     def _safe_slm_waypoint(self, q, mapping_from, mapping_to, pos):
         """Find one vacant legal SLM site that makes both single-atom legs safe.
@@ -136,11 +162,20 @@ class ZAC_zzx(ZAC):
                 continue
             zone_id = int(instruction["zone_id"])
             instruction_id = int(instruction["id"])
+            dependencies = instruction.setdefault("dependency", {}).setdefault(
+                "qubit", [])
             for q, location in enumerate(gate_mapping):
                 slm = self.architecture.dict_SLM[int(location[0])]
                 if slm.entanglement_id == zone_id:
+                    prior = self.qubit_dependency[q]
+                    # process_gate_layer may already have advanced a gate
+                    # participant to a later same-layer 1Q instruction.  Only
+                    # bind genuine predecessors; adding the later instruction
+                    # would create a dependency cycle.
+                    if prior < instruction_id and prior not in dependencies:
+                        dependencies.append(prior)
                     self.qubit_dependency[q] = max(
-                        self.qubit_dependency[q], instruction_id)
+                        prior, instruction_id)
 
     def parse_setting(self, setting: dict):
         schema = setting.get("experiment_schema")
@@ -198,9 +233,58 @@ class ZAC_zzx(ZAC):
         # 驻留模式中和复用机制（ResidentPlacer 内部还会再置空一次，双保险）：
         # 复用点名 + 两世界 filter_mapping 与驻留决策互斥——同时开会座位双订。
         if self.placer_kind == "resident":
+            # Preserve the original paper placement as a strong incumbent in
+            # the joint resident search.  M3/M4 receive the identical mapping;
+            # only their registered ForecastOracle horizon decides whether the
+            # physical objective keeps or improves it.  A private copy is
+            # required because VertexMatchingPlacer.filter_mapping mutates its
+            # reuse list while selecting the original reuse/no-reuse branch.
+            if self.zzx_params.get("experiment_schema") == 2:
+                from zac.placer.vmplacer import VertexMatchingPlacer
+                baseline = VertexMatchingPlacer(
+                    deepcopy(self.qubit_mapping[0]))
+                baseline.run(
+                    self.architecture, deepcopy(self.qubit_mapping),
+                    self.gate_scheduling, self.dynamic_placement,
+                    deepcopy(self.reuse_qubit))
+                baseline_mapping = deepcopy(baseline.mapping)
+                # Preserve ZAC's selective adjacent-layer reuse exactly.  Only
+                # remove its final all-RETURN, which is not part of the M3/M4
+                # contract and cannot help a circuit with no later operation.
+                if self.gate_scheduling:
+                    baseline_mapping[-1] = deepcopy(baseline_mapping[-2])
+                placer.baseline_mapping = baseline_mapping
             self.reuse_qubit = [set() for _ in self.gate_scheduling]
         placer.run(self.architecture, self.qubit_mapping, self.gate_scheduling,
                    self.dynamic_placement, self.reuse_qubit)
+        if (self.placer_kind == "resident" and
+                placer.baseline_mapping is not None):
+            resident_score, resident_breakdown = placer.mapping_stream_objective(
+                placer.mapping)
+            baseline_score, baseline_breakdown = placer.mapping_stream_objective(
+                placer.baseline_mapping)
+            if baseline_score < resident_score:
+                placer.mapping = deepcopy(placer.baseline_mapping)
+                selected = "zac_incumbent"
+                selected_breakdown = baseline_breakdown
+            else:
+                selected = "resident"
+                selected_breakdown = resident_breakdown
+            placer.global_incumbent = {
+                "selected": selected,
+                "resident_objective": list(resident_score[:4]),
+                "baseline_objective": list(baseline_score[:4]),
+                "selected_negative_log_fidelity": (
+                    selected_breakdown.negative_log_fidelity),
+            }
+            if selected == "zac_incumbent":
+                placer.decision_log = placer.decision_log_for_mapping(
+                    placer.mapping, selected=selected)
+            # The global incumbent is selected after ResidentPlacer.run() has
+            # already audited its own stream.  Re-run the same hard contract so
+            # an externally supplied ZAC incumbent can never bypass length,
+            # copy, or injectivity validation.
+            placer._assert_contract()
         self.qubit_mapping = placer.mapping       # 放置结果交回流水线
 
         self.runtime_analysis["intermediate placement"] = time.time() - t_p
@@ -211,6 +295,8 @@ class ZAC_zzx(ZAC):
             # the historic preview alias, but never leave the formal decision
             # ledger empty after a resident run.
             self.zzx_decision_log = list(placer.decision_log)
+            self.zzx_global_incumbent = getattr(
+                placer, "global_incumbent", None)
 
     # ------------------------------------------------------------ 路由接线
     def _expanded_batch_conflicts(self, members, owner, mapping_from,

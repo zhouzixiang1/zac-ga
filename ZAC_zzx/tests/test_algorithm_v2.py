@@ -6,6 +6,7 @@ import math
 import random
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,12 +123,30 @@ class TestPhysicalExpansion(unittest.TestCase):
             "type": "rydberg",
             "id": 7,
             "zone_id": 0,
+            "dependency": {"qubit": []},
         }]}
         # Toy architecture arrays 1 and 2 belong to entanglement zone 0;
         # storage array 0 has entanglement_id=-1.
         compiler._bind_resident_rydberg_dependencies(
             [[1, 0, 0], [0, 0, 0]], 0)
         self.assertEqual(compiler.qubit_dependency, [7, 9])
+        self.assertEqual(compiler.result_json["instructions"][0]
+                         ["dependency"]["qubit"], [1])
+
+    def test_disjoint_one_qubit_blocks_share_global_dependency(self):
+        compiler = ZAC_zzx()
+        compiler.result_json = {"instructions": [
+            {"type": "init", "id": 0, "begin_time": 0.0, "end_time": 0.0},
+            {"type": "1qGate", "id": 1,
+             "begin_time": 0.0, "end_time": 52.0},
+        ]}
+        compiler._last_global_1q_instruction = 1
+        dependency = {"qubit": [0]}
+        compiler.write_1q_gate_instruction(
+            2, [{"name": "u3", "q": 1}], dependency,
+            [[0, 0, 0], [0, 1, 0]])
+        self.assertEqual(dependency["qubit"], [0, 1])
+        self.assertEqual(compiler.get_begin_time(2, dependency), 52.0)
 
 
 class TestSchema2Contract(unittest.TestCase):
@@ -212,6 +231,33 @@ class TestPhysicalObjective(unittest.TestCase):
         self.assertGreater(result.transfer_nll, 0.0)
         self.assertGreater(result.coherence_nll, 0.0)
 
+    def test_multirow_move_time_matches_router_expansion(self):
+        arch = make_arch()
+        compiler = ZAC_zzx()
+        compiler.architecture = arch
+        begin = [
+            [[0, 0, 0, 0]],
+            [[1, 0, 1, 1]],
+        ]
+        end = [
+            [[0, 1, 0, 0]],
+            [[1, 1, 1, 1]],
+        ]
+        details = compiler.expand_arrangement({
+            "begin_locs": begin,
+            "end_locs": end,
+        })
+        routed_duration = compiler.get_duration({"insts": details})
+        legs = []
+        for source_row, target_row in zip(begin, end):
+            source = arch.exact_SLM_location_tuple(source_row[0][1:])
+            target = arch.exact_SLM_location_tuple(target_row[0][1:])
+            legs.append((math.dist(source, target), *source, *target))
+        phase = PhysicalIncrementalCost(2).movement_phase(
+            legs, owners=[0, 1])
+        self.assertEqual(phase.batches, 1)
+        self.assertAlmostEqual(phase.move_time_us, routed_duration, places=12)
+
 
 class TestResidentDecisionMechanics(unittest.TestCase):
     @classmethod
@@ -254,12 +300,85 @@ class TestResidentDecisionMechanics(unittest.TestCase):
         self.assertEqual(set(two), {0, 1})
         self.assertEqual(len(set(two.values())), 2)
 
+    def test_partial_sparse_return_match_is_completed_deterministically(self):
+        initial = [(0, i, 0) for i in range(4)]
+        registry = ResidentRegistry(self.arch, initial)
+        registry.enter_zone(0, (1, 0, 0))
+        registry.enter_zone(1, (2, 0, 1))
+        with patch(
+                "zzx.resident.min_weight_full_bipartite_matching",
+                return_value=([0], [0])):
+            result = match_return_sites(
+                registry, [0, 1], NextUse([]), 0,
+                forecast=ForecastOracle([], 0), candidate_mode="nearest")
+        self.assertEqual(set(result), {0, 1})
+        self.assertEqual(len(set(result.values())), 2)
+
+    def test_exhausted_return_box_falls_back_to_global_physical_minimum(self):
+        zone = (1, 0, 0)
+        near = self.arch.nearest_storage_site(*zone)
+        slm = self.arch.dict_SLM[near[0]]
+        crowded = [
+            (near[0], row, column)
+            for row in range(max(0, near[1] - 3),
+                             min(slm.n_r, near[1] + 4))
+            for column in range(max(0, near[2] - 3),
+                                min(slm.n_c, near[2] + 4))]
+        far_home = next(
+            (0, row, column)
+            for row in range(slm.n_r)
+            for column in range(slm.n_c)
+            if (0, row, column) not in crowded)
+        registry = ResidentRegistry(self.arch, [far_home, *crowded])
+        registry.enter_zone(0, zone)
+
+        result = match_return_sites(
+            registry, [0], NextUse([]), 0, box_ratio=3,
+            forecast=ForecastOracle([], 0), candidate_mode="nearest")
+        occupied = registry.occupied_storage()
+        free = [
+            (0, row, column)
+            for row in range(slm.n_r)
+            for column in range(slm.n_c)
+            if (0, row, column) not in occupied]
+        zone_xy = self.arch.exact_SLM_location_tuple(zone)
+        expected = min(
+            free,
+            key=lambda site: (
+                math.sqrt(math.dist(
+                    zone_xy, self.arch.exact_SLM_location_tuple(site))),
+                site))
+        self.assertEqual(result[0], expected)
+
     def test_seed_population_contains_stay_return_and_physical_greedy(self):
         population = build_seed_population(
-            [3], 2, [1, 0], 6, random.Random(0))
+            [3], 2, [1, 0], 6, random.Random(0),
+            greedy_gate_genes=[2])
         self.assertIn([0, 0, 0], population)
         self.assertIn([0, 1, 1], population)
-        self.assertIn([0, 1, 0], population)
+        self.assertIn([2, 1, 0], population)
+
+    def test_seed_population_rejects_misaligned_greedy_gate_vector(self):
+        with self.assertRaisesRegex(ValueError, "greedy_gate_genes"):
+            build_seed_population(
+                [2, 3], 1, [0], 4, random.Random(0),
+                greedy_gate_genes=[1])
+
+    def test_zero_weight_matching_edges_remain_legal(self):
+        """Sparse scipy matrices must not drop exact zero-cost candidates."""
+        initial = [(0, i, 0) for i in range(4)]
+        placer = ResidentPlacer(initial)
+        placer.architecture = self.arch
+        placer.registry = ResidentRegistry(self.arch, initial)
+        left = (1, 0, 0)
+        right = (1, 0, 1)
+        candidates = [
+            [(left, 0.0, 0, 1), (right, 10.0, 0, 1)],
+            [(right, 0.0, 2, 3), (left, 10.0, 2, 3)],
+        ]
+        matched = placer._match_gates(candidates, [(0, 1), (2, 3)])
+        self.assertEqual([placement["site"] for placement in matched],
+                         [left, right])
 
     def test_cache_toggle_preserves_schedule_and_dead_resident_is_searched(self):
         initial = [(0, i, 0) for i in range(6)]
@@ -283,7 +402,10 @@ class TestResidentDecisionMechanics(unittest.TestCase):
 
     def test_physical_rollout_can_select_both_stay_and_return(self):
         initial = [(0, i, 0) for i in range(6)]
-        schedule = [[[0, 1]], [[2, 3]], [[0, 2]]]
+        # q0 is worth retaining for its visible reuse with q4, whereas dead q1
+        # is physically cheaper to return.  This separately exercises both
+        # decision outcomes under the fully expanded rollout cost.
+        schedule = [[[0, 1]], [[2, 3]], [[0, 4]]]
         placer = ResidentPlacer(
             initial, seed=0, experiment_schema=2,
             method_id="ours_lk", objective="physical_log_fidelity",
@@ -294,6 +416,59 @@ class TestResidentDecisionMechanics(unittest.TestCase):
                    [set() for _ in schedule])
         first = placer.decision_log[0]
         self.assertEqual((first["stay"], first["return"]), (1, 1))
+
+    def test_returned_partner_seat_is_reused_without_moving_shared_atom(self):
+        """The back phase must make a RETURNed gate seat available to out.
+
+        A chain layer ``(q0, hub) -> (q1, hub)`` is the minimal regression for
+        the old menu-time blockage: q0 returns first, q1 takes q0's old seat,
+        and the hub remains on its half of the same Rydberg pair.
+        """
+        initial = [(0, i, 0) for i in range(6)]
+        schedule = [[[0, 5]], [[1, 5]], [[2, 5]]]
+        placer = ResidentPlacer(
+            initial, seed=0, experiment_schema=2,
+            method_id="ours_lk", objective="physical_log_fidelity",
+            lookahead_horizon=2, engine="ga", fitness_cache=True,
+            population_size=6, iterations=2,
+            neighbors_per_solution=2, neighbor_sample_size=6)
+        placer.run(self.arch, [initial], schedule, True,
+                   [set() for _ in schedule])
+
+        first_gate, first_boundary, second_gate = placer.mapping[1:4]
+        self.assertEqual(placer.decision_log[0]["return"], 1)
+        self.assertNotEqual(first_gate[0], first_boundary[0])
+        self.assertEqual(first_gate[5], first_boundary[5])
+        self.assertEqual(second_gate[5], first_gate[5])
+        self.assertEqual(second_gate[1], first_gate[0])
+
+    def test_return_ghost_repair_search_orders_candidates_without_name_error(self):
+        initial = [(0, i, 0) for i in range(3)]
+        placer = ResidentPlacer(initial)
+        placer.architecture = self.arch
+        placer.mapping = [initial]
+        placer.registry = ResidentRegistry(self.arch, initial)
+        placer.registry.enter_zone(0, (1, 0, 0))
+        decisions = {0: ("RETURN", (0, 0, 0))}
+        ex = lambda loc: self.arch.exact_SLM_location_tuple(tuple(loc))
+
+        def t1(q):
+            return decisions[q][1] if q in decisions else \
+                placer.registry.current_pos(q)
+
+        def both(q, left, right):
+            a, b = ex(left(q)), ex(right(q))
+            return [(q, *a)] if a == b else [(q, *a), (q, *b)]
+
+        start, end = ex((1, 0, 0)), ex((0, 0, 0))
+        issue = ("back", 0, (math.dist(start, end), *start, *end),
+                 1, *ex(initial[1]))
+        changed = placer._fix_leg_ghost(
+            issue, [], decisions, set(), t1, t1, both,
+            lambda _q: None, len(initial), {})
+        self.assertTrue(changed)
+        self.assertEqual(decisions[0][0], "RETURN")
+        self.assertNotEqual(decisions[0][1], (0, 0, 0))
 
     def test_horizon_changes_only_visible_rollout_layers(self):
         initial = [(0, i, 0) for i in range(6)]
