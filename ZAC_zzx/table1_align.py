@@ -115,7 +115,6 @@ def main():
     def emit(ws, note, rws):
         cols = ["circuit", "q", "2q门", "layers", "max门/层",
                 "ZAC Place", "ZAC Route", "ZAC Steps", "ZAC Rearr",
-                "ra Place", "ra Route", "ra Steps", "ra Rearr",
                 "rw Place", "rw Route", "rw Steps", "rw Rearr",
                 "NL Place", "NL Route", "NL Steps", "NL Rearr",
                 "LK Place", "LK Route", "LK Steps", "LK Rearr"]
@@ -131,7 +130,7 @@ def main():
             cell.alignment = Alignment(horizontal="center", wrap_text=True)
         for r in rws:
             line = [r["n"], r["q"], r["g2"], r["layers"], r["maxg"]]
-            for blk in (r["z"], r["ra"], r["rw"], r["nl"], r["lk"]):
+            for blk in (r["z"], r["rw"], r["nl"], r["lk"]):
                 line += list(blk) if blk else ["—"] * 4
             ws.append(line)
 
@@ -142,31 +141,33 @@ def main():
         for label, idx in (("Σ Place ms", 0), ("Σ Route ms", 1),
                            ("Σ Steps", 2), ("Σ Rearr ms", 3)):
             line = [label]
-            for key in ("z", "ra", "rw", "nl", "lk"):
+            for key in ("z", "rw", "nl", "lk"):
                 v = col(key, idx)
                 line.append(round(sum(v), 1) if v else "—")
             ws.append(line)
         for label, idx in (("geomean Steps/ZAC", 2), ("geomean Rearr/ZAC", 3)):
             line = [label, 1.0]
-            for key in ("ra", "rw", "nl", "lk"):
+            for key in ("rw", "nl", "lk"):
                 # 行内配对：两法同电路都齐才入对（缺失行会错位 zip，已修）
                 pairs = [(r[key][idx], r["z"][idx]) for r in rws if r[key] and r["z"]]
                 g = gm([a / b for a, b in pairs if a and b])
                 line.append(round(g, 3) if g else "—")
             ws.append(line)
-        for c, w in zip(range(1, len(cols) + 1), [18, 5, 6, 7, 8] + [9, 9, 8, 9] * 5):
+        for c, w in zip(range(1, len(cols) + 1), [18, 5, 6, 7, 8] + [9, 9, 8, 9] * 4):
             ws.column_dimensions[get_column_letter(c)].width = w
         return col
 
     wb = Workbook()
     ws1 = wb.active
     ws1.title = "ZAC数据集18"
-    note1 = ("四方法 × ICCAD'25 Table I 全指标。每方法四列：Place ms / Route ms / "
-             "Num. Rearr. Steps / Rearr ms（ra=routing-agnostic、rw=routing-aware=论文主方法）。"
+    note1 = ("四方法 × ICCAD'25 Table I 全指标：ZAC原始 / ICCAD rw（论文主方法）/"
+             "遗传无前瞻(NL, w_ghost=0) / 遗传前瞻(LK, 鬼点罚 w_ghost=1)，遗传两席均"
+             "GA 初始化+硬保证层。每方法四列：Place ms / Route ms / Num. Rearr. Steps / "
+             "Rearr ms。"
              "ICCAD=论文管线 mqt.qmap 3.2.0（Steps 26/30 与 Table I 逐位一致；时间单位坑已勘误："
              "stats() 实为 μs，此处已修为真 ms）。ZAC/遗传：Place=初始布局+逐轮放置、Route=路由"
              "（ZAC 原程序路由计时混在放置内故 Route≈0）；Steps=rearrangeJob 条数（与 Table I "
-             "一步=一次完整 AOD 重排循环同义）；Rearr=Σ批起止区间。遗传=GA 初始化+鬼点硬保证层。")
+             "一步=一次完整 AOD 重排循环同义）；Rearr=Σ批起止区间。")
     col1 = emit(ws1, note1, rows)
     mds = [md_block("ZAC 数据集（hpca 18）", rows)]
     if rows2:
@@ -190,15 +191,15 @@ def md_block(title, rows):
         v = col(key, idx)
         return sum(v) if v else float("nan")
     lines = [f"## {title}", "",
-             "| 指标 | ZAC原始 | ICCAD ra | ICCAD rw | 遗传NL | 遗传LK |",
-             "|---|---|---|---|---|---|",
-             f"| Σ Place ms | {s('z',0):.0f} | {s('ra',0):.0f} | {s('rw',0):.0f} | {s('nl',0):.0f} | {s('lk',0):.0f} |",
-             f"| Σ Route ms | {s('z',1):.0f} | {s('ra',1):.0f} | {s('rw',1):.0f} | {s('nl',1):.0f} | {s('lk',1):.0f} |",
-             f"| Σ Steps | {s('z',2):.0f} | {s('ra',2):.0f} | {s('rw',2):.0f} | {s('nl',2):.0f} | {s('lk',2):.0f} |",
-             f"| Σ Rearr ms | {s('z',3):.0f} | {s('ra',3):.0f} | {s('rw',3):.0f} | {s('nl',3):.0f} | {s('lk',3):.0f} |"]
+             "| 指标 | ZAC原始 | ICCAD rw | 遗传NL | 遗传LK |",
+             "|---|---|---|---|---|",
+             f"| Σ Place ms | {s('z',0):.0f} | {s('rw',0):.0f} | {s('nl',0):.0f} | {s('lk',0):.0f} |",
+             f"| Σ Route ms | {s('z',1):.0f} | {s('rw',1):.0f} | {s('nl',1):.0f} | {s('lk',1):.0f} |",
+             f"| Σ Steps | {s('z',2):.0f} | {s('rw',2):.0f} | {s('nl',2):.0f} | {s('lk',2):.0f} |",
+             f"| Σ Rearr ms | {s('z',3):.0f} | {s('rw',3):.0f} | {s('nl',3):.0f} | {s('lk',3):.0f} |"]
     for label, idx in (("Steps", 2), ("Rearr", 3)):
         cells = ["1.000"]
-        for key in ("ra", "rw", "nl", "lk"):
+        for key in ("rw", "nl", "lk"):
             pairs = [(r[key][idx], r["z"][idx]) for r in rows if r[key] and r["z"]]
             g = gm([a / b for a, b in pairs if a and b])
             cells.append(f"{g:.3f} (N={len(pairs)})" if g else "—")
