@@ -36,9 +36,12 @@ def zair(code_dir, fid_dir, time_dir):
                    if i["type"] == "rearrangeJob")
         fp = Path(fid_dir) / f"{n}_fidelity.json"
         tp = Path(time_dir) / f"{n}_time.json"
+        ryd = [len(i["gates"]) for i in code["instructions"]
+               if i["type"] == "rydberg"]
         rows[key] = (steps, round(move, 1),
                      round(json.load(open(fp))["cir_fidelity"], 4) if fp.exists() else None,
-                     round(json.load(open(tp))["total"], 2) if tp.exists() else None)
+                     round(json.load(open(tp))["total"], 2) if tp.exists() else None,
+                     len(ryd), max(ryd) if ryd else 0)
     return rows
 
 
@@ -83,7 +86,7 @@ def main():
     # ---------------- Sheet1：ZAC 数据集 ----------------
     ws = wb.active
     ws.title = "ZAC数据集"
-    cols = ["circuit", "q", "2q门",
+    cols = ["circuit", "q", "2q门", "Num. Layers", "Max 2Q-Gates in Layer",
             "ZAC Steps", "ICCAD Steps", "遗传(无前瞻) Steps", "遗传(前瞻) Steps",
             "ZAC move μs", "ICCAD move μs", "遗传(无前瞻) move", "遗传(前瞻) move",
             "ZAC fid", "ICCAD fid", "遗传(无前瞻) fid", "遗传(前瞻) fid",
@@ -97,7 +100,7 @@ def main():
     rows = []
     for n in common:
         q = qm[n]
-        rows.append([n, q["qubits"], q["gates2q"],
+        rows.append([n, q["qubits"], q["gates2q"], lk[n][4], lk[n][5],
                      zac[n][0], q["batches"], nl[n][0], lk[n][0],
                      zac[n][1], round(q["move_time"], 1), nl[n][1], lk[n][1],
                      zac[n][2], q["fidelity"], nl[n][2], lk[n][2],
@@ -156,7 +159,7 @@ def main():
               ZZX / "results/qmap_suite/zzx/fidelity",
               ZZX / "results/qmap_suite/zzx/time") if (
         ZZX / "results/qmap_suite/zzx/code").exists() else {}
-    cols2 = ["circuit", "q", "2q门",
+    cols2 = ["circuit", "q", "2q门", "Num. Layers", "Max 2Q-Gates in Layer",
              "ICCAD Steps", "ZAC Steps", "遗传zzx Steps(旧内核)",
              "ICCAD move μs", "ZAC move μs", "遗传zzx move(旧内核)",
              "ICCAD fid", "ZAC fid", "遗传zzx fid(旧内核)"]
@@ -177,6 +180,7 @@ def main():
         zr = z2.get(n)
         xr = x2.get(n)
         ws2.append([n, q.get("qubits"), q.get("gates2q"),
+                    q.get("rounds"), xr[5] if xr else "—",
                     q["batches"], zr[0] if zr else "—", xr[0] if xr else "—",
                     round(q["move_time"], 1),
                     zr[1] if zr else "—", xr[1] if xr else "—",
