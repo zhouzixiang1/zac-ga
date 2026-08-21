@@ -61,7 +61,8 @@ def load_arch(code: dict, code_path: Path) -> Architecture:
             candidates.insert(0, Path(arg.split("=", 1)[1]))
     for cand in candidates:
         if cand.is_file():
-            arch = Architecture(json.load(open(cand)))
+            with open(cand, encoding="utf-8") as handle:
+                arch = Architecture(json.load(handle))
             arch.preprocessing()
             return arch
     raise FileNotFoundError(f"找不到架构 spec：{raw}（候选：{candidates}）")
@@ -81,7 +82,8 @@ def qasm_partner_ledger(qasm_path: Path) -> dict[int, list[int]]:
 
 
 def verify(code_path: Path, qasm_path: Path | None = None) -> dict:
-    code = json.load(open(code_path))
+    with open(code_path, encoding="utf-8") as handle:
+        code = json.load(handle)
     arch = load_arch(code, code_path)
     insts = code["instructions"]
 

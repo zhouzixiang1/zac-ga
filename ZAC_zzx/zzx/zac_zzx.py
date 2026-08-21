@@ -23,8 +23,9 @@ from copy import deepcopy
 from zac.zac import ZAC
 
 
-from zzx.ghost import ghost_hits, pair_edges
-from zzx.zcost import color_batches
+from zzx.algorithm_v2 import validate_schema2_setting
+from zzx.ghost import ghost_hits
+from zzx.zcost import greedy_phase_batches, phase_batches
 from math import hypot
 
 
@@ -43,6 +44,9 @@ class ZAC_zzx(ZAC):
                     # ---- M3 前瞻/决策层旋钮（提前入白名单防键漂移）----
                     "w_ghost", "w_ord", "gamma_batch", "fitness_mode",
                     "w_resident", "pin_radius", "w_pin",
+                    # ---- 正式实验 Schema 2（NL/LK 只允许 horizon 不同）----
+                    "experiment_schema", "method_id", "objective",
+                    "lookahead_horizon", "fitness_cache",
                     # ---- 初始布局引擎（"ga" = GAInitialPlacer 换掉 ZAC 的 SA）----
                     "init_engine", "init_pop", "init_gens")
     # ZAC 原版认识的键（消费断言用； Zac.parse_setting 同步维护）
@@ -62,6 +66,11 @@ class ZAC_zzx(ZAC):
         self.zzx_decision_log: list = []     # 驻留决策账本（每层 STAY/RETURN 计数）
 
     def parse_setting(self, setting: dict):
+        schema = setting.get("experiment_schema")
+        if schema is not None and schema != 2:
+            raise ValueError(f"不支持的 experiment_schema: {schema!r}")
+        if schema == 2:
+            validate_schema2_setting(setting)
         super().parse_setting(setting)    # 先让 ZAC 原版解析它认识的字段
         self.placer_kind = setting.get("placer", "zac")
         self.zzx_params = {k: setting[k] for k in self.ZAC_ZZX_KEYS if k in setting}
@@ -120,10 +129,15 @@ class ZAC_zzx(ZAC):
         self.runtime_analysis["intermediate placement"] = time.time() - t_p
         self.runtime_analysis["zzx gate placement"] = placer.search_time
         self.zzx_placer_preview = getattr(placer, preview_attr)
+        if self.placer_kind == "resident":
+            # Public Schema-2 evidence channel consumed by method_driver.  Keep
+            # the historic preview alias, but never leave the formal decision
+            # ledger empty after a resident run.
+            self.zzx_decision_log = list(placer.decision_log)
 
     # ------------------------------------------------------------ 路由接线
     def _coloring_batches(self, remain_graph, mapping_from, mapping_to):
-        """把 remain_graph 一次性着色分批（每色=一批，批间按最远腿降序）。
+        """把 remain_graph 按注册的 coloring/greedy 策略一次性分批。
 
         vectors 与 router.graph_construction 同源：(起x, 终x, 起y, 终y)。
         腿格式换算成 zcost 的 (dist, 起x, 起y, 终x, 终y) 后直接复用
@@ -180,10 +194,17 @@ class ZAC_zzx(ZAC):
         # 初始着色带"T0 位置鬼点边"（排除两腿主人，稀疏）——引导着色
         # 天然避开绝大多数撞鬼组合；残余由下面的重放审计精确拆批
         ghosts0 = [(q, *pos[q]) for q in range(n_atoms)]
-        extra = sorted(pair_edges(legs, ghosts0, owners=remain_graph))
-        chi, batches, method = color_batches(
-            legs, exact_threshold=self.zzx_exact_threshold,
-            node_budget=self.zzx_node_budget, extra_edges=extra or None)
+        if self.routing_strategy == "greedy":
+            batcher = lambda values, **kwargs: greedy_phase_batches(
+                values, ghosts=kwargs.get("ghosts"), owners=kwargs.get("owners"))
+        else:
+            batcher = lambda values, **kwargs: phase_batches(
+                values, ghosts=kwargs.get("ghosts"), owners=kwargs.get("owners"),
+                exact_threshold=kwargs.get("exact_threshold", 0),
+                node_budget=self.zzx_node_budget)
+        chi, batches, method = batcher(
+            legs, ghosts=ghosts0, owners=remain_graph,
+            exact_threshold=self.zzx_exact_threshold)
         final, deferred = audit_pass(batches, pos)
         for round_i in range(3):                    # 2 轮重批 + 末轮强制单飞
             if not deferred:
@@ -196,9 +217,8 @@ class ZAC_zzx(ZAC):
                 deferred = []
                 break
             sub = sorted(deferred)
-            _, sub_batches, _ = color_batches(
-                [legs[i] for i in sub], exact_threshold=self.zzx_exact_threshold,
-                node_budget=self.zzx_node_budget)
+            _, sub_batches, _ = batcher(
+                [legs[i] for i in sub], exact_threshold=self.zzx_exact_threshold)
             sub_batches = [[sub[k] for k in members] for members in sub_batches]
             more, deferred = audit_pass(sub_batches, pos)
             final += more
@@ -209,7 +229,7 @@ class ZAC_zzx(ZAC):
     def _phase_batches(self, remain_graph, mapping_from, mapping_to):
         """一个搬运相位的批次生成器：coloring 一次着色；mis/maximalis* 逐轮剥离。
         返回 (set_aod, method) 序列；耗尽即停。"""
-        if self.routing_strategy == "coloring":
+        if self.routing_strategy in {"coloring", "greedy"}:
             while remain_graph:
                 window = (remain_graph[:self.window_size] if self.use_window
                           else remain_graph)

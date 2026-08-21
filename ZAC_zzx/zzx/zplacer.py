@@ -39,7 +39,9 @@ from __future__ import annotations
 import math
 import random
 import time
+from collections import OrderedDict
 from copy import deepcopy
+from itertools import product
 from math import sqrt
 
 import numpy as np
@@ -50,6 +52,9 @@ from scipy.sparse.csgraph import min_weight_full_bipartite_matching
 # 所以下面的 zac.* 解析到 ZAC_zzx/zac/（本地副本）。
 from zac.placer.vmplacer import VertexMatchingPlacer
 
+from zzx.algorithm_v2 import (CacheStats, ForecastOracle,
+                              PhysicalIncrementalCost, build_seed_population,
+                              resident_decision_candidates)
 from zzx.zcost import batch_cost, compatible_2d, conflict_graph
 from zzx.ghost import (ghost_hits, hit_count, leg_hits, new_conflicts,
                        pair_edges)
@@ -493,10 +498,31 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.iterations: int = params.get("iterations", 8)
         self.neighbors_per_solution: int = params.get("neighbors_per_solution", 2)
         self.neighbor_sample_size: int = params.get("neighbor_sample_size", 24)
+        self.experiment_schema: int = params.get("experiment_schema", 1)
+        self.method_id: str = params.get("method_id", "legacy")
+        self.objective: str = params.get("objective", "legacy")
+        self.lookahead_horizon: int = params.get("lookahead_horizon", 0)
+        self.fitness_cache: bool = params.get("fitness_cache", True)
+        # Formal ablation controls are injected by method_driver only after the
+        # frozen main Schema-2 config has passed its strict validation.  They are
+        # intentionally absent from the M3/M4 config contract.
+        self.ablation_policy: str = params.get("ablation_policy", "optimize")
+        self.ablation_fitness_mode: str = params.get(
+            "ablation_fitness_mode", "phase")
+        if self.ablation_policy not in {
+                "optimize", "always_stay", "always_return", "adjacent_only"}:
+            raise ValueError(f"unknown ablation decision policy: {self.ablation_policy!r}")
+        if self.ablation_fitness_mode not in {"phase", "lumped_greedy"}:
+            raise ValueError(
+                f"unknown ablation fitness mode: {self.ablation_fitness_mode!r}")
         self.search_time = 0.0
         self.decision_log: list = []                # 每层决策统计（供账本/实验）
+        self.cache_stats = CacheStats()
+        self.transition_cache = OrderedDict()
+        self.transition_cache_limit = 256
         self.registry = None
         self.nu = None
+        self.forecast = None
 
     # ------------------------------------------------------------------ 轮循环
     def run(self, architecture, qubit_mapping, gate_scheduling,
@@ -521,8 +547,21 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.mapping = [list(qubit_mapping[0])]
         self.registry = ResidentRegistry(architecture, qubit_mapping[0],
                                          self.theta_capacity)
-        self.nu = NextUse(gate_scheduling)
+        # Schema 2 makes ForecastOracle the sole future-information channel.
+        # Keep a deliberately empty legacy helper so accidental next-use reads
+        # cannot leak L+2+ even though older function signatures still accept it.
+        self.nu = NextUse([] if self.experiment_schema == 2 else gate_scheduling)
+        self.forecast = ForecastOracle(gate_scheduling, self.lookahead_horizon)
         n = len(gate_scheduling)
+
+        # Canonical optimisation can legitimately remove every two-qubit gate
+        # (for example, ground_state_estimation_10).  Such a circuit has no
+        # resident boundary to optimise; preserving the initial mapping is the
+        # complete 2n+1 contract and must not probe layer zero.
+        if n == 0:
+            self.decision_log = []
+            self._assert_contract()
+            return
 
         placement = self._plan_round(0)
         self._repair_ghosts(placement, {})       # 第 0 轮入场也过鬼点防线
@@ -531,7 +570,10 @@ class ResidentPlacer(VertexMatchingPlacer):
             if layer + 1 < n:
                 if self.engine == "ga":
                     # A3：边界决策 + 下一轮门位联合搜索（一步 GA 两张映射一起提交）
-                    self._ga_step(layer)
+                    if self.experiment_schema == 2:
+                        self._ga_step_v2(layer)
+                    else:
+                        self._ga_step(layer)
                     continue
                 placement = self._plan_round(layer + 1)   # 门赢：先定门位，闲人让路
                 next_gates = self.gate_scheduling[layer + 1]
@@ -540,10 +582,32 @@ class ResidentPlacer(VertexMatchingPlacer):
                 # 末边界：没有下一轮门位 → 全员 STAY（native 同款），
                 # 或 final_return_home=True 时全队回存储（实验开关）
                 placement, next_gates, next_seats = None, [], []
-            decisions, stats = decide_lazy(
-                self.registry, self.nu, layer, next_gates, next_seats,
-                final_return_home=self.final_return_home and layer == n - 1)
+            terminal_ablation_return = (
+                layer == n - 1 and self.ablation_policy == "always_return")
+            if terminal_ablation_return:
+                # Keep the registry at its true pre-move positions until ghost
+                # repair has replayed every RETURN leg.  decide_lazy's legacy
+                # final-return branch mutates eagerly and is therefore not used
+                # by the strict Schema-2 ablation path.
+                returners = sorted(self.registry.zone_seat)
+                sites = match_return_sites(
+                    self.registry, returners, self.nu, layer,
+                    self.box_ratio, self.alpha_lookahead,
+                    forecast=self.forecast, candidate_mode="forecast")
+                decisions = {q: ("RETURN", sites[q]) for q in returners}
+                stats = {"stay": 0, "forced_e2": 0, "capacity": 0,
+                         "return": len(returners), "participants": 0}
+            else:
+                decisions, stats = decide_lazy(
+                    self.registry, self.nu, layer, next_gates, next_seats,
+                    final_return_home=self.final_return_home and layer == n - 1)
             self._repair_ghosts(placement or [], decisions)   # 防线③（match 引擎同享）
+            if terminal_ablation_return:
+                for q, (kind, loc) in decisions.items():
+                    if kind == "RETURN":
+                        self.registry.return_to_storage(q, loc)
+                    elif kind == "RESEAT":
+                        self.registry.reseat(q, loc)
             self._append_boundary(decisions)
             self.decision_log.append({"layer": layer, **stats,
                                       "ghost_fix": getattr(self, "ghost_fixes", 0)})
@@ -1055,7 +1119,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                 if phase == "back" and ghost_hits(out_legs, [(owner, *t0)]):
                     continue      # 新落位在 out 相也不得被扫
                 decisions[owner] = (kind, site)
-                ban.add(loc)
+                ban.add(site)
                 return True
 
         # ③ 腿主是参与者 → 改门位（全区按权重搜索替位）；
@@ -1476,4 +1540,489 @@ class ResidentPlacer(VertexMatchingPlacer):
             "ghost_fix": getattr(self, "ghost_fixes", 0),
             "participants": len(participants),
             "score": round(scored[0][0], 3)})
+        self.search_time += time.time() - t0
+
+    # ========================================================= Schema 2 GA
+    def _ga_step_v2(self, layer: int):
+        """Formal M3/M4 transition with a physical, horizon-bounded objective.
+
+        M3 and M4 execute this exact function.  Their only behavioral difference is
+        the ``ForecastOracle`` horizon (0 versus 2); ghost safety and current-phase
+        scoring are shared hard invariants.
+        """
+        t0 = time.time()
+        next_layer = layer + 1
+        list_gate = self.forecast.target_layer(layer)
+        reg, arch = self.registry, self.architecture
+        participants = {q for gate in list_gate for q in gate}
+        static_ghosts = self._static_ghosts(participants)
+        step_cache = CacheStats()
+        physical = PhysicalIncrementalCost(len(self.mapping[0]))
+
+        # ---- Gate menus and immutable leg cache ---------------------------------
+        candidates, gate_cache = [], []
+        for q1, q2 in list_gate:
+            resident_seats = [reg.zone_seat[q] for q in (q1, q2)
+                              if reg.is_resident(q)]
+            sites = self._expanded_sites(q1, q2, list_gate)
+            for seat in resident_seats:
+                base = self._norm_left(seat)
+                slm = arch.dict_SLM[base[0]]
+                for dc in range(-self.pin_radius, self.pin_radius + 1):
+                    col = base[2] + dc
+                    if 0 <= col < slm.n_c:
+                        sites.add((base[0], base[1], col))
+            blocked = {seat for q, seat in reg.zone_seat.items()
+                       if q not in (q1, q2)}
+            opts = self._build_opts(sites, q1, q2, blocked)
+            if not opts:
+                opts = self._build_opts(set(self._all_zone_sites()),
+                                        q1, q2, blocked)
+            if len(opts) < len(list_gate):
+                seen = {o[0] for o in opts}
+                for site in sorted(set(self._all_zone_sites()) - seen,
+                                   key=lambda s: self._site_weight(q1, q2, s)):
+                    pair = (site, (site[0] + 1, site[1], site[2]))
+                    if pair[0] in blocked or pair[1] in blocked:
+                        continue
+                    opts.append((site, self._site_weight(q1, q2, site), q1, q2))
+                    if len(opts) >= len(list_gate):
+                        break
+                opts.sort(key=lambda o: (o[1], o[0]))
+            opts = self._filter_menu_ghosts(
+                opts, q1, q2, static_ghosts, max(1, len(list_gate)))
+            if not opts:
+                raise RuntimeError(f"layer {next_layer} 门 ({q1},{q2}) 无合法门位")
+            candidates.append(opts)
+            cached_sites = {}
+            for site, _, _, _ in opts:
+                s1, s2 = self._pair_seats(q1, q2, site)
+                legs, owners, seated = [], [], []
+                for q, target in ((q1, s1), (q2, s2)):
+                    source_xy = arch.exact_SLM_location_tuple(reg.current_pos(q))
+                    target_xy = arch.exact_SLM_location_tuple(target)
+                    distance = math.dist(source_xy, target_xy)
+                    if distance > 1e-9:
+                        legs.append((distance, *source_xy, *target_xy))
+                        owners.append(q)
+                    else:
+                        seated.append((q, *target_xy))
+                cached_sites[site] = {
+                    "legs": tuple(legs), "owners": tuple(owners),
+                    "seated": tuple(seated),
+                }
+            gate_cache.append(cached_sites)
+
+        # Every non-participating resident is a real decision, including dead ones.
+        # The always-RETURN mechanism additionally returns immediate-next-layer
+        # participants to storage before bringing them back for their gate.  This
+        # makes it distinct from adjacent-only residency, which permits direct
+        # zone reuse only for those immediate participants.
+        eligible = (sorted(reg.zone_seat)
+                    if self.ablation_policy == "always_return"
+                    else resident_decision_candidates(reg.zone_seat, participants))
+        n_gates = len(candidates)
+        gate_domains = [len(opts) for opts in candidates]
+        demand = 2 * len(list_gate)
+        max_stays = math.floor(self.theta_capacity * reg.zone_sites - demand + 1e-12)
+        if max_stays < 0:
+            raise RuntimeError(
+                f"layer {next_layer} 当前门需求 {demand} 已超过驻留容量阈值")
+        min_returns = max(0, len(eligible) - max_stays)
+
+        # Capacity is normalized before fitness, never patched onto the winner.
+        def eviction_key(q):
+            visible = self.forecast.next_use(q, layer)
+            return (visible is None, visible[0] if visible else -1, q)
+
+        eviction_order = sorted(eligible, key=eviction_key, reverse=True)
+
+        def normalize_chrom(chrom):
+            raw = list(chrom)
+            if len(raw) != n_gates + len(eligible):
+                raise ValueError("Schema 2 染色体长度错误")
+            normalized = [raw[i] % gate_domains[i] for i in range(n_gates)]
+            bits = [1 if raw[n_gates + i] else 0 for i in range(len(eligible))]
+            if self.ablation_policy == "always_stay":
+                bits = [0] * len(eligible)
+            elif self.ablation_policy in {"always_return", "adjacent_only"}:
+                bits = [1] * len(eligible)
+            selected = sum(bits)
+            if selected < min_returns:
+                index = {q: i for i, q in enumerate(eligible)}
+                for q in eviction_order:
+                    i = index[q]
+                    if bits[i] == 0:
+                        bits[i] = 1
+                        selected += 1
+                        if selected == min_returns:
+                            break
+            return normalized + bits
+
+        # ---- Decode cache --------------------------------------------------------
+        decode_cache = {}
+
+        def decode(chrom):
+            gate_key = tuple(chrom[:n_gates])
+            if self.fitness_cache and gate_key in decode_cache:
+                step_cache.decode_hits += 1
+                return decode_cache[gate_key]
+            used, placed, accumulated_legs = set(), [], []
+            accumulated_ghosts = list(static_ghosts)
+            for col, opts in enumerate(candidates):
+                start = gate_key[col]
+                chosen = None
+                for offset in range(len(opts)):
+                    candidate = opts[(start + offset) % len(opts)]
+                    if candidate[0] in used:
+                        continue
+                    entry = gate_cache[col][candidate[0]]
+                    if new_conflicts(accumulated_legs, entry["legs"],
+                                     accumulated_ghosts):
+                        continue
+                    chosen = candidate
+                    break
+                if chosen is None:
+                    chosen = next((opts[(start + offset) % len(opts)]
+                                   for offset in range(len(opts))
+                                   if opts[(start + offset) % len(opts)][0] not in used),
+                                  None)
+                if chosen is None:
+                    raise RuntimeError(f"layer {next_layer} 门位菜单无法形成单射")
+                used.add(chosen[0])
+                placed.append(chosen)
+                entry = gate_cache[col][chosen[0]]
+                accumulated_legs.extend(entry["legs"])
+                accumulated_ghosts.extend(entry["seated"])
+            value = tuple(placed)
+            if self.fitness_cache:
+                decode_cache[gate_key] = value
+            return value
+
+        # RETURN matching is performed for the actual chromosome subset.
+        return_cache = {}
+
+        def return_sites_for(bits):
+            returners = tuple(q for q, bit in zip(eligible, bits) if bit)
+            if self.fitness_cache and returners in return_cache:
+                step_cache.return_match_hits += 1
+                return return_cache[returners]
+            mode = "forecast" if self.lookahead_horizon else "nearest"
+            value = (match_return_sites(
+                reg, list(returners), self.nu, layer,
+                self.box_ratio, self.alpha_lookahead,
+                forecast=self.forecast, candidate_mode=mode)
+                if returners else {})
+            if self.fitness_cache:
+                return_cache[returners] = value
+            return value
+
+        def back_legs(returners, sites):
+            legs, owners = [], []
+            for q in returners:
+                p0 = arch.exact_SLM_location_tuple(reg.zone_seat[q])
+                p1 = arch.exact_SLM_location_tuple(sites[q])
+                distance = math.dist(p0, p1)
+                if distance > 1e-9:
+                    legs.append((distance, *p0, *p1))
+                    owners.append(q)
+            return legs, owners
+
+        def forecast_phases(returners, sites):
+            """Deterministic rollout: no nested GA and no reads outside the oracle."""
+            # A returner that participates in the current target layer has
+            # already re-entered by the start of the visible future rollout.
+            in_storage = {
+                q: q in returners and q not in participants for q in eligible}
+            phases, exposures = [], 0
+            batching = ("greedy" if self.ablation_fitness_mode == "lumped_greedy"
+                        else "phase")
+            for _, gates in self.forecast.visible_future(layer):
+                future_participants = {q for gate in gates for q in gate}
+                legs, owners = [], []
+                for q in eligible:
+                    if in_storage[q] and q in future_participants:
+                        p0 = arch.exact_SLM_location_tuple(sites[q])
+                        # Re-entry proxy is deterministic and candidate-dependent:
+                        # return to the atom's last valid zone seat.
+                        p1 = arch.exact_SLM_location_tuple(reg.zone_seat[q])
+                        distance = math.dist(p0, p1)
+                        if distance > 1e-9:
+                            legs.append((distance, *p0, *p1))
+                            owners.append(q)
+                        in_storage[q] = False
+                if legs:
+                    phases.append(physical.movement_phase(
+                        legs, owners=owners, batching=batching))
+                exposures += sum(
+                    1 for q in eligible
+                    if not in_storage[q] and q not in future_participants)
+            return phases, exposures
+
+        def score_plan(chrom):
+            chrom = normalize_chrom(chrom)
+            placed = decode(chrom)
+            bits = chrom[n_gates:]
+            returners = tuple(q for q, bit in zip(eligible, bits) if bit)
+            sites = return_sites_for(bits)
+            legs_back, owners_back = back_legs(returners, sites)
+            positions_t0 = [
+                (q, *arch.exact_SLM_location_tuple(reg.current_pos(q)))
+                for q in range(len(self.mapping[0]))]
+            positions_t1 = []
+            returned = set(returners)
+            for q in range(len(self.mapping[0])):
+                loc = sites[q] if q in returned else reg.current_pos(q)
+                positions_t1.append((q, *arch.exact_SLM_location_tuple(loc)))
+            # Compute out legs from the actual post-decision positions.  Main
+            # NL/LK results are unchanged, while always-RETURN can faithfully
+            # model a next-layer participant returning and re-entering.
+            position_t1_by_q = {row[0]: (row[1], row[2]) for row in positions_t1}
+            legs_out, owners_out = [], []
+            for chosen in placed:
+                s1, s2 = self._pair_seats(chosen[2], chosen[3], chosen[0])
+                for q, target in ((chosen[2], s1), (chosen[3], s2)):
+                    p0 = position_t1_by_q[q]
+                    p1 = arch.exact_SLM_location_tuple(target)
+                    distance = math.dist(p0, p1)
+                    if distance > 1e-9:
+                        legs_out.append((distance, *p0, *p1))
+                        owners_out.append(q)
+            if self.ablation_fitness_mode == "lumped_greedy":
+                # Deliberately reproduce the old proxy: back/out legs are put in
+                # one greedy pool even though the executable router must retain
+                # the physical gate boundary.  Ghost correctness remains a hard
+                # post-selection repair and final replay invariant.
+                phases = [physical.movement_phase(
+                    legs_back + legs_out,
+                    owners=owners_back + owners_out,
+                    batching="greedy")]
+            else:
+                phases = [
+                    physical.movement_phase(
+                        legs_back, ghosts=positions_t0, owners=owners_back),
+                    physical.movement_phase(
+                        legs_out, ghosts=positions_t1, owners=owners_out),
+                ]
+            future_phases, future_exposures = forecast_phases(returned, sites)
+            phases.extend(future_phases)
+            idle_exposures = sum(
+                1 for q in eligible
+                if q not in returned and q not in participants)
+            idle_exposures += future_exposures
+            return physical.score(phases, idle_exposures, chrom)
+
+        fitness_cache = {}
+
+        def fitness(chrom):
+            key = tuple(normalize_chrom(chrom))
+            step_cache.evaluations += 1
+            if self.fitness_cache and key in fitness_cache:
+                step_cache.fitness_hits += 1
+                return fitness_cache[key]
+            step_cache.unique_evaluations += 1
+            value = score_plan(key)
+            if self.fitness_cache:
+                fitness_cache[key] = value
+            return value
+
+        # Physical greedy seed: starting from all-STAY (capacity-normalized), accept
+        # a RETURN flip iff it improves the full registered lexicographic objective.
+        greedy = normalize_chrom([0] * (n_gates + len(eligible)))[n_gates:]
+        greedy_chrom = [0] * n_gates + list(greedy)
+        greedy_score = fitness(greedy_chrom)[0]
+        for i in range(len(eligible)):
+            trial = list(greedy_chrom)
+            trial[n_gates + i] = 1
+            trial = normalize_chrom(trial)
+            trial_score = fitness(trial)[0]
+            if trial_score < greedy_score:
+                greedy_chrom, greedy_score = trial, trial_score
+        greedy = greedy_chrom[n_gates:]
+
+        def score_unique(chromosomes):
+            unique = {}
+            for chromosome in chromosomes:
+                key = tuple(normalize_chrom(chromosome))
+                unique.setdefault(key, list(key))
+            scored = [(fitness(chromosome)[0], chromosome)
+                      for chromosome in unique.values()]
+            return sorted(scored, key=lambda item: (item[0], tuple(item[1])))
+
+        def neighbor(chrom):
+            result = list(chrom)
+            if n_gates and (not eligible or self.rng.random() < 0.5):
+                i = self.rng.randrange(n_gates)
+                result[i] = self.rng.choice(
+                    [result[i] + 1, result[i] - 1,
+                     self.rng.randrange(gate_domains[i])])
+            elif eligible:
+                i = self.rng.randrange(len(eligible))
+                result[n_gates + i] ^= 1
+            return normalize_chrom(result)
+
+        # Deterministic fast paths are shared by NL/LK.  The state key contains
+        # exactly the visible forecast window, so H=0 cannot acquire hidden
+        # future information through the LRU cache.
+        visible_window = tuple(self.forecast.visible_future(layer))
+        state_key = (
+            self.lookahead_horizon, self.ablation_policy,
+            self.ablation_fitness_mode,
+            tuple(tuple(reg.current_pos(q)) for q in range(len(self.mapping[0]))),
+            tuple(list_gate), visible_window, tuple(gate_domains), tuple(eligible),
+            min_returns,
+        )
+        cached_winner = self.transition_cache.get(state_key)
+        search_mode = "ga"
+        if cached_winner is not None:
+            self.transition_cache.move_to_end(state_key)
+            scored = score_unique([cached_winner])
+            search_mode = "lru"
+        else:
+            search_space = 1
+            for domain in gate_domains:
+                search_space *= domain
+                if search_space > 64:
+                    break
+            if search_space <= 64:
+                if self.ablation_policy == "optimize":
+                    search_space *= 2 ** len(eligible)
+            if search_space <= 64:
+                domains = [range(domain) for domain in gate_domains]
+                decision_domain = (range(2) if self.ablation_policy == "optimize"
+                                   else range(1))
+                domains.extend((decision_domain for _ in eligible))
+                chromosomes = product(*domains) if domains else [()]
+                scored = score_unique(chromosomes)
+                search_mode = "direct" if search_space <= 1 else "enumerate"
+            else:
+                population = build_seed_population(
+                    gate_domains, len(eligible), greedy, self.population_size,
+                    self.rng, normalize=normalize_chrom)
+                scored = score_unique(population)[:self.population_size]
+                for _ in range(self.iterations):
+                    offspring = []
+                    for _, chromosome in scored:
+                        pool = score_unique(
+                            neighbor(chromosome)
+                            for _ in range(self.neighbor_sample_size))
+                        offspring.extend(chromosome for _, chromosome
+                                         in pool[:self.neighbors_per_solution])
+                    scored = score_unique(
+                        [chromosome for _, chromosome in scored] + offspring
+                    )[:self.population_size]
+
+        best_chrom = normalize_chrom(scored[0][1])
+        self.transition_cache[state_key] = tuple(best_chrom)
+        self.transition_cache.move_to_end(state_key)
+        while len(self.transition_cache) > self.transition_cache_limit:
+            self.transition_cache.popitem(last=False)
+        placed = decode(best_chrom)
+        placements = self._repair_placements(
+            [self._mk_placement(c[2], c[3], c[0]) for c in placed], list_gate)
+        bits = best_chrom[n_gates:]
+        sites = return_sites_for(bits)
+        decisions = {
+            q: (("RETURN", sites[q]) if bit else ("STAY", reg.zone_seat[q]))
+            for q, bit in zip(eligible, bits)
+        }
+        if sum(1 for value in decisions.values() if value[0] == "STAY") + demand \
+                > self.theta_capacity * reg.zone_sites + 1e-12:
+            raise AssertionError("Schema 2 容量约束未在 fitness 前满足")
+
+        # Hard repair is method-independent.  The repaired schedule is scored again
+        # below, so the ledger never reports the stale pre-repair objective.
+        self._repair_ghosts(placements, decisions)
+
+        def score_repaired():
+            positions_t0 = {
+                q: reg.current_pos(q) for q in range(len(self.mapping[0]))}
+            positions_t1 = dict(positions_t0)
+            back, back_owners = [], []
+            for q, (kind, loc) in decisions.items():
+                if kind == "STAY":
+                    continue
+                p0 = arch.exact_SLM_location_tuple(positions_t0[q])
+                p1 = arch.exact_SLM_location_tuple(loc)
+                distance = math.dist(p0, p1)
+                if distance > 1e-9:
+                    back.append((distance, *p0, *p1))
+                    back_owners.append(q)
+                positions_t1[q] = loc
+            out, out_owners = [], []
+            for placement in placements:
+                for q, seat in zip(placement["gate"], placement["seats"]):
+                    p0 = arch.exact_SLM_location_tuple(positions_t1[q])
+                    p1 = arch.exact_SLM_location_tuple(seat)
+                    distance = math.dist(p0, p1)
+                    if distance > 1e-9:
+                        out.append((distance, *p0, *p1))
+                        out_owners.append(q)
+            ghosts_t0 = [(q, *arch.exact_SLM_location_tuple(loc))
+                          for q, loc in positions_t0.items()]
+            ghosts_t1 = [(q, *arch.exact_SLM_location_tuple(loc))
+                          for q, loc in positions_t1.items()]
+            if self.ablation_fitness_mode == "lumped_greedy":
+                phases = [physical.movement_phase(
+                    back + out, owners=back_owners + out_owners,
+                    batching="greedy")]
+            else:
+                phases = [
+                    physical.movement_phase(back, ghosts_t0, back_owners),
+                    physical.movement_phase(out, ghosts_t1, out_owners),
+                ]
+            returners = {q for q, value in decisions.items()
+                         if value[0] == "RETURN"}
+            repaired_sites = {q: decisions[q][1] for q in returners}
+            future, future_exposures = forecast_phases(returners, repaired_sites)
+            phases.extend(future)
+            current_exposures = sum(
+                1 for q in eligible
+                if q not in participants and decisions[q][0] != "RETURN")
+            return physical.score(
+                phases, current_exposures + future_exposures, best_chrom)
+
+        repaired_score, breakdown = score_repaired()
+        for field in step_cache.as_dict():
+            setattr(self.cache_stats, field,
+                    getattr(self.cache_stats, field) + getattr(step_cache, field))
+
+        for q, (kind, loc) in decisions.items():
+            if kind == "RETURN":
+                reg.return_to_storage(q, loc)
+            elif kind == "RESEAT":
+                reg.reseat(q, loc)
+        self._append_boundary(decisions)
+        self._commit_round(next_layer, placements)
+        self.decision_log.append({
+            "layer": layer,
+            "engine": "ga-v2",
+            "method_id": self.method_id,
+            "lookahead_horizon": self.lookahead_horizon,
+            "ablation_policy": self.ablation_policy,
+            "fitness_phase_mode": self.ablation_fitness_mode,
+            "search_mode": search_mode,
+            "stay": sum(1 for v in decisions.values() if v[0] == "STAY"),
+            "return": sum(1 for v in decisions.values() if v[0] == "RETURN"),
+            "reseat": sum(1 for v in decisions.values() if v[0] == "RESEAT"),
+            "eligible_decisions": len(eligible),
+            "no_visible_use": sum(
+                1 for q in eligible
+                if self.forecast.next_use(q, layer) is None),
+            "forced_e2": 0,
+            "capacity": min_returns,
+            "ghost_fix": getattr(self, "ghost_fixes", 0),
+            "participants": len(participants),
+            "score": [repaired_score[0], repaired_score[1],
+                      repaired_score[2], repaired_score[3]],
+            "physical": {
+                "negative_log_fidelity": breakdown.negative_log_fidelity,
+                "idle_exposures": breakdown.idle_exposures,
+                "transfers": breakdown.transfers,
+                "move_batches": breakdown.move_batches,
+                "move_time_us": breakdown.move_time_us,
+                "total_distance_um": breakdown.total_distance_um,
+            },
+            "cache": step_cache.as_dict(),
+        })
         self.search_time += time.time() - t0

@@ -159,7 +159,8 @@ def _box_sites(arch, center: tuple, ratio: int, free: set) -> list:
 
 def match_return_sites(registry: ResidentRegistry, returners: list,
                        next_use: NextUse, after: int,
-                       box_ratio: int = 3, alpha_lookahead: float = 0.1) -> dict:
+                       box_ratio: int = 3, alpha_lookahead: float = 0.1,
+                       forecast=None, candidate_mode: str = "legacy") -> dict:
     """给一批回返者定存储落位：三方案箱候选 ∪ 自由位 → 最小权完美匹配。
 
     三方案（笔记 :123-131，ZAC place_qubit 的箱式化沿用 vmplacer.py:443-450 ratio=3）：
@@ -174,6 +175,8 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     回返者的 C2/C3 候选撞车，匹配无解；扩成 (2·box_ratio+1)² 的自由位箱
     后候选池恒够（存储 10000 位 vs ≤98 回返者）。
     """
+    if candidate_mode not in ("legacy", "nearest", "forecast"):
+        raise ValueError(f"未知 RETURN 候选模式: {candidate_mode!r}")
     arch = registry.arch
     # 全存储位清单 + 自由位集合（未被任何在储原子占用——occupied 含未来
     # 参与者仍在存储的家，所以回返者永远不会落到别人头上）
@@ -198,26 +201,45 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     for i, q in enumerate(returners):
         zone_loc = registry.zone_seat[q]                  # 调用保证 q 当前在激发区
         zx, zy = arch.exact_SLM_location_tuple(zone_loc)
-        # 锚点：有下次使用→搭档投影；死驻留者→原位（微弱拉回家的倾向）
-        anchor_loc, _ = registry.anchor(q, after, next_use)
+        # Schema 2 只能通过 ForecastOracle 读取可见未来。H=0 时 next_use()
+        # 必为 None，RETURN 落位因此只看当前位置与最近存储区，不会泄漏搭档。
+        anchor_loc = None
+        if candidate_mode == "legacy":
+            anchor_loc, _ = registry.anchor(q, after, next_use)
+            if anchor_loc is None:
+                anchor_loc = registry.homes[q]
+        elif candidate_mode == "forecast" and forecast is not None:
+            visible = forecast.next_use(q, after)
+            if visible is not None:
+                _, partner = visible
+                partner_loc = registry.current_pos(partner)
+                anchor_loc = (arch.nearest_storage_site(*partner_loc)
+                              if registry._is_zone(partner_loc) else partner_loc)
         if anchor_loc is None:
-            anchor_loc = registry.homes[q]                # 死驻留者：锚点=原位
+            anchor_loc = arch.nearest_storage_site(*zone_loc)
         ax, ay = arch.exact_SLM_location_tuple(anchor_loc)
 
         # C1 原位 / C2 就近 / C3 伙伴 —— 三族候选箱（各以中心±box_ratio 展开）
         near_current = arch.nearest_storage_site(zone_loc[0], zone_loc[1], zone_loc[2])
-        families = [registry.homes[q], near_current, anchor_loc]
+        if candidate_mode == "nearest":
+            families = [near_current]
+        elif candidate_mode == "forecast":
+            families = [near_current, anchor_loc]
+        else:
+            families = [registry.homes[q], near_current, anchor_loc]
         candidates = set()
         for center in families:
             if center[0] in arch.storage_zone:
                 candidates.update(_box_sites(arch, center, box_ratio, free))
-        if registry.homes[q] in free:
+        if candidate_mode == "legacy" and registry.homes[q] in free:
             candidates.add(registry.homes[q])              # 原位自由时永远给一次机会
 
         # 每个候选位的代价：省本次（离激发区近）+ 省未来（离锚点近）
         for site in candidates:
             sx, sy = arch.exact_SLM_location_tuple(site)
-            cost = sqrt(math.dist((zx, zy), (sx, sy))) + alpha_lookahead * sqrt(
+            lookahead_weight = (alpha_lookahead
+                                if candidate_mode != "nearest" else 0.0)
+            cost = sqrt(math.dist((zx, zy), (sx, sy))) + lookahead_weight * sqrt(
                 math.dist((sx, sy), (ax, ay)))
             rows.append(_add(site))
             cols.append(i)
@@ -244,7 +266,7 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
             taken.add(rows_list[r])
         for q in returners:                                # 仍漏的：扫全存储自由位
             if q not in assignment:
-                rest = next(s for s in all_storage if s not in taken)
+                rest = next(s for s in sorted(free) if s not in taken)
                 assignment[q] = rest
                 taken.add(rest)
     return assignment

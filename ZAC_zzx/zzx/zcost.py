@@ -213,6 +213,67 @@ def color_batches(legs: list[tuple], exact_threshold: int = 24,
     return n_used, batches, method
 
 
+def phase_batches(legs: list[tuple] | tuple[tuple, ...], ghosts=None, owners=None,
+                  exact_threshold: int = 0, node_budget: int = 200_000):
+    """Pure shared phase-coloring core used by both GA scoring and final routing.
+
+    ``ghosts`` are the atoms stationary at the start of the phase.  Pairwise ghost
+    conflicts become graph edges; single-leg ghost safety remains a hard placement
+    invariant and is checked by the caller before committing a schedule.
+    """
+    legs = list(legs)
+    extra = None
+    if ghosts and legs:
+        # Local import avoids making the basic graph-coloring module depend on ghost
+        # geometry for callers that only need AOD ordering compatibility.
+        from zzx.ghost import pair_edges
+        extra = sorted(pair_edges(legs, ghosts, owners=owners)) or None
+    return color_batches(
+        legs, exact_threshold=exact_threshold,
+        node_budget=node_budget, extra_edges=extra)
+
+
+def greedy_phase_batches(legs: list[tuple] | tuple[tuple, ...], ghosts=None,
+                         owners=None):
+    """Deterministic maximal-independent-set peeling for the routing ablation.
+
+    Unlike DSATUR, this routine never revisits a previous batch assignment.  It
+    repeatedly scans longest legs first and greedily fills one compatible batch.
+    The conflict graph contains the same AOD-ordering and pairwise ghost edges as
+    :func:`phase_batches`, so this is a real batching-policy ablation rather than
+    a relaxation of physical correctness.
+    """
+    legs = list(legs)
+    if not legs:
+        return 0, [], "empty"
+    adj = conflict_graph(legs)
+    if ghosts:
+        from zzx.ghost import pair_edges
+        for i, j in sorted(pair_edges(legs, ghosts, owners=owners)):
+            if j not in adj[i]:
+                adj[i].append(j)
+            if i not in adj[j]:
+                adj[j].append(i)
+    remaining = set(range(len(legs)))
+    priority = sorted(remaining, key=lambda i: (-legs[i][0], i))
+    batches = []
+    while remaining:
+        members = []
+        selected = set()
+        for i in priority:
+            if i not in remaining:
+                continue
+            if any(j in selected for j in adj[i]):
+                continue
+            members.append(i)
+            selected.add(i)
+        if not members:  # defensive; the first remaining vertex is always legal
+            members = [min(remaining)]
+        batches.append(members)
+        remaining.difference_update(members)
+    return len(batches), batches, "greedy-maximal"
+
+
 def batch_cost(legs: list[tuple], w_batch: float = 1.0,
                exact_threshold: int = 0) -> tuple[float, int, int]:
     """放置适应度用的代价：w_batch×批数 + Σ批 √(批内最长腿)。
