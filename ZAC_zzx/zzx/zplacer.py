@@ -1664,11 +1664,24 @@ class ResidentPlacer(VertexMatchingPlacer):
             gate_cache.append(cached_sites)
 
         # Every non-participating resident is a real decision, including dead ones.
-        # The always-RETURN mechanism additionally returns immediate-next-layer
-        # participants to storage before bringing them back for their gate.  This
-        # makes it distinct from adjacent-only residency, which permits direct
-        # zone reuse only for those immediate participants.
+        # Immediate target participants are searched separately below as bounded
+        # RETURN -> re-entry relocation moves, so the registered residency GA and
+        # its RNG stream remain byte-identical when no cycle is selected.
         eligible = sorted(potential_returners)
+        adjacent_resident_participants = sorted(
+            set(reg.zone_seat) & participants)
+        # The extra RETURN -> re-entry refinement is exact only for a serial
+        # chain boundary: one target gate with one reused resident endpoint.
+        # On a parallel target front, independently cycling one endpoint can
+        # displace the joint gate matching beyond the finite rollout (QFT is a
+        # concrete example).  The ordinary resident GA already evaluates that
+        # coupled placement, so keep the local extension fail-closed there.
+        cycle_candidates = (
+            adjacent_resident_participants
+            if (self.ablation_policy == "optimize"
+                and len(list_gate) == 1
+                and len(adjacent_resident_participants) == 1)
+            else [])
         n_gates = len(candidates)
         gate_domains = [len(opts) for opts in candidates]
         demand = 2 * len(list_gate)
@@ -1843,8 +1856,8 @@ class ResidentPlacer(VertexMatchingPlacer):
         return_cache = ({tuple(eligible): all_return_sites}
                         if eligible else {})
 
-        def return_sites_for(bits):
-            returners = tuple(q for q, bit in zip(eligible, bits) if bit)
+        def return_sites_for_atoms(returners):
+            returners = tuple(sorted(returners))
             if self.fitness_cache and returners in return_cache:
                 step_cache.return_match_hits += 1
                 return return_cache[returners]
@@ -2077,12 +2090,28 @@ class ResidentPlacer(VertexMatchingPlacer):
                         batching=batching))
             return phases, exposures
 
-        def score_plan(chrom, include_forecast=True):
+        def score_plan(chrom, include_forecast=True, cycle_returners=()):
             chrom = normalize_chrom(chrom)
-            placed = decode(chrom)
+            cycle_returners = tuple(sorted(
+                set(cycle_returners) & set(cycle_candidates)))
+            scored_chrom = tuple(chrom) + tuple(
+                1 if q in cycle_returners else 0 for q in cycle_candidates)
+            try:
+                placed = decode(chrom)
+            except RuntimeError:
+                # Some gene vectors induce a greedy menu order that violates
+                # Hall's condition even though the layer has other legal
+                # placements.  Such a chromosome is infeasible, not a compiler
+                # failure; the seeded full matching remains a finite incumbent.
+                return ((float("inf"), float("inf"), float("inf"),
+                         float("inf"), scored_chrom),
+                        PhysicalIncrementalCost(len(self.mapping[0])).score(
+                            (), 0, scored_chrom)[1])
             bits = chrom[n_gates:]
-            returners = tuple(q for q, bit in zip(eligible, bits) if bit)
-            sites = return_sites_for(bits)
+            returners = tuple(sorted(
+                {q for q, bit in zip(eligible, bits) if bit}
+                | set(cycle_returners)))
+            sites = return_sites_for_atoms(returners)
             legs_back, owners_back = back_legs(returners, sites)
             positions_t0 = [
                 (q, *arch.exact_SLM_location_tuple(reg.current_pos(q)))
@@ -2104,9 +2133,9 @@ class ResidentPlacer(VertexMatchingPlacer):
                     target_xy = arch.exact_SLM_location_tuple(target)
                     if target_xy in occupied_t1:
                         return ((float("inf"), float("inf"), float("inf"),
-                                 float("inf"), tuple(chrom)),
+                                 float("inf"), scored_chrom),
                                 PhysicalIncrementalCost(len(self.mapping[0])).score(
-                                    (), 0, chrom)[1])
+                                    (), 0, scored_chrom)[1])
             # Compute out legs from the actual post-decision positions.  Main
             # NL/LK results are unchanged, while always-RETURN can faithfully
             # model a next-layer participant returning and re-entering.
@@ -2147,19 +2176,23 @@ class ResidentPlacer(VertexMatchingPlacer):
                 1 for q in eligible
                 if q not in returned and q not in participants)
             idle_exposures += future_exposures
-            return physical.score(phases, idle_exposures, chrom)
+            return physical.score(phases, idle_exposures, scored_chrom)
 
         fitness_cache = {}
 
-        def fitness(chrom, include_forecast=True):
+        def fitness(chrom, include_forecast=True, cycle_returners=()):
             key = tuple(normalize_chrom(chrom))
-            cache_key = (bool(include_forecast), key)
+            cycles = tuple(sorted(
+                set(cycle_returners) & set(cycle_candidates)))
+            cache_key = (bool(include_forecast), key, cycles)
             step_cache.evaluations += 1
             if self.fitness_cache and cache_key in fitness_cache:
                 step_cache.fitness_hits += 1
                 return fitness_cache[cache_key]
             step_cache.unique_evaluations += 1
-            value = score_plan(key, include_forecast=include_forecast)
+            value = score_plan(
+                key, include_forecast=include_forecast,
+                cycle_returners=cycles)
             if self.fitness_cache:
                 fitness_cache[cache_key] = value
             return value
@@ -2440,17 +2473,88 @@ class ResidentPlacer(VertexMatchingPlacer):
                     horizon_current_objective[:4] > safe_current_objective[:4]):
                 best_chrom = normalize_chrom(safe_chrom)
                 lookahead_selection = "myopic_safety"
-        self.transition_cache[state_key] = tuple(best_chrom)
+        cache_chrom = tuple(best_chrom)
+
+        # Adjacent reuse/cycle relocation is a bounded lookahead-only extension
+        # around the already selected resident-GA incumbent.  Keeping these bits
+        # outside the stochastic chromosome preserves the exact H=0 search and
+        # prevents a larger gene vector from degrading a no-cycle winner merely
+        # by consuming a different RNG stream.  For each currently resident
+        # target participant, test RETURN -> re-entry jointly with the gate-site
+        # gene of its target gate.  This is the neutral-atom analogue of deciding
+        # when a chain should advance the interaction site instead of pinning it.
+        selected_cycles: set[int] = set()
+        cycle_objective = fitness(best_chrom)[0]
+        cycle_search_log = []
+        # A rollout improvement smaller than one extra load+store fidelity pair
+        # is not robust enough to justify changing the executable current state.
+        # This physical hysteresis suppresses receding-horizon chattering without
+        # introducing a tunable proxy weight.
+        min_cycle_gain = -2.0 * math.log(physical.F_TRANSFER)
+        if self.lookahead_horizon > 0 and self.ablation_policy == "optimize":
+            gate_of = {
+                q: gate_index for gate_index, gate in enumerate(list_gate)
+                for q in gate}
+            for q in cycle_candidates:
+                gate_index = gate_of[q]
+                domain = gate_domains[gate_index]
+                trial_budget = max(
+                    2, self.neighbor_sample_size // max(1, len(list_gate)))
+                if domain <= trial_budget:
+                    values = list(range(domain))
+                else:
+                    values = sorted({
+                        round(j * (domain - 1) / (trial_budget - 1))
+                        for j in range(trial_budget)
+                    } | {best_chrom[gate_index]})
+                trial_cycles = set(selected_cycles)
+                trial_cycles.add(q)
+                local_score = cycle_objective
+                local_chrom = list(best_chrom)
+                for value in values:
+                    trial = list(best_chrom)
+                    trial[gate_index] = value
+                    trial = normalize_chrom(trial)
+                    score = fitness(
+                        trial, cycle_returners=trial_cycles)[0]
+                    if score < local_score:
+                        local_score, local_chrom = score, trial
+                candidate_gain = cycle_objective[0] - local_score[0]
+                if candidate_gain > min_cycle_gain:
+                    prior_objective = cycle_objective
+                    best_chrom = normalize_chrom(local_chrom)
+                    selected_cycles = trial_cycles
+                    cycle_objective = local_score
+                    lookahead_selection = "horizon_cycle"
+                    cycle_search_log.append({
+                        "q": q, "accepted": True,
+                        "negative_log_fidelity_gain": (
+                            prior_objective[0] - local_score[0]),
+                        "gate_index": gate_index,
+                        "gate_gene": best_chrom[gate_index],
+                    })
+                else:
+                    cycle_search_log.append({
+                        "q": q, "accepted": False,
+                        "negative_log_fidelity_gain": max(0.0, candidate_gain),
+                        "gate_index": gate_index,
+                        "gate_gene": best_chrom[gate_index],
+                    })
+
+        self.transition_cache[state_key] = cache_chrom
         self.transition_cache.move_to_end(state_key)
         while len(self.transition_cache) > self.transition_cache_limit:
             self.transition_cache.popitem(last=False)
         placed = decode(best_chrom)
         bits = best_chrom[n_gates:]
-        sites = return_sites_for(bits)
+        returners = ({q for q, bit in zip(eligible, bits) if bit}
+                     | selected_cycles)
+        sites = return_sites_for_atoms(returners)
         decisions = {
             q: (("RETURN", sites[q]) if bit else ("STAY", reg.zone_seat[q]))
             for q, bit in zip(eligible, bits)
         }
+        decisions.update({q: ("RETURN", sites[q]) for q in selected_cycles})
         vacated = {q for q, value in decisions.items()
                    if value[0] in ("RETURN", "RESEAT")}
         placements = self._repair_placements(
@@ -2517,7 +2621,10 @@ class ResidentPlacer(VertexMatchingPlacer):
                 1 for q in eligible
                 if q not in participants and decisions[q][0] != "RETURN")
             return physical.score(
-                phases, current_exposures + future_exposures, best_chrom)
+                phases, current_exposures + future_exposures,
+                tuple(best_chrom) + tuple(
+                    1 if q in selected_cycles else 0
+                    for q in cycle_candidates))
 
         repaired_score, breakdown = score_repaired()
         for field in step_cache.as_dict():
@@ -2563,6 +2670,9 @@ class ResidentPlacer(VertexMatchingPlacer):
             "return": sum(1 for v in decisions.values() if v[0] == "RETURN"),
             "reseat": sum(1 for v in decisions.values() if v[0] == "RESEAT"),
             "eligible_decisions": len(eligible),
+            "adjacent_cycle_candidates": len(cycle_candidates),
+            "adjacent_cycle_returns": len(selected_cycles),
+            "adjacent_cycle_search": cycle_search_log,
             "no_visible_use": sum(
                 1 for q in eligible
                 if self.forecast.next_use(q, layer) is None),

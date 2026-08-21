@@ -496,6 +496,66 @@ class TestResidentDecisionMechanics(unittest.TestCase):
             }, sort_keys=True, separators=(",", ":")))
         self.assertEqual(outputs[0], outputs[1])
 
+    def test_lookahead_can_cycle_an_adjacent_chain_without_perturbing_h0(self):
+        """H=2 may relocate a long chain via RETURN/re-entry; H=0 may not.
+
+        The cycle bit is deliberately outside the stochastic residency GA.  This
+        golden case guards both sides of that contract: the no-lookahead method
+        retains its original search stream, while lookahead accepts only cycle
+        improvements larger than one physical load+store fidelity pair.
+        """
+        n_qubits = 70
+        initial = [(0, q // 10, q % 10) for q in range(n_qubits)]
+        schedule = [[[q, q + 1]] for q in range(n_qubits - 1)]
+        runs = {}
+        for method, horizon in (("ours_nl", 0), ("ours_lk", 2)):
+            placer = ResidentPlacer(
+                initial, seed=0, experiment_schema=2,
+                method_id=method, objective="physical_log_fidelity",
+                lookahead_horizon=horizon, engine="ga", fitness_cache=True,
+                population_size=6, iterations=2,
+                neighbors_per_solution=2, neighbor_sample_size=12)
+            placer.run(self.arch, [initial], schedule, True,
+                       [set() for _ in schedule])
+            runs[horizon] = placer
+
+        self.assertEqual(
+            sum(row.get("adjacent_cycle_returns", 0)
+                for row in runs[0].decision_log), 0)
+        accepted = [
+            entry
+            for row in runs[2].decision_log
+            for entry in row.get("adjacent_cycle_search", ())
+            if entry["accepted"]
+        ]
+        self.assertGreater(len(accepted), 0)
+        transfer_pair_nll = -2.0 * math.log(PhysicalIncrementalCost.F_TRANSFER)
+        self.assertTrue(all(
+            entry["negative_log_fidelity_gain"] > transfer_pair_nll
+            for entry in accepted))
+        self.assertEqual(len(runs[2].mapping), 2 * len(schedule) + 1)
+
+    def test_adjacent_cycle_refinement_is_serial_only(self):
+        """Independent cycle trials must not perturb a coupled parallel front."""
+        initial = [(0, q, 0) for q in range(8)]
+        schedule = [
+            [[0, 1], [2, 3]],
+            [[1, 4], [3, 5]],
+            [[4, 6], [5, 7]],
+        ]
+        placer = ResidentPlacer(
+            initial, seed=0, experiment_schema=2,
+            method_id="ours_lk", objective="physical_log_fidelity",
+            lookahead_horizon=2, engine="ga", fitness_cache=True,
+            population_size=6, iterations=2,
+            neighbors_per_solution=2, neighbor_sample_size=12)
+        placer.run(self.arch, [initial], schedule, True,
+                   [set() for _ in schedule])
+
+        first = placer.decision_log[0]
+        self.assertEqual(first.get("adjacent_cycle_candidates"), 0)
+        self.assertEqual(first.get("adjacent_cycle_returns"), 0)
+
     def test_returned_partner_seat_is_reused_without_moving_shared_atom(self):
         """The back phase must make a RETURNed gate seat available to out.
 
