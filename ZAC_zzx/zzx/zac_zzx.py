@@ -233,58 +233,9 @@ class ZAC_zzx(ZAC):
         # 驻留模式中和复用机制（ResidentPlacer 内部还会再置空一次，双保险）：
         # 复用点名 + 两世界 filter_mapping 与驻留决策互斥——同时开会座位双订。
         if self.placer_kind == "resident":
-            # Preserve the original paper placement as a strong incumbent in
-            # the joint resident search.  M3/M4 receive the identical mapping;
-            # only their registered ForecastOracle horizon decides whether the
-            # physical objective keeps or improves it.  A private copy is
-            # required because VertexMatchingPlacer.filter_mapping mutates its
-            # reuse list while selecting the original reuse/no-reuse branch.
-            if self.zzx_params.get("experiment_schema") == 2:
-                from zac.placer.vmplacer import VertexMatchingPlacer
-                baseline = VertexMatchingPlacer(
-                    deepcopy(self.qubit_mapping[0]))
-                baseline.run(
-                    self.architecture, deepcopy(self.qubit_mapping),
-                    self.gate_scheduling, self.dynamic_placement,
-                    deepcopy(self.reuse_qubit))
-                baseline_mapping = deepcopy(baseline.mapping)
-                # Preserve ZAC's selective adjacent-layer reuse exactly.  Only
-                # remove its final all-RETURN, which is not part of the M3/M4
-                # contract and cannot help a circuit with no later operation.
-                if self.gate_scheduling:
-                    baseline_mapping[-1] = deepcopy(baseline_mapping[-2])
-                placer.baseline_mapping = baseline_mapping
             self.reuse_qubit = [set() for _ in self.gate_scheduling]
         placer.run(self.architecture, self.qubit_mapping, self.gate_scheduling,
                    self.dynamic_placement, self.reuse_qubit)
-        if (self.placer_kind == "resident" and
-                placer.baseline_mapping is not None):
-            resident_score, resident_breakdown = placer.mapping_stream_objective(
-                placer.mapping)
-            baseline_score, baseline_breakdown = placer.mapping_stream_objective(
-                placer.baseline_mapping)
-            if baseline_score < resident_score:
-                placer.mapping = deepcopy(placer.baseline_mapping)
-                selected = "zac_incumbent"
-                selected_breakdown = baseline_breakdown
-            else:
-                selected = "resident"
-                selected_breakdown = resident_breakdown
-            placer.global_incumbent = {
-                "selected": selected,
-                "resident_objective": list(resident_score[:4]),
-                "baseline_objective": list(baseline_score[:4]),
-                "selected_negative_log_fidelity": (
-                    selected_breakdown.negative_log_fidelity),
-            }
-            if selected == "zac_incumbent":
-                placer.decision_log = placer.decision_log_for_mapping(
-                    placer.mapping, selected=selected)
-            # The global incumbent is selected after ResidentPlacer.run() has
-            # already audited its own stream.  Re-run the same hard contract so
-            # an externally supplied ZAC incumbent can never bypass length,
-            # copy, or injectivity validation.
-            placer._assert_contract()
         self.qubit_mapping = placer.mapping       # 放置结果交回流水线
 
         self.runtime_analysis["intermediate placement"] = time.time() - t_p
@@ -295,8 +246,6 @@ class ZAC_zzx(ZAC):
             # the historic preview alias, but never leave the formal decision
             # ledger empty after a resident run.
             self.zzx_decision_log = list(placer.decision_log)
-            self.zzx_global_incumbent = getattr(
-                placer, "global_incumbent", None)
 
     # ------------------------------------------------------------ 路由接线
     def _expanded_batch_conflicts(self, members, owner, mapping_from,

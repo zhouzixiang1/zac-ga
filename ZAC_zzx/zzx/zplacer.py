@@ -458,6 +458,10 @@ class ResidentPlacer(VertexMatchingPlacer):
     def __init__(self, mapping: list, l2: bool = False, seed: int = 0, **params):
         super().__init__(mapping, l2)
         self.rng = random.Random(seed)              # RNG 隔离（审计 MAJOR-6：模块级共享会毁 SA 确定性）
+        # Independent current-transition stream.  M4 advances this exactly as
+        # M3 advances ``rng``; H=2 exploration therefore cannot perturb the
+        # reproducible H=0 safety incumbent used at the next boundary.
+        self.safety_rng = random.Random(seed)
         self.theta_capacity: float = params.get("theta_capacity", 0.9)
         self.box_ratio: int = params.get("box_ratio", 3)
         self.alpha_lookahead: float = params.get("alpha_lookahead", 0.1)
@@ -523,7 +527,10 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.registry = None
         self.nu = None
         self.forecast = None
-        self.baseline_mapping = None
+        # q -> (visible use layer, exact zone seat).  A lookahead STAY is a
+        # physical residency commitment, not merely a promise that a later
+        # greedy placement may immediately undo with a zone-to-zone transfer.
+        self.residency_commitments: dict[int, tuple[int, tuple]] = {}
 
     # ------------------------------------------------------------------ 轮循环
     def run(self, architecture, qubit_mapping, gate_scheduling,
@@ -553,6 +560,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         # cannot leak L+2+ even though older function signatures still accept it.
         self.nu = NextUse([] if self.experiment_schema == 2 else gate_scheduling)
         self.forecast = ForecastOracle(gate_scheduling, self.lookahead_horizon)
+        self.residency_commitments = {}
         n = len(gate_scheduling)
 
         # Canonical optimisation can legitimately remove every two-qubit gate
@@ -1231,89 +1239,6 @@ class ResidentPlacer(VertexMatchingPlacer):
             seats = [tuple(s) for s in m]
             assert len(seats) == len(set(seats)), f"映射 {i} 非单射（座位双订）"
 
-    def mapping_stream_objective(self, mapping):
-        """Score a complete 2n+1 mapping stream with registered physics."""
-        expected = 2 * len(self.gate_scheduling) + 1
-        if len(mapping) != expected:
-            raise ValueError(
-                f"global incumbent mapping length {len(mapping)} != {expected}")
-        physical = PhysicalIncrementalCost(len(mapping[0]))
-        phases = []
-        idle_exposures = 0
-        for layer, gates in enumerate(self.gate_scheduling):
-            initial = mapping[2 * layer]
-            gate_mapping = mapping[2 * layer + 1]
-            final = mapping[2 * layer + 2]
-            participants = {q for gate in gates for q in gate}
-
-            out_owners = [
-                q for q in sorted(participants)
-                if tuple(initial[q]) != tuple(gate_mapping[q])]
-            out_legs = []
-            for q in out_owners:
-                source = self.architecture.exact_SLM_location_tuple(initial[q])
-                target = self.architecture.exact_SLM_location_tuple(gate_mapping[q])
-                out_legs.append((math.dist(source, target), *source, *target))
-            initial_ghosts = [
-                (q, *self.architecture.exact_SLM_location_tuple(location))
-                for q, location in enumerate(initial)]
-            phases.append(physical.movement_phase(
-                out_legs, ghosts=initial_ghosts, owners=out_owners))
-
-            idle_exposures += sum(
-                1 for q, location in enumerate(gate_mapping)
-                if self.architecture.dict_SLM[location[0]].entanglement_id != -1
-                and q not in participants)
-
-            back_owners = [
-                q for q in range(len(gate_mapping))
-                if tuple(gate_mapping[q]) != tuple(final[q])]
-            back_legs = []
-            for q in back_owners:
-                source = self.architecture.exact_SLM_location_tuple(gate_mapping[q])
-                target = self.architecture.exact_SLM_location_tuple(final[q])
-                back_legs.append((math.dist(source, target), *source, *target))
-            gate_ghosts = [
-                (q, *self.architecture.exact_SLM_location_tuple(location))
-                for q, location in enumerate(gate_mapping)]
-            phases.append(physical.movement_phase(
-                back_legs, ghosts=gate_ghosts, owners=back_owners))
-        return physical.score(phases, idle_exposures, ())
-
-    def decision_log_for_mapping(self, mapping, *, selected):
-        """Derive boundary counters from the globally selected stream."""
-        rows = []
-        for layer in range(len(self.gate_scheduling)):
-            gate_mapping = mapping[2 * layer + 1]
-            final = mapping[2 * layer + 2]
-            stay = returned = reseat = 0
-            for before, after in zip(gate_mapping, final):
-                if not self.registry._is_zone(before):
-                    continue
-                if not self.registry._is_zone(after):
-                    returned += 1
-                elif tuple(before) == tuple(after):
-                    stay += 1
-                else:
-                    reseat += 1
-            rows.append({
-                "layer": layer,
-                "engine": "global-physical-incumbent",
-                "method_id": self.method_id,
-                "lookahead_horizon": self.lookahead_horizon,
-                "global_selected": selected,
-                "stay": stay,
-                "return": returned,
-                "reseat": reseat,
-                "eligible_decisions": stay + returned + reseat,
-                "forced_e2": 0,
-                "capacity": 0,
-                "ghost_fix": 0,
-                "participants": len({
-                    q for gate in self.gate_scheduling[layer] for q in gate}),
-            })
-        return rows
-
     # ============================================================== GA 决策层（A3）
     def _ga_step(self, layer: int):
         """一步联合搜索：边界 L 决策（STAY/RETURN）∪ 轮 L+1 门位。
@@ -1668,30 +1593,42 @@ class ResidentPlacer(VertexMatchingPlacer):
 
         # ---- Gate menus and immutable leg cache ---------------------------------
         candidates, gate_cache = [], []
+        target_pins = {
+            q: seat for q, (use_layer, seat) in self.residency_commitments.items()
+            if use_layer == next_layer and q in participants
+        }
         for q1, q2 in list_gate:
             resident_seats = [reg.zone_seat[q] for q in (q1, q2)
                               if reg.is_resident(q)]
-            sites = self._expanded_sites(q1, q2, list_gate)
-            if self.baseline_mapping is not None:
-                baseline_gate_mapping = self.baseline_mapping[2 * next_layer + 1]
-                sites.add(self._norm_left(baseline_gate_mapping[q1]))
-            for seat in resident_seats:
-                base = self._norm_left(seat)
-                slm = arch.dict_SLM[base[0]]
-                for dc in range(-self.pin_radius, self.pin_radius + 1):
-                    col = base[2] + dc
-                    if 0 <= col < slm.n_c:
-                        sites.add((base[0], base[1], col))
+            committed_sites = {
+                self._norm_left(target_pins[q]) for q in (q1, q2)
+                if q in target_pins
+            }
+            if len(committed_sites) > 1:
+                raise RuntimeError(
+                    f"layer {next_layer} gate ({q1},{q2}) has incompatible "
+                    f"residency commitments {sorted(committed_sites)}")
+            if committed_sites:
+                sites = set(committed_sites)
+            else:
+                sites = self._expanded_sites(q1, q2, list_gate)
+                for seat in resident_seats:
+                    base = self._norm_left(seat)
+                    slm = arch.dict_SLM[base[0]]
+                    for dc in range(-self.pin_radius, self.pin_radius + 1):
+                        col = base[2] + dc
+                        if 0 <= col < slm.n_c:
+                            sites.add((base[0], base[1], col))
             # Other target-layer participants cannot vacate before the out
             # phase.  Potential RETURN atoms can, and are checked against the
             # actual decision bits in ``score_plan`` below.
             blocked = {seat for q, seat in reg.zone_seat.items()
                        if q not in (q1, q2) and q not in potential_returners}
             opts = self._build_opts(sites, q1, q2, blocked)
-            if not opts:
+            if not opts and not committed_sites:
                 opts = self._build_opts(set(self._all_zone_sites()),
                                         q1, q2, blocked)
-            if len(opts) < len(list_gate):
+            if not committed_sites and len(opts) < len(list_gate):
                 seen = {o[0] for o in opts}
                 for site in sorted(set(self._all_zone_sites()) - seen,
                                    key=lambda s: self._site_weight(q1, q2, s)):
@@ -1747,6 +1684,88 @@ class ResidentPlacer(VertexMatchingPlacer):
             return (visible is None, visible[0] if visible else -1, q)
 
         eviction_order = sorted(eligible, key=eviction_key, reverse=True)
+        # Receding-horizon guard: LK may retain an atom only when its next use
+        # is actually visible inside L+2/L+3.  Otherwise every boundary can
+        # postpone the same terminal RETURN by two layers and the atom remains
+        # illuminated indefinitely (the classic finite-horizon procrastination
+        # failure observed on multiply).  This rule consumes no information
+        # beyond ForecastOracle and is intentionally absent for H=0, whose
+        # contract is the exact current transition.
+        horizon_forced_returns = {
+            q for q in eligible
+            if (self.ablation_policy == "optimize"
+                and self.lookahead_horizon > 0
+                and self.forecast.next_use(q, layer) is None)
+        }
+
+        # A visible future use is necessary but not sufficient for residency.
+        # Compare every proposed cross-layer wait with a deterministic
+        # all-RETURN reference using only the current state and ForecastOracle.
+        # The guard credits transfer fidelity and the moving atom's coherence,
+        # but not stationary-atom coherence that may disappear when moves share
+        # a batch.  This prevents a rolling H=2 forecast from buying two idle
+        # Rydberg exposures to save a cheaper RETURN/re-entry pair.
+        all_return_sites = (match_return_sites(
+            reg, eligible, self.nu, layer,
+            self.box_ratio, self.alpha_lookahead,
+            forecast=self.forecast,
+            candidate_mode=("forecast" if self.lookahead_horizon else "nearest"))
+            if eligible else {})
+        physical_guard_details = []
+        physical_forced_returns = set()
+        if self.ablation_policy == "optimize" and self.lookahead_horizon > 0:
+            for q in eligible:
+                visible = self.forecast.next_use(q, layer)
+                if visible is None:
+                    continue
+                idle_pulses = visible[0] - next_layer
+                source = arch.exact_SLM_location_tuple(reg.zone_seat[q])
+                storage = arch.exact_SLM_location_tuple(all_return_sites[q])
+                distance = math.dist(source, storage)
+                leg_out = (distance, *source, *storage)
+                leg_back = (distance, *storage, *source)
+                phases = (
+                    physical.movement_phase([leg_out], owners=[q]),
+                    physical.movement_phase([leg_back], owners=[q]),
+                )
+                admit, idle_nll, avoided_move_nll = \
+                    physical.residency_break_even(phases, idle_pulses)
+                if not admit:
+                    physical_forced_returns.add(q)
+                physical_guard_details.append({
+                    "q": q,
+                    "next_use_layer": visible[0],
+                    "idle_exposures": idle_pulses,
+                    "idle_nll": idle_nll,
+                    "avoidable_return_nll": avoided_move_nll,
+                    "margin_nll": avoided_move_nll - idle_nll,
+                    "forced_return": not admit,
+                })
+
+        def resolve_commitment_conflicts(bits):
+            """At most one incompatible resident may pin a visible future gate."""
+            index = {q: i for i, q in enumerate(eligible)}
+            grouped = {}
+            for q, bit in zip(eligible, bits):
+                if bit:
+                    continue
+                visible = self.forecast.next_use(q, layer)
+                if visible is None:
+                    continue
+                use_layer, partner = visible
+                grouped.setdefault(
+                    (use_layer, tuple(sorted((q, partner)))), []).append(q)
+            for _key, atoms in grouped.items():
+                if len(atoms) < 2:
+                    continue
+                sites = {self._norm_left(reg.zone_seat[q]) for q in atoms}
+                if len(sites) <= 1:
+                    continue
+                # Deterministic single-pin repair.  Lower id keeps residency;
+                # the other atom returns and remains an ordinary future mover.
+                for q in sorted(atoms)[1:]:
+                    bits[index[q]] = 1
+            return bits
 
         def normalize_chrom(chrom):
             raw = list(chrom)
@@ -1758,6 +1777,16 @@ class ResidentPlacer(VertexMatchingPlacer):
                 bits = [0] * len(eligible)
             elif self.ablation_policy in {"always_return", "adjacent_only"}:
                 bits = [1] * len(eligible)
+            elif horizon_forced_returns:
+                for i, q in enumerate(eligible):
+                    if q in horizon_forced_returns:
+                        bits[i] = 1
+            if physical_forced_returns and self.ablation_policy == "optimize":
+                for i, q in enumerate(eligible):
+                    if q in physical_forced_returns:
+                        bits[i] = 1
+            if self.lookahead_horizon > 0 and self.ablation_policy == "optimize":
+                bits = resolve_commitment_conflicts(bits)
             selected = sum(bits)
             if selected < min_returns:
                 index = {q: i for i, q in enumerate(eligible)}
@@ -1811,7 +1840,8 @@ class ResidentPlacer(VertexMatchingPlacer):
             return value
 
         # RETURN matching is performed for the actual chromosome subset.
-        return_cache = {}
+        return_cache = ({tuple(eligible): all_return_sites}
+                        if eligible else {})
 
         def return_sites_for(bits):
             returners = tuple(q for q, bit in zip(eligible, bits) if bit)
@@ -1851,7 +1881,14 @@ class ResidentPlacer(VertexMatchingPlacer):
                           for q in range(len(self.mapping[0])))
             key = (tuple(sorted(returners)), state)
             if key not in terminal_return_cache:
-                shadow = deepcopy(reg)
+                # Do not deepcopy the registry: it owns the full preprocessed
+                # Architecture (large nested distance tables), while terminal
+                # matching only needs the immutable architecture/home metadata
+                # plus simulated occupancy.  Reconstructing this lightweight
+                # state is semantically identical and removes the dominant H=2
+                # profiling cost.
+                shadow = ResidentRegistry(
+                    reg.arch, reg.homes, reg.theta)
                 shadow.zone_seat = {}
                 shadow.storage_site = {}
                 for q, location in enumerate(state):
@@ -2015,8 +2052,16 @@ class ResidentPlacer(VertexMatchingPlacer):
             # intentionally absent for H=0, whose registered contract is the
             # exact current transition only.
             if self.lookahead_horizon:
+                # Close every candidate on the same physical terminal state.
+                # Limiting this to the boundary's original decision genes
+                # omitted target/future-layer partners that entered the zone
+                # during rollout.  Their eventual exit then vanished from the
+                # objective, systematically favouring placements that dragged
+                # a fresh partner to a resident's remote seat.  All simulated
+                # residents must therefore receive a terminal RETURN value.
                 terminal = tuple(
-                    q for q in eligible if reg._is_zone(sim_locations[q]))
+                    q for q in range(len(self.mapping[0]))
+                    if reg._is_zone(sim_locations[q]))
                 terminal_sites = terminal_return_sites(terminal, sim_locations)
                 terminal_legs, terminal_owners = [], []
                 for q in terminal:
@@ -2032,7 +2077,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                         batching=batching))
             return phases, exposures
 
-        def score_plan(chrom):
+        def score_plan(chrom, include_forecast=True):
             chrom = normalize_chrom(chrom)
             placed = decode(chrom)
             bits = chrom[n_gates:]
@@ -2092,9 +2137,12 @@ class ResidentPlacer(VertexMatchingPlacer):
                     physical.movement_phase(
                         legs_out, ghosts=positions_t1, owners=owners_out),
                 ]
-            future_phases, future_exposures = forecast_phases(
-                returned, sites, placed)
-            phases.extend(future_phases)
+            if include_forecast:
+                future_phases, future_exposures = forecast_phases(
+                    returned, sites, placed)
+                phases.extend(future_phases)
+            else:
+                future_exposures = 0
             idle_exposures = sum(
                 1 for q in eligible
                 if q not in returned and q not in participants)
@@ -2103,16 +2151,17 @@ class ResidentPlacer(VertexMatchingPlacer):
 
         fitness_cache = {}
 
-        def fitness(chrom):
+        def fitness(chrom, include_forecast=True):
             key = tuple(normalize_chrom(chrom))
+            cache_key = (bool(include_forecast), key)
             step_cache.evaluations += 1
-            if self.fitness_cache and key in fitness_cache:
+            if self.fitness_cache and cache_key in fitness_cache:
                 step_cache.fitness_hits += 1
-                return fitness_cache[key]
+                return fitness_cache[cache_key]
             step_cache.unique_evaluations += 1
-            value = score_plan(key)
+            value = score_plan(key, include_forecast=include_forecast)
             if self.fitness_cache:
-                fitness_cache[key] = value
+                fitness_cache[cache_key] = value
             return value
 
         # Physical greedy seed: first solve the ZAC-style global gate/site
@@ -2130,20 +2179,64 @@ class ResidentPlacer(VertexMatchingPlacer):
                  if tuple(option[0]) == site), 0))
         seed_chromosomes = [normalize_chrom(
             matched_genes + [1] * len(eligible))]
-        if self.baseline_mapping is not None:
-            baseline_gate_mapping = self.baseline_mapping[2 * next_layer + 1]
-            baseline_boundary_mapping = self.baseline_mapping[2 * layer + 2]
-            baseline_genes = []
-            for col, (q1, _q2) in enumerate(list_gate):
-                baseline_site = self._norm_left(baseline_gate_mapping[q1])
-                baseline_genes.append(next(
-                    (index for index, option in enumerate(candidates[col])
-                     if tuple(option[0]) == tuple(baseline_site)), 0))
-            baseline_bits = [
-                0 if reg._is_zone(baseline_boundary_mapping[q]) else 1
-                for q in eligible]
-            seed_chromosomes.append(normalize_chrom(
-                baseline_genes + baseline_bits))
+
+        # M4 carries an explicit H=0 safety incumbent on the *same current
+        # registry state*.  It is obtained once per boundary, outside fitness,
+        # so this is not a nested GA and cannot read L+2 through a side channel.
+        # Gate genes are first improved for the exact current transition; H=2
+        # may then toggle residency genes while those gate sites stay fixed.
+        # The unrestricted H=2 GA can replace this candidate only when its
+        # current physical objective is non-inferior (see winner guard below).
+        safe_chrom = list(seed_chromosomes[0])
+        myopic_chrom = list(safe_chrom)
+        if self.lookahead_horizon > 0 and self.ablation_policy == "optimize":
+            myopic_score = fitness(myopic_chrom, include_forecast=False)[0]
+            for i in range(len(eligible)):
+                trial = list(myopic_chrom)
+                trial[n_gates + i] ^= 1
+                trial = normalize_chrom(trial)
+                trial_score = fitness(trial, include_forecast=False)[0]
+                if trial_score < myopic_score:
+                    myopic_chrom, myopic_score = trial, trial_score
+            if n_gates:
+                myopic_trials = max(
+                    2, self.neighbor_sample_size // max(1, n_gates))
+                for i, domain in enumerate(gate_domains):
+                    if domain <= myopic_trials:
+                        values = list(range(domain))
+                    else:
+                        values = sorted({
+                            round(j * (domain - 1) / (myopic_trials - 1))
+                            for j in range(myopic_trials)
+                        } | {myopic_chrom[i]})
+                    for value in values:
+                        if value == myopic_chrom[i]:
+                            continue
+                        trial = list(myopic_chrom)
+                        trial[i] = value
+                        trial = normalize_chrom(trial)
+                        trial_score = fitness(
+                            trial, include_forecast=False)[0]
+                        if trial_score < myopic_score:
+                            myopic_chrom, myopic_score = trial, trial_score
+                for i in range(len(eligible)):
+                    trial = list(myopic_chrom)
+                    trial[n_gates + i] ^= 1
+                    trial = normalize_chrom(trial)
+                    trial_score = fitness(
+                        trial, include_forecast=False)[0]
+                    if trial_score < myopic_score:
+                        myopic_chrom, myopic_score = trial, trial_score
+            safe_chrom = list(myopic_chrom)
+            safe_score = fitness(safe_chrom)[0]
+            for i in range(len(eligible)):
+                trial = list(safe_chrom)
+                trial[n_gates + i] ^= 1
+                trial = normalize_chrom(trial)
+                trial_score = fitness(trial)[0]
+                if trial_score < safe_score:
+                    safe_chrom, safe_score = trial, trial_score
+            seed_chromosomes.append(list(safe_chrom))
         greedy_score, greedy_chrom = min(
             (fitness(chromosome)[0], chromosome)
             for chromosome in seed_chromosomes)
@@ -2198,26 +2291,72 @@ class ResidentPlacer(VertexMatchingPlacer):
                     greedy_chrom, greedy_score = trial, trial_score
         greedy = greedy_chrom[n_gates:]
 
-        def score_unique(chromosomes):
+        def score_unique(chromosomes, include_forecast=True):
             unique = {}
             for chromosome in chromosomes:
                 key = tuple(normalize_chrom(chromosome))
                 unique.setdefault(key, list(key))
-            scored = [(fitness(chromosome)[0], chromosome)
+            scored = [(fitness(
+                chromosome, include_forecast=include_forecast)[0], chromosome)
                       for chromosome in unique.values()]
             return sorted(scored, key=lambda item: (item[0], tuple(item[1])))
 
-        def neighbor(chrom):
+        def neighbor_with_rng(chrom, rng):
             result = list(chrom)
-            if n_gates and (not eligible or self.rng.random() < 0.5):
-                i = self.rng.randrange(n_gates)
-                result[i] = self.rng.choice(
+            if n_gates and (not eligible or rng.random() < 0.5):
+                i = rng.randrange(n_gates)
+                result[i] = rng.choice(
                     [result[i] + 1, result[i] - 1,
-                     self.rng.randrange(gate_domains[i])])
+                     rng.randrange(gate_domains[i])])
             elif eligible:
-                i = self.rng.randrange(len(eligible))
+                i = rng.randrange(len(eligible))
                 result[n_gates + i] ^= 1
             return normalize_chrom(result)
+
+        def neighbor(chrom):
+            return neighbor_with_rng(chrom, self.rng)
+
+        # Complete the H=0 safety search with the same registered GA budget as
+        # M3.  The auxiliary run occurs once per boundary, never inside a
+        # candidate fitness evaluation.  Small spaces use the shared exact
+        # enumeration path and consume no RNG.
+        if self.lookahead_horizon > 0 and self.ablation_policy == "optimize":
+            myopic_space = 1
+            for domain in gate_domains:
+                myopic_space *= domain
+                if myopic_space > 64:
+                    break
+            myopic_space *= 2 ** len(eligible)
+            if myopic_space <= 64:
+                domains = [range(domain) for domain in gate_domains]
+                domains.extend(range(2) for _ in eligible)
+                myopic_scored = score_unique(
+                    product(*domains) if domains else [()],
+                    include_forecast=False)
+            else:
+                myopic_population = build_seed_population(
+                    gate_domains, len(eligible), myopic_chrom[n_gates:],
+                    self.population_size, self.safety_rng,
+                    normalize=normalize_chrom,
+                    greedy_gate_genes=myopic_chrom[:n_gates])
+                myopic_scored = score_unique(
+                    myopic_population, include_forecast=False
+                )[:self.population_size]
+                for _ in range(self.iterations):
+                    offspring = []
+                    for _, chromosome in myopic_scored:
+                        pool = score_unique(
+                            (neighbor_with_rng(chromosome, self.safety_rng)
+                             for _ in range(self.neighbor_sample_size)),
+                            include_forecast=False)
+                        offspring.extend(
+                            chromosome for _, chromosome
+                            in pool[:self.neighbors_per_solution])
+                    myopic_scored = score_unique(
+                        [chromosome for _, chromosome in myopic_scored]
+                        + offspring, include_forecast=False
+                    )[:self.population_size]
+            myopic_chrom = normalize_chrom(myopic_scored[0][1])
 
         # Deterministic fast paths are shared by NL/LK.  The state key contains
         # exactly the visible forecast window, so H=0 cannot acquire hidden
@@ -2228,7 +2367,10 @@ class ResidentPlacer(VertexMatchingPlacer):
             self.ablation_fitness_mode,
             tuple(tuple(reg.current_pos(q)) for q in range(len(self.mapping[0]))),
             tuple(list_gate), visible_window, tuple(gate_domains), tuple(eligible),
-            min_returns,
+            min_returns, tuple(sorted(physical_forced_returns)),
+            tuple(sorted((q, use_layer, tuple(seat))
+                         for q, (use_layer, seat)
+                         in self.residency_commitments.items())),
         )
         cached_winner = self.transition_cache.get(state_key)
         search_mode = "ga"
@@ -2258,6 +2400,9 @@ class ResidentPlacer(VertexMatchingPlacer):
                     gate_domains, len(eligible), greedy, self.population_size,
                     self.rng, normalize=normalize_chrom,
                     greedy_gate_genes=greedy_chrom[:n_gates])
+                if self.lookahead_horizon > 0 and \
+                        self.ablation_policy == "optimize":
+                    population.extend((list(safe_chrom), list(greedy_chrom)))
                 scored = score_unique(population)[:self.population_size]
                 for _ in range(self.iterations):
                     offspring = []
@@ -2272,6 +2417,29 @@ class ResidentPlacer(VertexMatchingPlacer):
                     )[:self.population_size]
 
         best_chrom = normalize_chrom(scored[0][1])
+        lookahead_selection = "horizon"
+        safe_current_objective = None
+        horizon_current_objective = None
+        if self.lookahead_horizon > 0 and self.ablation_policy == "optimize":
+            # Ensure the safety candidate participates even in an LRU or
+            # truncated-population path, then apply a registered current-step
+            # Pareto guard.  No completed-circuit score is observed here.
+            # Preserve the horizon-selected residency pattern while projecting
+            # only its gate genes onto the H=0 physical incumbent.  This keeps
+            # the very mechanism being tested (cross-layer STAY) eligible for
+            # the safety path instead of comparing it against all-RETURN.  The
+            # decision bits remain byte-for-byte identical: this guard audits
+            # forecast-induced gate displacement, not the lookahead decision.
+            safe_chrom = normalize_chrom(
+                list(myopic_chrom[:n_gates]) + list(best_chrom[n_gates:]))
+            horizon_current_objective = fitness(
+                best_chrom, include_forecast=False)[0]
+            safe_current_objective = fitness(
+                safe_chrom, include_forecast=False)[0]
+            if (lookahead_selection == "horizon" and
+                    horizon_current_objective[:4] > safe_current_objective[:4]):
+                best_chrom = normalize_chrom(safe_chrom)
+                lookahead_selection = "myopic_safety"
         self.transition_cache[state_key] = tuple(best_chrom)
         self.transition_cache.move_to_end(state_key)
         while len(self.transition_cache) > self.transition_cache_limit:
@@ -2295,6 +2463,12 @@ class ResidentPlacer(VertexMatchingPlacer):
         # Hard repair is method-independent.  The repaired schedule is scored again
         # below, so the ledger never reports the stale pre-repair objective.
         self._repair_ghosts(placements, decisions)
+        for placement in placements:
+            for q, seat in zip(placement["gate"], placement["seats"]):
+                if q in target_pins and tuple(seat) != tuple(target_pins[q]):
+                    raise RuntimeError(
+                        f"ghost repair broke residency commitment for q{q}: "
+                        f"{seat} != {target_pins[q]}")
 
         def score_repaired():
             positions_t0 = {
@@ -2352,11 +2526,24 @@ class ResidentPlacer(VertexMatchingPlacer):
 
         for q, (kind, loc) in decisions.items():
             if kind == "RETURN":
+                self.residency_commitments.pop(q, None)
                 reg.return_to_storage(q, loc)
             elif kind == "RESEAT":
+                self.residency_commitments.pop(q, None)
                 reg.reseat(q, loc)
+            elif kind == "STAY" and self.lookahead_horizon > 0:
+                visible = self.forecast.next_use(q, layer)
+                if visible is None:
+                    self.residency_commitments.pop(q, None)
+                else:
+                    self.residency_commitments[q] = (
+                        visible[0], tuple(reg.zone_seat[q]))
         self._append_boundary(decisions)
         self._commit_round(next_layer, placements)
+        for q in participants:
+            commitment = self.residency_commitments.get(q)
+            if commitment is not None and commitment[0] <= next_layer:
+                self.residency_commitments.pop(q, None)
         self.decision_log.append({
             "layer": layer,
             "engine": "ga-v2",
@@ -2365,6 +2552,13 @@ class ResidentPlacer(VertexMatchingPlacer):
             "ablation_policy": self.ablation_policy,
             "fitness_phase_mode": self.ablation_fitness_mode,
             "search_mode": search_mode,
+            "lookahead_selection": lookahead_selection,
+            "safe_current_objective": (
+                list(safe_current_objective[:4])
+                if safe_current_objective is not None else None),
+            "horizon_current_objective": (
+                list(horizon_current_objective[:4])
+                if horizon_current_objective is not None else None),
             "stay": sum(1 for v in decisions.values() if v[0] == "STAY"),
             "return": sum(1 for v in decisions.values() if v[0] == "RETURN"),
             "reseat": sum(1 for v in decisions.values() if v[0] == "RESEAT"),
@@ -2374,6 +2568,11 @@ class ResidentPlacer(VertexMatchingPlacer):
                 if self.forecast.next_use(q, layer) is None),
             "forced_e2": 0,
             "capacity": min_returns,
+            "horizon_guard_returns": len(horizon_forced_returns),
+            "physical_guard_returns": len(physical_forced_returns),
+            "physical_guard": physical_guard_details,
+            "committed_target_atoms": len(target_pins),
+            "active_commitments": len(self.residency_commitments),
             "ghost_fix": getattr(self, "ghost_fixes", 0),
             "participants": len(participants),
             "score": [repaired_score[0], repaired_score[1],

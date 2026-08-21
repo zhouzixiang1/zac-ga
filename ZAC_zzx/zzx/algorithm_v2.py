@@ -319,6 +319,38 @@ class PhysicalIncrementalCost:
         )
         return breakdown.objective(chromosome), breakdown
 
+    def residency_break_even(
+            self, round_trip_phases: Iterable[MovementPhaseCost],
+            idle_exposures: int) -> tuple[bool, float, float]:
+        """Conservative physical admission test for a cross-layer ``STAY``.
+
+        A resident is admitted only when the Rydberg-idle loss incurred before
+        its visible reuse is smaller than the *atom-local* loss of a dedicated
+        RETURN and re-entry.  Transfer errors and the moving atom's coherence
+        are unavoidable local costs.  Coherence accumulated by other atoms is
+        deliberately not credited here because phase batching can amortise it;
+        the complete candidate objective still accounts for that term exactly.
+
+        The returned tuple is ``(admit_stay, idle_nll, avoided_move_nll)``.
+        Ties choose RETURN, giving the guard a deterministic safety boundary.
+        """
+        phases = tuple(round_trip_phases)
+        if idle_exposures < 0:
+            raise ValueError("idle_exposures 不得为负")
+        idle_nll = -idle_exposures * (
+            log(self.F_EXC) + log1p(-self.T_RYDBERG_US / self.T2_US))
+        movers = sum(phase.movers for phase in phases)
+        avoided_move_nll = -2 * movers * log(self.F_TRANSFER)
+        for phase in phases:
+            if phase.move_time_us <= 0 or phase.movers <= 0:
+                continue
+            mover_idle = max(0.0, phase.move_time_us - 2 * self.T_TRANSFER_US)
+            if mover_idle >= self.T2_US:
+                return True, idle_nll, float("inf")
+            avoided_move_nll -= phase.movers * log1p(
+                -mover_idle / self.T2_US)
+        return idle_nll < avoided_move_nll, idle_nll, avoided_move_nll
+
     @staticmethod
     def _ood(chromosome, phases, idle_exposures, transfers):
         breakdown = PhysicalCostBreakdown(

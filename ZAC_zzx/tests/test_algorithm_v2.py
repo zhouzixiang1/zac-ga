@@ -231,6 +231,21 @@ class TestPhysicalObjective(unittest.TestCase):
         self.assertGreater(result.transfer_nll, 0.0)
         self.assertGreater(result.coherence_nll, 0.0)
 
+    def test_residency_break_even_rejects_two_idle_pulses(self):
+        model = PhysicalIncrementalCost(13)
+        leg_out = (10.0, 0.0, 0.0, 10.0, 0.0)
+        leg_back = (10.0, 10.0, 0.0, 0.0, 0.0)
+        phases = (
+            model.movement_phase([leg_out], owners=[0]),
+            model.movement_phase([leg_back], owners=[0]),
+        )
+        one_pulse = model.residency_break_even(phases, 1)
+        two_pulses = model.residency_break_even(phases, 2)
+        self.assertTrue(one_pulse[0])
+        self.assertFalse(two_pulses[0])
+        self.assertLess(one_pulse[1], one_pulse[2])
+        self.assertGreater(two_pulses[1], two_pulses[2])
+
     def test_multirow_move_time_matches_router_expansion(self):
         arch = make_arch()
         compiler = ZAC_zzx()
@@ -282,6 +297,26 @@ class TestResidentDecisionMechanics(unittest.TestCase):
             self.assertEqual(placer.decision_log, [])
             self.assertEqual(list(placer.forecast.visible_future(0)), [])
             self.assertEqual(placer.nu.rounds, {})
+
+    def test_schema2_compiler_never_runs_an_auxiliary_full_schedule_baseline(self):
+        """H=0 must not bypass ForecastOracle through a post-hoc ZAC stream."""
+        initial = [(0, i, 0) for i in range(6)]
+        schedule = [[[0, 1]], [[2, 3]], [[0, 2]]]
+        compiler = ZAC_zzx()
+        compiler.parse_setting({
+            **load_setting("ours_nl_v2.json"),
+            "name": "horizon-boundary-regression",
+        })
+        compiler.architecture = self.arch
+        compiler.qubit_mapping = [initial]
+        compiler.gate_scheduling = schedule
+        compiler.dynamic_placement = True
+        compiler.reuse_qubit = [set() for _ in schedule]
+        with patch(
+                "zac.placer.vmplacer.VertexMatchingPlacer.run",
+                side_effect=AssertionError("full-schedule baseline leaked")):
+            compiler.place_qubit_intermedeiate()
+        self.assertEqual(len(compiler.qubit_mapping), 2 * len(schedule) + 1)
 
     def test_return_matching_uses_the_selected_subset(self):
         initial = [(0, i, 0) for i in range(4)]
@@ -416,6 +451,50 @@ class TestResidentDecisionMechanics(unittest.TestCase):
                    [set() for _ in schedule])
         first = placer.decision_log[0]
         self.assertEqual((first["stay"], first["return"]), (1, 1))
+
+    def test_two_idle_pulse_residency_is_rejected_by_physical_guard(self):
+        initial = [(0, i, 0) for i in range(8)]
+        # At boundary 0, q0 is not reused until L+3: retaining it would incur
+        # two Rydberg-idle pulses before the visible gate (q0,q6).
+        schedule = [
+            [[0, 1]], [[2, 3]], [[4, 5]], [[0, 6]],
+        ]
+        placer = ResidentPlacer(
+            initial, seed=0, experiment_schema=2,
+            method_id="ours_lk", objective="physical_log_fidelity",
+            lookahead_horizon=2, engine="ga", fitness_cache=True,
+            population_size=6, iterations=2,
+            neighbors_per_solution=2, neighbor_sample_size=6)
+        placer.run(self.arch, [initial], schedule, True,
+                   [set() for _ in schedule])
+        first = placer.decision_log[0]
+        q0_guard = next(row for row in first["physical_guard"]
+                        if row["q"] == 0)
+        self.assertEqual(q0_guard["idle_exposures"], 2)
+        self.assertTrue(q0_guard["forced_return"])
+        self.assertEqual(first["physical_guard_returns"], 1)
+        self.assertNotEqual(placer.mapping[1][0], placer.mapping[2][0])
+
+    def test_dual_horizon_search_is_byte_deterministic(self):
+        initial = [(0, i, 0) for i in range(8)]
+        schedule = [
+            [[0, 1]], [[2, 3]], [[0, 4]], [[1, 5]],
+        ]
+        outputs = []
+        for _ in range(2):
+            placer = ResidentPlacer(
+                initial, seed=7, experiment_schema=2,
+                method_id="ours_lk", objective="physical_log_fidelity",
+                lookahead_horizon=2, engine="ga", fitness_cache=True,
+                population_size=6, iterations=3,
+                neighbors_per_solution=2, neighbor_sample_size=8)
+            placer.run(self.arch, [initial], schedule, True,
+                       [set() for _ in schedule])
+            outputs.append(json.dumps({
+                "mapping": placer.mapping,
+                "decision_log": placer.decision_log,
+            }, sort_keys=True, separators=(",", ":")))
+        self.assertEqual(outputs[0], outputs[1])
 
     def test_returned_partner_seat_is_reused_without_moving_shared_atom(self):
         """The back phase must make a RETURNed gate seat available to out.
