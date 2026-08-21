@@ -48,7 +48,10 @@ def main():
     z = zac_rows()
     # ---- ICCAD（论文管线）：15 复现 + 3 补跑 ----
     # qmap 3.2.0（论文版本）全量重采：18 电路 ×2 映射，步数 26/30 与
-    # Table I 精确一致；rearr 原始单位 μs，行构造时 ÷1000 对齐论文 ms
+    # Table I 精确一致；rearr 原始单位 μs，行构造时 ÷1000 对齐论文 ms。
+    # ⚠ 单位坑（已修，2026-08-21）：stats().placeTime/routeTime/totalTime 实测
+    # 也是 μs（wall 2.1ms ↔ 1727），qmap_table1_v32.json 的 place_ms/route_ms/
+    # total_ms 已就地 ÷1000 为真 ms——重新采集时必须同样换算
     iccad = {}
     for r in json.load(open(ROOT / "experiments/results/qmap_table1_v32.json")):
         key = f"{r['circuit']}_n{r['qubits']}".replace(

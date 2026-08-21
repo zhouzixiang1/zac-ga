@@ -152,7 +152,7 @@ def main():
             n, v32[n]["astar"]["qubits"], g2, ag["layers"], ag["max_gates"],
             z[n][0], z[n][1], z[n][2], z[n][3],
             ag["steps"], asr["steps"], round(asr["rearr_us"], 1),
-            sc.get("fid", "—"), round(asr["total_ms"] / 1000, 3),
+            sc.get("fid", "—"), round(asr["total_ms"] / 1000, 3),  # json 已修为真 ms（stats 原始单位 μs）
             nl[n][0], nl[n][1], nl[n][2], nl[n][3],
             lk[n][0], lk[n][1], lk[n][2], lk[n][3]])
     ws = wb.active
