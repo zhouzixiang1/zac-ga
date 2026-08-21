@@ -114,6 +114,21 @@ class TestPhysicalExpansion(unittest.TestCase):
             set(),
         )
 
+    def test_idle_resident_depends_on_zone_rydberg_pulse(self):
+        compiler = ZAC_zzx()
+        compiler.architecture = make_arch()
+        compiler.qubit_dependency = [1, 9]
+        compiler.result_json = {"instructions": [{
+            "type": "rydberg",
+            "id": 7,
+            "zone_id": 0,
+        }]}
+        # Toy architecture arrays 1 and 2 belong to entanglement zone 0;
+        # storage array 0 has entanglement_id=-1.
+        compiler._bind_resident_rydberg_dependencies(
+            [[1, 0, 0], [0, 0, 0]], 0)
+        self.assertEqual(compiler.qubit_dependency, [7, 9])
+
 
 class TestSchema2Contract(unittest.TestCase):
     def test_registered_pair_differs_only_in_horizon_identity_and_output(self):

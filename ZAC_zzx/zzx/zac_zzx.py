@@ -122,6 +122,26 @@ class ZAC_zzx(ZAC):
         self.process_movement_layer(set_aod, mapping_from, mapping_to)
         return 1
 
+    def _bind_resident_rydberg_dependencies(self, gate_mapping, first_instruction):
+        """Make every atom exposed by a Rydberg pulse depend on that pulse.
+
+        ZAC's original dependency ledger updates only gate participants.  A
+        resident idle atom is nevertheless inside the illuminated zone and is
+        counted as an excitation exposure; loading it while the pulse is still
+        active is physically impossible.  Preserve a later atom-local 1Q
+        dependency by taking the largest instruction id.
+        """
+        for instruction in self.result_json["instructions"][first_instruction:]:
+            if instruction.get("type") != "rydberg":
+                continue
+            zone_id = int(instruction["zone_id"])
+            instruction_id = int(instruction["id"])
+            for q, location in enumerate(gate_mapping):
+                slm = self.architecture.dict_SLM[int(location[0])]
+                if slm.entanglement_id == zone_id:
+                    self.qubit_dependency[q] = max(
+                        self.qubit_dependency[q], instruction_id)
+
     def parse_setting(self, setting: dict):
         schema = setting.get("experiment_schema")
         if schema is not None and schema != 2:
@@ -595,7 +615,9 @@ class ZAC_zzx(ZAC):
                                     "atoms": len(moved) if batch else 0})
 
         # ---- 门执行层（原版）：一次 rydberg 做完本轮全部 2q 门，1q 挂在后面 ----
+        first_gate_inst = len(self.result_json["instructions"])
         self.process_gate_layer(layer, gate_mapping)
+        self._bind_resident_rydberg_dependencies(gate_mapping, first_gate_inst)
         last_gate_inst = len(self.result_json["instructions"]) - 1
 
         # ---- 后半程（back 相）：全部映射增量者（映射流保证 = 回撤者），含闲住驻留者 ----
