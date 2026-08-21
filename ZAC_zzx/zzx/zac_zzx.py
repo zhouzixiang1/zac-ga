@@ -25,7 +25,7 @@ from zac.zac import ZAC
 
 from zzx.algorithm_v2 import validate_schema2_setting
 from zzx.ghost import ghost_hits
-from zzx.zcost import greedy_phase_batches, phase_batches
+from zzx.zcost import compatible_2d, greedy_phase_batches, phase_batches
 from math import hypot
 
 
@@ -64,6 +64,63 @@ class ZAC_zzx(ZAC):
         self.zzx_route_log: list = []    # 路由账本：每段搬运的 (层, 相位, 批数, 解法)
         self.zzx_placer_preview: list = []   # 放置预演账本（对账用）
         self.zzx_decision_log: list = []     # 驻留决策账本（每层 STAY/RETURN 计数）
+        # The phase replay validates batches in emitted route order.  Preserve
+        # that order when the single AOD timeline is assigned; duration-based
+        # reordering would move previously audited ghosts before/after a batch.
+        self.strict_aod_route_order = True
+        self._zzx_waypoint_plan: dict = {}
+
+    def _safe_slm_waypoint(self, q, mapping_from, mapping_to, pos):
+        """Find one vacant legal SLM site that makes both single-atom legs safe.
+
+        This is a last-resort physical repair for baseline placements whose
+        direct single-atom line crosses a stationary atom.  It preserves the
+        baseline's requested endpoint and records the real extra load/move/
+        store batch instead of silently perturbing a trajectory.
+        """
+        arch = self.architecture
+        start = arch.exact_SLM_location_tuple(tuple(mapping_from[q]))
+        end = arch.exact_SLM_location_tuple(tuple(mapping_to[q]))
+        occupied = {tuple(value) for atom, value in pos.items() if atom != q}
+        ghosts = [(atom, *value) for atom, value in pos.items() if atom != q]
+        candidates = []
+        preferred = set(getattr(arch, "storage_zone", []))
+        for slm_id in sorted(arch.dict_SLM):
+            slm = arch.dict_SLM[slm_id]
+            for row in range(slm.n_r):
+                for column in range(slm.n_c):
+                    location = (slm_id, row, column)
+                    point = arch.exact_SLM_location_tuple(location)
+                    if point in occupied or point == start or point == end:
+                        continue
+                    distance = hypot(start[0] - point[0], start[1] - point[1])
+                    distance += hypot(point[0] - end[0], point[1] - end[1])
+                    candidates.append((0 if slm_id in preferred else 1,
+                                       distance, location, point))
+        for _zone_rank, _distance, location, point in sorted(candidates):
+            first = (hypot(start[0] - point[0], start[1] - point[1]),
+                     *start, *point)
+            second = (hypot(point[0] - end[0], point[1] - end[1]),
+                      *point, *end)
+            if not ghost_hits([first], ghosts) and not ghost_hits([second], ghosts):
+                return location
+        return None
+
+    def _process_ghost_safe_movement(self, set_aod, mapping_from, mapping_to):
+        """Emit a repaired route and return its number of physical batches."""
+        if len(set_aod) == 1:
+            q = next(iter(set_aod))
+            key = (q, tuple(mapping_from[q]), tuple(mapping_to[q]))
+            waypoint = self._zzx_waypoint_plan.pop(key, None)
+            if waypoint is not None:
+                intermediate = deepcopy(mapping_from)
+                intermediate[q] = list(waypoint)
+                self.process_movement_layer({q}, mapping_from, intermediate)
+                self.process_movement_layer({q}, intermediate, mapping_to)
+                self.zzx_ghost_splits = getattr(self, "zzx_ghost_splits", 0) + 1
+                return 2
+        self.process_movement_layer(set_aod, mapping_from, mapping_to)
+        return 1
 
     def parse_setting(self, setting: dict):
         schema = setting.get("experiment_schema")
@@ -136,6 +193,92 @@ class ZAC_zzx(ZAC):
             self.zzx_decision_log = list(placer.decision_log)
 
     # ------------------------------------------------------------ 路由接线
+    def _expanded_batch_conflicts(self, members, owner, mapping_from,
+                                  mapping_to, pos):
+        """Replay the exact parking expansion for a proposed physical batch.
+
+        Endpoint-compatible legs are not automatically compatible after ZAC's
+        staggered row activation: a parked column can temporarily merge with a
+        neighbouring column, and a one-micron parking detour can sweep across a
+        stationary atom.  The formal router therefore previews the very same
+        ``expand_arrangement`` implementation used for native code generation
+        and returns the member indices responsible for the first physical
+        conflict.  An empty set means every expanded MOVE phase is AOD ordered
+        and ghost safe at the current replay positions.
+        """
+        arch = self.architecture
+        exact = lambda loc: arch.exact_SLM_location_tuple(tuple(loc))
+        qubits = sorted(owner[index] for index in members)
+        rows = {}
+        for q in qubits:
+            rows.setdefault(exact(mapping_from[q])[1], []).append(q)
+        row_qubits = [rows[y] for y in sorted(rows)]
+        begin_locs = [
+            [[q, *mapping_from[q]] for q in row]
+            for row in row_qubits
+        ]
+        end_locs = [
+            [[q, *mapping_to[q]] for q in row]
+            for row in row_qubits
+        ]
+        details = self.expand_arrangement({
+            "begin_locs": begin_locs,
+            "end_locs": end_locs,
+        })
+        member_of = {q: index for index, q in owner.items() if index in members}
+        physical = {q: tuple(pos[q]) for q in qubits}
+        held = set()
+
+        for detail in details:
+            kind = str(detail.get("type", ""))
+            if kind == "activate":
+                for row_id in detail.get("row_id", []):
+                    held.update(row_qubits[int(row_id)])
+                continue
+            if not kind.startswith("move"):
+                continue
+            coordinates = {
+                int(item["id"]): (float(item["x"]), float(item["y"]))
+                for row in detail.get("end_coord", []) for item in row
+            }
+            phase_legs = []
+            phase_owners = []
+            phase_positions = dict(pos)
+            phase_positions.update(physical)
+            for q in sorted(held):
+                start = physical[q]
+                end = coordinates.get(q, start)
+                distance = hypot(start[0] - end[0], start[1] - end[1])
+                if distance > 1e-9:
+                    phase_legs.append((distance, *start, *end))
+                    phase_owners.append(q)
+
+            vectors = [(leg[1], leg[3], leg[2], leg[4]) for leg in phase_legs]
+            for left in range(len(vectors)):
+                for right in range(left + 1, len(vectors)):
+                    if not compatible_2d(vectors[left], vectors[right]):
+                        return {
+                            member_of[phase_owners[left]],
+                            member_of[phase_owners[right]],
+                        }
+
+            moving = set(phase_owners)
+            ghosts = [(q, *location) for q, location in phase_positions.items()
+                      if q not in moving]
+            hits = ghost_hits(phase_legs, ghosts, detail=True)
+            if hits:
+                _gid, _gx, _gy, col_track, row_track, _s = hits[0]
+                bad = {
+                    member_of[q]
+                    for q, leg in zip(phase_owners, phase_legs)
+                    if (leg[1], leg[3]) == col_track
+                    or (leg[2], leg[4]) == row_track
+                }
+                return bad or {member_of[phase_owners[0]]}
+            for q in held:
+                physical[q] = coordinates.get(q, physical[q])
+        return set()
+
     def _coloring_batches(self, remain_graph, mapping_from, mapping_to):
         """把 remain_graph 按注册的 coloring/greedy 策略一次性分批。
 
@@ -165,14 +308,29 @@ class ZAC_zzx(ZAC):
             命中批拆腿策略：detail 给出肇事列/行轨迹，映射回贡献腿移出。
             """
             clean, deferred = [], []
-            for members in batch_ids:
+            queue = [list(members) for members in batch_ids]
+            while queue:
+                members = queue.pop(0)
                 pending = list(members)
+                waypoint_repaired = False
                 while True:
                     ghosts = [(q, *pos[q]) for q in range(n_atoms)
                               if q not in {owner[i] for i in pending}]
                     batch_legs = [legs[i] for i in pending]
                     hits = ghost_hits(batch_legs, ghosts, detail=True)
                     if not hits:
+                        break
+                    if len(pending) == 1:
+                        q = owner[pending[0]]
+                        waypoint = self._safe_slm_waypoint(
+                            q, mapping_from, mapping_to, pos)
+                        if waypoint is None:
+                            deferred.append(pending[0])
+                            pending = []
+                            break
+                        key = (q, tuple(mapping_from[q]), tuple(mapping_to[q]))
+                        self._zzx_waypoint_plan[key] = waypoint
+                        waypoint_repaired = True
                         break
                     _, _, _, ct, rt, _s = hits[0]
                     bad = {i for i in pending
@@ -184,7 +342,48 @@ class ZAC_zzx(ZAC):
                     pending = [i for i in pending if i not in bad]
                     if not pending:
                         break
+                if pending and waypoint_repaired:
+                    clean.append(pending)
+                    i = pending[0]
+                    pos[owner[i]] = (legs[i][3], legs[i][4])
+                    continue
                 if pending:
+                    expanded_bad = self._expanded_batch_conflicts(
+                        pending, owner, mapping_from, mapping_to, pos)
+                    if expanded_bad:
+                        if len(pending) == 1:
+                            q = owner[pending[0]]
+                            waypoint = self._safe_slm_waypoint(
+                                q, mapping_from, mapping_to, pos)
+                            if waypoint is None:
+                                raise ValueError(
+                                    f"single-leg expanded route remains unsafe for atom {q}")
+                            key = (q, tuple(mapping_from[q]), tuple(mapping_to[q]))
+                            self._zzx_waypoint_plan[key] = waypoint
+                            clean.append(pending)
+                            pos[q] = (legs[pending[0]][3], legs[pending[0]][4])
+                            continue
+                        # First preserve as much concurrency as possible by
+                        # deferring only the phase contributors.  If every leg
+                        # contributes (for example two columns merge only after
+                        # parking), split deterministically by pickup row.  A
+                        # one-row batch has no parking detour; individual legs
+                        # are the final hard-safe fallback.
+                        bad = [i for i in pending if i in expanded_bad]
+                        keep = [i for i in pending if i not in expanded_bad]
+                        if keep and bad:
+                            queue.insert(0, keep)
+                            deferred.extend(bad)
+                            continue
+                        row_groups = {}
+                        for i in pending:
+                            y = legs[i][2]
+                            row_groups.setdefault(y, []).append(i)
+                        groups = [row_groups[y] for y in sorted(row_groups)]
+                        if len(groups) == 1:
+                            groups = [[i] for i in pending]
+                        queue[0:0] = groups
+                        continue
                     clean.append(pending)
                     for i in pending:               # 本批落座，推进重放位置
                         pos[owner[i]] = (legs[i][3], legs[i][4])
@@ -210,10 +409,14 @@ class ZAC_zzx(ZAC):
             if not deferred:
                 break
             if round_i == 2:
-                # 单腿恒干净（放置层保证 vs {批前,批后} 位置）→ 单飞兜底
-                final += [[i] for i in sorted(deferred)]
-                for i in sorted(deferred):
-                    pos[owner[i]] = (legs[i][3], legs[i][4])
+                # 最终单飞仍走同一真实展开审计；绝不在 repair 后绕过重放。
+                singles = [[i] for i in sorted(deferred)]
+                more, unresolved = audit_pass(singles, pos)
+                if unresolved:
+                    atoms = [owner[i] for i in unresolved]
+                    raise ValueError(
+                        f"ghost-safe routing could not place atoms {atoms}")
+                final += more
                 deferred = []
                 break
             sub = sorted(deferred)
@@ -265,7 +468,7 @@ class ZAC_zzx(ZAC):
         """resident 模式独占路径；其余走 ZAC_new 的着色路由或原版。"""
         if self.placer_kind == "resident":
             return self._route_resident(layer)
-        if self.routing_strategy != "coloring":
+        if self.routing_strategy not in {"coloring", "greedy"}:
             return super().route_qubit_mis(layer)
 
         # ---- 前半程：宿舍 → 车间（与原版 route_qubit_mis 逐行对应）----
@@ -298,8 +501,8 @@ class ZAC_zzx(ZAC):
                         (window[i] for i in members))
             for members in batches:
                 set_aod = {window[i] for i in members}
-                self.process_movement_layer(set_aod, initial_mapping, gate_mapping)
-                batch += 1
+                batch += self._process_ghost_safe_movement(
+                    set_aod, initial_mapping, gate_mapping)
             remain_graph = [q for q in remain_graph if q not in moved]
         self.zzx_route_log.append({"layer": layer, "phase": "out",
                                     "batches": batch, "method": method,
@@ -323,14 +526,13 @@ class ZAC_zzx(ZAC):
                     window = (remain_graph[:self.window_size] if self.use_window
                               else remain_graph)
                     chi, batches, method = self._coloring_batches(
-                        window, final_mapping, gate_mapping)
+                        window, gate_mapping, final_mapping)
                     moved = set(q for members in batches for q in
                                 (window[i] for i in members))
                     for members in batches:
                         set_aod = {window[i] for i in members}
-                        self.process_movement_layer(set_aod, gate_mapping,
-                                                    final_mapping)
-                        batch += 1
+                        batch += self._process_ghost_safe_movement(
+                            set_aod, gate_mapping, final_mapping)
                     remain_graph = [q for q in remain_graph if q not in moved]
                 self.zzx_route_log.append({"layer": layer, "phase": "back",
                                             "batches": batch, "method": method,
@@ -385,8 +587,8 @@ class ZAC_zzx(ZAC):
         moved = set()
         for set_aod, method in self._phase_batches(remain_graph, initial_mapping,
                                                    gate_mapping):
-            self.process_movement_layer(set_aod, initial_mapping, gate_mapping)   # ZAC 原机
-            batch += 1
+            batch += self._process_ghost_safe_movement(
+                set_aod, initial_mapping, gate_mapping)
             moved |= set_aod
         self.zzx_route_log.append({"layer": layer, "phase": "out",
                                     "batches": batch, "method": method,
@@ -415,8 +617,8 @@ class ZAC_zzx(ZAC):
             moved = set()
             for set_aod, method in self._phase_batches(remain_back, gate_mapping,
                                                        final_mapping):
-                self.process_movement_layer(set_aod, gate_mapping, final_mapping)
-                batch += 1
+                batch += self._process_ghost_safe_movement(
+                    set_aod, gate_mapping, final_mapping)
                 moved |= set_aod
             self.zzx_route_log.append({"layer": layer, "phase": "back",
                                         "batches": batch, "method": method,

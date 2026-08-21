@@ -6,12 +6,14 @@
 
 ## 方法边界
 
-- M1：原版 ZAC，正式主实验读取同一 canonical QASM，`resyn=false`。
-- M2：`mqt.qmap==3.2.0` 的 routing-aware A*，固定论文参数，禁止 routing-agnostic fallback。
+- M1：原版 ZAC 的放置与 maximal-independent-set 端点决策，正式主实验读取同一 canonical QASM，`resyn=false`；之后只执行公共物理合法化层。
+- M2：`mqt.qmap==3.2.0` 的 routing-aware A*，固定论文参数，禁止 routing-agnostic fallback；保留 QMAP 的端点和逐原子轨迹，再执行同一口径的公共物理合法化层。
 - M3：跨层驻留 GA，`lookahead_horizon=0`；只能看到当前边界和目标 2Q 层。
 - M4：与 M3 的有效配置只差 `method_id`、输出目录和 `lookahead_horizon=2`；可额外读取后续两个 2Q 层。
 
 创新声明只能落在跨越非相邻层的驻留、真实物理代价、滚动多层前瞻、分相位 ghost 硬保证和有界内存编译上，不能声称首次 routing-aware placement 或首次 look-ahead。
+
+四方法最终进入评分器的轨迹都必须满足同一 ghost 硬约束。原 ZAC 和 QMAP 3.2 的冲突图没有把静止原子纳入判定，因此原始 native 轨迹另存为证据，但不能直接冒充可执行结果：公共合法化层不改变门序或目标落位，只拆分实际非法的 batch；若单原子原路径仍撞 ghost，则显式加入空闲合法 SLM waypoint。增加的 Move batch、Move phase、transfer 和时间全部进入统一指标，repair/split 计数写入 `compiler_stats.json`。M3/M4 在生成期调用同一逐 phase 重放逻辑，repair 后必须再次验证；任何无法合法化的轨迹仍然 fail-closed。
 
 ## 正式执行顺序
 

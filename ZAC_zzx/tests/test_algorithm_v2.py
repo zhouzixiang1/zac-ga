@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from zac.ds.architecture import Architecture  # noqa: E402
+from zac.router.router import Router_mixin  # noqa: E402
 from zzx.algorithm_v2 import (  # noqa: E402
     ForecastBoundaryError,
     ForecastOracle,
@@ -35,6 +36,83 @@ def make_arch():
     arch = Architecture(spec)
     arch.preprocessing()
     return arch
+
+
+class _ExpansionArchitecture:
+    """Minimal coordinate oracle for the reused-column parking regression."""
+
+    _positions = {
+        (1, 1, 0): (35.0, 317.0),
+        (1, 2, 0): (35.0, 327.0),
+        (1, 3, 1): (47.0, 337.0),
+        (1, 5, 1): (47.0, 357.0),
+        (0, 0, 0): (59.0, 294.0),
+        (0, 1, 0): (60.0, 307.0),
+        (2, 0, 0): (49.0, 317.0),
+        (2, 1, 0): (61.0, 337.0),
+    }
+
+    def exact_SLM_location(self, array, row, column):
+        return self._positions[(array, row, column)]
+
+    def exact_SLM_location_tuple(self, location):
+        return self._positions[tuple(location)]
+
+
+class _ExpansionRouter(Router_mixin):
+    PARKING_DIST = 1
+
+    def __init__(self):
+        self.architecture = _ExpansionArchitecture()
+
+
+class TestPhysicalExpansion(unittest.TestCase):
+    def test_reused_parked_column_moves_every_held_atom(self):
+        details = _ExpansionRouter().expand_arrangement({
+            "begin_locs": [
+                [[8, 1, 1, 0]],
+                [[4, 1, 2, 0]],
+            ],
+            "end_locs": [
+                [[8, 1, 3, 1]],
+                [[4, 1, 5, 1]],
+            ],
+        })
+        shift_back = details[2]
+        big_move = details[4]
+        self.assertEqual(shift_back["move_type"], "before")
+        self.assertEqual(
+            shift_back["end_coord"][0][0],
+            {"id": 8, "x": 35.0, "y": 318.0},
+        )
+        self.assertEqual(big_move["begin_coord"][0][0]["x"], 35.0)
+        self.assertEqual(big_move["begin_coord"][1][0]["x"], 35.0)
+
+    def test_endpoint_safe_batch_is_split_when_parking_merges_columns(self):
+        compiler = ZAC_zzx()
+        compiler.architecture = _ExpansionArchitecture()
+        mapping_from = [[0, 0, 0], [0, 1, 0]]
+        mapping_to = [[2, 0, 0], [2, 1, 0]]
+        owner = {0: 0, 1: 1}
+        positions = {
+            q: compiler.architecture.exact_SLM_location_tuple(mapping_from[q])
+            for q in range(2)
+        }
+        self.assertEqual(
+            compiler._expanded_batch_conflicts(
+                [0, 1], owner, mapping_from, mapping_to, positions),
+            {0, 1},
+        )
+        self.assertEqual(
+            compiler._expanded_batch_conflicts(
+                [0], owner, mapping_from, mapping_to, positions),
+            set(),
+        )
+        self.assertEqual(
+            compiler._expanded_batch_conflicts(
+                [1], owner, mapping_from, mapping_to, positions),
+            set(),
+        )
 
 
 class TestSchema2Contract(unittest.TestCase):

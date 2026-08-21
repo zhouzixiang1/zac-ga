@@ -312,7 +312,10 @@ class Router_mixin:
         # seperate qubits in list_aod_qubit into multiple lists where qubits in one list can pick up simultaneously
         # we use row-based pick up
         pickup_dict = dict() # key: array and row, value: a list of qubit in the same row
-        for q in set_aod_qubit:
+        qubit_order = (sorted(set_aod_qubit)
+                       if getattr(self, "strict_aod_route_order", False)
+                       else set_aod_qubit)
+        for q in qubit_order:
             x, y = self.architecture.exact_SLM_location_tuple(initial_mapping[q])
             if y in pickup_dict:
                 pickup_dict[y].append(q)
@@ -330,7 +333,10 @@ class Router_mixin:
 
         set_qubit_dependency = set()
         set_site_dependency = set()
-        for dict_key in pickup_dict:
+        row_order = (sorted(pickup_dict)
+                     if getattr(self, "strict_aod_route_order", False)
+                     else pickup_dict)
+        for dict_key in row_order:
             # collect set of aod qubits to pick up
             list_aod_qubits.append(pickup_dict[dict_key])
             row_begin_location = []
@@ -558,8 +564,18 @@ class Router_mixin:
                 continue
             duration = self.get_duration(self.result_json['instructions'][idx])
             list_instruction_duration[duration_idx].append((duration, idx))
-        list_instruction_duration[0] = sorted(list_instruction_duration[0], reverse=True)
-        list_instruction_duration[1] = sorted(list_instruction_duration[1], reverse=True)
+        if getattr(self, "strict_aod_route_order", False):
+            # Ghost-safe routing replays the exact batch sequence before code
+            # generation.  With one AOD, changing that sequence by sorting on
+            # duration changes which atoms are stationary during later moves
+            # and invalidates the proof.  The original ZAC path keeps its
+            # duration heuristic; Schema-2 resident routing is deterministic
+            # and follows instruction order.
+            list_instruction_duration[0].sort(key=lambda item: item[1])
+            list_instruction_duration[1].sort(key=lambda item: item[1])
+        else:
+            list_instruction_duration[0] = sorted(list_instruction_duration[0], reverse=True)
+            list_instruction_duration[1] = sorted(list_instruction_duration[1], reverse=True)
         # assign instruction according to the duration in descending order
         # print("list_instruction_duration")
         # print(list_instruction_duration)
@@ -736,6 +752,20 @@ class Router_mixin:
 
         # assign AOD column ids based on all x coords needed
         col_x_to_id = {all_col_x[i]: i for i in range(len(all_col_x))}
+        # Rows are activated one at a time.  Once an atom is loaded, however,
+        # it remains attached to both of its AOD beams until the final
+        # deactivation.  The historic expansion only updated coordinates in
+        # the row currently being activated.  Reusing a parked column in a
+        # later row therefore left atoms already held by that column at the
+        # stale parked x coordinate, even though the physical column had just
+        # shifted back.  Besides reporting the wrong trajectory and duration,
+        # that produced an apparently many-to-one, AOD-incompatible big move.
+        # Track which rows are already held so every column movement is
+        # propagated to all atoms bound to that beam.
+        loaded_rows = set()
+
+        def col_id_for(row_index, atom_index):
+            return col_x_to_id[init_coords[row_index][atom_index]["x"]]
         # ---------------------------------------------------------------------
         
         # -------------------- activation and parking -------------------------
@@ -812,14 +842,20 @@ class Router_mixin:
                     shift_back["col_x_end"].append(col_x)
                     shift_back["col_loc_begin"].append([-1, -1])
                     shift_back["col_loc_end"].append(col_loc)
-                    # since there's a shift, update the coords of the qubit
-                    coords[row_id][j]["x"] = col_x
+                    # Moving an already-active column moves every atom held by
+                    # that beam, not the (still unheld) atom in the row about
+                    # to be activated.
+                    for held_row in loaded_rows:
+                        for held_index in range(len(coords[held_row])):
+                            if col_id_for(held_row, held_index) == col_id:
+                                coords[held_row][held_index]["x"] = col_x
             
             shift_back["end_coord"] = deepcopy(coords)
 
             if len(shift_back["col_id"]) != 0:
                 details.append(shift_back)
             details.append(activate)
+            loaded_rows.add(row_id)
 
             if row_id < len(inst["begin_locs"]) - 1:
             # parking movement after the activation
@@ -843,6 +879,7 @@ class Router_mixin:
                     "begin_coord": deepcopy(coords),
                     "end_coord": [],
                 }
+                parked_col_ids = set()
                 for j, loc in enumerate(locs):
                     # col_x = self.architecture.exact_SLM_location(
                     #     loc["a"],
@@ -862,8 +899,15 @@ class Router_mixin:
                     parking["col_x_end"].append(col_x + self.PARKING_DIST)
                     parking["col_loc_begin"].append(col_loc)
                     parking["col_loc_end"].append([-1, -1])
-                    coords[row_id][j]["x"] = parking["col_x_end"][-1]
-                    coords[row_id][j]["y"] = parking["row_y_end"][0]
+                    parked_col_ids.add(col_id)
+                # The row beam only carries the newly activated row, whereas
+                # each parked column carries all atoms already loaded on it.
+                for atom_index in range(len(coords[row_id])):
+                    coords[row_id][atom_index]["y"] = parking["row_y_end"][0]
+                for held_row in loaded_rows:
+                    for held_index in range(len(coords[held_row])):
+                        if col_id_for(held_row, held_index) in parked_col_ids:
+                            coords[held_row][held_index]["x"] += self.PARKING_DIST
                 parking["end_coord"] = deepcopy(coords)
                 details.append(parking)
         # ---------------------------------------------------------------------
@@ -993,4 +1037,3 @@ class Router_mixin:
             detail_inst["id"] = inst_counter
 
         return details
-                    

@@ -76,7 +76,12 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
     spec = _load(architecture_path)
     architecture = Architecture(spec)
     architecture.preprocessing()
-    compiler = ZAC() if method == "M1" else ZAC_zzx()
+    # Formal M1 keeps ZAC's placement and greedy maximal-independent-set
+    # routing decisions, then passes each proposed batch through the same
+    # strict expanded-phase legality repair used by M3/M4.  Raw ZAC does not
+    # model stationary-atom ghost intersections; scoring an invalid raw trace
+    # would make the baseline undefined on most of HPCA18.
+    compiler = ZAC_zzx() if method in ("M1", "M3", "M4") else ZAC()
     user_config = _load(config_path)
     ablation_controls: Dict[str, Any] | None = None
     if run_kind == "ablation":
@@ -112,7 +117,7 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
         "resyn": False,
     }
     if method == "M1":
-        setting.update(placer="zac", routing_strategy="maximalis_sort")
+        setting.update(placer="zac", routing_strategy="greedy")
         if user_config != {"experiment_schema": 2, "method_id": "M1"}:
             raise ValueError(
                 "M1 config must contain only experiment_schema=2 and method_id=M1")
@@ -167,6 +172,10 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
         "run_kind": run_kind or "unregistered",
         "ablation_variant": ablation_variant or None,
         "ablation_controls": ablation_controls,
+        "physicalization": (
+            "common_expanded_phase_ghost_safe_repair"
+            if method in ("M1", "M3", "M4") else None
+        ),
     })
 
 
@@ -191,6 +200,8 @@ def compile_qmap(input_path: Path, config_path: Path,
     from mqt.qmap.na.zoned import RoutingAwareCompiler, ZonedNeutralAtomArchitecture
     from qiskit import QuantumCircuit
     from spec_convert import convert
+    from evaluation import normalize_na, validate_trace_physics
+    from .na_physicalizer import physicalize_na
 
     config = _validated_m2_config(config_path)
     qmap_version = importlib.metadata.version("mqt.qmap")
@@ -222,8 +233,18 @@ def compile_qmap(input_path: Path, config_path: Path,
     compiler_time_ns = time.perf_counter_ns() - start
     if not isinstance(native, str) or not native.strip():
         raise RuntimeError("QMAP returned an empty native program")
-    # Preserve every @+ u instruction.  Removing it invalidates gate and idle ledgers.
-    (output / "trace.na").write_text(native, encoding="utf-8")
+    # Preserve every @+ u instruction.  Removing it invalidates gate and idle
+    # ledgers.  Keep the unmodified compiler output as evidence, while the
+    # formal trace receives only deterministic legality splits/waypoints that
+    # preserve QMAP's endpoints and per-atom authored trajectory.
+    (output / "trace.na.raw").write_text(native, encoding="utf-8")
+    repaired_native, repair_stats = physicalize_na(native, zac_spec)
+    repaired_path = output / "trace.na"
+    repaired_path.write_text(repaired_native, encoding="utf-8")
+    physical_validation = validate_trace_physics(
+        normalize_na(repaired_path, architecture=architecture_path),
+        n_qubits=len(qiskit_circuit.qubits),
+    )
     stats = compiler.stats()
     _write_json(output / "compiler_timing.json", {
         "compiler_time_ns": compiler_time_ns,
@@ -238,6 +259,11 @@ def compile_qmap(input_path: Path, config_path: Path,
         "compiler_class": type(compiler).__name__,
         "fallback": False,
         "stats": stats,
+        "physicalization": "common_ghost_safe_split_preserving_qmap_endpoints",
+        "physicalization_stats": repair_stats,
+        "physical_validation": physical_validation,
+        "ghost_splits": repair_stats["ghost_splits"],
+        "ghost_repairs": repair_stats["waypoint_atoms"],
     })
 
 
