@@ -89,82 +89,122 @@ def main():
         rows.append({"n": n, "q": q, "g2": g2, "layers": ag[4], "maxg": ag[5],
                      "z": z, "ra": ag, "rw": rw, "nl": nl, "lk": lk})
 
-    # ---- xlsx ----
+    # ---- Sheet2：ICCAD 数据集（qmap examples 154）----
+    rows2 = []
+    if (ROOT / "experiments/results/qmap_iccad_v32.json").exists():
+        cap = json.load(open(ROOT / "experiments/results/qmap_iccad_v32.json"))
+        suite = {r["name"]: r for r in json.load(
+            open(ZZX / "results/qmap_suite/summary.json"))}
+        for n in sorted(cap):
+            v = cap[n]
+            if "astar" not in v or "agnostic" not in v:
+                continue
+            rec = suite.get(n, {})
+            ra, rw = v["agnostic"], v["astar"]
+            rows2.append({
+                "n": n, "q": v.get("qubits", rec.get("qubits")),
+                "g2": rec.get("gates2q", ""),
+                "layers": ra.get("layers", ""), "maxg": ra.get("max_gates", ""),
+                "z": zair_block(ZZX / "results/qmap_suite/zac/code", n),
+                "ra": (ra["place_ms"], ra["route_ms"], ra["steps"], ra["rearr_ms"]),
+                "rw": (rw["place_ms"], rw["route_ms"], rw["steps"], rw["rearr_ms"]),
+                "nl": zair_block(ZZX / "results/qmap_suite/zzx_hard_nl/code", n),
+                "lk": zair_block(ZZX / "results/qmap_suite/zzx_hard/code", n)})
+
+    # ---- xlsx：双 sheet（发射函数共用） ----
+    def emit(ws, note, rws):
+        cols = ["circuit", "q", "2q门", "layers", "max门/层",
+                "ZAC Place", "ZAC Route", "ZAC Steps", "ZAC Rearr",
+                "ra Place", "ra Route", "ra Steps", "ra Rearr",
+                "rw Place", "rw Route", "rw Steps", "rw Rearr",
+                "NL Place", "NL Route", "NL Steps", "NL Rearr",
+                "LK Place", "LK Route", "LK Steps", "LK Rearr"]
+        bold, fill = Font(bold=True), PatternFill("solid", fgColor="DDEBF7")
+        ws.append([note])
+        ws["A1"].font = Font(italic=True, size=9, color="666666")
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(cols))
+        ws.append(cols)
+        for c in range(1, len(cols) + 1):
+            cell = ws.cell(row=2, column=c)
+            cell.font = bold
+            cell.fill = fill
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+        for r in rws:
+            line = [r["n"], r["q"], r["g2"], r["layers"], r["maxg"]]
+            for blk in (r["z"], r["ra"], r["rw"], r["nl"], r["lk"]):
+                line += list(blk) if blk else ["—"] * 4
+            ws.append(line)
+
+        def col(key, idx):
+            return [r[key][idx] for r in rws if r[key]]
+
+        ws.append([])
+        for label, idx in (("Σ Place ms", 0), ("Σ Route ms", 1),
+                           ("Σ Steps", 2), ("Σ Rearr ms", 3)):
+            line = [label]
+            for key in ("z", "ra", "rw", "nl", "lk"):
+                v = col(key, idx)
+                line.append(round(sum(v), 1) if v else "—")
+            ws.append(line)
+        for label, idx in (("geomean Steps/ZAC", 2), ("geomean Rearr/ZAC", 3)):
+            line = [label, 1.0]
+            for key in ("ra", "rw", "nl", "lk"):
+                # 行内配对：两法同电路都齐才入对（缺失行会错位 zip，已修）
+                pairs = [(r[key][idx], r["z"][idx]) for r in rws if r[key] and r["z"]]
+                g = gm([a / b for a, b in pairs if a and b])
+                line.append(round(g, 3) if g else "—")
+            ws.append(line)
+        for c, w in zip(range(1, len(cols) + 1), [18, 5, 6, 7, 8] + [9, 9, 8, 9] * 5):
+            ws.column_dimensions[get_column_letter(c)].width = w
+        return col
+
     wb = Workbook()
-    ws = wb.active
-    ws.title = "对齐TableI"
-    note = ("四方法 × ICCAD'25 Table I 全指标（18 电路）。每方法四列：Place ms / Route ms / "
-            "Num. Rearr. Steps / Rearr ms（ra=routing-agnostic、rw=routing-aware=论文主方法）。"
-            "ICCAD=论文管线 mqt.qmap 3.2.0（Steps 26/30 与 Table I 逐位一致；时间单位坑已勘误："
-            "stats() 实为 μs，此处已修为真 ms）。ZAC/遗传：Place=初始布局+逐轮放置、Route=路由"
-            "（ZAC 原程序路由计时混在放置内故 Route≈0，其编译总量见 total 列注）；Steps=rearrangeJob"
-            " 条数（与 Table I 一步=一次完整 AOD 重排循环同义，26 万班次零空班核验）；Rearr=Σ批"
-            "起止区间。遗传=GA 初始化+鬼点硬保证层（鬼点全 0）。")
-    cols = ["circuit", "q", "2q门", "layers", "max门/层",
-            "ZAC Place", "ZAC Route", "ZAC Steps", "ZAC Rearr",
-            "ra Place", "ra Route", "ra Steps", "ra Rearr",
-            "rw Place", "rw Route", "rw Steps", "rw Rearr",
-            "NL Place", "NL Route", "NL Steps", "NL Rearr",
-            "LK Place", "LK Route", "LK Steps", "LK Rearr"]
-    bold, fill = Font(bold=True), PatternFill("solid", fgColor="DDEBF7")
-    ws.append([note])
-    ws["A1"].font = Font(italic=True, size=9, color="666666")
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(cols))
-    ws.append(cols)
-    for c in range(1, len(cols) + 1):
-        cell = ws.cell(row=2, column=c)
-        cell.font = bold
-        cell.fill = fill
-        cell.alignment = Alignment(horizontal="center", wrap_text=True)
-    for r in rows:
-        line = [r["n"], r["q"], r["g2"], r["layers"], r["maxg"]]
-        for blk in (r["z"], r["ra"], r["rw"], r["nl"], r["lk"]):
-            line += [blk[0], blk[1], blk[2], blk[3]]
-        ws.append(line)
-    # ---- 汇总 ----
-    def col(key, idx):
-        return [r[key][idx] for r in rows if r[key]]
-
-    ws.append([])
-    for label, idx, how in (("Σ Place ms", 0, "sum"), ("Σ Route ms", 1, "sum"),
-                            ("Σ Steps", 2, "sum"), ("Σ Rearr ms", 3, "sum")):
-        line = [label]
-        for key in ("z", "ra", "rw", "nl", "lk"):
-            v = col(key, idx)
-            line.append(round(sum(v), 1) if v else "—")
-        ws.append(line)
-    for label, idx in (("geomean Steps/ZAC", 2), ("geomean Rearr/ZAC", 3)):
-        line = [label, 1.0]
-        for key in ("ra", "rw", "nl", "lk"):
-            pairs = [(a, b) for a, b in zip(col(key, idx), col("z", idx)) if a and b]
-            g = gm([a / b for a, b in pairs])
-            line.append(round(g, 3) if g else "—")
-        ws.append(line)
-    for c, w in zip(range(1, len(cols) + 1), [18, 5, 6, 7, 8] + [9, 9, 8, 9] * 5):
-        ws.column_dimensions[get_column_letter(c)].width = w
+    ws1 = wb.active
+    ws1.title = "ZAC数据集18"
+    note1 = ("四方法 × ICCAD'25 Table I 全指标。每方法四列：Place ms / Route ms / "
+             "Num. Rearr. Steps / Rearr ms（ra=routing-agnostic、rw=routing-aware=论文主方法）。"
+             "ICCAD=论文管线 mqt.qmap 3.2.0（Steps 26/30 与 Table I 逐位一致；时间单位坑已勘误："
+             "stats() 实为 μs，此处已修为真 ms）。ZAC/遗传：Place=初始布局+逐轮放置、Route=路由"
+             "（ZAC 原程序路由计时混在放置内故 Route≈0）；Steps=rearrangeJob 条数（与 Table I "
+             "一步=一次完整 AOD 重排循环同义）；Rearr=Σ批起止区间。遗传=GA 初始化+鬼点硬保证层。")
+    col1 = emit(ws1, note1, rows)
+    mds = [md_block("ZAC 数据集（hpca 18）", rows)]
+    if rows2:
+        ws2 = wb.create_sheet("ICCAD数据集154")
+        note2 = ("ICCAD 数据集（qmap examples 154）× Table I 全指标。ICCAD=3.2.0 论文管线全量"
+                 "采集（capture_iccad_v32.py，单位已修）；ZAC=qmap_suite/zac；遗传=硬化套件"
+                 "（zzx_hard/zzx_hard_nl，GA 初始化+鬼点硬保证层）。超时/失败以 — 表示；"
+                 "geomean 按与 ZAC 成对齐全的电路计算（各法 N 见 Σ 行可推）。")
+        emit(ws2, note2, rows2)
+        mds.append(md_block("ICCAD 数据集（qmap examples 154）", rows2))
     wb.save(OUT / "四方法_对齐TableI.xlsx")
+    open(OUT / "四方法_对齐TableI.md", "w").write(
+        "# 四方法 × Table I 全指标对齐（双数据集）\n\n" + "\n\n".join(mds))
+    print("\n\n".join(mds))
 
-    # ---- md 摘要 ----
+
+def md_block(title, rows):
+    col = lambda key, idx: [r[key][idx] for r in rows if r[key]]
+
     def s(key, idx):
-        return sum(col(key, idx))
-    md = ["# 四方法 × Table I 全指标对齐（18 电路）", "",
-          "| 指标 | ZAC原始 | ICCAD ra | ICCAD rw | 遗传NL | 遗传LK |",
-          "|---|---|---|---|---|---|",
-          f"| Σ Place ms | {s('z',0):.0f} | {s('ra',0):.0f} | {s('rw',0):.0f} | {s('nl',0):.0f} | {s('lk',0):.0f} |",
-          f"| Σ Route ms | {s('z',1):.0f} | {s('ra',1):.0f} | {s('rw',1):.0f} | {s('nl',1):.0f} | {s('lk',1):.0f} |",
-          f"| Σ Steps | {s('z',2):.0f} | {s('ra',2):.0f} | {s('rw',2):.0f} | {s('nl',2):.0f} | {s('lk',2):.0f} |",
-          f"| Σ Rearr ms | {s('z',3):.0f} | {s('ra',3):.0f} | {s('rw',3):.0f} | {s('nl',3):.0f} | {s('lk',3):.0f} |"]
+        v = col(key, idx)
+        return sum(v) if v else float("nan")
+    lines = [f"## {title}", "",
+             "| 指标 | ZAC原始 | ICCAD ra | ICCAD rw | 遗传NL | 遗传LK |",
+             "|---|---|---|---|---|---|",
+             f"| Σ Place ms | {s('z',0):.0f} | {s('ra',0):.0f} | {s('rw',0):.0f} | {s('nl',0):.0f} | {s('lk',0):.0f} |",
+             f"| Σ Route ms | {s('z',1):.0f} | {s('ra',1):.0f} | {s('rw',1):.0f} | {s('nl',1):.0f} | {s('lk',1):.0f} |",
+             f"| Σ Steps | {s('z',2):.0f} | {s('ra',2):.0f} | {s('rw',2):.0f} | {s('nl',2):.0f} | {s('lk',2):.0f} |",
+             f"| Σ Rearr ms | {s('z',3):.0f} | {s('ra',3):.0f} | {s('rw',3):.0f} | {s('nl',3):.0f} | {s('lk',3):.0f} |"]
     for label, idx in (("Steps", 2), ("Rearr", 3)):
         cells = ["1.000"]
         for key in ("ra", "rw", "nl", "lk"):
-            pairs = [(a, b) for a, b in zip(col(key, idx), col("z", idx)) if a and b]
-            g = gm([a / b for a, b in pairs])
-            cells.append(f"{g:.3f}" if g else "—")
-        md.append(f"| geomean {label}/ZAC | " + " | ".join(cells) + " |")
-    md += ["", "（ZAC 的 Route≈0 系原程序计时口径：路由混在放置内；Place 列含其全部编译。）",
-           "", "明细见 四方法_对齐TableI.xlsx。"]
-    open(OUT / "四方法_对齐TableI.md", "w").write("\n".join(md) + "\n")
-    print("\n".join(md))
+            pairs = [(r[key][idx], r["z"][idx]) for r in rows if r[key] and r["z"]]
+            g = gm([a / b for a, b in pairs if a and b])
+            cells.append(f"{g:.3f} (N={len(pairs)})" if g else "—")
+        lines.append(f"| geomean {label}/ZAC | " + " | ".join(cells) + " |")
+    lines += ["", "（ZAC 的 Route≈0 系原程序计时口径：路由混在放置内；Place 列含其全部编译。）"]
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

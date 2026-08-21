@@ -52,6 +52,20 @@ CONFIGS = {
         "use_window": True, "window_size": 1000, "reuse": True,
         "seed": 0, "w_batch": 1.57, "gamma0": 0.0, "init_engine": "ga",
     },
+    "zzx_hard": {  # 前瞻席（鬼点罚）+ GA 初始 + 硬保证层（= main_ga 同款）
+        "placer": "resident", "engine": "ga", "routing_strategy": "coloring",
+        "trivial_placement": False, "dynamic_placement": True,
+        "use_window": True, "window_size": 1000, "reuse": True,
+        "seed": 0, "w_batch": 1.57, "init_engine": "ga",
+        "w_ghost": 1.0, "w_ord": 0.0,
+    },
+    "zzx_hard_nl": {  # 无前瞻席 + GA 初始 + 硬保证层（= nolook_ga 同款：w_ghost=0）
+        "placer": "resident", "engine": "ga", "routing_strategy": "coloring",
+        "trivial_placement": False, "dynamic_placement": True,
+        "use_window": True, "window_size": 1000, "reuse": True,
+        "seed": 0, "w_batch": 1.57, "init_engine": "ga",
+        "w_ghost": 0.0, "w_ord": 0.0,
+    },
 }
 
 
