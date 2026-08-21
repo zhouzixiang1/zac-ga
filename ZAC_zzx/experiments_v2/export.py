@@ -13,8 +13,12 @@ import hashlib
 import json
 import math
 import os
+import statistics
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from .figures import render_report_figures
+from .workbook_renderer import render_workbook
 
 
 TABLE_COLUMNS: Mapping[str, tuple[str, ...]] = {
@@ -26,9 +30,17 @@ TABLE_COLUMNS: Mapping[str, tuple[str, ...]] = {
         "duplicate",
     ),
     "method_quality": (
-        "method", "valid", "N", "status", "success", "timeout", "oom",
-        "compiler_error", "verifier_fail", "scorer_error", "missing",
-        "duplicate",
+        "method", "valid", "N", "valid_over_N", "paired_valid",
+        "paired_N", "paired_valid_over_N", "status",
+        "fidelity_geometric_mean", "move_batches_median",
+        "move_time_us_median", "timed_compiler_seconds_median",
+        "timed_valid", "PAR2_seconds", "success", "timeout", "oom",
+        "compiler_error", "verifier_fail", "scorer_error", "missing", "duplicate",
+    ),
+    "quality_strata": (
+        "stratum", "method", "n", "fidelity_geometric_mean",
+        "move_batches_median", "move_time_us_median",
+        "timed_compiler_seconds_median", "timed_valid",
     ),
     "quality_circuits": (
         "circuit", "method", "paired", "protocol", "log_fidelity",
@@ -62,17 +74,24 @@ TABLE_COLUMNS: Mapping[str, tuple[str, ...]] = {
     ),
     "timing_circuits": (
         "circuit", "method", "protocol_complete", "attempts", "successful",
-        "median_success_seconds", "PAR2_seconds",
+        "runtime_observed", "median_success_seconds", "PAR2_seconds",
     ),
     "attempts": (
         "run_id", "run_kind", "circuit", "method", "seed", "repetition",
         "status", "git_commit", "input_sha256", "config_sha256",
         "fidelity_ood", "log_fidelity", "fidelity", "move_batches",
-        "move_time_us", "compiler_time_seconds", "artifact_dir", "error",
+        "move_time_us", "compiler_time_seconds", "compiler_process_wall_seconds",
+        "end_to_end_time_seconds", "cpu_time_seconds", "peak_rss_bytes",
+        "log_one_qubit_gate", "log_two_qubit_gate", "log_idle_excitation",
+        "log_atom_transfer", "log_coherence_linear",
+        "exponential_sensitivity_log_fidelity",
+        "exponential_sensitivity_fidelity", "duration_us", "idle_exposures",
+        "stay_count", "return_count", "reseat_count", "ghost_repairs",
+        "ghost_splits", "ghost_hits", "verifier_ok", "artifact_dir", "error",
     ),
     "plot_data": (
         "section", "metric", "series", "x", "value", "lower", "upper",
-        "n", "reference", "notes",
+        "n", "reference", "is_pareto", "notes",
     ),
 }
 
@@ -176,20 +195,106 @@ def _build_tables(report: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
         })
 
     main = report.get("main", {})
+    timing = report.get("timing", {})
+    timing_lookup: dict[tuple[str, str], Any] = {}
+    timing_protocol: dict[tuple[str, str], bool] = {}
+    timing_methods = timing.get("methods", {})
+    for method, payload in sorted(timing_methods.items()):
+        tables["timing"].append({
+            "method": method, "valid": payload.get("valid"),
+            "N": payload.get("N"), "status": payload.get("status"),
+            "PAR2_seconds": payload.get("PAR2_seconds"),
+            **_status_columns(payload),
+        })
+        for circuit, item in sorted(payload.get("circuits", {}).items()):
+            protocol_ok = bool(item.get("protocol_complete"))
+            runtime_ok = bool(item.get("runtime_observed",
+                                       item.get("successful", 0) > 0))
+            timing_protocol[(circuit, method)] = protocol_ok and runtime_ok
+            timing_lookup[(circuit, method)] = (
+                item.get("median_success_seconds")
+                if protocol_ok and runtime_ok else None)
+            tables["timing_circuits"].append({
+                "circuit": circuit, "method": method,
+                **{field: item.get(field)
+                   for field in TABLE_COLUMNS["timing_circuits"][2:]},
+            })
+
+    paired = set(main.get("paired_cohort", []))
+    paired_summaries = main.get("paired_method_summary", {})
+    quality_rows = main.get("per_circuit_quality", [])
     for method, payload in sorted(main.get("methods", {}).items()):
+        summary = dict(paired_summaries.get(method, {}))
+        if not summary and paired:
+            rows = [row for row in quality_rows
+                    if row.get("method") == method and row.get("circuit") in paired
+                    and row.get("log_fidelity") is not None]
+            if rows:
+                summary = {
+                    "valid": len(rows), "N": main.get("N"),
+                    "fidelity_geometric_mean": math.exp(math.fsum(
+                        float(row["log_fidelity"]) for row in rows) / len(rows)),
+                    "move_batches_median": statistics.median(
+                        float(row["move_batches"]) for row in rows),
+                    "move_time_us_median": statistics.median(
+                        float(row["move_time_us"]) for row in rows),
+                }
+        timed_values = [
+            float(timing_lookup[(circuit, method)])
+            for circuit in paired
+            if timing_lookup.get((circuit, method)) is not None
+        ]
+        valid = payload.get("valid")
+        denominator = payload.get("N")
+        paired_valid = summary.get("valid", len(paired) if summary else 0)
+        paired_n = summary.get("N", main.get("N"))
         tables["method_quality"].append({
             "method": method,
-            "valid": payload.get("valid"), "N": payload.get("N"),
-            "status": payload.get("status"), **_status_columns(payload),
+            "valid": valid, "N": denominator,
+            "valid_over_N": (
+                f"{valid}/{denominator}" if valid is not None and denominator is not None
+                else None),
+            "paired_valid": paired_valid, "paired_N": paired_n,
+            "paired_valid_over_N": (
+                f"{paired_valid}/{paired_n}"
+                if paired_valid is not None and paired_n is not None else None),
+            "status": payload.get("status"),
+            "fidelity_geometric_mean": summary.get("fidelity_geometric_mean"),
+            "move_batches_median": summary.get("move_batches_median"),
+            "move_time_us_median": summary.get("move_time_us_median"),
+            "timed_compiler_seconds_median": (
+                statistics.median(timed_values) if timed_values else None),
+            "timed_valid": len(timed_values),
+            "PAR2_seconds": timing_methods.get(method, {}).get("PAR2_seconds"),
+            **_status_columns(payload),
         })
 
-    timing_lookup: dict[tuple[str, str], Any] = {}
-    for method, payload in report.get("timing", {}).get("methods", {}).items():
-        for circuit, item in payload.get("circuits", {}).items():
-            timing_lookup[(circuit, method)] = item.get("median_success_seconds")
+    stratum_by_circuit = main.get("stratum_by_circuit", {})
+    for stratum, method_payloads in sorted(
+            main.get("stratum_method_summary", {}).items()):
+        members = {circuit for circuit, label in stratum_by_circuit.items()
+                   if label == stratum}
+        for method, payload in sorted(method_payloads.items()):
+            timed_values = [
+                float(timing_lookup[(circuit, method)])
+                for circuit in members
+                if timing_lookup.get((circuit, method)) is not None
+            ]
+            tables["quality_strata"].append({
+                "stratum": stratum, "method": method,
+                "n": payload.get("n"),
+                "fidelity_geometric_mean": payload.get(
+                    "fidelity_geometric_mean"),
+                "move_batches_median": payload.get("move_batches_median"),
+                "move_time_us_median": payload.get("move_time_us_median"),
+                "timed_compiler_seconds_median": (
+                    statistics.median(timed_values) if timed_values else None),
+                "timed_valid": len(timed_values),
+            })
+
     fidelity_best = main.get("fidelity", {}).get("Bstar_method_by_circuit", {})
     move_best = main.get("move", {}).get("metric_best_method_by_circuit", {})
-    for payload in main.get("per_circuit_quality", []):
+    for payload in quality_rows:
         circuit, method = payload.get("circuit"), payload.get("method")
         tables["quality_circuits"].append({
             **payload,
@@ -225,23 +330,7 @@ def _build_tables(report: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
                 **{field: item.get(field) for field in move_fields},
             })
 
-    timing = report.get("timing", {})
-    for method, payload in sorted(timing.get("methods", {}).items()):
-        tables["timing"].append({
-            "method": method, "valid": payload.get("valid"),
-            "N": payload.get("N"), "status": payload.get("status"),
-            "PAR2_seconds": payload.get("PAR2_seconds"),
-            **_status_columns(payload),
-        })
-        for circuit, item in sorted(payload.get("circuits", {}).items()):
-            tables["timing_circuits"].append({
-                "circuit": circuit, "method": method,
-                **{field: item.get(field)
-                   for field in TABLE_COLUMNS["timing_circuits"][2:]},
-            })
-
     suite_circuits = report.get("frozen_suite", {}).get("circuits", [])
-    paired = set(main.get("paired_cohort", []))
     main_methods = main.get("methods", {})
     for circuit in suite_circuits:
         row = {
@@ -266,6 +355,7 @@ def _build_tables(report: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
             "value": row["rate"], "lower": row["wilson95_low"],
             "upper": row["wilson95_high"], "n": row["N"],
             "reference": coverage.get("dataset_threshold"),
+            "is_pareto": None,
             "notes": "Wilson 95% CI",
         })
     for row in tables["fidelity"]:
@@ -275,6 +365,7 @@ def _build_tables(report: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
             "value": row["ratio"], "lower": row["simultaneous95_low"],
             "upper": row["simultaneous95_high"], "n": row["n"],
             "reference": 1.02,
+            "is_pareto": None,
             "notes": "simultaneous family-wise interval; target ratio 1.02",
         })
     for row in tables["move"]:
@@ -284,6 +375,7 @@ def _build_tables(report: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
             "value": row["ratio"], "lower": row["simultaneous95_low"],
             "upper": row["simultaneous95_high"], "n": row["n"],
             "reference": 1.0,
+            "is_pareto": None,
             "notes": "lower is better; simultaneous family-wise interval",
         })
     for row in tables["timing"]:
@@ -292,35 +384,68 @@ def _build_tables(report: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
             "series": row["method"], "x": row["method"],
             "value": row["PAR2_seconds"], "lower": None, "upper": None,
             "n": row["N"], "reference": None,
+            "is_pareto": None,
             "notes": "implementation-level compiler time",
         })
-    for row in tables["quality_circuits"]:
-        if row.get("fidelity") is None:
-            continue
-        base = {
-            "series": row["method"], "n": 1, "reference": None,
-            "lower": None, "upper": None,
-        }
-        tables["plot_data"].append({
-            **base, "section": "ecdf", "metric": "fidelity",
-            "x": row["circuit"], "value": row["fidelity"],
-            "notes": "validated per-circuit quality point",
-        })
-        for metric in ("move_batches", "move_time_us"):
-            if row.get(metric) is None:
-                continue
-            tables["plot_data"].append({
-                **base, "section": "pareto",
-                "metric": f"fidelity_vs_{metric}",
-                "x": row[metric], "value": row["fidelity"],
-                "notes": str(row["circuit"]),
-            })
-        if row.get("timed_compiler_seconds") is not None:
-            tables["plot_data"].append({
-                **base, "section": "ecdf", "metric": "compiler_seconds",
-                "x": row["circuit"], "value": row["timed_compiler_seconds"],
-                "notes": "five-repeat median; implementation-level",
-            })
+
+    paired_rows = [row for row in tables["quality_circuits"]
+                   if bool(row.get("paired"))]
+    for metric in ("fidelity", "move_batches", "move_time_us",
+                   "timed_compiler_seconds"):
+        for method in ("M1", "M2", "M3", "M4"):
+            values = sorted(
+                (float(row[metric]), str(row.get("circuit")))
+                for row in paired_rows
+                if row.get("method") == method and
+                isinstance(row.get(metric), (int, float)) and
+                math.isfinite(float(row[metric])))
+            for rank, (value, circuit) in enumerate(values, start=1):
+                tables["plot_data"].append({
+                    "section": "ecdf", "metric": metric, "series": method,
+                    "x": value, "value": rank / len(values),
+                    "lower": None, "upper": None, "n": len(values),
+                    "reference": None, "is_pareto": None,
+                    "notes": circuit,
+                })
+
+    quality_lookup = {
+        (str(row.get("circuit")), str(row.get("method"))): row
+        for row in paired_rows
+    }
+    for metric in ("move_batches", "move_time_us"):
+        for method in ("M1", "M2", "M3", "M4"):
+            points: list[tuple[str, float, float]] = []
+            for row in paired_rows:
+                if row.get("method") != method:
+                    continue
+                circuit = str(row.get("circuit"))
+                baseline = quality_lookup.get(
+                    (circuit, str(row.get("fidelity_Bstar_method"))))
+                if baseline is None:
+                    continue
+                cost, base_cost = row.get(metric), baseline.get(metric)
+                fidelity, base_fidelity = row.get("fidelity"), baseline.get("fidelity")
+                numeric = (cost, base_cost, fidelity, base_fidelity)
+                if (not all(isinstance(value, (int, float)) and
+                            math.isfinite(float(value)) for value in numeric) or
+                        float(base_cost) <= 0 or float(base_fidelity) <= 0):
+                    continue
+                points.append((
+                    circuit, float(cost) / float(base_cost),
+                    float(fidelity) / float(base_fidelity)))
+            for circuit, cost_ratio, fidelity_ratio in points:
+                pareto = not any(
+                    other_cost <= cost_ratio and other_fidelity >= fidelity_ratio and
+                    (other_cost < cost_ratio or other_fidelity > fidelity_ratio)
+                    for other_circuit, other_cost, other_fidelity in points
+                    if other_circuit != circuit)
+                tables["plot_data"].append({
+                    "section": "pareto", "metric": f"fidelity_vs_{metric}",
+                    "series": method, "x": cost_ratio,
+                    "value": fidelity_ratio, "lower": None, "upper": None,
+                    "n": len(points), "reference": 1.0,
+                    "is_pareto": pareto, "notes": circuit,
+                })
     return tables
 
 
@@ -378,6 +503,10 @@ def _markdown_report(report: Mapping[str, Any],
             tables["summary"], TABLE_COLUMNS["summary"]),
         "## Coverage", "", _markdown_table(
             tables["coverage"], TABLE_COLUMNS["coverage"]),
+        "## Four-method four-metric main table", "", _markdown_table(
+            tables["method_quality"], TABLE_COLUMNS["method_quality"]),
+        "## Preregistered scale strata", "", _markdown_table(
+            tables["quality_strata"], TABLE_COLUMNS["quality_strata"]),
         "## Fidelity comparisons", "", _markdown_table(
             tables["fidelity"], TABLE_COLUMNS["fidelity"]),
         "## Move comparisons", "", _markdown_table(
@@ -385,9 +514,9 @@ def _markdown_report(report: Mapping[str, Any],
         "## Implementation-level compiler time", "", _markdown_table(
             tables["timing"], TABLE_COLUMNS["timing"]),
         "## Data contract", "",
-        "`plot_data.csv` contains only aggregate values and confidence intervals already "
-        "present in the statistical report. Per-circuit ECDF or Pareto points require the "
-        "validated per-circuit manifests and are intentionally not inferred here.", "",
+        "`plot_data.csv` contains explicit ECDF coordinates, fidelity-B*-normalized "
+        "Pareto points, and aggregate confidence intervals derived only from the strict "
+        "paired cohort. Missing observations are not imputed.", "",
     ]
     return "\n".join(sections)
 
@@ -437,12 +566,24 @@ def _latex_report(report: Mapping[str, Any],
         "metric", "comparison", "n", "ratio", "simultaneous95_low",
         "simultaneous95_high", "wins", "ties", "losses")
     timing_columns = ("method", "valid", "N", "PAR2_seconds", "status")
+    main_columns = (
+        "method", "paired_valid_over_N", "fidelity_geometric_mean",
+        "move_batches_median", "move_time_us_median",
+        "timed_compiler_seconds_median")
+    strata_columns = (
+        "stratum", "method", "n", "fidelity_geometric_mean",
+        "move_batches_median", "move_time_us_median",
+        "timed_compiler_seconds_median")
     claim = "passed" if report.get("claim_gate", {}).get("passed") else "failed-or-incomplete"
     return "\n".join([
         "% Generated from the frozen Schema-2 aggregate; requires \\usepackage{booktabs}.",
         f"% Publication claim gate: {claim}. No missing result was imputed.",
         _latex_table(f"{dataset} coverage", f"{dataset}-coverage",
                      tables["coverage"], coverage_columns),
+        _latex_table(f"{dataset} four-method four-metric paired results",
+                     f"{dataset}-main", tables["method_quality"], main_columns),
+        _latex_table(f"{dataset} preregistered scale strata",
+                     f"{dataset}-strata", tables["quality_strata"], strata_columns),
         _latex_table(f"{dataset} fidelity comparisons", f"{dataset}-fidelity",
                      tables["fidelity"], fidelity_columns),
         _latex_table(f"{dataset} move comparisons", f"{dataset}-move",
@@ -462,12 +603,7 @@ def _sha256(path: Path) -> str:
 
 def export_experiment_report(
         report: Mapping[str, Any], output_directory: str | Path) -> Mapping[str, Any]:
-    """Export one aggregate to deterministic, non-imputing delivery formats.
-
-    A normalized workbook source contract is emitted instead of pretending to
-    produce an XLSX.  A later artifact-tool rendering step can consume the
-    contract and CSV files after real experiment results exist.
-    """
+    """Export one aggregate to traceable tables, XLSX, and vector figures."""
     if report.get("experiment_schema") != 2:
         raise ValueError("export accepts only experiment_schema=2 reports")
     if not isinstance(report.get("dataset"), str) or not report["dataset"]:
@@ -493,7 +629,8 @@ def export_experiment_report(
 
     sheet_names = {
         "summary": "Overview", "coverage": "Coverage",
-        "method_quality": "Quality Methods", "fidelity": "Fidelity",
+        "method_quality": "Quality Methods", "quality_strata": "Quality Strata",
+        "fidelity": "Fidelity",
         "quality_circuits": "Circuit Quality",
         "fidelity_strata": "Fidelity Strata", "move": "Move",
         "timing": "Timing", "cohort": "Cohort",
@@ -506,10 +643,11 @@ def export_experiment_report(
         "experiment_schema": 2,
         "experiment_id": report.get("experiment_id"),
         "dataset": report.get("dataset"),
-        "not_an_xlsx": True,
+        "source_contract": True,
+        "rendered_xlsx": "report.xlsx",
         "render_policy": (
-            "Render with the approved spreadsheet artifact tool only after "
-            "validated experiment results are available"),
+            "Rendered with the approved spreadsheet artifact tool from the "
+            "validated Schema-2 aggregate; missing observations stay blank"),
         "sheets": [
             {
                 "sheet_name": sheet_names[name],
@@ -526,11 +664,23 @@ def export_experiment_report(
     _atomic_json(workbook_contract_path, workbook_contract)
     generated.append(workbook_contract_path)
 
+    workbook = render_workbook(
+        workbook_contract_path, output / "report.xlsx",
+        qa_directory=output / "workbook_qa")
+    generated.append(Path(workbook["xlsx_path"]))
+    generated.extend(Path(path) for path in workbook["qa_artifact_paths"])
+    generated.extend(Path(path) for path in workbook["preview_paths"])
+
+    figures = render_report_figures(report, tables, output / "figures")
+    generated.extend(Path(path) for path in figures["files"])
+    generated.append(Path(figures["qa_path"]))
+
     file_rows = []
     row_counts = {f"{name}.csv": len(rows) for name, rows in tables.items()}
-    for path in sorted(generated, key=lambda item: item.name):
+    for path in sorted(set(generated), key=lambda item: str(item.relative_to(output))):
+        relative = path.relative_to(output).as_posix()
         file_rows.append({
-            "name": path.name, "path": str(path), "sha256": _sha256(path),
+            "name": relative, "path": str(path), "sha256": _sha256(path),
             "bytes": path.stat().st_size,
             "rows": row_counts.get(path.name),
         })
@@ -540,8 +690,14 @@ def export_experiment_report(
         "dataset": report.get("dataset"),
         "claim_gate_passed": bool(report.get("claim_gate", {}).get("passed", False)),
         "no_imputation": True,
-        "xlsx_pending_artifact_render": True,
+        "xlsx_pending_artifact_render": False,
+        "xlsx_rendered": True,
+        "xlsx_path": workbook["xlsx_path"],
+        "workbook_qa_path": workbook["qa_path"],
+        "artifact_tool_version": workbook["artifact_tool_version"],
         "workbook_contract_path": str(workbook_contract_path),
+        "figure_backend": figures["backend"],
+        "figure_qa_path": figures["qa_path"],
         "files": file_rows,
     }
     manifest_path = output / "export_manifest.json"

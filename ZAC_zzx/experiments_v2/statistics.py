@@ -143,21 +143,35 @@ def paired_wilcoxon(differences: Sequence[float]) -> Mapping[str, float | int | 
     test_name = "Wilcoxon signed-rank, one-sided greater"
     if nonzero:
         try:
+            import scipy
             from scipy.stats import wilcoxon
             statistic, p_value = wilcoxon(
                 nonzero, alternative="greater", zero_method="wilcox")
             statistic, p_value = float(statistic), float(p_value)
-        except (ImportError, ValueError):
-            statistic = float(wins)
-            p_value = math.fsum(
-                math.comb(wins + losses, k)
-                for k in range(wins, wins + losses + 1)) / (2 ** (wins + losses))
-            test_name = "exact one-sided sign test fallback"
+        except ImportError as error:
+            raise RuntimeError(
+                "formal paired Wilcoxon requires scipy; statistical fallback is forbidden"
+            ) from error
+        except ValueError as error:
+            raise RuntimeError(
+                "scipy.stats.wilcoxon rejected the pre-registered paired sample"
+            ) from error
+        scipy_version = str(scipy.__version__)
     else:
         statistic, p_value = 0.0, 1.0
+        try:
+            import scipy
+        except ImportError as error:
+            raise RuntimeError(
+                "formal paired Wilcoxon requires scipy even for an all-tie sample"
+            ) from error
+        scipy_version = str(scipy.__version__)
     return {
         "test": test_name, "statistic": statistic, "p_value": p_value,
         "rank_biserial": effect, "wins": wins, "ties": ties, "losses": losses,
+        "implementation": "scipy.stats.wilcoxon",
+        "scipy_version": scipy_version,
+        "alternative": "greater", "zero_method": "wilcox",
     }
 
 
@@ -435,6 +449,45 @@ def _main_report(runs: Sequence[RunManifest], circuits: Sequence[str], dataset: 
             "gate": {"passed": False, "reason": "empty strict paired cohort"},
         }
 
+    paired_summary: Dict[str, Mapping[str, float | int]] = {}
+    stratum_summary: Dict[str, Dict[str, Mapping[str, float | int]]] = {}
+    for method in METHODS:
+        log_values = [values[(circuit, method, "log_fidelity")]
+                      for circuit in paired]
+        paired_summary[method] = {
+            "valid": len(paired),
+            "N": len(circuits),
+            "fidelity_geometric_mean": geometric_mean_from_logs(log_values),
+            "move_batches_median": statistics.median(
+                values[(circuit, method, "move_batches")] for circuit in paired),
+            "move_time_us_median": statistics.median(
+                values[(circuit, method, "move_time_us")] for circuit in paired),
+            "quality_compiler_seconds_median": statistics.median(
+                values[(circuit, method, "compiler_time_ns")] / 1e9
+                for circuit in paired),
+        }
+    for label in sorted(set(labels.values())):
+        members = [circuit for circuit in paired if labels[circuit] == label]
+        stratum_summary[label] = {}
+        for method in METHODS:
+            stratum_summary[label][method] = {
+                "n": len(members),
+                "fidelity_geometric_mean": geometric_mean_from_logs([
+                    values[(circuit, method, "log_fidelity")]
+                    for circuit in members]),
+                "move_batches_median": statistics.median(
+                    values[(circuit, method, "move_batches")]
+                    for circuit in members),
+                "move_time_us_median": statistics.median(
+                    values[(circuit, method, "move_time_us")]
+                    for circuit in members),
+                "quality_compiler_seconds_median": statistics.median(
+                    values[(circuit, method, "compiler_time_ns")] / 1e9
+                    for circuit in members),
+            }
+    for method in METHODS:
+        status_by_method[method]["paired_summary"] = paired_summary[method]
+
     bstar_method: Dict[str, str] = {}
     for circuit in paired:
         m1 = values[(circuit, "M1", "log_fidelity")]
@@ -506,17 +559,18 @@ def _main_report(runs: Sequence[RunManifest], circuits: Sequence[str], dataset: 
                 current, m3, labels, iterations=bootstrap_iterations,
                 seed=bootstrap_seed + 30 + offset),
         }
-    batch_upper = float(move_report["move_batches"]["vs_metric_best_baseline"]
+    batch_upper = float(move_report["move_batches"]["vs_fidelity_Bstar"]
                         ["simultaneous95_high"])
-    time_upper = float(move_report["move_time_us"]["vs_metric_best_baseline"]
+    time_upper = float(move_report["move_time_us"]["vs_fidelity_Bstar"]
                        ["simultaneous95_high"])
     improved_one = batch_upper < 1.0 or time_upper < 1.0
     both_noninferior = batch_upper <= 1.02 and time_upper <= 1.02
     move_gate = {
         "passed": improved_one or both_noninferior,
         "criterion": (
-            "at least one Bonferroni simultaneous upper bound <1, "
-            "or both upper bounds <=1.02"),
+            "relative to the per-circuit fidelity B*: at least one Bonferroni "
+            "simultaneous upper bound <1, or both upper bounds <=1.02"),
+        "baseline": "per-circuit fidelity B*",
         "improved_at_least_one": improved_one,
         "both_within_2pct_noninferiority": both_noninferior,
     }
@@ -530,6 +584,9 @@ def _main_report(runs: Sequence[RunManifest], circuits: Sequence[str], dataset: 
         "status": "pass" if passed else "fail", "paired_cohort": paired,
         "per_circuit_quality": per_circuit_quality,
         "methods": status_by_method,
+        "paired_method_summary": paired_summary,
+        "stratum_method_summary": stratum_summary,
+        "stratum_by_circuit": labels,
         "fidelity": {
             "Bstar_definition": "per-circuit maximum log fidelity among M1 and M2",
             "Bstar_method_by_circuit": bstar_method,
@@ -579,7 +636,8 @@ def _timing_report(runs: Sequence[RunManifest], circuits: Sequence[str],
     for run in runs:
         groups[(run.circuit, run.method)].append(run)
     methods: Dict[str, object] = {}
-    all_complete = True
+    all_protocol_complete = True
+    all_runtime_observed = True
     for method in METHODS:
         circuit_rows: Dict[str, object] = {}
         penalties: List[float] = []
@@ -598,10 +656,6 @@ def _timing_report(runs: Sequence[RunManifest], circuits: Sequence[str],
                 # variation is not confounded with a different search path.
                 and all(by_rep[index][0].seed == 0 for index in QUALITY_SEEDS)
             )
-            if protocol_ok:
-                complete += 1
-            else:
-                all_complete = False
             successful: List[float] = []
             circuit_penalties: List[float] = []
             for repetition in range(5):
@@ -618,9 +672,17 @@ def _timing_report(runs: Sequence[RunManifest], circuits: Sequence[str],
                         value = 2.0 * timeout_seconds
                 penalties.append(value)
                 circuit_penalties.append(value)
+            runtime_observed = bool(successful)
+            if protocol_ok and runtime_observed:
+                complete += 1
+            if not protocol_ok:
+                all_protocol_complete = False
+            if not runtime_observed:
+                all_runtime_observed = False
             circuit_rows[circuit] = {
                 "protocol_complete": protocol_ok, "attempts": len(records),
                 "successful": len(successful),
+                "runtime_observed": runtime_observed,
                 "median_success_seconds": (
                     statistics.median(successful) if successful else None),
                 "PAR2_seconds": statistics.fmean(circuit_penalties),
@@ -637,10 +699,16 @@ def _timing_report(runs: Sequence[RunManifest], circuits: Sequence[str],
     return {
         "available": True,
         "valid": min(int(methods[m]["valid"]) for m in METHODS),
-        "N": len(circuits), "status": "pass" if all_complete else "fail",
+        "N": len(circuits),
+        "status": "pass" if (all_protocol_complete and all_runtime_observed) else "fail",
         "timeout_seconds": timeout_seconds,
         "PAR2_timeout_penalty_seconds": 2.0 * timeout_seconds,
-        "methods": methods, "gate": {"passed": all_complete},
+        "methods": methods,
+        "gate": {
+            "passed": all_protocol_complete and all_runtime_observed,
+            "all_protocol_complete": all_protocol_complete,
+            "all_circuit_methods_have_successful_runtime": all_runtime_observed,
+        },
     }
 
 
@@ -751,6 +819,39 @@ def aggregate_experiment(
                 "compiler_time_seconds": (
                     item.compiler_time_ns / 1e9
                     if item.compiler_time_ns is not None else None),
+                "compiler_process_wall_seconds": (
+                    item.compiler_process_wall_ns / 1e9
+                    if item.compiler_process_wall_ns is not None else None),
+                "end_to_end_time_seconds": (
+                    item.end_to_end_time_ns / 1e9
+                    if item.end_to_end_time_ns is not None else None),
+                "cpu_time_seconds": (
+                    item.cpu_time_ns / 1e9
+                    if item.cpu_time_ns is not None else None),
+                "peak_rss_bytes": item.peak_rss_bytes,
+                "log_one_qubit_gate": item.fidelity_components.get(
+                    "log_one_qubit_gate"),
+                "log_two_qubit_gate": item.fidelity_components.get(
+                    "log_two_qubit_gate"),
+                "log_idle_excitation": item.fidelity_components.get(
+                    "log_idle_excitation"),
+                "log_atom_transfer": item.fidelity_components.get(
+                    "log_atom_transfer"),
+                "log_coherence_linear": item.fidelity_components.get(
+                    "log_coherence_linear"),
+                "exponential_sensitivity_log_fidelity":
+                    item.exponential_sensitivity_log_fidelity,
+                "exponential_sensitivity_fidelity":
+                    item.exponential_sensitivity_fidelity,
+                "duration_us": item.duration_us,
+                "idle_exposures": item.idle_exposures,
+                "stay_count": item.stay_count,
+                "return_count": item.return_count,
+                "reseat_count": item.reseat_count,
+                "ghost_repairs": item.ghost_repairs,
+                "ghost_splits": item.ghost_splits,
+                "ghost_hits": item.ghost_hits,
+                "verifier_ok": item.verifier_ok,
                 "artifact_dir": item.artifact_dir,
                 "error": item.error,
             }
@@ -771,7 +872,8 @@ def aggregate_experiment(
             "requires": [
                 "explicit frozen suite", "clean consistent provenance",
                 "coverage gate", "main fidelity and move gates",
-                "five-repeat timing protocol"],
+                "five-repeat timing protocol with at least one successful runtime "
+                "per circuit and method"],
             "missing_sections": [
                 name for name, section in (("coverage", coverage),
                                            ("main", main), ("timing", timing))

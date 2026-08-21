@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from experiments_v2.contracts import RunManifest, RunStatus  # noqa: E402
-from experiments_v2.statistics import aggregate_experiment  # noqa: E402
+from experiments_v2.statistics import (  # noqa: E402
+    aggregate_experiment, paired_wilcoxon)
 
 
 class ManifestFactory:
@@ -125,11 +126,24 @@ class TestStrictStatistics(unittest.TestCase):
             self.assertTrue(m4_c0["paired"])
             self.assertAlmostEqual(
                 m4_c0["fidelity"], math.exp(-0.8 + math.log(1.03)))
+            summary = report["main"]["paired_method_summary"]["M4"]
+            self.assertEqual((summary["valid"], summary["N"]), (10, 10))
+            self.assertAlmostEqual(
+                summary["fidelity_geometric_mean"],
+                math.exp(-0.8 + math.log(1.03)))
+            self.assertEqual(summary["move_batches_median"], 80)
+            self.assertEqual(
+                set(report["main"]["stratum_method_summary"]), {"le32"})
+            self.assertEqual(
+                set(report["main"]["stratum_by_circuit"]), set(circuits))
             self.assertEqual(len(report["attempt_index"]), len(paths))
             self.assertEqual(
                 {row["run_kind"] for row in report["attempt_index"]},
                 {"coverage", "main", "timing"},
             )
+            self.assertIn("log_idle_excitation", report["attempt_index"][0])
+            self.assertIn("end_to_end_time_seconds", report["attempt_index"][0])
+            self.assertIn("ghost_repairs", report["attempt_index"][0])
 
     def test_coverage_denominator_is_frozen_suite_not_observed_union(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -195,6 +209,34 @@ class TestStrictStatistics(unittest.TestCase):
                 "M2")
             self.assertIn("fidelity_Bstar_definition", main["move"])
 
+    def test_move_claim_gate_uses_fidelity_bstar_not_metric_best(self):
+        with tempfile.TemporaryDirectory() as directory:
+            factory = ManifestFactory(Path(directory))
+            paths = [
+                factory.add("c0", "M1", "main", log_fidelity=-1.0,
+                            move_batches=50, move_time_us=500),
+                factory.add("c0", "M2", "main", log_fidelity=-0.9,
+                            move_batches=90, move_time_us=900),
+            ]
+            for seed in range(5):
+                paths.append(factory.add(
+                    "c0", "M3", "main", seed=seed, log_fidelity=-0.8,
+                    move_batches=85, move_time_us=850))
+                paths.append(factory.add(
+                    "c0", "M4", "main", seed=seed,
+                    log_fidelity=-0.8 + math.log(1.03),
+                    move_batches=80, move_time_us=800))
+            report = aggregate_experiment(
+                paths, dataset="zac18", frozen_circuits=["c0"],
+                bootstrap_iterations=20)
+            move = report["main"]["move"]
+            self.assertEqual(move["gate"]["baseline"],
+                             "per-circuit fidelity B*")
+            self.assertTrue(move["gate"]["passed"])
+            self.assertGreater(
+                move["metrics"]["move_batches"]
+                ["vs_metric_best_baseline"]["ratio"], 1.0)
+
     def test_timing_par2_penalizes_failure_but_protocol_is_complete(self):
         with tempfile.TemporaryDirectory() as directory:
             factory = ManifestFactory(Path(directory))
@@ -232,6 +274,31 @@ class TestStrictStatistics(unittest.TestCase):
                 bootstrap_iterations=10)
             self.assertFalse(report["timing"]["gate"]["passed"])
             self.assertEqual(report["timing"]["methods"]["M4"]["valid"], 0)
+
+    def test_timing_all_failures_cannot_pass_publication_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            factory = ManifestFactory(Path(directory))
+            paths = []
+            for method in ("M1", "M2", "M3", "M4"):
+                for repetition in range(5):
+                    paths.append(factory.add(
+                        "c0", method, "timing", repetition=repetition,
+                        status=RunStatus.TIMEOUT.value))
+            report = aggregate_experiment(
+                paths, dataset="zac18", frozen_circuits=["c0"],
+                bootstrap_iterations=10)
+            self.assertFalse(report["timing"]["gate"]["passed"])
+            self.assertFalse(
+                report["timing"]["gate"]
+                ["all_circuit_methods_have_successful_runtime"])
+            self.assertEqual(report["timing"]["methods"]["M1"]["valid"], 0)
+
+    def test_wilcoxon_is_scipy_and_never_a_sign_test_fallback(self):
+        result = paired_wilcoxon([0.1, 0.2, 0.3])
+        self.assertEqual(result["implementation"], "scipy.stats.wilcoxon")
+        self.assertEqual(result["test"],
+                         "Wilcoxon signed-rank, one-sided greater")
+        self.assertNotIn("fallback", result["test"])
 
     def test_mixed_experiment_ids_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:

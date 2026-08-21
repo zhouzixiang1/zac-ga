@@ -577,6 +577,67 @@ atom (16, 0) atom2
         self.assertEqual(
             validate_trace_physics(events, n_qubits=2)["ghost_hits"], 0)
 
+    def test_strict_replay_treats_held_stationary_atom_as_ghost(self):
+        events = [
+            CanonicalTraceEvent(
+                EventType.INIT, 0, 0, atoms=(0, 1),
+                end_positions=((0.0, 0.0), (5.0, 0.0)),
+                end_regions=("storage", "storage")),
+            CanonicalTraceEvent(
+                EventType.LOAD, 0, 15, atoms=(0,), batch_id="staggered",
+                start_positions=((0.0, 0.0),), end_positions=((0.0, 0.0),)),
+            CanonicalTraceEvent(
+                EventType.MOVE, 15, 20, atoms=(0,), batch_id="staggered",
+                start_positions=((0.0, 0.0),), end_positions=((1.0, 0.0),)),
+            CanonicalTraceEvent(
+                EventType.LOAD, 20, 35, atoms=(1,), batch_id="staggered",
+                start_positions=((5.0, 0.0),), end_positions=((5.0, 0.0),)),
+            CanonicalTraceEvent(
+                EventType.MOVE, 35, 40, atoms=(0,), batch_id="staggered",
+                start_positions=((1.0, 0.0),), end_positions=((10.0, 0.0),)),
+        ]
+        with self.assertRaisesRegex(TraceValidationError, "ghost collision"):
+            validate_trace_physics(events, n_qubits=2)
+
+    def test_strict_replay_rejects_interleaved_aod_batches(self):
+        events = [
+            CanonicalTraceEvent(
+                EventType.INIT, 0, 0, atoms=(0, 1),
+                end_positions=((0.0, 0.0), (5.0, 5.0)),
+                end_regions=("storage", "storage")),
+            CanonicalTraceEvent(
+                EventType.LOAD, 0, 15, atoms=(0,), batch_id="a",
+                start_positions=((0.0, 0.0),)),
+            CanonicalTraceEvent(
+                EventType.LOAD, 15, 30, atoms=(1,), batch_id="b",
+                start_positions=((5.0, 5.0),)),
+        ]
+        with self.assertRaisesRegex(TraceValidationError, "cannot interleave"):
+            validate_trace_physics(events, n_qubits=2)
+        with self.assertRaisesRegex(TraceValidationError, "cannot interleave"):
+            score_trace(events, MODEL, n_qubits=2)
+
+    def test_strict_replay_allows_unrelated_gate_to_overlap_open_aod_batch(self):
+        events = [
+            CanonicalTraceEvent(
+                EventType.INIT, 0, 0, atoms=(0, 1),
+                end_positions=((0.0, 0.0), (5.0, 5.0)),
+                end_regions=("storage", "storage")),
+            CanonicalTraceEvent(
+                EventType.LOAD, 0, 15, atoms=(0,), batch_id="a",
+                start_positions=((0.0, 0.0),)),
+            CanonicalTraceEvent(
+                EventType.ONE_QUBIT_GATE, 5, 57, atoms=(1,)),
+            CanonicalTraceEvent(
+                EventType.MOVE, 15, 20, atoms=(0,), batch_id="a",
+                start_positions=((0.0, 0.0),), end_positions=((1.0, 0.0),)),
+            CanonicalTraceEvent(
+                EventType.STORE, 20, 35, atoms=(0,), batch_id="a",
+                end_positions=((1.0, 0.0),)),
+        ]
+        self.assertEqual(
+            validate_trace_physics(events, n_qubits=2)["move_batches"], 1)
+
     def test_same_atom_operation_overlap_is_rejected(self):
         events = [
             init_event(1),

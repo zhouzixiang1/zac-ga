@@ -14,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from experiments_v2.cli import build_parser  # noqa: E402
-from experiments_v2.export import export_experiment_report  # noqa: E402
+from experiments_v2.export import _build_tables, export_experiment_report  # noqa: E402
+from experiments_v2.figures import render_report_figures  # noqa: E402
+from experiments_v2.workbook_renderer import render_workbook  # noqa: E402
 
 
 def _status_counts(success: int = 1) -> dict[str, int]:
@@ -66,6 +68,7 @@ def sample_report(*, claim_passed: bool = False) -> dict:
             "circuits": {
                 "toy": {
                     "protocol_complete": True, "attempts": 5, "successful": 5,
+                    "runtime_observed": True,
                     "median_success_seconds": 1.2, "PAR2_seconds": 1.25,
                 },
             },
@@ -89,6 +92,29 @@ def sample_report(*, claim_passed: bool = False) -> dict:
             "available": True, "valid": 1, "N": 1,
             "status": "pass" if claim_passed else "fail",
             "paired_cohort": ["toy"], "methods": quality_methods,
+            "paired_method_summary": {
+                method: {
+                    "valid": 1, "N": 1,
+                    "fidelity_geometric_mean": 0.904837418,
+                    "move_batches_median": 2,
+                    "move_time_us_median": 40.0,
+                    "quality_compiler_seconds_median": 1.0,
+                }
+                for method in methods
+            },
+            "stratum_by_circuit": {"toy": "le32"},
+            "stratum_method_summary": {
+                "le32": {
+                    method: {
+                        "n": 1,
+                        "fidelity_geometric_mean": 0.904837418,
+                        "move_batches_median": 2,
+                        "move_time_us_median": 40.0,
+                        "quality_compiler_seconds_median": 1.0,
+                    }
+                    for method in methods
+                },
+            },
             "per_circuit_quality": [
                 {
                     "circuit": "toy", "method": method, "paired": True,
@@ -150,22 +176,33 @@ class TestExperimentExport(unittest.TestCase):
             manifest = export_experiment_report(sample_report(), output)
             self.assertFalse(manifest["claim_gate_passed"])
             self.assertTrue(manifest["no_imputation"])
-            self.assertTrue(manifest["xlsx_pending_artifact_render"])
+            self.assertFalse(manifest["xlsx_pending_artifact_render"])
+            self.assertTrue(manifest["xlsx_rendered"])
             for name in (
                 "report.json", "report.md", "tables.tex", "summary.csv",
-                "coverage.csv", "fidelity.csv", "move.csv", "timing.csv",
+                "coverage.csv", "method_quality.csv", "quality_strata.csv",
+                "fidelity.csv", "move.csv", "timing.csv",
                 "cohort.csv", "quality_circuits.csv", "attempts.csv",
                 "plot_data.csv", "workbook_contract.json",
-                "export_manifest.json",
+                "report.xlsx", "export_manifest.json",
             ):
                 self.assertTrue((output / name).is_file(), name)
+            self.assertTrue((output / "report.xlsx").read_bytes().startswith(b"PK"))
+            for name in (
+                "coverage_status.svg", "four_method_four_metric.pdf",
+                "paired_ecdf.svg", "paired_pareto.pdf",
+                "preregistered_strata.svg", "figure_qa.json",
+            ):
+                self.assertTrue((output / "figures" / name).is_file(), name)
+            self.assertIn(
+                "<text", (output / "figures" / "four_method_four_metric.svg").read_text())
             strict_json = json.loads((output / "report.json").read_text())
             ratio = strict_json["main"]["move"]["metrics"]["move_batches"][
                 "vs_metric_best_baseline"]["ratio"]
             self.assertEqual(ratio, "Infinity")
             markdown = (output / "report.md").read_text()
             self.assertIn("diagnostic only", markdown)
-            self.assertIn("not inferred", markdown)
+            self.assertIn("not imputed", markdown)
             latex = (output / "tables.tex").read_text()
             self.assertIn(r"zac\_demo", latex)
             self.assertIn("failed-or-incomplete", latex)
@@ -173,20 +210,26 @@ class TestExperimentExport(unittest.TestCase):
                 plot_rows = list(csv.DictReader(handle))
             self.assertTrue(any(row["section"] == "fidelity" for row in plot_rows))
             self.assertTrue(any(row["section"] == "move" for row in plot_rows))
+            self.assertTrue(any(row["section"] == "ecdf" for row in plot_rows))
+            self.assertTrue(any(row["section"] == "pareto" for row in plot_rows))
+            with open(output / "attempts.csv", newline="", encoding="utf-8") as handle:
+                self.assertEqual(len(list(csv.DictReader(handle))), 1)
             exported = json.loads((output / "export_manifest.json").read_text())
             self.assertTrue(all(len(row["sha256"]) == 64 for row in exported["files"]))
 
-    def test_workbook_contract_is_normalized_and_explicitly_not_xlsx(self):
+    def test_workbook_contract_renders_verified_xlsx(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "delivery"
             manifest = export_experiment_report(
                 sample_report(claim_passed=True), output)
             contract = json.loads((output / "workbook_contract.json").read_text())
-            self.assertTrue(contract["not_an_xlsx"])
+            self.assertTrue(contract["source_contract"])
+            self.assertEqual(contract["rendered_xlsx"], "report.xlsx")
             self.assertIn("artifact tool", contract["render_policy"])
             self.assertEqual(
                 [sheet["sheet_name"] for sheet in contract["sheets"]],
-                ["Overview", "Coverage", "Quality Methods", "Circuit Quality", "Fidelity",
+                ["Overview", "Coverage", "Quality Methods", "Quality Strata",
+                 "Circuit Quality", "Fidelity",
                  "Fidelity Strata", "Move", "Timing", "Cohort",
                  "Timing Circuits", "Attempts", "Plot Data"],
             )
@@ -195,8 +238,25 @@ class TestExperimentExport(unittest.TestCase):
                 if sheet["sheet_name"] == "Coverage")
             self.assertEqual(coverage["rows"][0]["method"], "M1")
             self.assertEqual(coverage["freeze_panes"], "A2")
-            self.assertFalse((output / "report.xlsx").exists())
-            self.assertTrue(manifest["xlsx_pending_artifact_render"])
+            self.assertTrue((output / "report.xlsx").is_file())
+            qa = json.loads((output / "workbook_qa" / "workbook_qa.json").read_text())
+            self.assertEqual(qa["formula_errors"], [])
+            self.assertEqual(len(qa["previews"]), 13)
+            self.assertFalse(manifest["xlsx_pending_artifact_render"])
+            render_workbook(
+                output / "workbook_contract.json", output / "report-copy.xlsx",
+                qa_directory=output / "workbook-copy-qa")
+            self.assertEqual(
+                (output / "report.xlsx").read_bytes(),
+                (output / "report-copy.xlsx").read_bytes())
+            second_figures = output / "figures-copy"
+            render_report_figures(
+                sample_report(claim_passed=True),
+                _build_tables(sample_report(claim_passed=True)), second_figures)
+            for name in ("four_method_four_metric.svg", "paired_ecdf.pdf"):
+                self.assertEqual(
+                    (output / "figures" / name).read_bytes(),
+                    (second_figures / name).read_bytes())
 
     def test_cli_exposes_delivery_directory(self):
         parsed = build_parser().parse_args([
@@ -204,6 +264,11 @@ class TestExperimentExport(unittest.TestCase):
             "--output-dir", "delivery",
         ])
         self.assertEqual(parsed.output_dir, Path("delivery"))
+        ablation = build_parser().parse_args([
+            "aggregate-ablation", "--plan", "plan.json", "--dataset", "zac18",
+            "--output-dir", "ablation-delivery",
+        ])
+        self.assertEqual(ablation.output_dir, Path("ablation-delivery"))
 
     def test_non_schema2_report_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

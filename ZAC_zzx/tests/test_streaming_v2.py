@@ -387,6 +387,30 @@ class TestIncrementalTracePipeline(unittest.TestCase):
                 metadata={"ghost_hits": 0},
             ))
 
+    def test_incremental_validator_treats_held_stationary_atom_as_ghost(self):
+        validator = IncrementalTraceValidator(2)
+        events = [
+            CanonicalTraceEvent(
+                EventType.INIT, 0, 0, atoms=(0, 1),
+                end_positions=((0.0, 0.0), (5.0, 0.0))),
+            CanonicalTraceEvent(
+                EventType.LOAD, 0, 15, atoms=(0,), batch_id="staggered",
+                start_positions=((0.0, 0.0),)),
+            CanonicalTraceEvent(
+                EventType.MOVE, 15, 20, atoms=(0,), batch_id="staggered",
+                start_positions=((0.0, 0.0),), end_positions=((1.0, 0.0),)),
+            CanonicalTraceEvent(
+                EventType.LOAD, 20, 35, atoms=(1,), batch_id="staggered",
+                start_positions=((5.0, 0.0),)),
+        ]
+        for event in events:
+            validator.consume(event)
+        with self.assertRaisesRegex(TraceValidationError, "ghost collision"):
+            validator.consume(CanonicalTraceEvent(
+                EventType.MOVE, 35, 40, atoms=(0,), batch_id="staggered",
+                start_positions=((1.0, 0.0),), end_positions=((10.0, 0.0),),
+            ))
+
     def test_incremental_pipeline_checkpoint_resume_is_exact(self):
         events = self.events()
         uninterrupted = IncrementalTracePipeline(

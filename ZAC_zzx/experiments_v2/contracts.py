@@ -194,7 +194,7 @@ class RunManifest:
     peak_rss_bytes: Optional[int] = None
     log_fidelity: Optional[float] = None
     fidelity: Optional[float] = None
-    fidelity_components: Dict[str, float] = field(default_factory=dict)
+    fidelity_components: Dict[str, Optional[float]] = field(default_factory=dict)
     fidelity_ood: bool = False
     exponential_sensitivity_fidelity: Optional[float] = None
     exponential_sensitivity_log_fidelity: Optional[float] = None
@@ -262,21 +262,26 @@ class RunManifest:
                 raise ValueError("successful run has a logical gate-ledger mismatch")
             if self.ghost_hits != 0:
                 raise ValueError("successful run must have ghost_hits=0")
+            required_components = {
+                "log_one_qubit_gate", "log_two_qubit_gate",
+                "log_idle_excitation", "log_atom_transfer",
+                "log_coherence_linear",
+            }
+            if not required_components.issubset(self.fidelity_components):
+                raise ValueError("successful run is missing fidelity decomposition")
             if self.fidelity_ood:
                 if self.log_fidelity is not None or self.fidelity is not None:
                     raise ValueError("OOD result must not invent a linear fidelity")
                 if self.exponential_sensitivity_log_fidelity is None:
                     raise ValueError("OOD result is missing exponential sensitivity")
+                if self.fidelity_components["log_coherence_linear"] is not None:
+                    raise ValueError(
+                        "OOD result must record undefined linear coherence as null")
             else:
                 if self.log_fidelity is None or self.fidelity is None:
                     raise ValueError("in-domain success is missing fidelity")
-                required_components = {
-                    "log_one_qubit_gate", "log_two_qubit_gate",
-                    "log_idle_excitation", "log_atom_transfer",
-                    "log_coherence_linear",
-                }
-                if not required_components.issubset(self.fidelity_components):
-                    raise ValueError("successful run is missing fidelity decomposition")
+                if self.fidelity_components["log_coherence_linear"] is None:
+                    raise ValueError("in-domain success has null linear coherence")
             numeric_values = {
                 "move_time_us": self.move_time_us,
                 "duration_us": self.duration_us,

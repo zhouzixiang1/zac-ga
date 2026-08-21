@@ -435,6 +435,20 @@ class TestCliPlan(unittest.TestCase):
 
 
 class TestUnifiedEvaluationGate(unittest.TestCase):
+    def test_compiler_ghost_repairs_are_summed_across_layers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory)
+            (artifact / "compiler_stats.json").write_text(json.dumps({
+                "decision_log": [
+                    {"stay": 2, "return": 1, "ghost_fix": 1},
+                    {"stay": 3, "return": 2, "ghost_fix": 4},
+                ],
+                "ghost_splits": 2,
+            }), encoding="utf-8")
+            counters = UnifiedEvaluationGate._compiler_counters(artifact)
+            self.assertEqual(counters["ghost_repairs"], 5)
+            self.assertEqual(counters["ghost_splits"], 2)
+
     def test_normalize_score_and_gate_ledger_are_mandatory(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = PlanFixture(Path(directory))
@@ -622,6 +636,9 @@ class TestUnifiedEvaluationGate(unittest.TestCase):
             self.assertIsNone(manifest.log_fidelity)
             self.assertIsNone(manifest.fidelity)
             self.assertIsNotNone(manifest.exponential_sensitivity_log_fidelity)
+            self.assertIn("log_coherence_linear", manifest.fidelity_components)
+            self.assertIsNone(
+                manifest.fidelity_components["log_coherence_linear"])
 
             verified = command_verify_run(
                 plan, Path(manifest.artifact_dir) / "manifest.json")

@@ -42,7 +42,9 @@ M1 的 fidelity/duration 与论文派生表比较；论文没有逐项公开的�
 
 `run-ablation` 固定使用 0–4 五个种子。ZAC18 全量运行；QMAP154 按 canonical 2Q 门数 `<=300 / 301–1500 / >1500` 分层，每层确定性选 canonical SHA256 最小的 10 个电路。六个非重复实验臂为：`h0`、兼作 phase-coloring 参照的 `h2_phase_coloring`、容量安全的 `always_stay`、每层（包括末层）全回存储的 `always_return`、仅允许相邻 2Q 层直接复用的 `adjacent_only`，以及 lumped fitness + ghost-safe greedy batching 的 `lumped_greedy`。每次 attempt 使用独立 ablation wrapper 与 `RunManifest.ablation_variant`；主 M3/M4 配置不增加任何消融字段，非 ablation 轨道收到消融 wrapper 会直接失败。
 
-`aggregate-ablation` 只读取同一 frozen ablation `experiment_id` 下的 `run_kind=ablation` manifest。它要求每个电路/变体恰有 seed 0–4、`repetition=0` 的五次成功运行，先在电路内取中位数，再汇总 log-fidelity、Move 批次、Move 时间和编译时间。缺种子、重复 attempt、失败或 OOD 都逐电路显式保留为 invalid；报告固定 `diagnostic_only=true` 和 `eligible_for_main_claim_gate=false`，不会进入主论文结论门。
+`aggregate-ablation` 只读取同一 frozen ablation `experiment_id` 下的 `run_kind=ablation` manifest。它要求每个电路/变体恰有 seed 0–4、`repetition=0` 的五次成功运行，先在电路内取中位数，再汇总 log-fidelity、Move 批次、Move 时间和编译时间。以完整 `h2_phase_coloring` 为参照，逐电路给出 bootstrap 95% CI、双侧 paired Wilcoxon 和每个指标内的 Holm 校正；这些比较全部标记为 exploratory。缺种子、重复 attempt、失败或 OOD 都逐电路显式保留为 invalid；报告固定 `diagnostic_only=true` 和 `eligible_for_main_claim_gate=false`，不会进入主论文结论门。命令同时生成 Markdown/LaTeX/CSV、经逐 sheet QA 的 `ablation.xlsx` 以及四指标、ECDF 和配对效应的 SVG/PDF/PNG 图。
+
+`aggregate` 会一次生成完整交付目录：可追溯 JSON/CSV、Markdown、LaTeX、四方法四指标主表、预注册分层表、经 artifact-tool 渲染和逐 sheet 预览检查的 `report.xlsx`，以及 coverage、四指标、ECDF、fidelity-B* 归一化 Pareto 和规模分层的 SVG/PDF/PNG 图。所有 ECDF/Pareto 点只来自严格 paired cohort；缺失值保持空白，不插补。若论文结论门未通过，每张图和文字报告都会明确标记为 diagnostic only。
 
 ## 统一计量
 

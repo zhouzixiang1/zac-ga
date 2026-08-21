@@ -193,7 +193,7 @@ def _success_run(circuit: str, variant: str, seed: int, *,
         "log_two_qubit_gate": 0.0,
         "log_idle_excitation": 0.0,
         "log_atom_transfer": 0.0,
-        "log_coherence_linear": 0.0,
+        "log_coherence_linear": None if ood else 0.0,
     }
     return RunManifest(
         run_id=run_id or f"{circuit}-{variant}-{seed}",
@@ -260,6 +260,14 @@ class TestAblationStatistics(unittest.TestCase):
         self.assertEqual(c0["seed_median"]["move_time_us"], 52.0)
         self.assertEqual(c0["seed_median"]["compiler_time_seconds"], 12.0)
         self.assertEqual(report["fully_paired_success"]["valid"], 2)
+        comparison = report["comparisons"]["metrics"]["fidelity"][
+            "h0_vs_h2_phase_coloring"]
+        self.assertEqual(comparison["n"], 2)
+        self.assertAlmostEqual(comparison["ratio"], math.exp(0.2))
+        self.assertEqual(comparison["implementation"],
+                         "scipy.stats.wilcoxon")
+        self.assertIn("holm_p_value", comparison)
+        self.assertTrue(report["comparisons"]["exploratory_only"])
 
     def test_missing_duplicate_and_failure_are_explicit_invalid_cells(self):
         with tempfile.TemporaryDirectory() as directory:

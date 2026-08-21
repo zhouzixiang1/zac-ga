@@ -283,6 +283,7 @@ class IncrementalTraceValidator:
     def _validate_move_geometry(self, event: CanonicalTraceEvent) -> None:
         legs: list[tuple[float, float, float, float, float]] = []
         vectors: list[tuple[float, float, float, float]] = []
+        moving_atoms: set[int] = set()
         for q, start, end in zip(
                 event.atoms, event.start_positions, event.end_positions):
             known = self._positions[q]
@@ -292,6 +293,7 @@ class IncrementalTraceValidator:
             if distance > _TIME_TOLERANCE_US:
                 legs.append((distance, start[0], start[1], end[0], end[1]))
                 vectors.append((start[0], end[0], start[1], end[1]))
+                moving_atoms.add(q)
         for left in range(len(vectors)):
             for right in range(left + 1, len(vectors)):
                 if not compatible_2d(vectors[left], vectors[right]):
@@ -300,7 +302,7 @@ class IncrementalTraceValidator:
                     )
         ghosts = [
             (q, *position) for q, position in enumerate(self._positions)
-            if q not in self._held_atoms and position is not None
+            if q not in moving_atoms and position is not None
         ]
         hits = find_ghost_hits(legs, ghosts)
         self.ghost_hits += len(hits)

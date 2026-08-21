@@ -86,6 +86,13 @@ def score_trace(
     previous_start = -1.0
     init_atoms: tuple[int, ...] | None = None
     event_count = 0
+    active_aod_batch: str | None = None
+    completed_aod_batches: set[str] = set()
+    aod_held: set[int] = set()
+    aod_loaded: set[int] = set()
+    aod_moved = False
+    aod_storing = False
+    aod_end = -1.0
 
     for value in events:
         if not isinstance(value, CanonicalTraceEvent):
@@ -120,6 +127,64 @@ def score_trace(
             raise TraceValidationError(
                 f"event atom exceeds declared n_qubits={n_qubits}: {sorted(event_atoms)}"
             )
+
+        if event.event_type in {EventType.LOAD, EventType.MOVE, EventType.STORE}:
+            batch_id = str(event.batch_id)
+            if event.start_us < aod_end - _TIME_TOLERANCE_US:
+                raise TraceValidationError("single AOD operations cannot overlap")
+            aod_end = event.end_us
+            if event.event_type is EventType.LOAD:
+                if active_aod_batch is None:
+                    if batch_id in completed_aod_batches:
+                        raise TraceValidationError(
+                            "movement batch id is reused after completion")
+                    active_aod_batch = batch_id
+                    aod_held = set()
+                    aod_loaded = set()
+                    aod_moved = False
+                    aod_storing = False
+                elif active_aod_batch != batch_id:
+                    raise TraceValidationError(
+                        "single AOD cannot interleave movement batches")
+                if aod_storing:
+                    raise TraceValidationError(
+                        "movement batch loads after store begins")
+                incoming = set(event.atoms)
+                if incoming & aod_loaded:
+                    raise TraceValidationError(
+                        "movement batch loads an atom twice")
+                aod_loaded.update(incoming)
+                aod_held.update(incoming)
+            elif event.event_type is EventType.MOVE:
+                if active_aod_batch is None or active_aod_batch != batch_id:
+                    raise TraceValidationError(
+                        "movement batch moves an atom before load")
+                if aod_storing:
+                    raise TraceValidationError(
+                        "movement batch moves after store begins")
+                if not set(event.atoms).issubset(aod_held):
+                    raise TraceValidationError(
+                        "movement batch moves an atom before load")
+                aod_moved = True
+            else:
+                if active_aod_batch is None or active_aod_batch != batch_id:
+                    raise TraceValidationError(
+                        "movement batch stores an atom before load")
+                if not aod_moved:
+                    raise TraceValidationError(
+                        "movement batch stores before any move phase")
+                outgoing = set(event.atoms)
+                if not outgoing.issubset(aod_held):
+                    raise TraceValidationError(
+                        "movement batch stores an atom before load")
+                aod_storing = True
+                aod_held.difference_update(outgoing)
+                if not aod_held:
+                    completed_aod_batches.add(batch_id)
+                    active_aod_batch = None
+                    aod_loaded = set()
+                    aod_moved = False
+                    aod_storing = False
 
         if event.event_type is EventType.INIT:
             if event_count != 1 or init_atoms is not None:
@@ -174,6 +239,10 @@ def score_trace(
             raise TraceValidationError(f"unsupported canonical event: {event.kind}")
 
     inferred_n = max(seen_atoms, default=-1) + 1
+    if active_aod_batch is not None or aod_held:
+        raise TraceValidationError(
+            "movement batch must contain load, move and store; "
+            "trace ends with an incomplete AOD movement batch")
     if n_qubits is None:
         n_qubits = inferred_n
     if init_atoms is not None:

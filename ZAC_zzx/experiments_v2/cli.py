@@ -28,6 +28,7 @@ from .ablation import (
     registered_variant, select_ablation_cohort,
 )
 from .ablation_statistics import aggregate_ablation
+from .ablation_export import export_ablation_report
 from .canonicalize import canonicalize_suite
 from .contracts import (
     CanonicalCircuitManifest,
@@ -268,14 +269,14 @@ class UnifiedEvaluationGate:
             repair = row.get("ghost_fix")
             if isinstance(repair, (int, float)):
                 repairs.append(int(repair))
-        counts["ghost_repairs"] = max(repairs, default=0)
+        counts["ghost_repairs"] = sum(repairs)
         splits = payload.get("ghost_splits", 0)
         if isinstance(splits, (int, float)):
             counts["ghost_splits"] = int(splits)
         return dict(counts)
 
     def _build_metrics(self, artifact: Path, result: FidelityResult) -> Mapping[str, Any]:
-        components: dict[str, float] = {
+        components: dict[str, float | None] = {
             "qubits": float(self.canonical.qubits),
             "gates_1q": float(result.one_qubit_gates),
             "gates_2q": float(result.two_qubit_gates),
@@ -286,11 +287,10 @@ class UnifiedEvaluationGate:
                 result.exponential_sensitivity_log_fidelity),
         }
         for name, value in result.component_fidelity.items():
-            if value is not None:
-                components[name] = float(value)
+            components[name] = None if value is None else float(value)
         for name, value in result.component_log_fidelity.items():
-            if value is not None:
-                components[f"log_{name}"] = float(value)
+            components[f"log_{name}"] = (
+                None if value is None else float(value))
         metrics: dict[str, Any] = {
             "log_fidelity": result.log_fidelity,
             "fidelity": result.fidelity,
@@ -964,7 +964,9 @@ def command_run_ablation(plan: ExperimentPlan,
 
 
 def command_aggregate_ablation(plan: ExperimentPlan, dataset_name: str,
-                               output: Path | None) -> Mapping[str, Any]:
+                               output: Path | None,
+                               output_dir: Path | None = None
+                               ) -> Mapping[str, Any]:
     _assert_reproduction_gate(plan)
     if dataset_name not in plan.datasets:
         raise ValueError(f"unknown dataset: {dataset_name}")
@@ -990,7 +992,13 @@ def command_aggregate_ablation(plan: ExperimentPlan, dataset_name: str,
     destination = (output.resolve() if output is not None else
                    _report_path(plan, f"aggregate-ablation-{dataset.name}"))
     _atomic_json(destination, report)
-    return {**report, "report_path": str(destination)}
+    export_directory = (
+        output_dir.resolve() if output_dir is not None
+        else destination.with_suffix(""))
+    delivery = export_ablation_report(report, export_directory)
+    return {
+        **report, "report_path": str(destination), "delivery": delivery,
+    }
 
 
 def command_run_large(plan: ExperimentPlan, dataset_names: Sequence[str] | None,
@@ -1282,6 +1290,10 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate_ablation_parser.add_argument("--plan", required=True, type=Path)
     aggregate_ablation_parser.add_argument("--dataset", required=True)
     aggregate_ablation_parser.add_argument("--output", type=Path)
+    aggregate_ablation_parser.add_argument(
+        "--output-dir", type=Path,
+        help=("ablation delivery directory; writes CSV/Markdown/LaTeX, "
+              "verified XLSX, and PDF/SVG/PNG figures"))
 
     large = subparsers.add_parser("run-large")
     large.add_argument("--plan", required=True, type=Path)
@@ -1306,7 +1318,7 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate.add_argument(
         "--output-dir", type=Path,
         help=("delivery directory; defaults to the JSON path without its suffix; "
-              "XLSX remains pending approved artifact rendering"))
+              "writes CSV/Markdown/LaTeX, verified XLSX, and PDF/SVG/PNG figures"))
     return parser
 
 
@@ -1355,7 +1367,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 resume=args.resume, dry_run=args.dry_run)
         elif args.command == "aggregate-ablation":
             result = command_aggregate_ablation(
-                plan, args.dataset, args.output)
+                plan, args.dataset, args.output, args.output_dir)
         elif args.command == "run-large":
             result = command_run_large(
                 plan, args.datasets, _parse_methods(args.methods),
