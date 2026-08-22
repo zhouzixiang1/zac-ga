@@ -16,6 +16,7 @@ from zac.ds.architecture import Architecture  # noqa: E402
 from zac.router.router import Router_mixin  # noqa: E402
 from zzx.algorithm_v2 import (  # noqa: E402
     ForecastBoundaryError,
+    ForecastLayerProvider,
     ForecastOracle,
     PhysicalIncrementalCost,
     build_seed_population,
@@ -203,6 +204,35 @@ class TestForecastBoundary(unittest.TestCase):
         self.assertEqual(oracle.next_use(0, 0), (2, 2))
         with self.assertRaises(ForecastBoundaryError):
             oracle.future_layer(0, 3)
+
+    def test_provider_path_is_equivalent_and_h0_never_reads_future(self):
+        class RecordingProvider(ForecastLayerProvider):
+            def __init__(self, schedule):
+                self.schedule = schedule
+                self.reads = []
+
+            @property
+            def layer_count(self):
+                return len(self.schedule)
+
+            def read_layer(self, layer):
+                self.reads.append(layer)
+                return self.schedule[layer]
+
+        h0_provider = RecordingProvider(self.SCHEDULE)
+        h0 = ForecastOracle(h0_provider, 0)
+        self.assertEqual(h0.target_layer(0), ((2, 3),))
+        self.assertIsNone(h0.next_use(0, 0))
+        self.assertEqual(h0_provider.reads, [1])
+
+        h2_provider = RecordingProvider(self.SCHEDULE)
+        streamed = ForecastOracle(h2_provider, 2)
+        frozen = ForecastOracle(self.SCHEDULE, 2)
+        self.assertEqual(
+            list(streamed.visible_future(0)),
+            list(frozen.visible_future(0)),
+        )
+        self.assertEqual(streamed.next_use(0, 0), frozen.next_use(0, 0))
 
 
 class TestPhysicalObjective(unittest.TestCase):

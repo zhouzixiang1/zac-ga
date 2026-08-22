@@ -93,6 +93,39 @@ class ForecastBoundaryError(IndexError):
     """Raised when an algorithm tries to observe a layer outside its horizon."""
 
 
+class ForecastLayerProvider:
+    """Bounded backing store for :class:`ForecastOracle` layers.
+
+    Batch compilation passes an ordinary sequence and keeps its historic frozen
+    copy. Large compilation supplies a provider whose implementation may retain
+    only a small SQLite-backed ring. The oracle remains the sole horizon gate in
+    both cases.
+    """
+
+    @property
+    def layer_count(self) -> int:
+        raise NotImplementedError
+
+    def read_layer(self, layer: int) -> Sequence[Sequence[int]]:
+        raise NotImplementedError
+
+
+class _FrozenForecastLayerProvider(ForecastLayerProvider):
+    """Exact compatibility adapter for the existing in-memory schedule."""
+
+    def __init__(self, gate_scheduling: Sequence[Sequence[Sequence[int]]]):
+        self._schedule = tuple(
+            tuple((int(g[0]), int(g[1])) for g in layer)
+            for layer in gate_scheduling)
+
+    @property
+    def layer_count(self) -> int:
+        return len(self._schedule)
+
+    def read_layer(self, layer: int) -> tuple[tuple[int, int], ...]:
+        return self._schedule[layer]
+
+
 class ForecastOracle:
     """Read-only, horizon-limited view of layers after the current transition.
 
@@ -101,14 +134,19 @@ class ForecastOracle:
     no API path to future partners, which makes the no-lookahead ablation auditable.
     """
 
-    def __init__(self, gate_scheduling: Sequence[Sequence[Sequence[int]]],
+    def __init__(self, gate_scheduling: Sequence[Sequence[Sequence[int]]] |
+                 ForecastLayerProvider,
                  horizon: int):
         if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon < 0:
             raise ValueError("lookahead_horizon 必须是非负整数")
-        self._schedule = tuple(
-            tuple((int(g[0]), int(g[1])) for g in layer)
-            for layer in gate_scheduling)
+        self._provider = (
+            gate_scheduling if isinstance(gate_scheduling, ForecastLayerProvider)
+            else _FrozenForecastLayerProvider(gate_scheduling))
         self.horizon = horizon
+
+    @property
+    def layer_count(self) -> int:
+        return self._provider.layer_count
 
     def target_layer(self, boundary_layer: int) -> tuple[tuple[int, int], ...]:
         return self._read(boundary_layer, boundary_layer + 1, allow_target=True)
@@ -124,7 +162,7 @@ class ForecastOracle:
     def visible_future(self, boundary_layer: int):
         for offset in range(1, self.horizon + 1):
             layer = boundary_layer + 1 + offset
-            if layer >= len(self._schedule):
+            if layer >= self.layer_count:
                 break
             yield layer, self.future_layer(boundary_layer, offset)
 
@@ -144,9 +182,11 @@ class ForecastOracle:
         if layer < lower or layer > upper:
             raise ForecastBoundaryError(
                 f"layer {layer} 超出 boundary={boundary_layer}, H={self.horizon} 的可见范围")
-        if layer < 0 or layer >= len(self._schedule):
+        if layer < 0 or layer >= self.layer_count:
             return ()
-        return self._schedule[layer]
+        return tuple(
+            (int(gate[0]), int(gate[1]))
+            for gate in self._provider.read_layer(layer))
 
 
 @dataclass(frozen=True)

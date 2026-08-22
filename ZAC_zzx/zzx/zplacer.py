@@ -540,6 +540,66 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.residency_commitments: dict[int, tuple[int, tuple]] = {}
 
     # ------------------------------------------------------------------ 轮循环
+    def _initialize_run_state(self, architecture, qubit_mapping,
+                              gate_scheduling, *, forecast_source=None):
+        """Initialize the state shared by batch and bounded-memory execution.
+
+        ``gate_scheduling`` is the placement view used by the current physical
+        stage.  Batch execution passes its in-memory list; Large execution passes
+        a sequence facade backed by SQLite.  ``forecast_source`` may therefore be
+        a bounded :class:`ForecastLayerProvider` while preserving the exact
+        :class:`ForecastOracle` gate on future information.
+        """
+        self.architecture = architecture
+        self.gate_scheduling = gate_scheduling
+        n = len(gate_scheduling)
+        # Neutralise the legacy adjacent-layer reuse mechanism.  The resident
+        # registry is the sole source of cross-layer reuse for M3/M4.
+        self.list_reuse_qubit = [set() for _ in range(n)]
+        self.mapping = [list(qubit_mapping[0])]
+        self.registry = ResidentRegistry(architecture, qubit_mapping[0],
+                                         self.theta_capacity)
+        # Schema 2 makes ForecastOracle the sole future-information channel.
+        # Keep a deliberately empty legacy helper so accidental next-use reads
+        # cannot leak L+2+ even though older function signatures still accept it.
+        self.nu = NextUse([] if self.experiment_schema == 2 else gate_scheduling)
+        self.forecast = ForecastOracle(
+            gate_scheduling if forecast_source is None else forecast_source,
+            self.lookahead_horizon)
+        self.residency_commitments = {}
+        return n
+
+    def _finish_terminal_boundary(self, layer: int):
+        """Commit the exact terminal boundary shared by batch and Large paths."""
+        terminal_ablation_return = self.ablation_policy == "always_return"
+        if terminal_ablation_return:
+            # Keep the registry at its true pre-move positions until ghost
+            # repair has replayed every RETURN leg.  decide_lazy's legacy
+            # final-return branch mutates eagerly and is therefore not used by
+            # the strict Schema-2 ablation path.
+            returners = sorted(self.registry.zone_seat)
+            sites = match_return_sites(
+                self.registry, returners, self.nu, layer,
+                self.box_ratio, self.alpha_lookahead,
+                forecast=self.forecast, candidate_mode="forecast")
+            decisions = {q: ("RETURN", sites[q]) for q in returners}
+            stats = {"stay": 0, "forced_e2": 0, "capacity": 0,
+                     "return": len(returners), "participants": 0}
+        else:
+            decisions, stats = decide_lazy(
+                self.registry, self.nu, layer, [], [],
+                final_return_home=self.final_return_home)
+        self._repair_ghosts([], decisions)
+        if terminal_ablation_return:
+            for q, (kind, loc) in decisions.items():
+                if kind == "RETURN":
+                    self.registry.return_to_storage(q, loc)
+                elif kind == "RESEAT":
+                    self.registry.reseat(q, loc)
+        self._append_boundary(decisions)
+        self.decision_log.append({"layer": layer, **stats,
+                                  "ghost_fix": getattr(self, "ghost_fixes", 0)})
+
     def run(self, architecture, qubit_mapping, gate_scheduling,
             dynamic_placement, reuse_qubit):
         """轮循环总控：产出与 ZAC 同构的映射流（长度 2n+1）。
@@ -554,21 +614,8 @@ class ResidentPlacer(VertexMatchingPlacer):
             ③ commit(L+1)   参与者登记入区，两张映射依序入流
         engine="ga" 时 ①② 合并成一步联合搜索（_ga_step）。
         """
-        self.architecture = architecture
-        self.gate_scheduling = gate_scheduling
-        # 中和复用机制（双保险：ZAC_zzx 层已置空 self.reuse_qubit）。
-        # 不动 dynamic_placement/reuse 旗标——路由回程分支判定还用它们。
-        self.list_reuse_qubit = [set() for _ in gate_scheduling]
-        self.mapping = [list(qubit_mapping[0])]
-        self.registry = ResidentRegistry(architecture, qubit_mapping[0],
-                                         self.theta_capacity)
-        # Schema 2 makes ForecastOracle the sole future-information channel.
-        # Keep a deliberately empty legacy helper so accidental next-use reads
-        # cannot leak L+2+ even though older function signatures still accept it.
-        self.nu = NextUse([] if self.experiment_schema == 2 else gate_scheduling)
-        self.forecast = ForecastOracle(gate_scheduling, self.lookahead_horizon)
-        self.residency_commitments = {}
-        n = len(gate_scheduling)
+        n = self._initialize_run_state(
+            architecture, qubit_mapping, gate_scheduling)
 
         # Canonical optimisation can legitimately remove every two-qubit gate
         # (for example, ground_state_estimation_10).  Such a circuit has no
@@ -596,39 +643,16 @@ class ResidentPlacer(VertexMatchingPlacer):
                 next_seats = [p["seats"] for p in placement]
             else:
                 # 末边界：没有下一轮门位 → 全员 STAY（native 同款），
-                # 或 final_return_home=True 时全队回存储（实验开关）
-                placement, next_gates, next_seats = None, [], []
-            terminal_ablation_return = (
-                layer == n - 1 and self.ablation_policy == "always_return")
-            if terminal_ablation_return:
-                # Keep the registry at its true pre-move positions until ghost
-                # repair has replayed every RETURN leg.  decide_lazy's legacy
-                # final-return branch mutates eagerly and is therefore not used
-                # by the strict Schema-2 ablation path.
-                returners = sorted(self.registry.zone_seat)
-                sites = match_return_sites(
-                    self.registry, returners, self.nu, layer,
-                    self.box_ratio, self.alpha_lookahead,
-                    forecast=self.forecast, candidate_mode="forecast")
-                decisions = {q: ("RETURN", sites[q]) for q in returners}
-                stats = {"stay": 0, "forced_e2": 0, "capacity": 0,
-                         "return": len(returners), "participants": 0}
-            else:
-                decisions, stats = decide_lazy(
-                    self.registry, self.nu, layer, next_gates, next_seats,
-                    final_return_home=self.final_return_home and layer == n - 1)
-            self._repair_ghosts(placement or [], decisions)   # 防线③（match 引擎同享）
-            if terminal_ablation_return:
-                for q, (kind, loc) in decisions.items():
-                    if kind == "RETURN":
-                        self.registry.return_to_storage(q, loc)
-                    elif kind == "RESEAT":
-                        self.registry.reseat(q, loc)
+                # 或正式消融/显式开关要求时回存储。
+                self._finish_terminal_boundary(layer)
+                continue
+            decisions, stats = decide_lazy(
+                self.registry, self.nu, layer, next_gates, next_seats)
+            self._repair_ghosts(placement, decisions)   # 防线③（match 引擎同享）
             self._append_boundary(decisions)
             self.decision_log.append({"layer": layer, **stats,
                                       "ghost_fix": getattr(self, "ghost_fixes", 0)})
-            if placement is not None:
-                self._commit_round(layer + 1, placement)
+            self._commit_round(layer + 1, placement)
         self._assert_contract()
 
     # ------------------------------------------------------------------ 门位规划

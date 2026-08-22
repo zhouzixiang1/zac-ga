@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,12 +18,14 @@ sys.path.insert(0, str(ROOT))
 
 from streaming.qasm_sqlite import (  # noqa: E402
     LOGICAL_LEDGER_FORMAT,
+    ZAC_VIEW_FORMAT,
     LayerStore,
     LogicalLedgerHasher,
     build_layer_store,
 )
 from streaming.trace_pipeline import IncrementalTraceValidator  # noqa: E402
 from evaluation import CanonicalTraceEvent, EventType, TraceValidationError  # noqa: E402
+from zac.zac import ZAC  # noqa: E402
 
 
 QASM = '''OPENQASM 2.0;
@@ -33,6 +38,51 @@ cz q[0],q[1];
 cz q[1],q[2];
 u1(0) q[0];
 '''
+
+
+def _zac_scheduler_qasm() -> str:
+    lines = [
+        "OPENQASM 2.0;",
+        'include "qelib1.inc";',
+        "qreg q[20];",
+        "u1(0) q[0];",
+        "u2(0,0) q[19];",
+    ]
+    for gate_index in range(10):
+        q0, q1 = 2 * gate_index, 2 * gate_index + 1
+        if gate_index == 3:
+            q0, q1 = q1, q0  # Stock ZAC canonicalises each CZ pair.
+        lines.append(f"cz q[{q0}],q[{q1}];")
+        if gate_index == 0:
+            lines.append("u1(0) q[0];")
+        if gate_index == 5:
+            lines.append("u2(0,0) q[10];")
+    # Still parented by gate 0 despite appearing after all ten layer-0 CZs.
+    lines.append("u3(0,0,0) q[1];")
+    lines.extend((
+        "cz q[0],q[2];",       # index 10, ASAP layer 1
+        "u1(0) q[0];",         # trailing child of index 10
+        "cz q[4],q[6];",       # index 11, ASAP layer 1
+        "u2(0,0) q[6];",       # trailing child of index 11
+        "u3(0,0,0) q[8];",     # late source event, still child of index 4
+    ))
+    return "\n".join(lines) + "\n"
+
+
+def _stock_zac_schedule(source: Path, max_gates: int) -> ZAC:
+    """Run the frozen Qiskit parser and stock Scheduler_mixin on one toy."""
+    stock = ZAC()
+    stock.resyn = False
+    stock.architecture = SimpleNamespace(
+        entanglement_zone=[("rydberg",)],
+        dict_SLM={
+            "rydberg": SimpleNamespace(n_r=1, n_c=max_gates),
+        },
+    )
+    with redirect_stdout(io.StringIO()):
+        stock.set_program(str(source))
+        stock.scheduling()
+    return stock
 
 
 def _u64(value: int) -> bytes:
@@ -240,6 +290,185 @@ class TestDependencyLayerStreaming(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(ValueError, "rebuild"):
                     store.verify_logical_ledger()
+
+
+class TestFrozenZacSchedulerView(unittest.TestCase):
+    def _build(self, base: Path) -> tuple[Path, dict[str, object]]:
+        source, database = base / "zac-view.qasm", base / "zac-view.sqlite"
+        source.write_text(_zac_scheduler_qasm(), encoding="utf-8")
+        return database, dict(build_layer_store(source, database))
+
+    def test_parent_indices_asap_layers_and_metadata_are_frozen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database, metadata = self._build(Path(directory))
+            self.assertEqual(metadata["zac_view_format"], ZAC_VIEW_FORMAT)
+            self.assertEqual(metadata["zac_two_qubit_index_count"], 12)
+            self.assertEqual(metadata["zac_leading_one_qubit_count"], 2)
+            self.assertEqual(metadata["zac_parent_one_qubit_count"], 6)
+            with LayerStore(database) as store:
+                stock = _stock_zac_schedule(
+                    database.with_name("zac-view.qasm"), 11)
+                self.assertTrue(store.has_zac_view)
+                self.assertEqual(store.verify_zac_view(), {
+                    "gates_1q": 8,
+                    "gates_2q": 12,
+                    "leading_1q": 2,
+                    "parent_1q": 6,
+                })
+                leading = list(store.iter_zac_leading_one_qubit())
+                self.assertEqual(
+                    [(event.operation, event.qubits[0],
+                      event.parent_two_qubit_index)
+                     for event in leading],
+                    [("u1", 0, -1), ("u2", 19, -1)],
+                )
+                self.assertEqual(
+                    [(event.operation, event.qubits[0]) for event in leading],
+                    stock.dict_g_1q_parent[-1],
+                )
+                layers = list(store.iter_zac_asap_layers())
+                self.assertEqual(
+                    [[gate.two_qubit_index for gate in layer.gates]
+                     for layer in layers],
+                    [list(range(10)), [10, 11]],
+                )
+                self.assertEqual(
+                    [gate.gate_pair for layer in layers for gate in layer.gates],
+                    [tuple((2 * index, 2 * index + 1))
+                     for index in range(10)] + [(0, 2), (4, 6)],
+                )
+
+                # A continuous gate range is parent-major, not source-major.
+                children = list(store.iter_zac_one_qubit_for_gate_range(0, 5))
+                self.assertEqual(
+                    [(event.parent_two_qubit_index, event.operation,
+                      event.qubits[0]) for event in children],
+                    [(0, "u1", 0), (0, "u3", 1),
+                     (4, "u3", 8), (5, "u2", 10)],
+                )
+
+                # The ordinary event view exposes the same frozen indices.
+                source_events = sorted(
+                    store.iter_dependency_events(), key=lambda event: event.seq)
+                self.assertEqual(
+                    [event.two_qubit_index for event in source_events
+                     if len(event.qubits) == 2],
+                    list(range(12)),
+                )
+
+    def test_balanced_stages_and_children_match_stock_scheduler(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database, _ = self._build(Path(directory))
+            with LayerStore(database) as store:
+                expected_stage_sizes = {
+                    6: [5, 5, 2],   # balanced 10 -> 5+5, not 6+4
+                    10: [10, 2],    # equality takes stock ZAC's split branch
+                    11: [10, 2],    # strictly larger retains the layer
+                }
+                for capacity in (6, 10, 11):
+                    stock = _stock_zac_schedule(
+                        database.with_name("zac-view.qasm"), capacity)
+                    stages = list(store.iter_zac_stages(capacity))
+                    actual_indices = [
+                        [gate.two_qubit_index for gate in stage.gates]
+                        for stage in stages
+                    ]
+                    self.assertEqual(actual_indices, stock.gate_scheduling_idx)
+                    self.assertEqual(
+                        [len(stage.gates) for stage in stages],
+                        expected_stage_sizes[capacity],
+                    )
+                    self.assertEqual(
+                        [[gate.gate_pair for gate in stage.gates]
+                         for stage in stages],
+                        [[tuple(gate) for gate in layer]
+                         for layer in stock.gate_scheduling],
+                    )
+                    actual_children = [
+                        [(event.operation, event.qubits[0])
+                         for event in store.iter_zac_one_qubit_for_stage(stage)]
+                        for stage in stages
+                    ]
+                    self.assertEqual(actual_children,
+                                     stock.gate_1q_scheduling)
+                    self.assertEqual(
+                        [stage.stage_index for stage in stages],
+                        list(range(len(stages))),
+                    )
+                with self.assertRaisesRegex(ValueError, "positive"):
+                    list(store.iter_zac_stages(0))
+
+    def test_gapped_asap_stage_streams_only_its_parent_children(self):
+        qasm = '''OPENQASM 2.0;
+include "qelib1.inc";
+qreg q[5];
+cz q[0],q[1];
+cz q[0],q[2];
+u1(0) q[0];
+cz q[3],q[4];
+u2(0,0) q[3];
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source, database = base / "gapped.qasm", base / "gapped.sqlite"
+            source.write_text(qasm, encoding="utf-8")
+            build_layer_store(source, database)
+            stock = _stock_zac_schedule(source, 5)
+            with LayerStore(database) as store:
+                stages = list(store.iter_zac_stages(5))
+                self.assertEqual(
+                    [[gate.two_qubit_index for gate in stage.gates]
+                     for stage in stages],
+                    stock.gate_scheduling_idx,
+                )
+                self.assertEqual(stock.gate_scheduling_idx, [[0, 2], [1]])
+                self.assertEqual(
+                    [[event.parent_two_qubit_index
+                      for event in store.iter_zac_one_qubit_for_stage(stage)]
+                     for stage in stages],
+                    [[2], [1]],
+                )
+                self.assertEqual(
+                    [[(event.operation, event.qubits[0])
+                      for event in store.iter_zac_one_qubit_for_stage(stage)]
+                     for stage in stages],
+                    stock.gate_1q_scheduling,
+                )
+
+    def test_tampered_parent_fails_strict_view_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database, _ = self._build(Path(directory))
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "UPDATE events SET parent_two_qubit_index=1 "
+                "WHERE seq=(SELECT MIN(seq) FROM events "
+                "WHERE q1 IS NULL AND parent_two_qubit_index=0)")
+            connection.commit()
+            connection.close()
+            with LayerStore(database) as store:
+                with self.assertRaisesRegex(ValueError, "most recent CZ"):
+                    store.verify_zac_view()
+
+    def test_legacy_store_fails_closed_for_zac_view_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "legacy.sqlite"
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                "CREATE TABLE events("
+                "seq INTEGER PRIMARY KEY,layer INTEGER NOT NULL,"
+                "operation TEXT NOT NULL,q0 INTEGER NOT NULL,q1 INTEGER,"
+                "statement TEXT NOT NULL);"
+                "CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);"
+                "INSERT INTO events VALUES(0,0,'cz',0,1,'cz q[0],q[1];');"
+                "INSERT INTO metadata VALUES('max_layer','0');"
+            )
+            connection.commit()
+            connection.close()
+            with LayerStore(database) as store:
+                self.assertFalse(store.has_zac_view)
+                self.assertEqual([event.seq for event in store.layer(0)], [0])
+                with self.assertRaisesRegex(ValueError, "rebuild"):
+                    list(store.iter_zac_stages(2))
 
 
 if __name__ == "__main__":

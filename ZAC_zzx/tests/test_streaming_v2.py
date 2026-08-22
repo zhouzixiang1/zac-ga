@@ -19,6 +19,7 @@ from streaming.checkpoint import (  # noqa: E402
     Checkpoint, EventStreamWriter, load_checkpoint, save_checkpoint)
 from streaming.controller import (  # noqa: E402
     CheckpointController, CheckpointPolicy)
+from streaming.forecast import LayerStoreForecastProvider  # noqa: E402
 from streaming.large_contract import (  # noqa: E402
     LARGE_CIRCUITS, LARGE_RSS_LIMIT_BYTES, LARGE_TIMEOUT_SECONDS,
     OFFICIAL_METADATA, QASMBENCH_COMMIT, STREAMING_COMPILER_INTEGRATED,
@@ -32,6 +33,7 @@ from streaming.trace_pipeline import (  # noqa: E402
     IncrementalTraceValidator)
 from evaluation import (  # noqa: E402
     CanonicalTraceEvent, EventType, TraceValidationError, score_trace)
+from zzx.algorithm_v2 import ForecastOracle  # noqa: E402
 
 
 QASM = '''OPENQASM 2.0;
@@ -121,6 +123,36 @@ class TestLayerStore(unittest.TestCase):
                     [0, 1, 2, 3],
                 )
                 self.assertIsNone(store.layer(1)[0].two_qubit_layer)
+
+    def test_sqlite_forecast_ring_matches_frozen_oracle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source, database = base / "interleaved.qasm", base / "interleaved.sqlite"
+            source.write_text(QASM_WITH_INTERLEAVED_1Q, encoding="utf-8")
+            build_layer_store(source, database)
+            schedule = [
+                ((0, 1),), ((0, 2),), ((1, 2),), ((0, 1),),
+            ]
+            with LayerStore(database) as store:
+                provider = LayerStoreForecastProvider(
+                    store, max_cached_layers=2)
+                streamed = ForecastOracle(provider, 2)
+                frozen = ForecastOracle(schedule, 2)
+                self.assertEqual(
+                    streamed.target_layer(0), frozen.target_layer(0))
+                self.assertEqual(
+                    list(streamed.visible_future(0)),
+                    list(frozen.visible_future(0)),
+                )
+                self.assertEqual(
+                    streamed.next_use(0, 0), frozen.next_use(0, 0))
+                self.assertLessEqual(len(provider.cached_layers), 2)
+
+                h0_provider = LayerStoreForecastProvider(store)
+                h0 = ForecastOracle(h0_provider, 0)
+                self.assertEqual(h0.target_layer(0), ((0, 2),))
+                self.assertIsNone(h0.next_use(0, 0))
+                self.assertEqual(h0_provider.cached_layers, (1,))
 
     def test_empty_two_qubit_index_is_valid(self):
         qasm = '''OPENQASM 2.0;

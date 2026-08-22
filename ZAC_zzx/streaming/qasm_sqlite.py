@@ -7,7 +7,9 @@ events, dependency layers, two-qubit layers, next-use links, the interaction
 matrix and a strict per-atom logical-operation ledger directly to SQLite.  The
 original dependency-layer API is retained for event replay.  Placement
 look-ahead uses the independent CZ-layer API, so single-qubit gates cannot
-silently consume the look-ahead horizon.
+silently consume the look-ahead horizon.  A separate frozen stock-ZAC view
+retains original CZ indices, 1Q parent indices and capacity-balanced stages;
+formal ZAC scheduling must consume that view rather than dependency layers.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ _REF = re.compile(r"^([A-Za-z_]\w*)\[(\d+)\]$")
 _ALLOWED = frozenset(("cz", "u1", "u2", "u3"))
 
 LOGICAL_LEDGER_FORMAT = "zac-per-atom-logical-sequence-v2"
+ZAC_VIEW_FORMAT = "zac-scheduler-read-view-v1"
 _LOGICAL_ATOM_DOMAIN = b"zac-logical-atom-sequence-v1\0"
 _LOGICAL_LEDGER_DOMAIN = b"zac-logical-ledger-v1\0"
 
@@ -41,6 +44,8 @@ class GateEvent:
     qubits: Tuple[int, ...]
     statement: str
     two_qubit_layer: Optional[int] = None
+    two_qubit_index: Optional[int] = None
+    parent_two_qubit_index: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,35 @@ class DependencyLayerBatch:
 
     metadata: DependencyLayerMetadata
     events: Tuple[GateEvent, ...]
+
+
+@dataclass(frozen=True)
+class ZacGate:
+    """One original CZ in the exact index space used by stock ZAC."""
+
+    two_qubit_index: int
+    gate_pair: Tuple[int, int]
+    source_seq: int
+    asap_layer: int
+
+
+@dataclass(frozen=True)
+class ZacAsapLayer:
+    """One un-split ASAP layer produced from the original CZ stream."""
+
+    layer: int
+    gates: Tuple[ZacGate, ...]
+
+
+@dataclass(frozen=True)
+class ZacStage:
+    """One capacity-safe stage after stock ZAC's balanced layer split."""
+
+    stage_index: int
+    asap_layer: int
+    chunk_index: int
+    chunk_count: int
+    gates: Tuple[ZacGate, ...]
 
 
 def _unsigned(value: int, width: int) -> bytes:
@@ -274,8 +308,20 @@ class LayerStore:
         self.connection.row_factory = sqlite3.Row
         event_columns = self.connection.execute(
             "PRAGMA table_info(events)").fetchall()
-        self._has_two_qubit_layers = any(
-            str(row["name"]) == "two_qubit_layer" for row in event_columns)
+        self._event_columns = {str(row["name"]) for row in event_columns}
+        self._has_two_qubit_layers = "two_qubit_layer" in self._event_columns
+        self._has_zac_view = {
+            "two_qubit_layer",
+            "two_qubit_index",
+            "parent_two_qubit_index",
+        }.issubset(self._event_columns)
+        self._zac_gate_count = -1
+        if self._has_zac_view:
+            row = self.connection.execute(
+                "SELECT value FROM metadata "
+                "WHERE key='zac_two_qubit_index_count'").fetchone()
+            if row is not None:
+                self._zac_gate_count = int(json.loads(row["value"]))
         tables = {
             str(row["name"])
             for row in self.connection.execute(
@@ -300,6 +346,21 @@ class LayerStore:
         for row in rows:
             result[row["key"]] = json.loads(row["value"])
         return result
+
+    def _event_projection(self) -> str:
+        two_qubit_layer = (
+            "two_qubit_layer" if self._has_two_qubit_layers
+            else "NULL AS two_qubit_layer")
+        two_qubit_index = (
+            "two_qubit_index" if "two_qubit_index" in self._event_columns
+            else "NULL AS two_qubit_index")
+        parent = (
+            "parent_two_qubit_index"
+            if "parent_two_qubit_index" in self._event_columns
+            else "NULL AS parent_two_qubit_index")
+        return (
+            f"seq,layer,{two_qubit_layer},{two_qubit_index},{parent},"
+            "operation,q0,q1,statement")
 
     def iter_layers(self, start_layer: int = 0, lookahead_horizon: int = 0
                     ) -> Iterator[Tuple[int, List[GateEvent]]]:
@@ -328,12 +389,7 @@ class LayerStore:
         event-wise full-pass API for Large compilation and verification.
         """
         self._validate_layer_range(start_layer, stop_layer)
-        two_qubit_select = (
-            "two_qubit_layer" if self._has_two_qubit_layers
-            else "NULL AS two_qubit_layer")
-        query = (
-            f"SELECT seq, layer, {two_qubit_select}, operation, q0, q1, "
-            "statement FROM events WHERE layer>=?")
+        query = f"SELECT {self._event_projection()} FROM events WHERE layer>=?"
         parameters: Tuple[int, ...] = (start_layer,)
         if stop_layer is not None:
             query += " AND layer<=?"
@@ -413,12 +469,8 @@ class LayerStore:
         if current_layer < 0 or lookahead_horizon < 0:
             raise ValueError("layer and horizon must be non-negative")
         upper = current_layer + lookahead_horizon + 1
-        two_qubit_select = (
-            "two_qubit_layer" if self._has_two_qubit_layers
-            else "NULL AS two_qubit_layer")
         rows = self.connection.execute(
-            f"SELECT seq, layer, {two_qubit_select}, operation, q0, q1, "
-            "statement FROM events "
+            f"SELECT {self._event_projection()} FROM events "
             "WHERE layer >= ? AND layer <= ? ORDER BY layer, seq",
             (current_layer, upper),
         )
@@ -462,7 +514,7 @@ class LayerStore:
             raise ValueError("layer and horizon must be non-negative")
         upper = current_layer + lookahead_horizon + 1
         rows = self.connection.execute(
-            "SELECT seq, layer, two_qubit_layer, operation, q0, q1, statement "
+            f"SELECT {self._event_projection()} "
             "FROM events WHERE two_qubit_layer >= ? AND two_qubit_layer <= ? "
             "ORDER BY two_qubit_layer, seq",
             (current_layer, upper),
@@ -511,9 +563,243 @@ class LayerStore:
                 "layer store has no independent 2Q index; rebuild it with "
                 "build_layer_store")
 
+    @property
+    def has_zac_view(self) -> bool:
+        """Whether the store freezes stock ZAC's CZ/parent index spaces."""
+        return self._has_zac_view and self._zac_gate_count >= 0
+
+    def _require_zac_view(self) -> None:
+        if not self.has_zac_view:
+            raise ValueError(
+                "layer store has no frozen ZAC scheduler view; rebuild it "
+                "with build_layer_store")
+
+    def iter_zac_leading_one_qubit(self) -> Iterator[GateEvent]:
+        """Stream stock ZAC's parent ``-1`` 1Q prefix in source order."""
+        self._require_zac_view()
+        rows = self.connection.execute(
+            f"SELECT {self._event_projection()} FROM events "
+            "WHERE q1 IS NULL AND parent_two_qubit_index=-1 ORDER BY seq")
+        for row in rows:
+            yield self._event_from_row(row)
+
+    def _validate_zac_gate_range(
+        self, start_gate_index: int, stop_gate_index: int,
+    ) -> None:
+        self._require_zac_view()
+        count = self._zac_gate_count
+        if (start_gate_index < 0 or stop_gate_index < start_gate_index or
+                stop_gate_index >= count):
+            raise ValueError(
+                "ZAC gate-index range is outside the frozen CZ stream: "
+                f"[{start_gate_index}, {stop_gate_index}] for {count} gates")
+
+    def iter_zac_one_qubit_for_gate_range(
+        self, start_gate_index: int, stop_gate_index: Optional[int] = None,
+    ) -> Iterator[GateEvent]:
+        """Stream 1Q children for an inclusive continuous parent-index range.
+
+        Results match ``Scheduler_mixin`` ordering: parent gate index first,
+        then original QASM sequence within one parent.  No 1Q list is built.
+        """
+        stop = start_gate_index if stop_gate_index is None else stop_gate_index
+        self._validate_zac_gate_range(start_gate_index, stop)
+        rows = self.connection.execute(
+            f"SELECT {self._event_projection()} FROM events "
+            "WHERE q1 IS NULL AND parent_two_qubit_index>=? "
+            "AND parent_two_qubit_index<=? "
+            "ORDER BY parent_two_qubit_index,seq",
+            (start_gate_index, stop),
+        )
+        for row in rows:
+            yield self._event_from_row(row)
+
+    def iter_zac_one_qubit_for_gate_indices(
+        self, gate_indices: Iterable[int],
+    ) -> Iterator[GateEvent]:
+        """Stream 1Q children for sorted distinct (possibly gapped) parents.
+
+        This is the exact primitive needed by a split ASAP stage.  At most 500
+        parent indices are bound in each SQLite query; the potentially much
+        longer child stream is never materialised.
+        """
+        self._require_zac_view()
+        indices = tuple(int(value) for value in gate_indices)
+        if not indices:
+            return
+        if tuple(sorted(set(indices))) != indices:
+            raise ValueError("ZAC gate indices must be sorted and distinct")
+        self._validate_zac_gate_range(indices[0], indices[-1])
+        for offset in range(0, len(indices), 500):
+            chunk = indices[offset:offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.connection.execute(
+                f"SELECT {self._event_projection()} FROM events "
+                "WHERE q1 IS NULL AND parent_two_qubit_index IN "
+                f"({placeholders}) ORDER BY parent_two_qubit_index,seq",
+                chunk,
+            )
+            for row in rows:
+                yield self._event_from_row(row)
+
+    def iter_zac_one_qubit_for_stage(
+        self, stage: ZacStage,
+    ) -> Iterator[GateEvent]:
+        """Stream exactly the 1Q children attached to one ZAC stage."""
+        indices = tuple(gate.two_qubit_index for gate in stage.gates)
+        yield from self.iter_zac_one_qubit_for_gate_indices(indices)
+
+    def iter_zac_asap_layers(
+        self, start_layer: int = 0, stop_layer: Optional[int] = None,
+    ) -> Iterator[ZacAsapLayer]:
+        """Stream the original CZ-only ASAP layers used by stock ZAC."""
+        self._require_zac_view()
+        self._validate_layer_range(start_layer, stop_layer)
+        query = (
+            "SELECT seq,two_qubit_layer,two_qubit_index,q0,q1 FROM events "
+            "WHERE q1 IS NOT NULL AND two_qubit_layer>=?")
+        parameters: Tuple[int, ...] = (start_layer,)
+        if stop_layer is not None:
+            query += " AND two_qubit_layer<=?"
+            parameters = (start_layer, stop_layer)
+        query += " ORDER BY two_qubit_layer,two_qubit_index"
+
+        active_layer: Optional[int] = None
+        gates: List[ZacGate] = []
+        for row in self.connection.execute(query, parameters):
+            layer = int(row["two_qubit_layer"])
+            if active_layer is not None and layer != active_layer:
+                yield ZacAsapLayer(layer=active_layer, gates=tuple(gates))
+                gates = []
+            active_layer = layer
+            q0, q1 = sorted((int(row["q0"]), int(row["q1"])))
+            gates.append(ZacGate(
+                two_qubit_index=int(row["two_qubit_index"]),
+                gate_pair=(q0, q1),
+                source_seq=int(row["seq"]),
+                asap_layer=layer,
+            ))
+        if active_layer is not None:
+            yield ZacAsapLayer(layer=active_layer, gates=tuple(gates))
+
+    def iter_zac_stages(self, max_gates: int) -> Iterator[ZacStage]:
+        """Stream stock ZAC's exact capacity-balanced CZ stage sequence.
+
+        This intentionally mirrors ``scheduler.py`` lines 20--35: a layer
+        smaller than capacity is retained; otherwise it is divided into
+        ``ceil(width/capacity)`` stages, each targeting
+        ``ceil(width/number_of_stages)`` consecutive gates.
+        """
+        self._require_zac_view()
+        if max_gates <= 0:
+            raise ValueError("ZAC stage capacity must be positive")
+        stage_index = 0
+        for layer in self.iter_zac_asap_layers():
+            width = len(layer.gates)
+            if width < max_gates:
+                chunk_count = 1
+                gates_per_chunk = width
+            else:
+                chunk_count = (width + max_gates - 1) // max_gates
+                gates_per_chunk = (width + chunk_count - 1) // chunk_count
+            chunks = tuple(
+                layer.gates[offset:offset + gates_per_chunk]
+                for offset in range(0, width, gates_per_chunk)
+            )
+            if len(chunks) != chunk_count:
+                raise ValueError("internal ZAC balanced-stage split mismatch")
+            for chunk_index, gates in enumerate(chunks):
+                yield ZacStage(
+                    stage_index=stage_index,
+                    asap_layer=layer.layer,
+                    chunk_index=chunk_index,
+                    chunk_count=chunk_count,
+                    gates=gates,
+                )
+                stage_index += 1
+
+    def verify_zac_view(self) -> Mapping[str, int]:
+        """Strictly replay and verify the frozen stock-ZAC scheduling view."""
+        self._require_zac_view()
+        metadata = self.metadata
+        if metadata.get("zac_view_format") != ZAC_VIEW_FORMAT:
+            raise ValueError(
+                "unsupported frozen ZAC scheduler view format: "
+                f"{metadata.get('zac_view_format')!r}")
+        qubits = int(metadata.get("qubits", -1))
+        if qubits < 0:
+            raise ValueError("frozen ZAC scheduler view has invalid qubit count")
+        last_cz = [-1] * qubits
+        next_asap_layer = [0] * qubits
+        counts = {"gates_1q": 0, "gates_2q": 0,
+                  "leading_1q": 0, "parent_1q": 0}
+        max_asap_layer = -1
+        rows = self.connection.execute(
+            "SELECT seq,two_qubit_layer,two_qubit_index,"
+            "parent_two_qubit_index,q0,q1 FROM events ORDER BY seq")
+        for row in rows:
+            q0 = int(row["q0"])
+            if not 0 <= q0 < qubits:
+                raise ValueError("frozen ZAC scheduler view qubit out of range")
+            if row["q1"] is None:
+                counts["gates_1q"] += 1
+                if (row["two_qubit_index"] is not None or
+                        row["two_qubit_layer"] is not None):
+                    raise ValueError("1Q event has frozen CZ scheduling fields")
+                parent = row["parent_two_qubit_index"]
+                if parent is None or int(parent) != last_cz[q0]:
+                    raise ValueError(
+                        "frozen ZAC 1Q parent does not match the most recent CZ")
+                key = "leading_1q" if int(parent) == -1 else "parent_1q"
+                counts[key] += 1
+                continue
+
+            q1 = int(row["q1"])
+            if not 0 <= q1 < qubits:
+                raise ValueError("frozen ZAC scheduler view qubit out of range")
+            if row["parent_two_qubit_index"] is not None:
+                raise ValueError("CZ event has a frozen 1Q parent")
+            gate_index = row["two_qubit_index"]
+            if gate_index is None or int(gate_index) != counts["gates_2q"]:
+                raise ValueError("frozen ZAC CZ indices are not contiguous")
+            expected_layer = max(next_asap_layer[q0], next_asap_layer[q1])
+            if (row["two_qubit_layer"] is None or
+                    int(row["two_qubit_layer"]) != expected_layer):
+                raise ValueError("frozen ZAC CZ ASAP layer mismatch")
+            max_asap_layer = max(max_asap_layer, expected_layer)
+            next_asap_layer[q0] = expected_layer + 1
+            next_asap_layer[q1] = expected_layer + 1
+            last_cz[q0] = int(gate_index)
+            last_cz[q1] = int(gate_index)
+            counts["gates_2q"] += 1
+
+        expected = {
+            "gates_1q": int(metadata.get("gates_1q", -1)),
+            "gates_2q": int(metadata.get("zac_two_qubit_index_count", -1)),
+            "leading_1q": int(metadata.get("zac_leading_one_qubit_count", -1)),
+            "parent_1q": int(metadata.get("zac_parent_one_qubit_count", -1)),
+        }
+        if counts != expected:
+            raise ValueError(
+                f"frozen ZAC scheduler view count mismatch: "
+                f"expected {expected}, replayed {counts}")
+        if counts["gates_2q"] != int(metadata.get("gates_2q", -1)):
+            raise ValueError("frozen ZAC scheduler view CZ count mismatch")
+        if counts["gates_1q"] != int(
+                metadata.get("zac_one_qubit_count", -1)):
+            raise ValueError("frozen ZAC scheduler view 1Q coverage mismatch")
+        if counts["gates_1q"] + counts["gates_2q"] != int(
+                metadata.get("events", -1)):
+            raise ValueError("frozen ZAC scheduler view event coverage mismatch")
+        if max_asap_layer + 1 != int(metadata.get("two_qubit_layers", -1)):
+            raise ValueError("frozen ZAC scheduler view ASAP layer count mismatch")
+        return counts
+
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> GateEvent:
         raw_two_qubit_layer = row["two_qubit_layer"]
+        raw_two_qubit_index = row["two_qubit_index"]
+        raw_parent = row["parent_two_qubit_index"]
         return GateEvent(
             seq=int(row["seq"]),
             layer=int(row["layer"]),
@@ -523,6 +809,10 @@ class LayerStore:
             statement=str(row["statement"]),
             two_qubit_layer=(None if raw_two_qubit_layer is None else
                              int(raw_two_qubit_layer)),
+            two_qubit_index=(None if raw_two_qubit_index is None else
+                             int(raw_two_qubit_index)),
+            parent_two_qubit_index=(None if raw_parent is None else
+                                    int(raw_parent)),
         )
 
     def interaction_matrix(self) -> Iterator[Tuple[int, int, int]]:
@@ -616,12 +906,18 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
             "PRAGMA temp_store=FILE;"
             "CREATE TABLE events("
             " seq INTEGER PRIMARY KEY, layer INTEGER NOT NULL,"
-            " two_qubit_layer INTEGER,"
+            " two_qubit_layer INTEGER, two_qubit_index INTEGER,"
+            " parent_two_qubit_index INTEGER,"
             " operation TEXT NOT NULL, q0 INTEGER NOT NULL, q1 INTEGER,"
             " statement TEXT NOT NULL);"
             "CREATE INDEX events_by_layer ON events(layer, seq);"
             "CREATE INDEX events_by_two_qubit_layer "
             "ON events(two_qubit_layer, seq);"
+            "CREATE UNIQUE INDEX events_by_two_qubit_index "
+            "ON events(two_qubit_index) WHERE two_qubit_index IS NOT NULL;"
+            "CREATE INDEX events_by_parent_two_qubit_index "
+            "ON events(parent_two_qubit_index,seq) "
+            "WHERE parent_two_qubit_index IS NOT NULL;"
             "CREATE TABLE uses("
             " seq INTEGER NOT NULL, qubit INTEGER NOT NULL, layer INTEGER NOT NULL,"
             " next_seq INTEGER, next_layer INTEGER, PRIMARY KEY(seq, qubit));"
@@ -651,7 +947,9 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
         last_use: List[Optional[Tuple[int, int]]] = []
         next_two_qubit_layer: List[int] = []
         last_two_qubit_use: List[Optional[Tuple[int, int]]] = []
+        last_two_qubit_index: List[int] = []
         counts = {"gates_1q": 0, "gates_2q": 0}
+        zac_one_qubit_counts = {"leading": 0, "parent": 0}
         logical_ledger = LogicalLedgerHasher()
         seq = 0
         max_layer = -1
@@ -676,6 +974,7 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
                     last_use.extend([None] * size)
                     next_two_qubit_layer.extend([0] * size)
                     last_two_qubit_use.extend([None] * size)
+                    last_two_qubit_index.extend([-1] * size)
                     logical_ledger.extend_qubits(size)
                     continue
                 if _CREG.match(statement):
@@ -708,16 +1007,23 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
                 max_layer = max(max_layer, layer)
                 q1 = qubits[1] if len(qubits) == 2 else None
                 two_qubit_layer = None
+                two_qubit_index = None
+                parent_two_qubit_index = None
                 if q1 is not None:
                     two_qubit_layer = max(
                         next_two_qubit_layer[qubit] for qubit in qubits)
+                    two_qubit_index = counts["gates_2q"]
                     max_two_qubit_layer = max(
                         max_two_qubit_layer, two_qubit_layer)
+                else:
+                    parent_two_qubit_index = last_two_qubit_index[qubits[0]]
                 connection.execute(
                     "INSERT INTO events("
-                    "seq,layer,two_qubit_layer,operation,q0,q1,statement) "
-                    "VALUES(?,?,?,?,?,?,?)",
-                    (seq, layer, two_qubit_layer, operation, qubits[0], q1,
+                    "seq,layer,two_qubit_layer,two_qubit_index,"
+                    "parent_two_qubit_index,operation,q0,q1,statement) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    (seq, layer, two_qubit_layer, two_qubit_index,
+                     parent_two_qubit_index, operation, qubits[0], q1,
                      statement + ";"),
                 )
                 connection.execute(
@@ -746,11 +1052,16 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
                     next_layer[qubit] = layer + 1
                 if q1 is None:
                     counts["gates_1q"] += 1
+                    if parent_two_qubit_index == -1:
+                        zac_one_qubit_counts["leading"] += 1
+                    else:
+                        zac_one_qubit_counts["parent"] += 1
                     logical_ledger.record_one_qubit(qubits[0])
                 else:
                     counts["gates_2q"] += 1
                     logical_ledger.record_cz(qubits[0], q1)
                     assert two_qubit_layer is not None
+                    assert two_qubit_index is not None
                     for qubit in qubits:
                         previous = last_two_qubit_use[qubit]
                         if previous is not None:
@@ -767,6 +1078,7 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
                         )
                         last_two_qubit_use[qubit] = (seq, two_qubit_layer)
                         next_two_qubit_layer[qubit] = two_qubit_layer + 1
+                        last_two_qubit_index[qubit] = two_qubit_index
                     lo, hi = sorted(qubits)
                     connection.execute(
                         "INSERT INTO interactions(q0,q1,weight) VALUES(?,?,1) "
@@ -806,6 +1118,11 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
             "logical_ledger_sha256": logical_ledger_sha256,
             "per_atom_logical_operation_sequence_sha256":
                 logical_ledger_sha256,
+            "zac_view_format": ZAC_VIEW_FORMAT,
+            "zac_two_qubit_index_count": counts["gates_2q"],
+            "zac_one_qubit_count": counts["gates_1q"],
+            "zac_leading_one_qubit_count": zac_one_qubit_counts["leading"],
+            "zac_parent_one_qubit_count": zac_one_qubit_counts["parent"],
         }
         connection.executemany(
             "INSERT INTO metadata(key,value) VALUES(?,?)",
@@ -831,5 +1148,9 @@ __all__ = [
     "LayerStore",
     "LogicalAtomLedger",
     "LogicalLedgerHasher",
+    "ZAC_VIEW_FORMAT",
+    "ZacAsapLayer",
+    "ZacGate",
+    "ZacStage",
     "build_layer_store",
 ]
