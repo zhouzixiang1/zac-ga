@@ -63,7 +63,7 @@ M1 的 fidelity/duration 与论文派生表比较；论文没有逐项公开的�
 
 Large 输入固定到 QASMBench commit `357b942396d5c2b7cbc1c229c585a6ef5ccaebac`，采用逐语句标准门展开，禁止跨门优化。QASMBench 中用于电路生命周期的 `reset/measure/barrier/creg` 会被删除并在 canonical manifest 中逐项记录；因此 Large 只验证路由/编译可扩展性，reset 的物理时间和误差不纳入统一模型。
 
-流式基座提供 SQLite 层库、2Q 前瞻窗口、增量验证/计分、压缩 JSONL 事件、每 1000 层或 5 分钟的原子检查点，以及恢复一致性和 RSS 探针。当前这些组件尚未接入四方法的端到端编译器，冻结契约明确记录 `streaming_compiler_integrated=false`：`run-large --dry-run` 只输出不可执行的阻塞计划，正式 `run-large` 会 fail-closed，绝不回退到普通内存路径。只有某个 Large 电路完整经过流式编译、严格验证和统一计分后，报告才能写“支持该电路”；仅完成解析、canonicalize、RSS 探针或 timeout/OOM 尝试都不算支持。
+流式基座提供 SQLite 层库、逐原子逻辑账本、2Q 前瞻窗口、增量验证/计分、压缩 JSONL 事件、每 1000 层或 5 分钟的原子检查点，以及恢复一致性和 RSS 探针。`streaming/large_compiler.py` 还提供一个只用于集成和性能验证的四策略开发代理；其产物固定标记 `support_claim_eligible=false`，不能进入正式 Large 表。当前缺少的是与原 ZAC、QMAP 3.2 A* 和 Schema-2 GA 逐项等价的正式流式适配器，因此冻结契约仍记录 `streaming_compiler_integrated=false`：`run-large --dry-run` 只输出不可执行的阻塞计划，正式 `run-large` 会 fail-closed，绝不回退到普通内存路径。只有某个 Large 电路完整经过正式方法流式编译、严格验证和统一计分后，报告才能写“支持该电路”；仅完成解析、canonicalize、开发代理、RSS 探针或 timeout/OOM 尝试都不算支持。
 
 ## 论文门控
 

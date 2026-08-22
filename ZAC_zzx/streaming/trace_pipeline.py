@@ -26,6 +26,7 @@ from zzx.ghost import ghost_hits as find_ghost_hits
 from zzx.zcost import compatible_2d
 
 from .checkpoint import EventStreamWriter
+from .qasm_sqlite import LogicalLedgerHasher
 
 
 _TIME_TOLERANCE_US = 1e-9
@@ -90,6 +91,7 @@ class ValidationSummary:
     move_batches: int
     ordered_gate_hash: str
     multiset_gate_hash: str
+    logical_ledger_sha256: str
     ghost_hits: int
 
     def to_dict(self) -> dict[str, Any]:
@@ -116,6 +118,7 @@ class IncrementalTraceValidator:
         expected_two_qubit_gates: int | None = None,
         expected_ordered_gate_hash: str | None = None,
         expected_multiset_gate_hash: str | None = None,
+        expected_logical_ledger_sha256: str | None = None,
         require_init: bool = True,
         require_zero_ghost: bool = True,
     ):
@@ -126,6 +129,7 @@ class IncrementalTraceValidator:
         self.expected_two_qubit_gates = expected_two_qubit_gates
         self.expected_ordered_gate_hash = expected_ordered_gate_hash
         self.expected_multiset_gate_hash = expected_multiset_gate_hash
+        self.expected_logical_ledger_sha256 = expected_logical_ledger_sha256
         self.require_init = bool(require_init)
         self.require_zero_ghost = bool(require_zero_ghost)
         self.event_count = 0
@@ -144,6 +148,7 @@ class IncrementalTraceValidator:
         self._movement: _MovementState | None = None
         self._ordered_hash = _ZERO_HASH
         self._multiset_hash = 0
+        self._logical_ledger = LogicalLedgerHasher(self.n_qubits)
         self._finalized = False
 
     def consume(self, value: CanonicalTraceEvent | Mapping[str, Any]) -> None:
@@ -350,6 +355,11 @@ class IncrementalTraceValidator:
                 self._regions[q] = region
 
     def _update_gate_hashes(self, event: CanonicalTraceEvent) -> None:
+        if event.event_type is EventType.ONE_QUBIT_GATE:
+            self._logical_ledger.record_one_qubit(event.atoms[0])
+        elif event.event_type is EventType.TWO_QUBIT_GATE:
+            for q0, q1 in event.gate_pairs:
+                self._logical_ledger.record_cz(q0, q1)
         for record in _gate_records(event):
             line = json.dumps(record, separators=(",", ":"), ensure_ascii=True).encode("ascii")
             digest = hashlib.sha256(line).digest()
@@ -384,6 +394,10 @@ class IncrementalTraceValidator:
         if (self.expected_multiset_gate_hash is not None and
                 multiset != self.expected_multiset_gate_hash):
             raise TraceValidationError("multiset gate ledger hash mismatch")
+        logical_ledger = self._logical_ledger.hexdigest()
+        if (self.expected_logical_ledger_sha256 is not None and
+                logical_ledger != self.expected_logical_ledger_sha256):
+            raise TraceValidationError("per-atom logical gate ledger hash mismatch")
         self._finalized = True
         return ValidationSummary(
             ok=True,
@@ -393,6 +407,7 @@ class IncrementalTraceValidator:
             move_batches=self.move_batches,
             ordered_gate_hash=self._ordered_hash,
             multiset_gate_hash=multiset,
+            logical_ledger_sha256=logical_ledger,
             ghost_hits=self.ghost_hits,
         )
 
@@ -409,12 +424,14 @@ class IncrementalTraceValidator:
                 "storing": self._movement.storing,
             }
         return {
-            "format": "incremental-trace-validator-v1",
+            "format": "incremental-trace-validator-v2",
             "n_qubits": self.n_qubits,
             "expected_one_qubit_gates": self.expected_one_qubit_gates,
             "expected_two_qubit_gates": self.expected_two_qubit_gates,
             "expected_ordered_gate_hash": self.expected_ordered_gate_hash,
             "expected_multiset_gate_hash": self.expected_multiset_gate_hash,
+            "expected_logical_ledger_sha256":
+                self.expected_logical_ledger_sha256,
             "require_init": self.require_init,
             "require_zero_ghost": self.require_zero_ghost,
             "event_count": self.event_count,
@@ -434,12 +451,13 @@ class IncrementalTraceValidator:
             "movement": movement,
             "ordered_hash": self._ordered_hash,
             "multiset_hash": f"{self._multiset_hash:064x}",
+            "logical_ledger": self._logical_ledger.state_dict(),
         }
 
     @classmethod
     def from_state(cls, value: Mapping[str, Any]) -> "IncrementalTraceValidator":
         state = dict(value)
-        if state.pop("format", None) != "incremental-trace-validator-v1":
+        if state.pop("format", None) != "incremental-trace-validator-v2":
             raise ValueError("unsupported incremental validator checkpoint")
         validator = cls(
             int(state["n_qubits"]),
@@ -447,6 +465,8 @@ class IncrementalTraceValidator:
             expected_two_qubit_gates=state["expected_two_qubit_gates"],
             expected_ordered_gate_hash=state["expected_ordered_gate_hash"],
             expected_multiset_gate_hash=state["expected_multiset_gate_hash"],
+            expected_logical_ledger_sha256=
+                state["expected_logical_ledger_sha256"],
             require_init=bool(state["require_init"]),
             require_zero_ghost=bool(state["require_zero_ghost"]),
         )
@@ -486,6 +506,10 @@ class IncrementalTraceValidator:
             )
         validator._ordered_hash = str(state["ordered_hash"])
         validator._multiset_hash = int(str(state["multiset_hash"]), 16)
+        validator._logical_ledger = LogicalLedgerHasher.from_state(
+            state["logical_ledger"])
+        if validator._logical_ledger.qubits != validator.n_qubits:
+            raise ValueError("validator logical-ledger checkpoint length mismatch")
         if len(validator._ordered_hash) != 64:
             raise ValueError("invalid validator ordered gate hash")
         return validator

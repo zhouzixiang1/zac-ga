@@ -3,15 +3,15 @@
 This reader intentionally accepts only canonical files containing qreg plus
 one- and two-qubit basis instructions.  It fails closed on measurements,
 control flow, register-wide operands and user-defined gates.  Pass one writes
-events, dependency layers, two-qubit layers, next-use links and the interaction
-matrix directly to SQLite.  The original dependency-layer API is retained for
-event replay.  Placement look-ahead uses the independent CZ-layer API, so
-single-qubit gates cannot silently consume the look-ahead horizon.
+events, dependency layers, two-qubit layers, next-use links, the interaction
+matrix and a strict per-atom logical-operation ledger directly to SQLite.  The
+original dependency-layer API is retained for event replay.  Placement
+look-ahead uses the independent CZ-layer API, so single-qubit gates cannot
+silently consume the look-ahead horizon.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import json
 import os
@@ -19,7 +19,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 
 
 _QREG = re.compile(r"^qreg\s+([A-Za-z_]\w*)\[(\d+)\]$")
@@ -27,6 +27,10 @@ _CREG = re.compile(r"^creg\s+([A-Za-z_]\w*)\[(\d+)\]$")
 _OP = re.compile(r"^([A-Za-z_]\w*)(?:\([^;]*\))?\s+(.+)$")
 _REF = re.compile(r"^([A-Za-z_]\w*)\[(\d+)\]$")
 _ALLOWED = frozenset(("cz", "u1", "u2", "u3"))
+
+LOGICAL_LEDGER_FORMAT = "zac-per-atom-logical-sequence-v2"
+_LOGICAL_ATOM_DOMAIN = b"zac-logical-atom-sequence-v1\0"
+_LOGICAL_LEDGER_DOMAIN = b"zac-logical-ledger-v1\0"
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,208 @@ class GateEvent:
     qubits: Tuple[int, ...]
     statement: str
     two_qubit_layer: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class LogicalAtomLedger:
+    """Frozen digest and counts for one logical atom's operation sequence."""
+
+    qubit: int
+    operation_count: int
+    gates_1q: int
+    gates_2q: int
+    sequence_sha256: str
+
+
+@dataclass(frozen=True)
+class DependencyLayerMetadata:
+    """Small, streamable summary for one dependency layer."""
+
+    layer: int
+    event_count: int
+    gates_1q: int
+    gates_2q: int
+    first_seq: int
+    last_seq: int
+
+
+@dataclass(frozen=True)
+class DependencyLayerBatch:
+    """All disjoint events in one dependency layer plus its summary.
+
+    A dependency layer contains at most O(number-of-qubits) events, so a batch
+    retains the bounded-memory property while avoiding a live nested SQLite
+    cursor in the public API.
+    """
+
+    metadata: DependencyLayerMetadata
+    events: Tuple[GateEvent, ...]
+
+
+def _unsigned(value: int, width: int) -> bytes:
+    if value < 0:
+        raise ValueError("logical-ledger integers must be non-negative")
+    return value.to_bytes(width, byteorder="big", signed=False)
+
+
+def _marker_frame(marker: str) -> bytes:
+    encoded = marker.encode("ascii")
+    return _unsigned(len(encoded), 4) + encoded
+
+
+def _initial_atom_digest(qubit: int) -> bytes:
+    return hashlib.sha256(
+        _LOGICAL_ATOM_DOMAIN + _unsigned(qubit, 8)).digest()
+
+
+def _aggregate_logical_ledger_sha256(
+    records: Iterable[LogicalAtomLedger], qubits: int,
+) -> str:
+    """Hash ordered per-atom sequence digests without materialising sequences."""
+    digest = hashlib.sha256()
+    digest.update(_LOGICAL_LEDGER_DOMAIN)
+    digest.update(_unsigned(qubits, 8))
+    expected_qubit = 0
+    for record in records:
+        if record.qubit != expected_qubit:
+            raise ValueError(
+                "logical atom ledger must contain contiguous sorted qubits: "
+                f"expected {expected_qubit}, found {record.qubit}")
+        try:
+            sequence_digest = bytes.fromhex(record.sequence_sha256)
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid sequence SHA256 for qubit {record.qubit}") from exc
+        if len(sequence_digest) != hashlib.sha256().digest_size:
+            raise ValueError(
+                f"invalid sequence SHA256 for qubit {record.qubit}")
+        digest.update(_unsigned(record.qubit, 8))
+        digest.update(_unsigned(record.operation_count, 8))
+        digest.update(_unsigned(record.gates_1q, 8))
+        digest.update(_unsigned(record.gates_2q, 8))
+        digest.update(sequence_digest)
+        expected_qubit += 1
+    if expected_qubit != qubits:
+        raise ValueError(
+            "logical atom ledger has the wrong number of qubits: "
+            f"expected {qubits}, found {expected_qubit}")
+    return digest.hexdigest()
+
+
+class LogicalLedgerHasher:
+    """O(qubits) rolling hasher for strict logical-operation verification.
+
+    One-qubit gates are represented by ``1q``.  A CZ on ``q0, q1`` appends
+    ``cz:q1`` to q0 and ``cz:q0`` to q1.  Markers are length framed and each
+    atom has an independent SHA-256 state, so independent operations may be
+    scheduled in a different global order without changing the total ledger.
+    """
+
+    def __init__(self, qubits: int = 0):
+        self._digests: List[bytes] = []
+        self._operations: List[int] = []
+        self._gates_1q: List[int] = []
+        self._gates_2q: List[int] = []
+        self.extend_qubits(qubits)
+
+    @property
+    def qubits(self) -> int:
+        return len(self._digests)
+
+    def extend_qubits(self, count: int) -> None:
+        if count < 0:
+            raise ValueError("qubit count must be non-negative")
+        for qubit in range(self.qubits, self.qubits + count):
+            self._digests.append(_initial_atom_digest(qubit))
+            self._operations.append(0)
+            self._gates_1q.append(0)
+            self._gates_2q.append(0)
+
+    def _validate_qubit(self, qubit: int) -> None:
+        if not 0 <= qubit < self.qubits:
+            raise ValueError(f"logical qubit out of range: {qubit}")
+
+    def _record(self, qubit: int, marker: str, *, one_qubit: bool) -> None:
+        self._validate_qubit(qubit)
+        # A chain hash is deliberately used instead of serialising CPython's
+        # opaque hashlib state.  The current 32-byte digest is sufficient to
+        # checkpoint and resume the per-atom ledger exactly.
+        self._digests[qubit] = hashlib.sha256(
+            self._digests[qubit] + _marker_frame(marker)).digest()
+        self._operations[qubit] += 1
+        if one_qubit:
+            self._gates_1q[qubit] += 1
+        else:
+            self._gates_2q[qubit] += 1
+
+    def record_one_qubit(self, qubit: int) -> None:
+        self._record(qubit, "1q", one_qubit=True)
+
+    def record_cz(self, q0: int, q1: int) -> None:
+        self._validate_qubit(q0)
+        self._validate_qubit(q1)
+        self._record(q0, f"cz:{q1}", one_qubit=False)
+        self._record(q1, f"cz:{q0}", one_qubit=False)
+
+    def iter_atom_ledgers(self) -> Iterator[LogicalAtomLedger]:
+        for qubit, digest in enumerate(self._digests):
+            yield LogicalAtomLedger(
+                qubit=qubit,
+                operation_count=self._operations[qubit],
+                gates_1q=self._gates_1q[qubit],
+                gates_2q=self._gates_2q[qubit],
+                sequence_sha256=digest.hex(),
+            )
+
+    def hexdigest(self) -> str:
+        return _aggregate_logical_ledger_sha256(
+            self.iter_atom_ledgers(), self.qubits)
+
+    def state_dict(self) -> dict[str, Any]:
+        """Return the exact O(qubits) rolling state for a compiler checkpoint."""
+
+        return {
+            "format": LOGICAL_LEDGER_FORMAT,
+            "digests": [value.hex() for value in self._digests],
+            "operations": list(self._operations),
+            "gates_1q": list(self._gates_1q),
+            "gates_2q": list(self._gates_2q),
+        }
+
+    @classmethod
+    def from_state(cls, value: Mapping[str, Any]) -> "LogicalLedgerHasher":
+        state = dict(value)
+        if state.pop("format", None) != LOGICAL_LEDGER_FORMAT:
+            raise ValueError("unsupported logical-ledger checkpoint format")
+        unknown = set(state) - {"digests", "operations", "gates_1q", "gates_2q"}
+        if unknown:
+            raise ValueError(
+                f"unknown logical-ledger checkpoint fields: {sorted(unknown)}")
+        raw_digests = list(state["digests"])
+        hasher = cls(len(raw_digests))
+        try:
+            hasher._digests = [bytes.fromhex(str(item)) for item in raw_digests]
+        except ValueError as error:
+            raise ValueError("invalid logical-ledger checkpoint digest") from error
+        if any(len(item) != hashlib.sha256().digest_size
+               for item in hasher._digests):
+            raise ValueError("invalid logical-ledger checkpoint digest length")
+        hasher._operations = [int(item) for item in state["operations"]]
+        hasher._gates_1q = [int(item) for item in state["gates_1q"]]
+        hasher._gates_2q = [int(item) for item in state["gates_2q"]]
+        for name, sequence in (
+            ("operations", hasher._operations),
+            ("gates_1q", hasher._gates_1q),
+            ("gates_2q", hasher._gates_2q),
+        ):
+            if len(sequence) != hasher.qubits or any(item < 0 for item in sequence):
+                raise ValueError(f"invalid logical-ledger checkpoint {name}")
+        if any(
+            hasher._operations[q] != hasher._gates_1q[q] + hasher._gates_2q[q]
+            for q in range(hasher.qubits)
+        ):
+            raise ValueError("logical-ledger checkpoint count mismatch")
+        return hasher
 
 
 def _statements(lines: Iterable[str]) -> Iterator[str]:
@@ -70,6 +276,13 @@ class LayerStore:
             "PRAGMA table_info(events)").fetchall()
         self._has_two_qubit_layers = any(
             str(row["name"]) == "two_qubit_layer" for row in event_columns)
+        tables = {
+            str(row["name"])
+            for row in self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        self._has_dependency_layer_metadata = "dependency_layers" in tables
+        self._has_logical_atom_ledger = "logical_atom_ledger" in tables
 
     def close(self) -> None:
         self.connection.close()
@@ -95,6 +308,99 @@ class LayerStore:
         max_layer = int(self.metadata.get("max_layer", -1))
         for layer in range(start_layer, max_layer + 1):
             yield layer, self.window(layer, lookahead_horizon)
+
+    @staticmethod
+    def _validate_layer_range(
+        start_layer: int, stop_layer: Optional[int],
+    ) -> None:
+        if start_layer < 0:
+            raise ValueError("start layer must be non-negative")
+        if stop_layer is not None and stop_layer < start_layer:
+            raise ValueError("stop layer must be at least the start layer")
+
+    def iter_dependency_events(
+        self, start_layer: int = 0, stop_layer: Optional[int] = None,
+    ) -> Iterator[GateEvent]:
+        """Stream every event exactly once in ``(dependency layer, seq)`` order.
+
+        ``stop_layer`` is inclusive.  Unlike :meth:`iter_layers`, this API has
+        no look-ahead overlap and does not materialise a window, making it the
+        event-wise full-pass API for Large compilation and verification.
+        """
+        self._validate_layer_range(start_layer, stop_layer)
+        two_qubit_select = (
+            "two_qubit_layer" if self._has_two_qubit_layers
+            else "NULL AS two_qubit_layer")
+        query = (
+            f"SELECT seq, layer, {two_qubit_select}, operation, q0, q1, "
+            "statement FROM events WHERE layer>=?")
+        parameters: Tuple[int, ...] = (start_layer,)
+        if stop_layer is not None:
+            query += " AND layer<=?"
+            parameters = (start_layer, stop_layer)
+        query += " ORDER BY layer, seq"
+        for row in self.connection.execute(query, parameters):
+            yield self._event_from_row(row)
+
+    def iter_dependency_layer_metadata(
+        self, start_layer: int = 0, stop_layer: Optional[int] = None,
+    ) -> Iterator[DependencyLayerMetadata]:
+        """Stream summaries for all populated dependency layers."""
+        self._validate_layer_range(start_layer, stop_layer)
+        if self._has_dependency_layer_metadata:
+            query = (
+                "SELECT layer,event_count,gates_1q,gates_2q,first_seq,last_seq "
+                "FROM dependency_layers WHERE layer>=?")
+        else:
+            # Additive API remains useful on old v1/v2 stores.
+            query = (
+                "SELECT layer,COUNT(*) AS event_count,"
+                "SUM(CASE WHEN q1 IS NULL THEN 1 ELSE 0 END) AS gates_1q,"
+                "SUM(CASE WHEN q1 IS NULL THEN 0 ELSE 1 END) AS gates_2q,"
+                "MIN(seq) AS first_seq,MAX(seq) AS last_seq "
+                "FROM events WHERE layer>=?")
+        parameters: Tuple[int, ...] = (start_layer,)
+        if stop_layer is not None:
+            query += " AND layer<=?"
+            parameters = (start_layer, stop_layer)
+        if not self._has_dependency_layer_metadata:
+            query += " GROUP BY layer"
+        query += " ORDER BY layer"
+        for row in self.connection.execute(query, parameters):
+            yield DependencyLayerMetadata(
+                layer=int(row["layer"]),
+                event_count=int(row["event_count"]),
+                gates_1q=int(row["gates_1q"]),
+                gates_2q=int(row["gates_2q"]),
+                first_seq=int(row["first_seq"]),
+                last_seq=int(row["last_seq"]),
+            )
+
+    def iter_dependency_layers(
+        self, start_layer: int = 0, stop_layer: Optional[int] = None,
+    ) -> Iterator[DependencyLayerBatch]:
+        """Stream non-overlapping dependency-layer batches.
+
+        Each event appears in exactly one returned batch.  Only one layer is
+        buffered, whose width is bounded by the number of logical qubits.
+        """
+        events = iter(self.iter_dependency_events(start_layer, stop_layer))
+        event = next(events, None)
+        for metadata in self.iter_dependency_layer_metadata(
+                start_layer, stop_layer):
+            batch: List[GateEvent] = []
+            while event is not None and event.layer == metadata.layer:
+                batch.append(event)
+                event = next(events, None)
+            if len(batch) != metadata.event_count:
+                raise ValueError(
+                    "dependency-layer metadata/event mismatch for layer "
+                    f"{metadata.layer}: expected {metadata.event_count}, "
+                    f"found {len(batch)}")
+            yield DependencyLayerBatch(metadata=metadata, events=tuple(batch))
+        if event is not None:
+            raise ValueError(
+                "dependency-layer metadata ended before the event stream")
 
     def window(self, current_layer: int, lookahead_horizon: int) -> List[GateEvent]:
         """Return the legacy all-event dependency-layer window.
@@ -225,6 +531,72 @@ class LayerStore:
         for row in rows:
             yield int(row["q0"]), int(row["q1"]), int(row["weight"])
 
+    @property
+    def has_logical_ledger(self) -> bool:
+        return self._has_logical_atom_ledger
+
+    @property
+    def logical_ledger_sha256(self) -> Optional[str]:
+        """Return the frozen total per-atom sequence hash, if available."""
+        metadata = self.metadata
+        primary = metadata.get("per_atom_logical_operation_sequence_sha256")
+        alias = metadata.get("logical_ledger_sha256")
+        if primary is not None and alias is not None and primary != alias:
+            raise ValueError("logical ledger metadata hashes disagree")
+        value = primary if primary is not None else alias
+        return None if value is None else str(value)
+
+    def iter_logical_atom_ledgers(self) -> Iterator[LogicalAtomLedger]:
+        """Stream the frozen digest/count record for every logical atom."""
+        if not self._has_logical_atom_ledger:
+            raise ValueError(
+                "layer store has no frozen logical ledger; rebuild it with "
+                "build_layer_store")
+        rows = self.connection.execute(
+            "SELECT qubit,operation_count,gates_1q,gates_2q,sequence_sha256 "
+            "FROM logical_atom_ledger ORDER BY qubit")
+        for row in rows:
+            yield LogicalAtomLedger(
+                qubit=int(row["qubit"]),
+                operation_count=int(row["operation_count"]),
+                gates_1q=int(row["gates_1q"]),
+                gates_2q=int(row["gates_2q"]),
+                sequence_sha256=str(row["sequence_sha256"]),
+            )
+
+    def verify_logical_ledger(self) -> str:
+        """Recompute the total from frozen atom records and verify metadata."""
+        metadata = self.metadata
+        expected = self.logical_ledger_sha256
+        if expected is None or not self._has_logical_atom_ledger:
+            raise ValueError(
+                "layer store has no frozen logical ledger; rebuild it with "
+                "build_layer_store")
+        if metadata.get("logical_ledger_format") != LOGICAL_LEDGER_FORMAT:
+            raise ValueError(
+                "unsupported frozen logical ledger format: "
+                f"{metadata.get('logical_ledger_format')!r}")
+        qubits = int(metadata.get("qubits", -1))
+        records = tuple(self.iter_logical_atom_ledgers())
+        if sum(row.gates_1q for row in records) != int(
+                metadata.get("gates_1q", -1)):
+            raise ValueError("frozen logical ledger 1Q count mismatch")
+        if sum(row.gates_2q for row in records) != 2 * int(
+                metadata.get("gates_2q", -1)):
+            raise ValueError("frozen logical ledger CZ endpoint count mismatch")
+        if any(row.operation_count != row.gates_1q + row.gates_2q
+               for row in records):
+            raise ValueError("frozen logical ledger operation count mismatch")
+        if sum(row.operation_count for row in records) != int(
+                metadata.get("logical_ledger_operations", -1)):
+            raise ValueError("frozen logical ledger total operation mismatch")
+        actual = _aggregate_logical_ledger_sha256(records, qubits)
+        if actual != expected:
+            raise ValueError(
+                "frozen logical ledger hash mismatch: "
+                f"expected {expected}, recomputed {actual}")
+        return actual
+
 
 def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
                       *, commit_interval: int = 10_000) -> Mapping[str, object]:
@@ -263,6 +635,14 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
             "CREATE TABLE interactions("
             " q0 INTEGER NOT NULL, q1 INTEGER NOT NULL, weight INTEGER NOT NULL,"
             " PRIMARY KEY(q0, q1));"
+            "CREATE TABLE dependency_layers("
+            " layer INTEGER PRIMARY KEY, event_count INTEGER NOT NULL,"
+            " gates_1q INTEGER NOT NULL, gates_2q INTEGER NOT NULL,"
+            " first_seq INTEGER NOT NULL, last_seq INTEGER NOT NULL);"
+            "CREATE TABLE logical_atom_ledger("
+            " qubit INTEGER PRIMARY KEY, operation_count INTEGER NOT NULL,"
+            " gates_1q INTEGER NOT NULL, gates_2q INTEGER NOT NULL,"
+            " sequence_sha256 TEXT NOT NULL);"
             "CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
         )
         registers: Dict[str, Tuple[int, int]] = {}
@@ -272,6 +652,7 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
         next_two_qubit_layer: List[int] = []
         last_two_qubit_use: List[Optional[Tuple[int, int]]] = []
         counts = {"gates_1q": 0, "gates_2q": 0}
+        logical_ledger = LogicalLedgerHasher()
         seq = 0
         max_layer = -1
         max_two_qubit_layer = -1
@@ -295,6 +676,7 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
                     last_use.extend([None] * size)
                     next_two_qubit_layer.extend([0] * size)
                     last_two_qubit_use.extend([None] * size)
+                    logical_ledger.extend_qubits(size)
                     continue
                 if _CREG.match(statement):
                     continue
@@ -338,6 +720,17 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
                     (seq, layer, two_qubit_layer, operation, qubits[0], q1,
                      statement + ";"),
                 )
+                connection.execute(
+                    "INSERT INTO dependency_layers("
+                    "layer,event_count,gates_1q,gates_2q,first_seq,last_seq) "
+                    "VALUES(?,1,?,?,?,?) ON CONFLICT(layer) DO UPDATE SET "
+                    "event_count=event_count+1,"
+                    "gates_1q=gates_1q+excluded.gates_1q,"
+                    "gates_2q=gates_2q+excluded.gates_2q,"
+                    "first_seq=MIN(first_seq,excluded.first_seq),"
+                    "last_seq=MAX(last_seq,excluded.last_seq)",
+                    (layer, int(q1 is None), int(q1 is not None), seq, seq),
+                )
                 for qubit in qubits:
                     previous = last_use[qubit]
                     if previous is not None:
@@ -353,8 +746,10 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
                     next_layer[qubit] = layer + 1
                 if q1 is None:
                     counts["gates_1q"] += 1
+                    logical_ledger.record_one_qubit(qubits[0])
                 else:
                     counts["gates_2q"] += 1
+                    logical_ledger.record_cz(qubits[0], q1)
                     assert two_qubit_layer is not None
                     for qubit in qubits:
                         previous = last_two_qubit_use[qubit]
@@ -382,6 +777,17 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
 
         if not registers:
             raise ValueError("canonical QASM has no qreg")
+        atom_ledgers = tuple(logical_ledger.iter_atom_ledgers())
+        logical_ledger_sha256 = _aggregate_logical_ledger_sha256(
+            atom_ledgers, qubit_count)
+        connection.executemany(
+            "INSERT INTO logical_atom_ledger("
+            "qubit,operation_count,gates_1q,gates_2q,sequence_sha256) "
+            "VALUES(?,?,?,?,?)",
+            ((record.qubit, record.operation_count, record.gates_1q,
+              record.gates_2q, record.sequence_sha256)
+             for record in atom_ledgers),
+        )
         metadata: Dict[str, object] = {
             "format": "zac-layer-store-v2",
             "source_path": str(source),
@@ -394,6 +800,12 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
             "max_layer": max_layer,
             "two_qubit_layers": max_two_qubit_layer + 1,
             "max_two_qubit_layer": max_two_qubit_layer,
+            "logical_ledger_format": LOGICAL_LEDGER_FORMAT,
+            "logical_ledger_operations": (
+                counts["gates_1q"] + 2 * counts["gates_2q"]),
+            "logical_ledger_sha256": logical_ledger_sha256,
+            "per_atom_logical_operation_sequence_sha256":
+                logical_ledger_sha256,
         }
         connection.executemany(
             "INSERT INTO metadata(key,value) VALUES(?,?)",
@@ -411,4 +823,13 @@ def build_layer_store(qasm_path: str | Path, sqlite_path: str | Path,
         return metadata
 
 
-__all__ = ["GateEvent", "LayerStore", "build_layer_store"]
+__all__ = [
+    "DependencyLayerBatch",
+    "DependencyLayerMetadata",
+    "GateEvent",
+    "LOGICAL_LEDGER_FORMAT",
+    "LayerStore",
+    "LogicalAtomLedger",
+    "LogicalLedgerHasher",
+    "build_layer_store",
+]
