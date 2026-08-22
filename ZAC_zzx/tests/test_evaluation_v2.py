@@ -692,6 +692,34 @@ atom (2, 0) atom1
         with self.assertRaisesRegex(TraceValidationError, "duration must be 52"):
             score_trace(events, MODEL)
 
+    def test_fixed_duration_survives_large_absolute_timestamp_roundoff(self):
+        # These are the exact endpoint/difference magnitudes observed in the
+        # QMAP154 coverage failures.  The physical operation is exactly 52 us;
+        # only subtraction of two large binary64 timestamps loses one ulp.
+        start = 10_000_000.0
+        end = 10_000_051.999999998
+        event = CanonicalTraceEvent(
+            EventType.ONE_QUBIT_GATE, start, end, atoms=(0,),
+            gate_names=("u3",))
+        self.assertNotEqual(event.duration_us, MODEL.one_qubit_duration_us)
+        result = score_trace([init_event(1), event], MODEL)
+        self.assertEqual(result.one_qubit_gates, 1)
+        # The long global schedule is outside the linear T2 model, but this is
+        # a fidelity-domain result rather than a malformed-duration failure.
+        self.assertTrue(result.ood)
+
+    def test_large_timestamp_tolerance_still_rejects_real_duration_error(self):
+        start = 10_000_000.0
+        events = [
+            init_event(1),
+            CanonicalTraceEvent(
+                EventType.ONE_QUBIT_GATE, start,
+                start + MODEL.one_qubit_duration_us + 1e-5,
+                atoms=(0,), gate_names=("u3",)),
+        ]
+        with self.assertRaisesRegex(TraceValidationError, "duration must be 52"):
+            score_trace(events, MODEL)
+
     def test_same_atom_operation_overlap_is_rejected(self):
         events = [
             init_event(1),

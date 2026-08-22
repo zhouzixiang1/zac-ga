@@ -17,6 +17,31 @@ Position = tuple[float, float]
 GatePair = tuple[int, int]
 
 
+def fixed_duration_matches(
+    start_us: float,
+    end_us: float,
+    expected_us: float,
+    *,
+    tolerance_floor_us: float = 1e-9,
+) -> bool:
+    """Compare a fixed physical duration without subtractive cancellation.
+
+    Native schedules accumulate absolute timestamps.  Once those timestamps
+    reach roughly 1e7 microseconds, subtracting two IEEE-754 doubles can lose
+    one or two ulps and turn an exact 15/52-us operation into, for example,
+    14.999999998137355 us.  Compare the stored end point with ``start +
+    expected`` and admit only a small, scale-aware ulp envelope.  The envelope
+    remains many orders of magnitude below any physical timing resolution and
+    still rejects genuinely malformed fixed durations.
+    """
+    expected_end = float(start_us) + float(expected_us)
+    scale = max(abs(float(start_us)), abs(float(end_us)),
+                abs(expected_end), 1.0)
+    tolerance = max(float(tolerance_floor_us), 8.0 * math.ulp(scale))
+    return math.isclose(
+        float(end_us), expected_end, rel_tol=0.0, abs_tol=tolerance)
+
+
 class TraceValidationError(ValueError):
     """The native or canonical trace is incomplete or physically ambiguous."""
 

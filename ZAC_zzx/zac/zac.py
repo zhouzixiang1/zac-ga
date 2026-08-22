@@ -229,9 +229,24 @@ class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator)
         # print("result_scheduling")
         # print(result_scheduling)
         
-        self.place_qubit_initial()
+        if not self.gate_scheduling:
+            # A canonical circuit may legitimately contain qubits but no gates
+            # (for example, an inverse pair removed by O3).  Neither the SA/GA
+            # objective nor the vertex-matching placer has a meaningful search
+            # problem in that case.  Emit a deterministic storage placement and
+            # let the normal router write the initial trace.  This keeps all four
+            # methods on the same no-op path and avoids method-specific fallbacks.
+            t_p = time.time()
+            if self.given_initial_mapping is not None:
+                self.qubit_mapping.append(self.given_initial_mapping)
+            else:
+                self.place_trivial()
+            self.runtime_analysis["initial placement"] = time.time() - t_p
+            self.runtime_analysis["intermediate placement"] = 0.0
+        else:
+            self.place_qubit_initial()
+            self.place_qubit_intermedeiate()
         print("[INFO]               Time for initial placement: {}s".format(self.runtime_analysis["initial placement"]))
-        self.place_qubit_intermedeiate()
         print("[INFO]               Time for intermediate placement: {}s".format(self.runtime_analysis["intermediate placement"]))
         self.route_qubit()
         self.runtime_analysis["total"] = time.time()- t_s
@@ -258,6 +273,13 @@ class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator)
         collect qubits that will remain in Rydberg zone between two Rydberg stages
         """
         self.reuse_qubit = []
+        # Canonical optimisation may legitimately cancel every gate while
+        # preserving the circuit width (qft_10/qft_16 are real suite cases).
+        # An empty schedule has no inter-layer reuse relation; indexing layer
+        # zero here used to turn an otherwise valid no-op compilation into an
+        # IndexError before the resident placer's existing empty fast path.
+        if not self.gate_scheduling:
+            return
         qubit_is_used = [[-1 for i in range(self.n_q)] for j in range(len(self.gate_scheduling))]
         for gate_idx, gate in enumerate(self.gate_scheduling[0]):
             for q in gate:

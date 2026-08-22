@@ -356,6 +356,30 @@ class TestIncrementalTracePipeline(unittest.TestCase):
             self.assertEqual(result["validation"]["ghost_hits"], 0)
             self.assertEqual(len(list(EventStreamWriter.read(path))), len(events))
 
+    def test_incremental_scorer_accepts_large_timestamp_roundoff(self):
+        scorer = IncrementalTraceScorer(1)
+        scorer.consume(CanonicalTraceEvent(
+            EventType.INIT, 0.0, 0.0, atoms=(0,),
+            end_positions=((0.0, 0.0),), end_regions=("storage",)))
+        scorer.consume(CanonicalTraceEvent(
+            EventType.ONE_QUBIT_GATE,
+            10_000_000.0, 10_000_051.999999998,
+            atoms=(0,), gate_names=("u3",)))
+        result = scorer.finalize()
+        self.assertEqual(result.one_qubit_gates, 1)
+        self.assertTrue(result.ood)
+
+    def test_incremental_scorer_rejects_large_timestamp_real_error(self):
+        scorer = IncrementalTraceScorer(1)
+        scorer.consume(CanonicalTraceEvent(
+            EventType.INIT, 0.0, 0.0, atoms=(0,),
+            end_positions=((0.0, 0.0),), end_regions=("storage",)))
+        with self.assertRaisesRegex(TraceValidationError, "duration must be 52"):
+            scorer.consume(CanonicalTraceEvent(
+                EventType.ONE_QUBIT_GATE,
+                10_000_000.0, 10_000_052.00001,
+                atoms=(0,), gate_names=("u3",)))
+
     def test_incremental_validator_rejects_nonzero_ghost_metadata(self):
         validator = IncrementalTraceValidator(2)
         validator.consume(CanonicalTraceEvent(

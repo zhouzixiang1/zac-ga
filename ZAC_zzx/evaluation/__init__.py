@@ -8,6 +8,7 @@ from .model import (
     FidelityResult,
     TraceValidationError,
     UnsupportedOperationError,
+    fixed_duration_matches,
 )
 from .scorer import score_trace
 from .validator import validate_trace_physics
@@ -17,6 +18,7 @@ __all__ = [
     "EventType",
     "FidelityModel",
     "FidelityResult",
+    "fixed_duration_matches",
     "TraceValidationError",
     "UnsupportedOperationError",
     "normalize_na",

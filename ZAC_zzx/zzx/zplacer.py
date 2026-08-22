@@ -528,6 +528,9 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.phase_cost_cache_limit = 65_536
         self.return_candidate_cache = OrderedDict()
         self.return_cache_limit = 8_192
+        self.rollout_pair_cache = OrderedDict()
+        self.rollout_site_cache = OrderedDict()
+        self.rollout_geometry_cache_limit = 65_536
         self.registry = None
         self.nu = None
         self.forecast = None
@@ -1637,10 +1640,22 @@ class ResidentPlacer(VertexMatchingPlacer):
             set(reg.zone_seat)
             if self.ablation_policy == "always_return"
             else set(resident_decision_candidates(reg.zone_seat, participants)))
-        static_ghosts = [
-            (q, *arch.exact_SLM_location_tuple(reg.current_pos(q)))
-            for q in range(len(self.mapping[0]))
-            if q not in participants and q not in potential_returners]
+        # Target participants are normally moved only in the out phase.  A
+        # lookahead commitment can nevertheless become physically impossible
+        # when every straight leg to its pinned seat intersects a stationary
+        # atom.  Such a participant must be released in the preceding back
+        # phase (RETURN -> re-entry), so keep a separate forced-cycle set rather
+        # than weakening ghost safety or falling back to an unrelated router.
+        forced_cycle_candidates: set[int] = set()
+        movable_before_out = set(potential_returners)
+
+        def static_ghost_rows():
+            return [
+                (q, *arch.exact_SLM_location_tuple(reg.current_pos(q)))
+                for q in range(len(self.mapping[0]))
+                if q not in participants and q not in movable_before_out]
+
+        static_ghosts = static_ghost_rows()
         step_cache = CacheStats()
         physical = PhysicalIncrementalCost(len(self.mapping[0]))
         phase_cache = {}
@@ -1688,9 +1703,13 @@ class ResidentPlacer(VertexMatchingPlacer):
                 if q in target_pins
             }
             if len(committed_sites) > 1:
-                raise RuntimeError(
-                    f"layer {next_layer} gate ({q1},{q2}) has incompatible "
-                    f"residency commitments {sorted(committed_sites)}")
+                released = {q for q in (q1, q2) if q in target_pins}
+                forced_cycle_candidates.update(released)
+                movable_before_out.update(released)
+                for q in released:
+                    target_pins.pop(q, None)
+                committed_sites = set()
+                static_ghosts = static_ghost_rows()
             if committed_sites:
                 sites = set(committed_sites)
             else:
@@ -1706,7 +1725,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             # phase.  Potential RETURN atoms can, and are checked against the
             # actual decision bits in ``score_plan`` below.
             blocked = {seat for q, seat in reg.zone_seat.items()
-                       if q not in (q1, q2) and q not in potential_returners}
+                       if q not in (q1, q2) and q not in movable_before_out}
             opts = self._build_opts(sites, q1, q2, blocked)
             if not opts and not committed_sites:
                 opts = self._build_opts(set(self._all_zone_sites()),
@@ -1724,6 +1743,34 @@ class ResidentPlacer(VertexMatchingPlacer):
                 opts.sort(key=lambda o: (o[1], o[0]))
             opts = self._filter_menu_ghosts(
                 opts, q1, q2, static_ghosts, max(1, len(list_gate)))
+            if not opts and committed_sites:
+                # The earlier STAY remains honoured until this target boundary,
+                # but its pin cannot be executed ghost-safely.  Release the
+                # pinned endpoint(s) through a mandatory physical cycle, then
+                # rebuild the menu over the ordinary complete domain.
+                released = {q for q in (q1, q2) if q in target_pins}
+                forced_cycle_candidates.update(released)
+                movable_before_out.update(released)
+                for q in released:
+                    target_pins.pop(q, None)
+                static_ghosts = static_ghost_rows()
+                blocked = {seat for q, seat in reg.zone_seat.items()
+                           if q not in (q1, q2)
+                           and q not in movable_before_out}
+                opts = self._build_opts(
+                    set(self._all_zone_sites()), q1, q2, blocked)
+                opts = self._filter_menu_ghosts(
+                    opts, q1, q2, static_ghosts,
+                    max(1, len(list_gate)))
+            elif not opts:
+                # A local expansion is only a speed path.  Preserve the hard
+                # feasibility contract by retrying the complete gate domain
+                # before declaring the physical layer impossible.
+                opts = self._build_opts(
+                    set(self._all_zone_sites()), q1, q2, blocked)
+                opts = self._filter_menu_ghosts(
+                    opts, q1, q2, static_ghosts,
+                    max(1, len(list_gate)))
             if not opts:
                 raise RuntimeError(f"layer {next_layer} 门 ({q1},{q2}) 无合法门位")
             candidates.append(opts)
@@ -1759,12 +1806,14 @@ class ResidentPlacer(VertexMatchingPlacer):
         # displace the joint gate matching beyond the finite rollout (QFT is a
         # concrete example).  The ordinary resident GA already evaluates that
         # coupled placement, so keep the local extension fail-closed there.
-        cycle_candidates = (
+        optional_cycle_candidates = (
             adjacent_resident_participants
             if (self.ablation_policy == "optimize"
                 and len(list_gate) == 1
                 and len(adjacent_resident_participants) == 1)
             else [])
+        cycle_candidates = sorted(
+            set(optional_cycle_candidates) | forced_cycle_candidates)
         n_gates = len(candidates)
         gate_domains = [len(opts) for opts in candidates]
         demand = 2 * len(list_gate)
@@ -2007,12 +2056,17 @@ class ResidentPlacer(VertexMatchingPlacer):
                         shadow, list(key[0]), self.nu, layer,
                         self.box_ratio, self.alpha_lookahead,
                         forecast=self.forecast, candidate_mode="forecast",
-                        candidate_cache=return_candidate_cache)
+                        candidate_cache=return_candidate_cache,
+                        assignment_mode="greedy")
                     if key[0] else {})
             return terminal_return_cache[key]
 
-        rollout_pair_cache = {}
-        rollout_site_cache = {}
+        # Pure rollout geometry survives boundary changes.  Random/large
+        # circuits revisit the same small set of storage/zone coordinate pairs
+        # millions of times even when the full registry state is not an LRU
+        # transition hit.
+        rollout_pair_cache = self.rollout_pair_cache
+        rollout_site_cache = self.rollout_site_cache
         rollout_phase_score_cache = {}
 
         def forecast_phases(returners, sites, target_placements):
@@ -2048,9 +2102,10 @@ class ResidentPlacer(VertexMatchingPlacer):
                     sim_locations[q] = tuple(seat)
 
             def local_pair(q1, q2, site):
-                key = (q1, q2, tuple(site),
-                       tuple(sim_locations[q1]), tuple(sim_locations[q2]))
+                key = (tuple(site), tuple(sim_locations[q1]),
+                       tuple(sim_locations[q2]))
                 if self.fitness_cache and key in rollout_pair_cache:
+                    rollout_pair_cache.move_to_end(key)
                     return rollout_pair_cache[key]
                 a, b = site, (site[0] + 1, site[1], site[2])
                 p1, p2 = sim_locations[q1], sim_locations[q2]
@@ -2079,12 +2134,14 @@ class ResidentPlacer(VertexMatchingPlacer):
                          orientation_cost((b, a), distances_ba)))[-1]
                 if self.fitness_cache:
                     rollout_pair_cache[key] = result
+                    rollout_pair_cache.move_to_end(key)
                 return result
 
             def local_sites(q1, q2, gate_count):
-                key = (q1, q2, int(gate_count),
-                       tuple(sim_locations[q1]), tuple(sim_locations[q2]))
+                key = (int(gate_count), tuple(sim_locations[q1]),
+                       tuple(sim_locations[q2]))
                 if self.fitness_cache and key in rollout_site_cache:
+                    rollout_site_cache.move_to_end(key)
                     return rollout_site_cache[key]
                 radius = max(
                     self.pin_radius,
@@ -2106,9 +2163,48 @@ class ResidentPlacer(VertexMatchingPlacer):
                         for column in range(max(0, base[2] - radius),
                                             min(slm.n_c, base[2] + radius + 1)):
                             result.add((base[0], row, column))
-                value = tuple(sorted(result))
+                # A forecast is a deterministic rollout proxy, not a nested
+                # placement search.  Evaluating every point in two 5x5 anchor
+                # windows made each H=2 chromosome perform roughly 40--50 full
+                # physical phase simulations.  Keep a fixed bounded support
+                # that always contains both participant anchors and their
+                # midpoint, then fill it with the nearest joint neighbours.
+                # The selected future phase is still scored by the exact shared
+                # physical cost below.  This is the same bounded-rollout rule
+                # at every layer and consumes no information beyond the oracle.
+                rollout_site_budget = 4
+                ordered_anchors = tuple(sorted(anchors))
+                priority = [site for site in ordered_anchors if site in result]
+                if (len(ordered_anchors) == 2
+                        and ordered_anchors[0][0] == ordered_anchors[1][0]):
+                    left, right = ordered_anchors
+                    midpoint = (
+                        left[0],
+                        round((left[1] + right[1]) / 2),
+                        round((left[2] + right[2]) / 2),
+                    )
+                    if midpoint in result and midpoint not in priority:
+                        priority.append(midpoint)
+
+                def joint_neighbour_key(site):
+                    distances = [
+                        abs(site[1] - anchor[1])
+                        + abs(site[2] - anchor[2])
+                        + (0 if site[0] == anchor[0] else 10_000)
+                        for anchor in ordered_anchors
+                    ]
+                    return (min(distances), max(distances),
+                            sum(distances), site)
+
+                for site in sorted(result, key=joint_neighbour_key):
+                    if site not in priority:
+                        priority.append(site)
+                    if len(priority) >= rollout_site_budget:
+                        break
+                value = tuple(priority[:rollout_site_budget])
                 if self.fitness_cache:
                     rollout_site_cache[key] = value
+                    rollout_site_cache.move_to_end(key)
                 return value
 
             for _, gates in self.forecast.visible_future(layer):
@@ -2221,7 +2317,8 @@ class ResidentPlacer(VertexMatchingPlacer):
         def score_plan(chrom, include_forecast=True, cycle_returners=()):
             chrom = normalize_chrom(chrom)
             cycle_returners = tuple(sorted(
-                set(cycle_returners) & set(cycle_candidates)))
+                (set(cycle_returners) | forced_cycle_candidates)
+                & set(cycle_candidates)))
             scored_chrom = tuple(chrom) + tuple(
                 1 if q in cycle_returners else 0 for q in cycle_candidates)
             try:
@@ -2311,7 +2408,8 @@ class ResidentPlacer(VertexMatchingPlacer):
         def fitness(chrom, include_forecast=True, cycle_returners=()):
             key = tuple(normalize_chrom(chrom))
             cycles = tuple(sorted(
-                set(cycle_returners) & set(cycle_candidates)))
+                (set(cycle_returners) | forced_cycle_candidates)
+                & set(cycle_candidates)))
             cache_key = (bool(include_forecast), key, cycles)
             step_cache.evaluations += 1
             if self.fitness_cache and cache_key in fitness_cache:
@@ -2324,6 +2422,20 @@ class ResidentPlacer(VertexMatchingPlacer):
             if self.fitness_cache:
                 fitness_cache[cache_key] = value
             return value
+
+        # The direct path below exhaustively scores every normalized chromosome.
+        # Any stochastic/greedy seed refinement before that enumeration cannot
+        # change its winner; it only repeats physical rollouts.  Decide this
+        # once so small-space layers retain exact search while skipping redundant
+        # seed work (the dominant case in long random circuits).
+        direct_search_space = 1
+        for domain in gate_domains:
+            direct_search_space *= domain
+            if direct_search_space > 64:
+                break
+        if direct_search_space <= 64 and self.ablation_policy == "optimize":
+            direct_search_space *= 2 ** len(eligible)
+        will_enumerate = direct_search_space <= 64
 
         # Physical greedy seed: first solve the ZAC-style global gate/site
         # matching, then start with every non-participant RETURNed so every
@@ -2389,25 +2501,27 @@ class ResidentPlacer(VertexMatchingPlacer):
                     if trial_score < myopic_score:
                         myopic_chrom, myopic_score = trial, trial_score
             safe_chrom = list(myopic_chrom)
-            safe_score = fitness(safe_chrom)[0]
-            for i in range(len(eligible)):
-                trial = list(safe_chrom)
-                trial[n_gates + i] ^= 1
-                trial = normalize_chrom(trial)
-                trial_score = fitness(trial)[0]
-                if trial_score < safe_score:
-                    safe_chrom, safe_score = trial, trial_score
-            seed_chromosomes.append(list(safe_chrom))
+            if not will_enumerate:
+                safe_score = fitness(safe_chrom)[0]
+                for i in range(len(eligible)):
+                    trial = list(safe_chrom)
+                    trial[n_gates + i] ^= 1
+                    trial = normalize_chrom(trial)
+                    trial_score = fitness(trial)[0]
+                    if trial_score < safe_score:
+                        safe_chrom, safe_score = trial, trial_score
+                seed_chromosomes.append(list(safe_chrom))
         greedy_score, greedy_chrom = min(
             (fitness(chromosome)[0], chromosome)
             for chromosome in seed_chromosomes)
-        for i in range(len(eligible)):
-            trial = list(greedy_chrom)
-            trial[n_gates + i] ^= 1
-            trial = normalize_chrom(trial)
-            trial_score = fitness(trial)[0]
-            if trial_score < greedy_score:
-                greedy_chrom, greedy_score = trial, trial_score
+        if not will_enumerate:
+            for i in range(len(eligible)):
+                trial = list(greedy_chrom)
+                trial[n_gates + i] ^= 1
+                trial = normalize_chrom(trial)
+                trial_score = fitness(trial)[0]
+                if trial_score < greedy_score:
+                    greedy_chrom, greedy_score = trial, trial_score
 
         # Joint physical-greedy gate seed.  Menu index zero is ordered by the
         # legacy sqrt-distance proxy and can be poor once transfer fidelity,
@@ -2415,7 +2529,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         # evaluated together.  Spend a deterministic *per-layer* budget across
         # gate genes: narrow layers see most/all of each menu, while wide Ising
         # layers remain bounded instead of multiplying runtime by menu size.
-        if n_gates:
+        if n_gates and not will_enumerate:
             trials_per_gate = max(
                 2, self.neighbor_sample_size // max(1, n_gates))
             for i, domain in enumerate(gate_domains):
@@ -2477,47 +2591,13 @@ class ResidentPlacer(VertexMatchingPlacer):
         def neighbor(chrom):
             return neighbor_with_rng(chrom, self.rng)
 
-        # Complete the H=0 safety search with the same registered GA budget as
-        # M3.  The auxiliary run occurs once per boundary, never inside a
-        # candidate fitness evaluation.  Small spaces use the shared exact
-        # enumeration path and consume no RNG.
-        if self.lookahead_horizon > 0 and self.ablation_policy == "optimize":
-            myopic_space = 1
-            for domain in gate_domains:
-                myopic_space *= domain
-                if myopic_space > 64:
-                    break
-            myopic_space *= 2 ** len(eligible)
-            if myopic_space <= 64:
-                domains = [range(domain) for domain in gate_domains]
-                domains.extend(range(2) for _ in eligible)
-                myopic_scored = score_unique(
-                    product(*domains) if domains else [()],
-                    include_forecast=False)
-            else:
-                myopic_population = build_seed_population(
-                    gate_domains, len(eligible), myopic_chrom[n_gates:],
-                    self.population_size, self.safety_rng,
-                    normalize=normalize_chrom,
-                    greedy_gate_genes=myopic_chrom[:n_gates])
-                myopic_scored = score_unique(
-                    myopic_population, include_forecast=False
-                )[:self.population_size]
-                for _ in range(self.iterations):
-                    offspring = []
-                    for _, chromosome in myopic_scored:
-                        pool = score_unique(
-                            (neighbor_with_rng(chromosome, self.safety_rng)
-                             for _ in range(self.neighbor_sample_size)),
-                            include_forecast=False)
-                        offspring.extend(
-                            chromosome for _, chromosome
-                            in pool[:self.neighbors_per_solution])
-                    myopic_scored = score_unique(
-                        [chromosome for _, chromosome in myopic_scored]
-                        + offspring, include_forecast=False
-                    )[:self.population_size]
-            myopic_chrom = normalize_chrom(myopic_scored[0][1])
+        # ``myopic_chrom`` above is a deterministic current-transition safety
+        # candidate.  Earlier versions ran a second full H=0 GA here before the
+        # registered H=2 GA.  That doubled M4's search budget, obscured the
+        # horizon-only comparison with M3, and dominated large-circuit runtime.
+        # The Pareto guard below still compares the horizon winner against the
+        # deterministic H=0 incumbent, but M3 and M4 now each execute exactly
+        # one stochastic GA per boundary.
 
         # Deterministic fast paths are shared by NL/LK.  The state key contains
         # exactly the visible forecast window, so H=0 cannot acquire hidden
@@ -2540,14 +2620,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             scored = score_unique([cached_winner])
             search_mode = "lru"
         else:
-            search_space = 1
-            for domain in gate_domains:
-                search_space *= domain
-                if search_space > 64:
-                    break
-            if search_space <= 64:
-                if self.ablation_policy == "optimize":
-                    search_space *= 2 ** len(eligible)
+            search_space = direct_search_space
             if search_space <= 64:
                 domains = [range(domain) for domain in gate_domains]
                 decision_domain = (range(2) if self.ablation_policy == "optimize"
@@ -2611,8 +2684,9 @@ class ResidentPlacer(VertexMatchingPlacer):
         # target participant, test RETURN -> re-entry jointly with the gate-site
         # gene of its target gate.  This is the neutral-atom analogue of deciding
         # when a chain should advance the interaction site instead of pinning it.
-        selected_cycles: set[int] = set()
-        cycle_objective = fitness(best_chrom)[0]
+        selected_cycles: set[int] = set(forced_cycle_candidates)
+        cycle_objective = fitness(
+            best_chrom, cycle_returners=selected_cycles)[0]
         cycle_search_log = []
         # A rollout improvement smaller than one extra load+store fidelity pair
         # is not robust enough to justify changing the executable current state.
@@ -2624,6 +2698,14 @@ class ResidentPlacer(VertexMatchingPlacer):
                 q: gate_index for gate_index, gate in enumerate(list_gate)
                 for q in gate}
             for q in cycle_candidates:
+                if q in forced_cycle_candidates:
+                    cycle_search_log.append({
+                        "q": q, "accepted": True, "forced": True,
+                        "negative_log_fidelity_gain": None,
+                        "gate_index": gate_of[q],
+                        "gate_gene": best_chrom[gate_of[q]],
+                    })
+                    continue
                 gate_index = gate_of[q]
                 domain = gate_domains[gate_index]
                 trial_budget = max(
@@ -2685,18 +2767,28 @@ class ResidentPlacer(VertexMatchingPlacer):
         decisions.update({q: ("RETURN", sites[q]) for q in selected_cycles})
         vacated = {q for q, value in decisions.items()
                    if value[0] in ("RETURN", "RESEAT")}
+        decoded_placements = [
+            self._mk_placement(c[2], c[3], c[0]) for c in placed]
         placements = self._repair_placements(
-            [self._mk_placement(c[2], c[3], c[0]) for c in placed], list_gate,
-            vacated=vacated)
+            deepcopy(decoded_placements), list_gate, vacated=vacated)
+        placement_repaired = placements != decoded_placements
         if sum(1 for value in decisions.values() if value[0] == "STAY") + demand \
                 > self.theta_capacity * reg.zone_sites + 1e-12:
             raise AssertionError("Schema 2 容量约束未在 fitness 前满足")
 
         # Hard repair is method-independent.  The repaired schedule is scored again
         # below, so the ledger never reports the stale pre-repair objective.
+        pre_ghost_placements = deepcopy(placements)
+        pre_ghost_decisions = dict(decisions)
         commitment_repairs, commitment_ghost_fallback = \
             self._repair_ghosts_with_commitments(
                 placements, decisions, target_pins)
+        physical_repair_applied = (
+            placement_repaired
+            or placements != pre_ghost_placements
+            or decisions != pre_ghost_decisions
+            or bool(commitment_repairs)
+            or commitment_ghost_fallback)
 
         def score_repaired():
             positions_t0 = {
@@ -2750,7 +2842,17 @@ class ResidentPlacer(VertexMatchingPlacer):
                     1 if q in selected_cycles else 0
                     for q in cycle_candidates))
 
-        repaired_score, breakdown = score_repaired()
+        if physical_repair_applied:
+            # A changed executable state must be replayed and rescored; no
+            # stale chromosome fitness may enter the evidence ledger.
+            repaired_score, breakdown = score_repaired()
+        else:
+            # The chromosome score already used the exact same back/out phases,
+            # rollout and terminal state.  Re-evaluating it once per boundary
+            # duplicated millions of H=2 rollouts on long circuits.  The formal
+            # cache returns both the exact objective and its physical breakdown.
+            repaired_score, breakdown = fitness(
+                best_chrom, cycle_returners=selected_cycles)
         for field in step_cache.as_dict():
             setattr(self.cache_stats, field,
                     getattr(self.cache_stats, field) + getattr(step_cache, field))
@@ -2796,6 +2898,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             "eligible_decisions": len(eligible),
             "adjacent_cycle_candidates": len(cycle_candidates),
             "adjacent_cycle_returns": len(selected_cycles),
+            "forced_commitment_cycles": len(forced_cycle_candidates),
             "adjacent_cycle_search": cycle_search_log,
             "no_visible_use": sum(
                 1 for q in eligible
@@ -2828,4 +2931,8 @@ class ResidentPlacer(VertexMatchingPlacer):
         })
         while len(self.return_candidate_cache) > self.return_cache_limit:
             self.return_candidate_cache.popitem(last=False)
+        while len(self.rollout_pair_cache) > self.rollout_geometry_cache_limit:
+            self.rollout_pair_cache.popitem(last=False)
+        while len(self.rollout_site_cache) > self.rollout_geometry_cache_limit:
+            self.rollout_site_cache.popitem(last=False)
         self.search_time += time.time() - t0

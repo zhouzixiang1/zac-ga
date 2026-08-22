@@ -21,6 +21,7 @@ from experiments_v2.cli import (  # noqa: E402
     UnifiedEvaluationGate,
     _attempt_spec,
     _manifest_paths,
+    _resume_manifest_is_current,
     command_verify_run,
     main,
 )
@@ -192,6 +193,20 @@ class PlanFixture:
 
 
 class TestCliPlan(unittest.TestCase):
+    def test_formal_resume_requires_same_clean_commit(self):
+        repository = {"commit": "a" * 40, "dirty": False}
+        current = RunManifest(
+            run_id="r", dataset="d", circuit="c", method="M1",
+            git_commit="a" * 40, git_dirty=False)
+        self.assertTrue(_resume_manifest_is_current(current, repository))
+        current.git_commit = "b" * 40
+        self.assertFalse(_resume_manifest_is_current(current, repository))
+        current.git_commit = "a" * 40
+        current.git_dirty = True
+        self.assertFalse(_resume_manifest_is_current(current, repository))
+        self.assertFalse(_resume_manifest_is_current(
+            current, {"commit": "unknown", "dirty": True}))
+
     def test_registered_truth_tables_resolve_inside_the_versioned_checkout(self):
         plan = load_experiment_plan(
             ROOT / "experiments_v2" / "experiment_plan_v2.json")

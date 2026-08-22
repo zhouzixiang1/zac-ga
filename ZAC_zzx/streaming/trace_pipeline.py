@@ -20,6 +20,7 @@ from evaluation import (
     FidelityModel,
     FidelityResult,
     TraceValidationError,
+    fixed_duration_matches,
 )
 from zzx.ghost import ghost_hits as find_ghost_hits
 from zzx.zcost import compatible_2d
@@ -45,8 +46,9 @@ def _safe_exp(value: float) -> float:
 
 
 def _assert_duration(event: CanonicalTraceEvent, expected: float) -> None:
-    if not math.isclose(event.duration_us, expected, rel_tol=0.0,
-                        abs_tol=_TIME_TOLERANCE_US):
+    if not fixed_duration_matches(
+            event.start_us, event.end_us, expected,
+            tolerance_floor_us=_TIME_TOLERANCE_US):
         raise TraceValidationError(
             f"{event.kind} duration must be {expected} us, got {event.duration_us} us"
         )

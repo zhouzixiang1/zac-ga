@@ -56,7 +56,12 @@ def _run_dir() -> Path:
 
 def _write_json(path: Path, payload: object) -> None:
     with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
+        # Native traces and per-layer decision ledgers reach hundreds of
+        # megabytes on the upper QMAP cohort.  Pretty-printing tripled both
+        # bytes and post-core write time while adding no experiment evidence.
+        # Stable compact separators preserve byte determinism and leave the
+        # runner's compiler-time definition unchanged.
+        json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
         handle.write("\n")
 
 

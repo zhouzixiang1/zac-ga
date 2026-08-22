@@ -35,6 +35,7 @@ from .contracts import (
     RunManifest,
     RunStatus,
     load_run_manifest,
+    repository_snapshot,
     sha256_file,
     stable_sha256,
 )
@@ -467,6 +468,17 @@ def _resume_key(manifest: RunManifest) -> tuple[Any, ...]:
     )
 
 
+def _resume_manifest_is_current(
+        manifest: RunManifest, repository: Mapping[str, Any]) -> bool:
+    """Only a clean attempt from the live commit may suppress a formal rerun."""
+    return bool(
+        repository.get("commit") not in (None, "", "unknown")
+        and repository.get("dirty") is False
+        and manifest.git_dirty is False
+        and manifest.git_commit == repository.get("commit")
+    )
+
+
 def _spec_key(spec: AttemptSpec) -> tuple[Any, ...]:
     return (
         spec.experiment_id,
@@ -538,11 +550,21 @@ def _run_matrix(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
         _assert_reproduction_gate(plan)
 
     existing: set[tuple[Any, ...]] = set()
+    ignored_stale_existing: list[str] = []
+    current_repository = (
+        repository_snapshot(plan.repo_root)
+        if resume and not dry_run else None)
     if resume:
         for dataset in datasets:
             root = plan.output_root / "runs" / phase / dataset.name
-            existing.update(_resume_key(load_run_manifest(path))
-                            for path in _manifest_paths(root))
+            for path in _manifest_paths(root):
+                manifest = load_run_manifest(path)
+                if (current_repository is not None and
+                        not _resume_manifest_is_current(
+                            manifest, current_repository)):
+                    ignored_stale_existing.append(str(path))
+                    continue
+                existing.add(_resume_key(manifest))
 
     attempted: list[Mapping[str, Any]] = []
     skipped: list[Mapping[str, Any]] = []
@@ -586,6 +608,7 @@ def _run_matrix(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
         "attempted": attempted,
         "status_counts": dict(sorted(statuses.items())),
         "skipped_existing": skipped,
+        "ignored_stale_existing": ignored_stale_existing,
         "commands": commands,
     }
 
@@ -883,6 +906,10 @@ def command_run_ablation(plan: ExperimentPlan,
     attempted: list[Mapping[str, Any]] = []
     skipped: list[Mapping[str, Any]] = []
     commands: list[Mapping[str, Any]] = []
+    ignored_stale_existing: list[str] = []
+    current_repository = (
+        repository_snapshot(plan.repo_root)
+        if resume and not dry_run else None)
     selections: dict[str, Any] = {}
     for dataset in datasets:
         cohort, selection = select_ablation_cohort(
@@ -896,8 +923,14 @@ def command_run_ablation(plan: ExperimentPlan,
         existing: set[tuple[Any, ...]] = set()
         if resume:
             root = plan.output_root / "runs" / "ablation" / dataset.name
-            existing.update(_resume_key(load_run_manifest(path))
-                            for path in _manifest_paths(root))
+            for path in _manifest_paths(root):
+                manifest = load_run_manifest(path)
+                if (current_repository is not None and
+                        not _resume_manifest_is_current(
+                            manifest, current_repository)):
+                    ignored_stale_existing.append(str(path))
+                    continue
+                existing.add(_resume_key(manifest))
         config_paths = {
             (variant_name, seed): _resolved_ablation_config(
                 plan, variant_name, seed)
@@ -956,6 +989,7 @@ def command_run_ablation(plan: ExperimentPlan,
         "attempted": attempted,
         "status_counts": dict(sorted(statuses.items())),
         "skipped_existing": skipped,
+        "ignored_stale_existing": ignored_stale_existing,
         "commands": commands,
     }
     if not dry_run:

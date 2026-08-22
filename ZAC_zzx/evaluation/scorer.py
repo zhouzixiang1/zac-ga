@@ -12,6 +12,7 @@ from .model import (
     FidelityModel,
     FidelityResult,
     TraceValidationError,
+    fixed_duration_matches,
 )
 
 
@@ -39,12 +40,9 @@ def _union_duration(intervals: list[tuple[float, float]]) -> float:
 
 
 def _assert_duration(event: CanonicalTraceEvent, expected: float) -> None:
-    if not math.isclose(
-        event.duration_us,
-        expected,
-        rel_tol=0.0,
-        abs_tol=_TIME_TOLERANCE_US,
-    ):
+    if not fixed_duration_matches(
+        event.start_us, event.end_us, expected,
+        tolerance_floor_us=_TIME_TOLERANCE_US):
         raise TraceValidationError(
             f"{event.kind} duration must be {expected} us, got {event.duration_us} us"
         )

@@ -36,7 +36,15 @@ class Router_mixin:
             t_s = time.time()
             self.route_qubit_mis(layer)
             time_mis += (time.time() - t_s)
-            print("[INFO] ZAC: Solve for Rydberg stage {}/{}. mis time={:2f}".format(layer+1, len(self.gate_scheduling), time_mis))
+            # Per-layer logging creates multi-gigabyte stdout streams on Large
+            # circuits and measurably slows otherwise linear routing.  Retain
+            # dense diagnostics for small cases and deterministic 1000-layer
+            # progress points for long runs.
+            completed = layer + 1
+            total_layers = len(self.gate_scheduling)
+            if (total_layers <= 100 or completed == 1
+                    or completed == total_layers or completed % 1000 == 0):
+                print("[INFO] ZAC: Solve for Rydberg stage {}/{}. mis time={:2f}".format(completed, total_layers, time_mis))
         self.flatten_rearrangment_instruction()
         self.runtime_analysis["routing"] = time_mis
 

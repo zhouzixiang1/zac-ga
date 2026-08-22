@@ -181,7 +181,8 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
                        next_use: NextUse, after: int,
                        box_ratio: int = 3, alpha_lookahead: float = 0.1,
                        forecast=None, candidate_mode: str = "legacy",
-                       candidate_cache: dict | None = None) -> dict:
+                       candidate_cache: dict | None = None,
+                       assignment_mode: str = "exact") -> dict:
     """给一批回返者定存储落位：三方案箱候选 ∪ 自由位 → 最小权完美匹配。
 
     三方案（笔记 :123-131，ZAC place_qubit 的箱式化沿用 vmplacer.py:443-450 ratio=3）：
@@ -198,6 +199,8 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     """
     if candidate_mode not in ("legacy", "nearest", "forecast"):
         raise ValueError(f"未知 RETURN 候选模式: {candidate_mode!r}")
+    if assignment_mode not in ("exact", "greedy"):
+        raise ValueError(f"未知 RETURN 匹配模式: {assignment_mode!r}")
     arch = registry.arch
     # 全存储位清单 + 自由位集合（未被任何在储原子占用——occupied 含未来
     # 参与者仍在存储的家，所以回返者永远不会落到别人头上）
@@ -208,19 +211,11 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     # removes the dominant terminal-matching allocation.
     occupied = registry.occupied_storage()
 
-    # 二部图：行 = 候选存储位（三族箱并集），列 = 回返者
-    site_index: dict = {}
-    rows_list: list = []
-    rows, cols, data = [], [], []
+    # Build per-returner columns first.  Most calls have distinct strict local
+    # minima and can return before allocating a sparse bipartite graph; only
+    # the genuinely coupled exact path below needs row indices.
     fallback_context = {}
     column_options = [[] for _ in returners]
-
-    def _add(site):
-        """给候选位编号（建行索引），重复出现的位共用一行。"""
-        if site not in site_index:
-            site_index[site] = len(rows_list)
-            rows_list.append(site)
-        return site_index[site]
 
     for i, q in enumerate(returners):
         zone_loc = registry.zone_seat[q]                  # 调用保证 q 当前在激发区
@@ -260,17 +255,20 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
             cache_key = (
                 candidate_mode, tuple(zone_loc), tuple(anchor_loc),
                 tuple(registry.homes[q]), int(box_ratio), lookahead_weight,
-                tuple(sorted(occupied)),
             )
             options = candidate_cache.get(cache_key)
         if options is None:
+            # Cache the immutable geometric column before occupancy filtering.
+            # Occupancy changes for almost every H=2 rollout state, while the
+            # boxes and their physical weights do not.  The previous cache key
+            # included all occupied sites and therefore missed on essentially
+            # every chromosome.
             candidates = set()
             for center in families:
                 if center[0] in arch.storage_zone:
                     candidates.update(_box_sites(
-                        arch, center, box_ratio, occupied))
-            if (candidate_mode == "legacy"
-                    and registry.homes[q] not in occupied):
+                        arch, center, box_ratio, set()))
+            if candidate_mode == "legacy":
                 candidates.add(registry.homes[q])
 
             # 每个候选位的代价：省本次（离激发区近）+ 省未来（离锚点近）
@@ -281,14 +279,11 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
                         + lookahead_weight * sqrt(
                             math.dist((sx, sy), (ax, ay))))
                 computed.append((cost, site))
-            options = tuple(computed)
+            options = tuple(sorted(computed))
             if candidate_cache is not None:
                 candidate_cache[cache_key] = options
-        for cost, site in options:
-            rows.append(_add(site))
-            cols.append(i)
-            data.append(cost)
-            column_options[i].append((cost, site))
+        column_options[i] = [
+            (cost, site) for cost, site in options if site not in occupied]
 
     if not returners:
         return {}
@@ -307,18 +302,51 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     if independent and len(set(independent)) == len(returners):
         return {q: site for q, site in zip(returners, independent)}
     assignment = {}
-    try:
-        # 最小权完美匹配：所有回返者各得一个互异自由位，总代价最小
-        matrix = coo_matrix(
-            (np.array(data), (np.array(rows), np.array(cols))),
-            shape=(len(rows_list), len(returners)))
-        row_ind, col_ind = min_weight_full_bipartite_matching(matrix)
-        assignment = {
-            returners[c]: rows_list[r] for r, c in zip(row_ind, col_ind)}
-    except ValueError:
-        # A structurally singular sparse matrix is completed below by the same
-        # deterministic fallback used for a partial scipy result.
-        pass
+    if assignment_mode == "exact":
+        # 二部图：行 = 候选存储位（三族箱并集），列 = 回返者
+        site_index: dict = {}
+        rows_list: list = []
+        rows, cols, data = [], [], []
+        for column, options in enumerate(column_options):
+            for cost, site in options:
+                row = site_index.get(site)
+                if row is None:
+                    row = len(rows_list)
+                    site_index[site] = row
+                    rows_list.append(site)
+                rows.append(row)
+                cols.append(column)
+                data.append(cost)
+        try:
+            # 最小权完美匹配：所有回返者各得一个互异自由位，总代价最小
+            matrix = coo_matrix(
+                (np.array(data), (np.array(rows), np.array(cols))),
+                shape=(len(rows_list), len(returners)))
+            row_ind, col_ind = min_weight_full_bipartite_matching(matrix)
+            assignment = {
+                returners[c]: rows_list[r] for r, c in zip(row_ind, col_ind)}
+        except ValueError:
+            # A structurally singular sparse matrix is completed below by the same
+            # deterministic fallback used for a partial scipy result.
+            pass
+    else:
+        # Forecast rollouts need a deterministic bounded terminal value, not
+        # another exact combinatorial solve for every chromosome.  Assign the
+        # most constrained atoms first, then their cheapest still-free site.
+        # Executable RETURN phases keep the default exact matching mode.
+        taken = set()
+        order = sorted(
+            range(len(returners)),
+            key=lambda i: (len(column_options[i]), returners[i]))
+        for i in order:
+            q = returners[i]
+            site = next(
+                (candidate for _cost, candidate
+                 in sorted(column_options[i]) if candidate not in taken),
+                None)
+            if site is not None:
+                assignment[q] = site
+                taken.add(site)
 
     # scipy's "full" routine covers the smaller bipartite side.  With a sparse
     # candidate graph it may therefore return normally while leaving one or
@@ -328,9 +356,7 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     for i, q in enumerate(returners):
         if q in assignment:
             continue
-        local = sorted(
-            (data[k], rows_list[rows[k]])
-            for k, column in enumerate(cols) if column == i)
+        local = sorted(column_options[i])
         site = next((candidate for _, candidate in local
                      if candidate not in taken), None)
         if site is None:

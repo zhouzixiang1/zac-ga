@@ -373,6 +373,26 @@ class TestResidentDecisionMechanics(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertTrue(candidate_cache)
 
+    def test_return_candidate_cache_reapplies_live_occupancy(self):
+        initial = [(0, i, 0) for i in range(4)]
+        registry = ResidentRegistry(self.arch, initial)
+        registry.enter_zone(0, (1, 0, 0))
+        candidate_cache = {}
+        kwargs = {
+            "forecast": ForecastOracle([], 0),
+            "candidate_mode": "nearest",
+            "candidate_cache": candidate_cache,
+        }
+        first = match_return_sites(
+            registry, [0], NextUse([]), 0, **kwargs)
+        # Occupy the cached optimum after its immutable geometric column has
+        # been built.  A cache hit must filter against this new live state.
+        registry.storage_site[1] = first[0]
+        second = match_return_sites(
+            registry, [0], NextUse([]), 0, **kwargs)
+        self.assertNotEqual(first[0], second[0])
+        self.assertNotIn(second[0], registry.occupied_storage())
+
     def test_partial_sparse_return_match_is_completed_deterministically(self):
         initial = [(0, i, 0) for i in range(4)]
         registry = ResidentRegistry(self.arch, initial)
@@ -472,6 +492,61 @@ class TestResidentDecisionMechanics(unittest.TestCase):
         self.assertEqual(logs[0][0]["eligible_decisions"], 2)
         self.assertGreater(logs[0][0]["cache"]["fitness_hits"], 0)
         self.assertEqual(logs[1][0]["cache"]["fitness_hits"], 0)
+
+    def test_lookahead_cache_toggle_preserves_schedule(self):
+        initial = [(0, i, 0) for i in range(8)]
+        schedule = [
+            [[0, 1]], [[2, 3]], [[0, 4]], [[1, 5]],
+        ]
+        mappings = []
+        scores = []
+        for enabled in (True, False):
+            placer = ResidentPlacer(
+                initial, seed=3, experiment_schema=2,
+                method_id="ours_lk", objective="physical_log_fidelity",
+                lookahead_horizon=2, engine="ga", fitness_cache=enabled,
+                population_size=6, iterations=2,
+                neighbors_per_solution=2, neighbor_sample_size=8)
+            placer.run(self.arch, [initial], schedule, True,
+                       [set() for _ in schedule])
+            mappings.append(placer.mapping)
+            scores.append([row["score"] for row in placer.decision_log
+                           if "score" in row])
+        self.assertEqual(mappings[0], mappings[1])
+        self.assertEqual(scores[0], scores[1])
+
+    def test_incompatible_target_commitments_force_return_and_reentry(self):
+        initial = [(0, i, 0) for i in range(6)]
+        schedule = [[[2, 3]], [[0, 1]], [[4, 5]]]
+        placer = ResidentPlacer(
+            initial, seed=0, experiment_schema=2,
+            method_id="ours_lk", objective="physical_log_fidelity",
+            lookahead_horizon=2, engine="ga", fitness_cache=True,
+            population_size=6, iterations=2,
+            neighbors_per_solution=2, neighbor_sample_size=8)
+        placer.architecture = self.arch
+        placer.gate_scheduling = schedule
+        placer.registry = ResidentRegistry(self.arch, initial)
+        placer.registry.enter_zone(0, (1, 0, 0))
+        placer.registry.enter_zone(1, (2, 1, 1))
+        current = [placer.registry.current_pos(q) for q in range(len(initial))]
+        placer.mapping = [initial, current]
+        placer.nu = NextUse([])
+        placer.forecast = ForecastOracle(schedule, 2)
+        placer.residency_commitments = {
+            0: (1, (1, 0, 0)),
+            1: (1, (2, 1, 1)),
+        }
+
+        placer._ga_step_v2(0)
+
+        row = placer.decision_log[-1]
+        self.assertEqual(row["forced_commitment_cycles"], 2)
+        self.assertEqual(row["adjacent_cycle_returns"], 2)
+        self.assertTrue(all(
+            entry.get("forced") for entry in row["adjacent_cycle_search"]))
+        self.assertNotIn(0, placer.residency_commitments)
+        self.assertNotIn(1, placer.residency_commitments)
 
     def test_physical_rollout_can_select_both_stay_and_return(self):
         initial = [(0, i, 0) for i in range(6)]
