@@ -112,7 +112,7 @@ def main():
                 "lk": zair_block(ZZX / "results/qmap_suite/zzx_hard/code", n)})
 
     # ---- xlsx：双 sheet（发射函数共用） ----
-    def emit(ws, note, rws):
+    def emit(ws, note, rws, fid_row=None):
         cols = ["circuit", "q", "2q门", "layers", "max门/层",
                 "ZAC Place", "ZAC Route", "ZAC Steps", "ZAC Rearr",
                 "rw Place", "rw Route", "rw Steps", "rw Rearr",
@@ -145,6 +145,8 @@ def main():
                 v = col(key, idx)
                 line.append(round(sum(v), 1) if v else "—")
             ws.append(line)
+        if fid_row:
+            ws.append(list(fid_row))
         for label, idx in (("geomean Steps/ZAC", 2), ("geomean Rearr/ZAC", 3)):
             line = [label, 1.0]
             for key in ("rw", "nl", "lk"):
@@ -157,6 +159,37 @@ def main():
             ws.column_dimensions[get_column_letter(c)].width = w
         return col
 
+    def fid_map_dir(d):
+        m = {}
+        for f in (ZZX / d).glob("fidelity/*_fidelity.json"):
+            m[f.name.replace("_fidelity.json", "")] = \
+                json.load(open(f))["cir_fidelity"]
+        return m
+
+    def fid_row_for(rows, fmaps, label):
+        common = [r["n"] for r in rows
+                  if all(r["n"] in fm for fm in fmaps.values())]
+        if not common:
+            return None
+        vals = [f"平均保真度({label} N={len(common)})"] + \
+               [round(sum(fm[n] for n in common) / len(common), 4)
+                for fm in fmaps.values()]
+        return vals
+
+    cap_fid = {}
+    p = ROOT / "experiments/results/qmap_iccad_v32.json"
+    if p.exists():
+        for n, v in json.load(open(p)).items():
+            if "astar" in v and v["astar"].get("fid") is not None:
+                cap_fid[n] = v["astar"]["fid"]
+    pf = {r["circuit"]: r["fid"] for r in json.load(
+        open(ROOT / "experiments/results/qmap_paper_fid.json"))
+        if r["config"] == "astar"}
+    truth_fid = {}
+    for f in (ZAC / "fidelity").glob("*_fidelity.json"):
+        truth_fid[f.name.replace("_fidelity.json", "").replace("_transpiled", "")] = \
+            json.load(open(f))["cir_fidelity"]
+
     wb = Workbook()
     ws1 = wb.active
     ws1.title = "ZAC数据集18"
@@ -168,23 +201,30 @@ def main():
              "stats() 实为 μs，此处已修为真 ms）。ZAC/遗传：Place=初始布局+逐轮放置、Route=路由"
              "（ZAC 原程序路由计时混在放置内故 Route≈0）；Steps=rearrangeJob 条数（与 Table I "
              "一步=一次完整 AOD 重排循环同义）；Rearr=Σ批起止区间。")
-    col1 = emit(ws1, note1, rows)
-    mds = [md_block("ZAC 数据集（hpca 18）", rows)]
+    fids1 = {"z": truth_fid, "rw": pf,
+             "nl": fid_map_dir("results/nolook_ga"), "lk": fid_map_dir("results/main_ga")}
+    fid1 = fid_row_for(rows, fids1, "N=18")
+    emit(ws1, note1, rows, fid1)
+    mds = [md_block("ZAC 数据集（hpca 18）", rows, fid1)]
     if rows2:
         ws2 = wb.create_sheet("ICCAD数据集154")
         note2 = ("ICCAD 数据集（qmap examples 154）× Table I 全指标。ICCAD=3.2.0 论文管线全量"
                  "采集（capture_iccad_v32.py，单位已修）；ZAC=qmap_suite/zac；遗传=硬化套件"
                  "（zzx_hard/zzx_hard_nl，GA 初始化+鬼点硬保证层）。超时/失败以 — 表示；"
                  "geomean 按与 ZAC 成对齐全的电路计算（各法 N 见 Σ 行可推）。")
-        emit(ws2, note2, rows2)
-        mds.append(md_block("ICCAD 数据集（qmap examples 154）", rows2))
+        fids2 = {"z": fid_map_dir("results/qmap_suite/zac"), "rw": cap_fid,
+                 "nl": fid_map_dir("results/qmap_suite/zzx_hard_nl"),
+                 "lk": fid_map_dir("results/qmap_suite/zzx_hard")}
+        fid2 = fid_row_for(rows2, fids2, "四法齐全")
+        emit(ws2, note2, rows2, fid2)
+        mds.append(md_block("ICCAD 数据集（qmap examples 154）", rows2, fid2))
     wb.save(OUT / "四方法_对齐TableI.xlsx")
     open(OUT / "四方法_对齐TableI.md", "w").write(
         "# 四方法 × Table I 全指标对齐（双数据集）\n\n" + "\n\n".join(mds))
     print("\n\n".join(mds))
 
 
-def md_block(title, rows):
+def md_block(title, rows, fid_row=None):
     col = lambda key, idx: [r[key][idx] for r in rows if r[key]]
 
     def s(key, idx):
@@ -204,6 +244,8 @@ def md_block(title, rows):
             g = gm([a / b for a, b in pairs if a and b])
             cells.append(f"{g:.3f} (N={len(pairs)})" if g else "—")
         lines.append(f"| geomean {label}/ZAC | " + " | ".join(cells) + " |")
+    if fid_row:
+        lines.append("| " + " | ".join(str(x) for x in fid_row) + " |")
     lines += ["", "（ZAC 的 Route≈0 系原程序计时口径：路由混在放置内；Place 列含其全部编译。）"]
     return "\n".join(lines)
 

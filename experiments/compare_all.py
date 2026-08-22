@@ -6,8 +6,8 @@
     qmap-agnostic ICCAD'25《Routing-Aware Placement》的 ZAC C++ 复刻版
     qmap-astar   ICCAD'25 的 A* 路由感知放置（论文主方法）
                  （两者 = M2 复现，qmap 3.2.0，与 Table I 12/15 步数精确一致）
-    GA v1a       用户的遗传放置器（GA/ 文件夹，ICCAD 评估+朴素变异）
-    FABLE        用户的 Fable 想法放置器（FABLE/ 文件夹，最大链+冲突边+结构化算子）
+    GA v1a       用户的遗传放置器（archive/GA，ICCAD 评估+朴素变异）
+    FABLE        用户的 Fable 想法放置器（archive/FABLE，最大链+冲突边+结构化算子）
 
 指标口径（M2/M4 已对齐）：
     步数   = 重排指令条数（ZAC 系=rearrangeJob 数；qmap 系=naviz 复合 job 数）
@@ -57,11 +57,11 @@ def fid_metrics(fid_dir: Path) -> dict[str, tuple[float, float]]:
 
 # ------------------------------------------------------------------ 加载
 zac_m = zair_metrics(ROOT / "ZAC/result/zac/repro_fixed/code")
-ga_m = zair_metrics(ROOT / "GA/results/repro_ga/code")
-fb_m = zair_metrics(ROOT / "FABLE/results/repro_fable/code")
+ga_m = zair_metrics(ROOT / "archive/GA/results/repro_ga/code")
+fb_m = zair_metrics(ROOT / "archive/FABLE/results/repro_fable/code")
 zac_f = fid_metrics(ROOT / "ZAC/result/zac/repro_fixed/fidelity")
-ga_f = fid_metrics(ROOT / "GA/results/repro_ga/fidelity")
-fb_f = fid_metrics(ROOT / "FABLE/results/repro_fable/fidelity")
+ga_f = fid_metrics(ROOT / "archive/GA/results/repro_ga/fidelity")
+fb_f = fid_metrics(ROOT / "archive/FABLE/results/repro_fable/fidelity")
 
 qmap = {}          # (name, config) -> (steps, rearr_us)
 with open(EXP / "results/qmap_qasmbench.csv") as f:

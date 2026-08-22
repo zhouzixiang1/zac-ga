@@ -18,8 +18,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-TRUTH = ROOT.parent / "ZAC" / "result" / "zac" / "repro_fixed"
-ZNEW_B = ROOT.parent / "ZAC_new" / "results" / "repro_penalty"          # ZAC_new-B 存档（跨会话回归参照）
+REPO_ROOT = ROOT.parents[1]
+TRUTH = REPO_ROOT / "ZAC" / "result" / "zac" / "repro_fixed"
+ZNEW_B = REPO_ROOT / "archive" / "ZAC_new" / "results" / "repro_penalty"  # ZAC_new-B 存档（跨会话回归参照）
 SERIAL = {"bv_n14_transpiled", "bv_n19_transpiled", "bv_n30_transpiled", "bv_n70_transpiled",
           "cat_n22_transpiled", "cat_n35_transpiled", "ghz_n23", "ghz_n40_transpiled",
           "ghz_n78_transpiled", "wstate_n27_transpiled"}

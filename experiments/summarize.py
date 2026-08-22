@@ -15,7 +15,7 @@ from parse_zair import load_run  # noqa: E402
 
 def main() -> None:
     zac = load_run(ROOT / "ZAC" / "result" / "zac" / "repro_fixed")
-    ga_dir = ROOT / "GA" / "results" / "repro_ga"
+    ga_dir = ROOT / "archive" / "GA" / "results" / "repro_ga"
     ga = load_run(ga_dir) if (ga_dir / "code").exists() else {}
     qmap_rows = list(csv.DictReader(open(ROOT / "experiments" / "results" / "qmap_qasmbench.csv"))) \
         if (ROOT / "experiments" / "results" / "qmap_qasmbench.csv").exists() else []

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RESULT = ROOT / "ZAC" / "result" / "zac" / "repro" / "qasm_sa_1000_reuse"
+RESULT = ROOT / "ZAC" / "result" / "zac" / "repro_fixed"
 TRUTH = ROOT / "experiments" / "paper_truth" / "zac.csv"
 
 truth = {r["circuit"]: (float(r["fidelity"]), float(r["duration_us"]))

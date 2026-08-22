@@ -15,7 +15,7 @@ from math import dist
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "neat" / "evaluation"))
+sys.path.insert(0, str(ROOT / "archive" / "neat" / "evaluation"))
 
 from codes import REGISTRY  # noqa: E402
 from loguru import logger  # noqa: E402

@@ -21,8 +21,8 @@ ZAC_ROOT = ZNEW_ROOT.parent
 
 SYSTEMS = [  # (标签, 结果目录, 是否本实验)
     ("ZAC 真值", ZAC_ROOT / "ZAC/result/zac/repro_fixed", False),
-    ("GA v1a", ZAC_ROOT / "GA/results/repro_ga", False),
-    ("FABLE", ZAC_ROOT / "FABLE/results/repro_fable", False),
+    ("GA v1a", ZAC_ROOT / "archive/GA/results/repro_ga", False),
+    ("FABLE", ZAC_ROOT / "archive/FABLE/results/repro_fable", False),
     ("ZAC_zzx-B", ZNEW_ROOT / "results/repro_penalty", True),
     ("ZAC_zzx-A", ZNEW_ROOT / "results/repro_ga", True),
 ]
