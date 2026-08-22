@@ -300,7 +300,14 @@ class Router_mixin:
         result_gate = []
         for gate_info in list_1q_gate:
             # collect qubit dependency
-            set_qubit_dependency.add(self.qubit_dependency[gate_info[1]])
+            previous = self.qubit_dependency[gate_info[1]]
+            # Several authored 1Q gates on one atom are intentionally packed
+            # into this globally serial block.  After the first gate the atom
+            # ledger already points at ``inst_idx``; recording that value as a
+            # dependency would create a self-cycle and makes aod_assignment
+            # read this instruction's end_time before it has been scheduled.
+            if previous != inst_idx:
+                set_qubit_dependency.add(previous)
             self.qubit_dependency[gate_info[1]] = inst_idx
             result_gate.append({
                 "name": gate_info[0],
@@ -443,7 +450,9 @@ class Router_mixin:
         set_qubit_dependency = set()
         for gate_info in list_1q_gate:
             # collect qubit dependency
-            set_qubit_dependency.add(self.qubit_dependency[gate_info[1]])
+            previous = self.qubit_dependency[gate_info[1]]
+            if previous != inst_idx:
+                set_qubit_dependency.add(previous)
             self.qubit_dependency[gate_info[1]] = inst_idx
             result_gate.append({
                 "name": gate_info[0],

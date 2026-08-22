@@ -169,6 +169,39 @@ class InstructionWindow:
         }
         self.peak_active_count = max(self.peak_active_count, self.active_count)
 
+    def state_dict(self) -> dict[str, Any]:
+        """Freeze the global id and every still-active dependency summary."""
+        return {
+            "format": "zac-instruction-window-state-v1",
+            "next_id": self._next_id,
+            "peak_active_count": self.peak_active_count,
+            "records": [
+                deepcopy(self._records[instruction_id])
+                for instruction_id in sorted(self._records)
+            ],
+        }
+
+    @classmethod
+    def from_state(cls, state: dict[str, Any]) -> "InstructionWindow":
+        if state.get("format") != "zac-instruction-window-state-v1":
+            raise ValueError("unsupported ZAC instruction-window state")
+        window = cls()
+        window._next_id = int(state["next_id"])
+        if window._next_id < 0:
+            raise ValueError("checkpoint next native instruction id is negative")
+        records: dict[int, dict[str, Any]] = {}
+        for raw in state["records"]:
+            record = _instruction_summary(deepcopy(raw))
+            instruction_id = int(record["id"])
+            if instruction_id in records or not 0 <= instruction_id < window._next_id:
+                raise ValueError("checkpoint instruction-window ids are invalid")
+            records[instruction_id] = record
+        window._records = records
+        window.peak_active_count = int(state["peak_active_count"])
+        if window.peak_active_count < len(records):
+            raise ValueError("checkpoint instruction peak is below active count")
+        return window
+
 
 @dataclass(frozen=True)
 class ZACRouteTransitionResult:
@@ -370,6 +403,102 @@ class ZACRouteTransitionDriver:
 
     # State-machine spelling consistent with the placement transition kernel.
     step = route_layer
+
+    def state_dict(self) -> dict[str, Any]:
+        """Freeze every persistent production-router dependency at a boundary."""
+        compiler = self.compiler
+        if compiler.zzx_route_log:
+            raise ValueError("route log must be flushed before checkpointing")
+        return {
+            "format": "formal-zac-route-state-v1",
+            "placer_kind": self.placer_kind,
+            "window_size": int(compiler.window_size),
+            "initial_mapping": self.initial_mapping,
+            "initial_instructions": deepcopy(self.initial_instructions),
+            "initial_one_qubit_gates": deepcopy(
+                compiler.dict_g_1q_parent.get(-1, [])),
+            "next_layer": self.next_layer,
+            "current_boundary": self.current_boundary,
+            "instructions": self.instructions.state_dict(),
+            "dependencies": {
+                "qubit": deepcopy(compiler.qubit_dependency),
+                "site": deepcopy(compiler.site_dependency),
+                "aod": deepcopy(compiler.aod_dependency),
+                "aod_end_time": deepcopy(compiler.aod_end_time),
+                "rydberg": deepcopy(compiler.rydberg_dependency),
+                "global_1q": getattr(
+                    compiler, "_last_global_1q_instruction", None),
+            },
+            "runtime_us": float(compiler.result_json["runtime"]),
+            "ghost_splits": int(getattr(compiler, "zzx_ghost_splits", 0)),
+        }
+
+    @classmethod
+    def from_state(
+        cls,
+        architecture: Any,
+        initial_mapping: Sequence[Sequence[int]],
+        state: dict[str, Any],
+    ) -> "ZACRouteTransitionDriver":
+        """Restore global native ids and dependency ledgers without replay."""
+        if state.get("format") != "formal-zac-route-state-v1":
+            raise ValueError("unsupported formal ZAC route state")
+        initial = _freeze_mapping(initial_mapping)
+        if initial != _freeze_mapping(state["initial_mapping"]):
+            raise ValueError("checkpoint route initial mapping mismatch")
+        driver = cls(
+            architecture,
+            initial,
+            initial_one_qubit_gates=state["initial_one_qubit_gates"],
+            window_size=int(state["window_size"]),
+            placer_kind=str(state["placer_kind"]),
+        )
+        driver.next_layer = int(state["next_layer"])
+        if driver.next_layer < 0:
+            raise ValueError("checkpoint route layer is negative")
+        driver.current_boundary = _freeze_mapping(state["current_boundary"])
+        driver.instructions = InstructionWindow.from_state(state["instructions"])
+        driver.initial_instructions = tuple(
+            deepcopy(state["initial_instructions"]))
+
+        compiler = driver.compiler
+        compiler.result_json["instructions"] = driver.instructions
+        dependencies = state["dependencies"]
+        compiler.qubit_dependency = [int(v) for v in dependencies["qubit"]]
+        compiler.site_dependency = {
+            tuple(site): int(instruction_id)
+            for site, instruction_id in dependencies["site"].items()
+        }
+        compiler.aod_dependency = [int(v) for v in dependencies["aod"]]
+        # Preserve the exact numeric representation (for example initial
+        # ``0`` versus later ``0.0``).  Python dictionary equality hides that
+        # distinction, but byte-stable JSONL output and its rolling hash do not.
+        compiler.aod_end_time = [
+            (deepcopy(value[0]), int(value[1]))
+            for value in dependencies["aod_end_time"]
+        ]
+        compiler.rydberg_dependency = [
+            int(v) for v in dependencies["rydberg"]]
+        raw_global_1q = dependencies.get("global_1q")
+        compiler._last_global_1q_instruction = (
+            None if raw_global_1q is None else int(raw_global_1q))
+        compiler.result_json["runtime"] = float(state["runtime_us"])
+        compiler.zzx_ghost_splits = int(state["ghost_splits"])
+        compiler.zzx_route_log = []
+
+        if len(compiler.qubit_dependency) != driver.n_qubits:
+            raise ValueError("checkpoint qubit dependency width mismatch")
+        if len(compiler.aod_dependency) != len(architecture.dict_AOD):
+            raise ValueError("checkpoint AOD dependency width mismatch")
+        if len(compiler.aod_end_time) != len(architecture.dict_AOD):
+            raise ValueError("checkpoint AOD availability width mismatch")
+        if len(compiler.rydberg_dependency) != len(architecture.entanglement_zone):
+            raise ValueError("checkpoint Rydberg dependency width mismatch")
+        active = driver._active_dependency_ids()
+        if active != set(driver.instructions._records):
+            raise ValueError(
+                "checkpoint instruction summaries do not equal active dependencies")
+        return driver
 
 
 __all__ = [

@@ -32,6 +32,16 @@ from .qasm_sqlite import LogicalLedgerHasher
 _TIME_TOLERANCE_US = 1e-9
 _ZERO_HASH = "0" * 64
 _HASH_MODULUS = 1 << 256
+_EVENT_ORDERS = frozenset({"chronological", "dependency"})
+
+
+def _event_order(value: str) -> str:
+    result = str(value)
+    if result not in _EVENT_ORDERS:
+        raise ValueError(
+            "event_order must be 'chronological' or 'dependency'"
+        )
+    return result
 
 
 def _event(value: CanonicalTraceEvent | Mapping[str, Any]) -> CanonicalTraceEvent:
@@ -121,6 +131,7 @@ class IncrementalTraceValidator:
         expected_logical_ledger_sha256: str | None = None,
         require_init: bool = True,
         require_zero_ghost: bool = True,
+        event_order: str = "chronological",
     ):
         if n_qubits < 0:
             raise ValueError("n_qubits must be non-negative")
@@ -132,6 +143,7 @@ class IncrementalTraceValidator:
         self.expected_logical_ledger_sha256 = expected_logical_ledger_sha256
         self.require_init = bool(require_init)
         self.require_zero_ghost = bool(require_zero_ghost)
+        self.event_order = _event_order(event_order)
         self.event_count = 0
         self.one_qubit_gates = 0
         self.two_qubit_gates = 0
@@ -140,6 +152,7 @@ class IncrementalTraceValidator:
         self._init_seen = False
         self._previous_start = -1.0
         self._last_one_qubit_end = -1.0
+        self._last_aod_end = -1.0
         self._physical_end: list[float] = [-1.0] * self.n_qubits
         self._physical_kind: list[str] = [""] * self.n_qubits
         self._positions: list[tuple[float, float] | None] = [None] * self.n_qubits
@@ -155,9 +168,13 @@ class IncrementalTraceValidator:
         if self._finalized:
             raise RuntimeError("validator is already finalized")
         event = _event(value)
-        if event.start_us + _TIME_TOLERANCE_US < self._previous_start:
+        if (self.event_order == "chronological" and
+                event.start_us + _TIME_TOLERANCE_US < self._previous_start):
             raise TraceValidationError("canonical events must be ordered by start_us")
-        self._previous_start = event.start_us
+        if self.event_order == "chronological":
+            self._previous_start = event.start_us
+        else:
+            self._previous_start = max(self._previous_start, event.start_us)
         self.event_count += 1
 
         atoms = set(event.atoms)
@@ -175,7 +192,8 @@ class IncrementalTraceValidator:
         if self.require_init and not self._init_seen:
             raise TraceValidationError("init must be the first event")
 
-        if event.duration_us > _TIME_TOLERANCE_US:
+        if (event.duration_us > _TIME_TOLERANCE_US or
+                self.event_order == "dependency"):
             for q in atoms:
                 if event.start_us < self._physical_end[q] - _TIME_TOLERANCE_US:
                     raise TraceValidationError(
@@ -208,6 +226,12 @@ class IncrementalTraceValidator:
                 raise TraceValidationError("CZ occurs while a participant is AOD-held")
             self.two_qubit_gates += len(event.gate_pairs)
         elif event.event_type in {EventType.LOAD, EventType.MOVE, EventType.STORE}:
+            if (self.event_order == "dependency" and
+                    event.start_us < self._last_aod_end - _TIME_TOLERANCE_US):
+                raise TraceValidationError(
+                    "single AOD operations must be dependency/time ordered")
+            if self.event_order == "dependency":
+                self._last_aod_end = event.end_us
             self._consume_movement(event)
         elif event.event_type is EventType.WAIT and event.atoms:
             raise TraceValidationError("global wait cannot own atoms")
@@ -434,6 +458,7 @@ class IncrementalTraceValidator:
                 self.expected_logical_ledger_sha256,
             "require_init": self.require_init,
             "require_zero_ghost": self.require_zero_ghost,
+            "event_order": self.event_order,
             "event_count": self.event_count,
             "one_qubit_gates": self.one_qubit_gates,
             "two_qubit_gates": self.two_qubit_gates,
@@ -442,6 +467,7 @@ class IncrementalTraceValidator:
             "init_seen": self._init_seen,
             "previous_start": self._previous_start,
             "last_one_qubit_end": self._last_one_qubit_end,
+            "last_aod_end": self._last_aod_end,
             "physical_end": list(self._physical_end),
             "physical_kind": list(self._physical_kind),
             "positions": [None if value is None else list(value)
@@ -469,6 +495,7 @@ class IncrementalTraceValidator:
                 state["expected_logical_ledger_sha256"],
             require_init=bool(state["require_init"]),
             require_zero_ghost=bool(state["require_zero_ghost"]),
+            event_order=str(state.get("event_order", "chronological")),
         )
         validator.event_count = int(state["event_count"])
         validator.one_qubit_gates = int(state["one_qubit_gates"])
@@ -478,6 +505,7 @@ class IncrementalTraceValidator:
         validator._init_seen = bool(state["init_seen"])
         validator._previous_start = float(state["previous_start"])
         validator._last_one_qubit_end = float(state["last_one_qubit_end"])
+        validator._last_aod_end = float(state.get("last_aod_end", -1.0))
         validator._physical_end = [float(item) for item in state["physical_end"]]
         validator._physical_kind = [str(item) for item in state["physical_kind"]]
         validator._positions = [
@@ -527,11 +555,18 @@ class _ScoreBatch:
 class IncrementalTraceScorer:
     """Numerically equivalent, bounded-memory implementation of ZAC fidelity."""
 
-    def __init__(self, n_qubits: int, model: FidelityModel | None = None):
+    def __init__(
+        self,
+        n_qubits: int,
+        model: FidelityModel | None = None,
+        *,
+        event_order: str = "chronological",
+    ):
         if n_qubits < 0:
             raise ValueError("n_qubits must be non-negative")
         self.n_qubits = int(n_qubits)
         self.model = model or FidelityModel()
+        self.event_order = _event_order(event_order)
         self.event_count = 0
         self.one_qubit_gates = 0
         self.two_qubit_gates = 0
@@ -541,6 +576,11 @@ class IncrementalTraceScorer:
         self.move_batches = 0
         self.move_time_us = 0.0
         self._previous_start = -1.0
+        self._resource_end = [-1.0] * self.n_qubits
+        self._resource_kind = [""] * self.n_qubits
+        self._last_one_qubit_end = -1.0
+        self._last_aod_end = -1.0
+        self._active_aod_batch: str | None = None
         self._busy_closed = [0.0] * self.n_qubits
         self._busy_begin = [-1.0] * self.n_qubits
         self._busy_end = [-1.0] * self.n_qubits
@@ -551,9 +591,13 @@ class IncrementalTraceScorer:
         if self._finalized:
             raise RuntimeError("scorer is already finalized")
         event = _event(value)
-        if event.start_us + _TIME_TOLERANCE_US < self._previous_start:
+        if (self.event_order == "chronological" and
+                event.start_us + _TIME_TOLERANCE_US < self._previous_start):
             raise TraceValidationError("canonical events must be ordered by start_us")
-        self._previous_start = event.start_us
+        if self.event_order == "chronological":
+            self._previous_start = event.start_us
+        else:
+            self._previous_start = max(self._previous_start, event.start_us)
         self.event_count += 1
         self.duration_us = max(self.duration_us, event.end_us)
         all_atoms = set(event.atoms)
@@ -562,11 +606,29 @@ class IncrementalTraceScorer:
         if any(q < 0 or q >= self.n_qubits for q in all_atoms):
             raise TraceValidationError("event atom is outside scorer qubit range")
 
+        if (self.event_order == "dependency" and
+                event.event_type is not EventType.INIT):
+            for q in all_atoms:
+                if event.start_us < self._resource_end[q] - _TIME_TOLERANCE_US:
+                    raise TraceValidationError(
+                        f"atom {q} is not dependency/time ordered after "
+                        f"{self._resource_kind[q]}"
+                    )
+                self._resource_end[q] = event.end_us
+                self._resource_kind[q] = event.kind
+
         busy_atoms: set[int] = set()
         if event.event_type is EventType.ONE_QUBIT_GATE:
             if len(event.atoms) != 1:
                 raise TraceValidationError("one-qubit event must contain one atom")
             _assert_duration(event, self.model.one_qubit_duration_us)
+            if (self.event_order == "dependency" and
+                    event.start_us <
+                    self._last_one_qubit_end - _TIME_TOLERANCE_US):
+                raise TraceValidationError(
+                    "global one-qubit gates must be dependency/time ordered")
+            if self.event_order == "dependency":
+                self._last_one_qubit_end = event.end_us
             self.one_qubit_gates += 1
             busy_atoms.update(event.atoms)
         elif event.event_type is EventType.TWO_QUBIT_GATE:
@@ -578,10 +640,12 @@ class IncrementalTraceScorer:
             busy_atoms.update(participants)
         elif event.event_type in {EventType.LOAD, EventType.STORE}:
             _assert_duration(event, self.model.transfer_duration_us)
+            self._check_dependency_aod(event)
             self.transfers += len(event.atoms)
             busy_atoms.update(event.atoms)
             self._consume_batch(event)
         elif event.event_type is EventType.MOVE:
+            self._check_dependency_aod(event)
             self._consume_batch(event)
         elif event.event_type is EventType.WAIT:
             if event.atoms:
@@ -599,6 +663,24 @@ class IncrementalTraceScorer:
                 self._busy_closed[q] += self._busy_end[q] - self._busy_begin[q]
                 self._busy_begin[q] = event.start_us
                 self._busy_end[q] = event.end_us
+
+    def _check_dependency_aod(self, event: CanonicalTraceEvent) -> None:
+        if self.event_order != "dependency":
+            return
+        if event.start_us < self._last_aod_end - _TIME_TOLERANCE_US:
+            raise TraceValidationError(
+                "single AOD operations must be dependency/time ordered")
+        batch_id = str(event.batch_id)
+        if event.event_type is EventType.LOAD:
+            if self._active_aod_batch is None:
+                self._active_aod_batch = batch_id
+            elif self._active_aod_batch != batch_id:
+                raise TraceValidationError(
+                    "single AOD cannot interleave movement batches")
+        elif self._active_aod_batch != batch_id:
+            raise TraceValidationError(
+                "single AOD movement dependency is not active")
+        self._last_aod_end = event.end_us
 
     def _consume_batch(self, event: CanonicalTraceEvent) -> None:
         batch_id = str(event.batch_id)
@@ -635,6 +717,8 @@ class IncrementalTraceScorer:
             self.move_batches += 1
             self.move_time_us += state.duration_us
             del self._batches[batch_id]
+            if self.event_order == "dependency":
+                self._active_aod_batch = None
 
     def finalize(self) -> FidelityResult:
         if self._finalized:
@@ -733,6 +817,7 @@ class IncrementalTraceScorer:
             "format": "incremental-trace-scorer-v1",
             "n_qubits": self.n_qubits,
             "model": self.model.to_dict(),
+            "event_order": self.event_order,
             "event_count": self.event_count,
             "one_qubit_gates": self.one_qubit_gates,
             "two_qubit_gates": self.two_qubit_gates,
@@ -742,6 +827,11 @@ class IncrementalTraceScorer:
             "move_batches": self.move_batches,
             "move_time_us": self.move_time_us,
             "previous_start": self._previous_start,
+            "resource_end": list(self._resource_end),
+            "resource_kind": list(self._resource_kind),
+            "last_one_qubit_end": self._last_one_qubit_end,
+            "last_aod_end": self._last_aod_end,
+            "active_aod_batch": self._active_aod_batch,
             "busy_closed": list(self._busy_closed),
             "busy_begin": list(self._busy_begin),
             "busy_end": list(self._busy_end),
@@ -763,7 +853,8 @@ class IncrementalTraceScorer:
         if state.pop("format", None) != "incremental-trace-scorer-v1":
             raise ValueError("unsupported incremental scorer checkpoint")
         scorer = cls(
-            int(state["n_qubits"]), FidelityModel.from_mapping(state["model"])
+            int(state["n_qubits"]), FidelityModel.from_mapping(state["model"]),
+            event_order=str(state.get("event_order", "chronological")),
         )
         for name in (
             "event_count", "one_qubit_gates", "two_qubit_gates",
@@ -773,6 +864,20 @@ class IncrementalTraceScorer:
         scorer.duration_us = float(state["duration_us"])
         scorer.move_time_us = float(state["move_time_us"])
         scorer._previous_start = float(state["previous_start"])
+        scorer._resource_end = [
+            float(item) for item in
+            state.get("resource_end", [-1.0] * scorer.n_qubits)
+        ]
+        scorer._resource_kind = [
+            str(item) for item in
+            state.get("resource_kind", [""] * scorer.n_qubits)
+        ]
+        scorer._last_one_qubit_end = float(
+            state.get("last_one_qubit_end", -1.0))
+        scorer._last_aod_end = float(state.get("last_aod_end", -1.0))
+        active_aod_batch = state.get("active_aod_batch")
+        scorer._active_aod_batch = (
+            None if active_aod_batch is None else str(active_aod_batch))
         scorer._busy_closed = [float(item) for item in state["busy_closed"]]
         scorer._busy_begin = [float(item) for item in state["busy_begin"]]
         scorer._busy_end = [float(item) for item in state["busy_end"]]
@@ -780,6 +885,8 @@ class IncrementalTraceScorer:
             ("busy_closed", scorer._busy_closed),
             ("busy_begin", scorer._busy_begin),
             ("busy_end", scorer._busy_end),
+            ("resource_end", scorer._resource_end),
+            ("resource_kind", scorer._resource_kind),
         ):
             if len(sequence) != scorer.n_qubits:
                 raise ValueError(f"scorer checkpoint {name} length mismatch")
@@ -807,6 +914,8 @@ class IncrementalTracePipeline:
     ):
         if validator.n_qubits != scorer.n_qubits:
             raise ValueError("validator and scorer disagree on n_qubits")
+        if validator.event_order != scorer.event_order:
+            raise ValueError("validator and scorer disagree on event_order")
         self.validator = validator
         self.scorer = scorer
         self.writer = writer
@@ -874,6 +983,7 @@ def consume_trace_incrementally(
     writer: EventStreamWriter | None = None,
     expected_one_qubit_gates: int | None = None,
     expected_two_qubit_gates: int | None = None,
+    event_order: str = "chronological",
 ) -> dict[str, Any]:
     """Convenience entry point for an existing event iterator."""
 
@@ -882,8 +992,9 @@ def consume_trace_incrementally(
             n_qubits,
             expected_one_qubit_gates=expected_one_qubit_gates,
             expected_two_qubit_gates=expected_two_qubit_gates,
+            event_order=event_order,
         ),
-        IncrementalTraceScorer(n_qubits, model),
+        IncrementalTraceScorer(n_qubits, model, event_order=event_order),
         writer,
     )
     for event in events:
