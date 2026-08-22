@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 import sys
 import tempfile
@@ -17,6 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from evaluation import CanonicalTraceEvent, normalize_na, score_trace  # noqa: E402
+from experiments_v2.na_physicalizer import (  # noqa: E402
+    physicalize_na_streaming as physicalize_na_streaming_actual,
+)
 from streaming.formal_large_qmap_compiler import (  # noqa: E402
     FormalLargeQmapAttemptError,
     QMAP_32_FROZEN_STREAM_CONFIG,
@@ -298,13 +303,116 @@ class TestFormalLargeQmapCompiler(unittest.TestCase):
                 manifest["qmap"]["base_commit"],
                 MOCK_PROVENANCE["bundle"]["base_commit"],
             )
-            self.assertEqual(result.compiler_core_ns, 15_000)
+            self.assertEqual(result.qmap_core_ns, 15_000)
+            self.assertEqual(
+                result.compiler_core_ns,
+                result.qmap_core_ns + result.physicalization_wall_ns,
+            )
+            self.assertGreaterEqual(result.physicalization_wall_ns, 0)
+            self.assertEqual(
+                manifest["result"]["compiler_core_ns"],
+                manifest["result"]["qmap_core_ns"]
+                + manifest["result"]["physicalization_wall_ns"],
+            )
+            self.assertIn(
+                "compiler_core_ns=qmap_core_ns+physicalization_wall_ns",
+                manifest["runtime_definition"],
+            )
             self.assertGreater(result.compiler_process_wall_ns, 0)
             self.assertEqual(manifest["metadata_audit"]["chunks"], 2)
-            self.assertTrue((output / "metadata.jsonl").is_file())
+            self.assertTrue((output / "native.raw.na").is_file())
+            self.assertTrue((output / "native.na").is_file())
+            self.assertFalse((output / "metadata.jsonl").exists())
+            self.assertTrue((output / "metadata.jsonl.gz").is_file())
+            with gzip.open(
+                output / "metadata.jsonl.gz", "rb"
+            ) as metadata_handle:
+                raw_metadata = metadata_handle.read()
+            self.assertEqual(
+                hashlib.sha256(raw_metadata).hexdigest(),
+                result.metadata_sha256,
+            )
+            self.assertEqual(result.physicalization, {
+                "raw_move_batches": 1,
+                "repaired_move_batches": 1,
+                "ghost_splits": 0,
+                "waypoint_atoms": 0,
+            })
+            self.assertTrue(result.placement_semantics_ok)
+            self.assertEqual(
+                result.raw_placement_semantics,
+                result.repaired_placement_semantics,
+            )
+            self.assertEqual(
+                result.raw_placement_semantics["schema"],
+                "na-placement-boundary-xor-v1",
+            )
+            self.assertEqual(
+                manifest["placement_semantics"]["raw"],
+                manifest["placement_semantics"]["repaired"],
+            )
+            self.assertEqual(
+                result.raw_native_sha256,
+                hashlib.sha256((output / "native.raw.na").read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                manifest["metadata_archive"]["archive_path"],
+                "metadata.jsonl.gz",
+            )
             self.assertEqual(
                 manifest["orchestrator_git"],
                 manifest["orchestrator_git_end"],
+            )
+
+    def test_changed_repaired_endpoint_is_verifier_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = FormalM2Fixture(directory)
+            output = fixture.root / "endpoint-tampered"
+
+            def physicalize_then_tamper(source, destination, architecture):
+                stats = physicalize_na_streaming_actual(
+                    source, destination, architecture,
+                )
+                destination_path = Path(destination)
+                repaired = destination_path.read_text(encoding="utf-8")
+                tampered, replacements = re.subn(
+                    r"\(10\.000000, 0\.000000\) atom0",
+                    "(11.000000, 0.000000) atom0",
+                    repaired,
+                    count=1,
+                )
+                self.assertEqual(replacements, 1)
+                destination_path.write_text(tampered, encoding="utf-8")
+                return stats
+
+            with patch(
+                "streaming.formal_large_qmap_compiler."
+                "physicalize_na_streaming",
+                side_effect=physicalize_then_tamper,
+            ):
+                with self.assertRaises(FormalLargeQmapAttemptError) as caught:
+                    self.compile_fixture(
+                        fixture, output, development_prefix=True,
+                    )
+
+            self.assertEqual(caught.exception.status, "verifier_fail")
+            self.assertFalse(output.exists())
+            manifest = json.loads(
+                (caught.exception.attempt_directory / "manifest.json").read_text()
+            )
+            result = manifest["result"]
+            self.assertIn(
+                "endpoint placement semantics mismatch", result["error"],
+            )
+            self.assertFalse(result["placement_semantics_ok"])
+            raw = result["raw_placement_semantics"]
+            repaired = result["repaired_placement_semantics"]
+            self.assertEqual(raw["schema"], "na-placement-boundary-xor-v1")
+            self.assertEqual(raw["boundary_count"], repaired["boundary_count"])
+            self.assertNotEqual(raw["sha256"], repaired["sha256"])
+            self.assertNotEqual(
+                raw["final_placement_sha256"],
+                repaired["final_placement_sha256"],
             )
 
     def test_timeout_kills_attempt_and_never_publishes_final(self):
@@ -405,6 +513,12 @@ class TestFormalLargeQmapCompiler(unittest.TestCase):
                     )
             self.assertEqual(caught.exception.status, "verifier_fail")
             self.assertFalse(output.exists())
+            self.assertTrue(
+                (caught.exception.attempt_directory / "metadata.jsonl").is_file()
+            )
+            self.assertFalse(
+                (caught.exception.attempt_directory / "metadata.jsonl.gz").exists()
+            )
 
     def test_full_run_refuses_dirty_feature_head(self):
         with tempfile.TemporaryDirectory() as directory:

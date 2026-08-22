@@ -23,6 +23,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import re
 import signal
 import subprocess
 import time
@@ -30,6 +31,7 @@ from typing import Any, Iterator, Mapping
 import uuid
 
 from evaluation import FidelityModel, TraceValidationError
+from experiments_v2.na_physicalizer import physicalize_na_streaming
 
 from .na_instruction_stream import normalize_na_incrementally
 from .qasm_sqlite import LogicalLedgerHasher
@@ -71,6 +73,16 @@ QMAP_32_FROZEN_STREAM_CONFIG: Mapping[str, Any] = {
 }
 
 _ZERO_HASH = "0" * 64
+_SEMANTIC_NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+_SEMANTIC_ATOM = re.compile(
+    rf"^atom\s+\(({_SEMANTIC_NUMBER}),\s*({_SEMANTIC_NUMBER})\)\s+"
+    r"([A-Za-z_]\w*)$"
+)
+_SEMANTIC_OPERATION = re.compile(r"^@\+\s+([A-Za-z_]\w*)(?=\s|$)")
+_SEMANTIC_MOVE = re.compile(
+    rf"^\(({_SEMANTIC_NUMBER}),\s*({_SEMANTIC_NUMBER})\)\s+"
+    r"([A-Za-z_]\w*)$"
+)
 
 
 @dataclass(frozen=True)
@@ -98,6 +110,7 @@ class FormalLargeQmapResult:
     full_circuit: bool
     provenance_ok: bool
     support_claim_eligible: bool
+    qmap_core_ns: int
     compiler_core_ns: int
     compiler_process_wall_ns: int
     compiler_statistics: Mapping[str, int]
@@ -109,8 +122,17 @@ class FormalLargeQmapResult:
     native_chunks: int
     native_operations: int
     canonical_events: int
+    raw_native_sha256: str
     native_sha256: str
+    physicalization_wall_ns: int
+    physicalization: Mapping[str, int]
+    placement_semantics_ok: bool
+    raw_placement_semantics: Mapping[str, Any]
+    repaired_placement_semantics: Mapping[str, Any]
     metadata_sha256: str
+    metadata_gzip_sha256: str
+    metadata_raw_size_bytes: int
+    metadata_gzip_size_bytes: int
     canonical_gzip_sha256: str
     canonical_chain_sha256: str
     fidelity: Mapping[str, Any]
@@ -151,6 +173,199 @@ def _canonical_hash(value: Mapping[str, Any]) -> str:
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
     ).encode("ascii")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _semantic_lines(handle: Any) -> Iterator[tuple[int, str]]:
+    for line_number, raw in enumerate(handle, 1):
+        value = raw.strip()
+        if value and not value.startswith(("#", "//")):
+            yield line_number, value
+
+
+def _semantic_payload(
+    line: str,
+    line_number: int,
+    match: re.Match[str],
+    lines: Iterator[tuple[int, str]],
+) -> list[str]:
+    suffix = line[match.end():].strip()
+    if suffix != "[":
+        if not suffix:
+            raise TraceValidationError(
+                f"empty NA semantic operation at line {line_number}"
+            )
+        return [suffix]
+    values: list[str] = []
+    for _payload_line, value in lines:
+        if value == "]":
+            return values
+        values.append(value)
+    raise TraceValidationError(
+        f"unterminated NA semantic block at line {line_number}"
+    )
+
+
+def _placement_record(
+    positions: Mapping[str, tuple[float, float]],
+) -> list[list[Any]]:
+    return [
+        [name, float(point[0]).hex(), float(point[1]).hex()]
+        for name, point in sorted(positions.items())
+    ]
+
+
+def _placement_leaf(name: str, point: tuple[float, float]) -> int:
+    payload = (
+        name.encode("utf-8") + b"\0"
+        + float(point[0]).hex().encode("ascii") + b"\0"
+        + float(point[1]).hex().encode("ascii")
+    )
+    return int.from_bytes(hashlib.sha256(payload).digest(), "big")
+
+
+def _json_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=True, allow_nan=False,
+    ).encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _hash_na_placement_semantics(path: str | Path) -> Mapping[str, Any]:
+    """Independently hash endpoint placement at every logical boundary.
+
+    This parser shares no batch-repair code with ``na_physicalizer``.  It
+    ignores the number and shape of movement phases, but commits to the initial
+    layout, the layout immediately before every non-movement operation (and to
+    that operation's normalized payload), and the final layout.  A named-atom
+    leaf hash and updatable 256-bit XOR root make every move O(moved atoms) and
+    every logical boundary O(1); complete sorted layouts are hashed only at the
+    initial and final boundaries.
+    """
+
+    source = Path(path).resolve()
+    positions: dict[str, tuple[float, float]] = {}
+    leaves: dict[str, int] = {}
+    placement_root = 0
+    chain = _ZERO_HASH
+    boundary_count = 0
+    non_movement_operations = 0
+
+    def add_boundary(phase: str, operation: Any = None) -> None:
+        nonlocal chain, boundary_count
+        record = {
+            "index": boundary_count,
+            "phase": phase,
+            "operation": operation,
+            "placement_root": f"{placement_root:064x}",
+        }
+        encoded = json.dumps(
+            record, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True, allow_nan=False,
+        ).encode("ascii")
+        chain = hashlib.sha256(bytes.fromhex(chain) + encoded).hexdigest()
+        boundary_count += 1
+
+    with source.open(encoding="utf-8") as handle:
+        lines = iter(_semantic_lines(handle))
+        current: tuple[int, str] | None = None
+        for line_number, line in lines:
+            declaration = _SEMANTIC_ATOM.fullmatch(line)
+            if declaration is None:
+                current = (line_number, line)
+                break
+            name = declaration.group(3)
+            if name in positions:
+                raise TraceValidationError(
+                    f"duplicate NA semantic atom declaration {name}"
+                )
+            point = (float(declaration.group(1)), float(declaration.group(2)))
+            if point in positions.values():
+                raise TraceValidationError(
+                    "NA semantic declarations contain duplicate positions"
+                )
+            positions[name] = point
+        if not positions:
+            raise TraceValidationError("NA semantic declarations are empty")
+
+        for name, point in positions.items():
+            leaf = _placement_leaf(name, point)
+            leaves[name] = leaf
+            placement_root ^= leaf
+        initial_placement_sha256 = _json_sha256(_placement_record(positions))
+        add_boundary("initial")
+        while current is not None:
+            line_number, line = current
+            if _SEMANTIC_ATOM.fullmatch(line) is not None:
+                raise TraceValidationError(
+                    f"late NA semantic atom declaration at line {line_number}"
+                )
+            operation_match = _SEMANTIC_OPERATION.match(line)
+            if operation_match is None:
+                raise TraceValidationError(
+                    f"invalid NA semantic operation at line {line_number}: {line!r}"
+                )
+            kind = operation_match.group(1)
+            values = _semantic_payload(
+                line, line_number, operation_match, lines
+            )
+            if kind == "move":
+                moved: set[str] = set()
+                for value in values:
+                    movement = _SEMANTIC_MOVE.fullmatch(value)
+                    if movement is None:
+                        raise TraceValidationError(
+                            f"invalid NA semantic move item {value!r}"
+                        )
+                    name = movement.group(3)
+                    if name not in positions or name in moved:
+                        raise TraceValidationError(
+                            "NA semantic move contains an unknown or duplicate atom"
+                        )
+                    moved.add(name)
+                    destination = (
+                        float(movement.group(1)), float(movement.group(2))
+                    )
+                    new_leaf = _placement_leaf(name, destination)
+                    placement_root ^= leaves[name] ^ new_leaf
+                    leaves[name] = new_leaf
+                    positions[name] = destination
+            elif kind in {"load", "store"}:
+                for value in values:
+                    names = [
+                        token for token in re.findall(r"[A-Za-z_]\w*", value)
+                        if token in positions
+                    ]
+                    if len(names) != 1:
+                        raise TraceValidationError(
+                            f"invalid NA semantic {kind} item {value!r}"
+                        )
+            else:
+                add_boundary(
+                    "before_non_movement",
+                    {"kind": kind, "payload": values},
+                )
+                non_movement_operations += 1
+            try:
+                current = next(lines)
+            except StopIteration:
+                current = None
+
+    final_record = _placement_record(positions)
+    final_placement_sha256 = _json_sha256(final_record)
+    add_boundary("final")
+    return {
+        "schema": "na-placement-boundary-xor-v1",
+        "placement_root_algorithm": (
+            "xor-sha256(atom-name,float.hex(x),float.hex(y))-v1"
+        ),
+        "sha256": chain,
+        "boundary_count": boundary_count,
+        "non_movement_operations": non_movement_operations,
+        "atoms": len(positions),
+        "initial_placement_sha256": initial_placement_sha256,
+        "final_placement_sha256": final_placement_sha256,
+    }
 
 
 def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> None:
@@ -417,6 +632,48 @@ class _GzipJsonlWriter:
         finally:
             self._gzip = None
             self._raw.close()
+
+
+def _archive_gzip_atomic(
+    source: Path, destination: Path, *, compresslevel: int = 1,
+) -> Mapping[str, Any]:
+    """Atomically gzip one file while hashing raw and compressed bytes."""
+
+    if not source.is_file():
+        raise FileNotFoundError(f"gzip archive source is missing: {source}")
+    if destination.exists():
+        raise FileExistsError(f"gzip archive destination exists: {destination}")
+    temporary = destination.with_name(f".{destination.name}.compressing")
+    if temporary.exists():
+        raise FileExistsError(f"stale gzip archive temporary file: {temporary}")
+    raw_digest = hashlib.sha256()
+    raw_size = 0
+    try:
+        with source.open("rb") as input_handle, temporary.open("xb") as raw_output:
+            with gzip.GzipFile(
+                filename="", fileobj=raw_output, mode="wb",
+                compresslevel=compresslevel, mtime=0,
+            ) as compressed:
+                while chunk := input_handle.read(1024 * 1024):
+                    raw_digest.update(chunk)
+                    raw_size += len(chunk)
+                    compressed.write(chunk)
+            raw_output.flush()
+            os.fsync(raw_output.fileno())
+        os.replace(temporary, destination)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    compressed_size = destination.stat().st_size
+    result = {
+        "raw_sha256": raw_digest.hexdigest(),
+        "raw_size_bytes": raw_size,
+        "gzip_sha256": _sha256_file(destination),
+        "gzip_size_bytes": compressed_size,
+        "compresslevel": int(compresslevel),
+    }
+    source.unlink()
+    return result
 
 
 def _metadata_schedule_record(audit: QmapScheduleAudit) -> Mapping[str, Any]:
@@ -691,11 +948,17 @@ def _parse_cli_summary(
 
 def _failure_manifest(
     base: Mapping[str, Any], *, status: str, message: str,
+    qmap_core_ns: int | None = None,
     compiler_core_ns: int | None = None, exit_code: int | None = None,
     compiler_cpu_ns: int | None = None, peak_rss_bytes: int | None = None,
     end_to_end_ns: int | None = None,
     compiler_process_wall_ns: int | None = None,
     rss_limit_exceeded: bool = False,
+    physicalization_wall_ns: int | None = None,
+    physicalization: Mapping[str, int] | None = None,
+    placement_semantics_ok: bool | None = None,
+    raw_placement_semantics: Mapping[str, Any] | None = None,
+    repaired_placement_semantics: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     return {
         **dict(base),
@@ -704,11 +967,19 @@ def _failure_manifest(
             "method": "M2",
             "status": status,
             "support_claim_eligible": False,
+            "qmap_core_ns": qmap_core_ns,
             "compiler_core_ns": compiler_core_ns,
             "compiler_process_wall_ns": compiler_process_wall_ns,
             "compiler_cpu_ns": compiler_cpu_ns,
             "peak_rss_bytes": peak_rss_bytes,
             "rss_limit_exceeded": bool(rss_limit_exceeded),
+            "physicalization_wall_ns": physicalization_wall_ns,
+            "physicalization": dict(physicalization or {}),
+            "placement_semantics_ok": placement_semantics_ok,
+            "raw_placement_semantics": dict(raw_placement_semantics or {}),
+            "repaired_placement_semantics": dict(
+                repaired_placement_semantics or {}
+            ),
             "end_to_end_ns": end_to_end_ns,
             "exit_code": exit_code,
             "error": message,
@@ -795,13 +1066,20 @@ def compile_formal_large_qmap(
     attempt.mkdir()
 
     converted_path = attempt / "qmap_architecture.json"
+    raw_native_path = attempt / "native.raw.na"
     native_path = attempt / "native.na"
     metadata_path = attempt / "metadata.jsonl"
+    metadata_gzip_path = attempt / "metadata.jsonl.gz"
     canonical_path = attempt / "trace.jsonl.gz"
     stdout_path = attempt / "compiler.stdout.log"
     stderr_path = attempt / "compiler.stderr.log"
     _write_json_canonical(converted_path, converted_architecture)
     converter_path = Path(__file__).resolve().parents[2] / "experiments" / "spec_convert.py"
+    physicalizer_path = (
+        Path(__file__).resolve().parents[1]
+        / "experiments_v2" / "na_physicalizer.py"
+    )
+    physicalizer_sha256 = _sha256_file(physicalizer_path)
 
     base_manifest: dict[str, Any] = {
         "format": "formal-large-qmap-attempt-v1",
@@ -838,19 +1116,31 @@ def compile_formal_large_qmap(
         "orchestrator_git": orchestrator_git,
         "model": physical_model.to_dict(),
         "runtime_definition": (
-            "compiler_core_ns is QMAP Statistics.totalTime in microseconds, "
-            "converted to nanoseconds; its five components exclude synchronous "
-            "stream consumer I/O. compiler_process_wall_ns is outer perf_counter_ns "
-            "around the complete CLI process. Python pre/post work is excluded"
+            "qmap_core_ns is QMAP Statistics.totalTime converted from "
+            "microseconds to nanoseconds. physicalization_wall_ns is the required "
+            "endpoint-preserving ghost-safe physicalizer wall time. "
+            "compiler_core_ns=qmap_core_ns+physicalization_wall_ns and is the "
+            "formal implementation-level compiler time used for M2 aggregation. "
+            "compiler_process_wall_ns is outer CLI process wall time; independent "
+            "verification, scoring, compression, and other Python I/O are excluded"
         ),
+        "physicalization": {
+            "policy": "common_ghost_safe_split_preserving_qmap_endpoints",
+            "implementation_path": str(physicalizer_path),
+            "implementation_sha256": physicalizer_sha256,
+            "architecture": "original_zac_architecture",
+            "included_in_compiler_core_ns": True,
+        },
         "rss_definition": (
             "periodic aggregate RSS sampling of the CLI process group, with a "
             "child RLIMIT_AS overshoot guard where supported"
         ),
         "rss_limit_bytes": int(rss_limit_bytes),
         "artifacts": {
+            "raw_native": "native.raw.na",
             "native": "native.na",
-            "metadata": "metadata.jsonl",
+            "metadata_raw_temporary": "metadata.jsonl",
+            "metadata": "metadata.jsonl.gz",
             "canonical_trace": "trace.jsonl.gz",
             "stdout": "compiler.stdout.log",
             "stderr": "compiler.stderr.log",
@@ -867,7 +1157,7 @@ def compile_formal_large_qmap(
             process = subprocess.Popen(
                 [
                     str(cli_file), str(schedule_file), str(converted_path),
-                    str(config_file), str(native_path), str(metadata_path),
+                    str(config_file), str(raw_native_path), str(metadata_path),
                 ],
                 cwd=attempt,
                 stdout=stdout,
@@ -980,10 +1270,17 @@ def compile_formal_large_qmap(
         )
         raise FormalLargeQmapAttemptError(status, attempt, message)
 
+    qmap_core_ns: int | None = None
     compiler_core_ns: int | None = None
     compiler_statistics: Mapping[str, int] = {}
+    physicalization_wall_ns: int | None = None
+    physicalization: Mapping[str, int] = {}
+    raw_placement_semantics: Mapping[str, Any] = {}
+    repaired_placement_semantics: Mapping[str, Any] = {}
+    placement_semantics_ok = False
+    metadata_archive: Mapping[str, Any] = {}
     try:
-        if not native_path.is_file() or native_path.stat().st_size == 0:
+        if not raw_native_path.is_file() or raw_native_path.stat().st_size == 0:
             raise TraceValidationError("QMAP CLI produced no native NA program")
         if not metadata_path.is_file() or metadata_path.stat().st_size == 0:
             raise TraceValidationError("QMAP CLI produced no metadata JSONL")
@@ -992,7 +1289,36 @@ def compile_formal_large_qmap(
             _parse_cli_summary(stdout_path, schedule_audit, metadata_audit)
         )
         compiler_statistics = dict(cli_summary["statistics"])
-        compiler_core_ns = int(compiler_statistics["totalTime"]) * 1000
+        qmap_core_ns = int(compiler_statistics["totalTime"]) * 1000
+        physicalization_start = time.perf_counter_ns()
+        physicalization = dict(
+            physicalize_na_streaming(
+                raw_native_path,
+                native_path,
+                architecture_file,
+            )
+        )
+        physicalization_wall_ns = (
+            time.perf_counter_ns() - physicalization_start
+        )
+        compiler_core_ns = qmap_core_ns + physicalization_wall_ns
+        if not native_path.is_file() or native_path.stat().st_size == 0:
+            raise TraceValidationError(
+                "QMAP ghost-safe physicalizer produced no native NA program"
+            )
+        raw_placement_semantics = dict(
+            _hash_na_placement_semantics(raw_native_path)
+        )
+        repaired_placement_semantics = dict(
+            _hash_na_placement_semantics(native_path)
+        )
+        placement_semantics_ok = (
+            raw_placement_semantics == repaired_placement_semantics
+        )
+        if not placement_semantics_ok:
+            raise TraceValidationError(
+                "raw/repaired NA endpoint placement semantics mismatch"
+            )
         writer = _GzipJsonlWriter(canonical_path)
         try:
             pipeline = IncrementalTracePipeline(
@@ -1027,6 +1353,27 @@ def compile_formal_large_qmap(
             writer.close()
 
         validation = report["validation"]
+        physicalization_keys = {
+            "raw_move_batches", "repaired_move_batches",
+            "ghost_splits", "waypoint_atoms",
+        }
+        if set(physicalization) != physicalization_keys or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in physicalization.values()
+        ):
+            raise TraceValidationError(
+                "formal M2 physicalization counter ledger is invalid"
+            )
+        if (
+            physicalization["repaired_move_batches"]
+            != physicalization["raw_move_batches"]
+            + physicalization["ghost_splits"]
+            or int(validation["move_batches"])
+            != physicalization["repaired_move_batches"]
+        ):
+            raise TraceValidationError(
+                "formal M2 physicalization batch ledger is inconsistent"
+            )
         if (
             not validation["ok"]
             or int(validation["ghost_hits"]) != 0
@@ -1049,6 +1396,10 @@ def compile_formal_large_qmap(
                 raise TraceValidationError(
                     f"formal M2 input changed during compilation/scoring: {key}"
                 )
+        if _sha256_file(physicalizer_path) != physicalizer_sha256:
+            raise TraceValidationError(
+                "formal M2 physicalizer changed during compilation/scoring"
+            )
         post_provenance = dict(
             _verify_qmap_provenance(qmap_source, cli_file, config_file)
         )
@@ -1065,15 +1416,26 @@ def compile_formal_large_qmap(
             raise TraceValidationError(
                 "formal full M2 ended with a dirty feature worktree"
             )
+        metadata_archive = {
+            **dict(_archive_gzip_atomic(metadata_path, metadata_gzip_path)),
+            "raw_temporary_path": "metadata.jsonl",
+            "archive_path": "metadata.jsonl.gz",
+        }
     except BaseException as error:
         message = f"{type(error).__name__}: {error}"
         _write_json_atomic(
             attempt / "manifest.json",
             _failure_manifest(
                 base_manifest, status="verifier_fail", message=message,
+                qmap_core_ns=qmap_core_ns,
                 compiler_core_ns=compiler_core_ns, exit_code=exit_code,
                 compiler_cpu_ns=compiler_cpu_ns, peak_rss_bytes=peak_rss_bytes,
                 compiler_process_wall_ns=compiler_process_wall_ns,
+                physicalization_wall_ns=physicalization_wall_ns,
+                physicalization=physicalization,
+                placement_semantics_ok=placement_semantics_ok,
+                raw_placement_semantics=raw_placement_semantics,
+                repaired_placement_semantics=repaired_placement_semantics,
                 end_to_end_ns=time.perf_counter_ns() - end_to_end_start,
             ),
         )
@@ -1084,11 +1446,14 @@ def compile_formal_large_qmap(
     support_claim_eligible = bool(
         full_circuit
         and provenance_ok
+        and placement_semantics_ok
         and not post_orchestrator_git["dirty"]
         and peak_rss_bytes is not None
         and peak_rss_bytes <= int(rss_limit_bytes)
         and validation["ok"]
         and int(validation["ghost_hits"]) == 0
+        and int(validation["move_batches"])
+        == physicalization["repaired_move_batches"]
         and int(validation["one_qubit_gates"]) == schedule_audit.gates_1q
         and int(validation["two_qubit_gates"]) == schedule_audit.gates_2q
         and validation["logical_ledger_sha256"]
@@ -1103,6 +1468,7 @@ def compile_formal_large_qmap(
         full_circuit=full_circuit,
         provenance_ok=provenance_ok,
         support_claim_eligible=support_claim_eligible,
+        qmap_core_ns=int(qmap_core_ns),
         compiler_core_ns=int(compiler_core_ns),
         compiler_process_wall_ns=compiler_process_wall_ns,
         compiler_statistics=compiler_statistics,
@@ -1114,8 +1480,17 @@ def compile_formal_large_qmap(
         native_chunks=int(metadata_audit["chunks"]),
         native_operations=int(metadata_audit["native_operations"]),
         canonical_events=writer.count,
+        raw_native_sha256=_sha256_file(raw_native_path),
         native_sha256=_sha256_file(native_path),
-        metadata_sha256=_sha256_file(metadata_path),
+        physicalization_wall_ns=int(physicalization_wall_ns),
+        physicalization=physicalization,
+        placement_semantics_ok=placement_semantics_ok,
+        raw_placement_semantics=raw_placement_semantics,
+        repaired_placement_semantics=repaired_placement_semantics,
+        metadata_sha256=str(metadata_archive["raw_sha256"]),
+        metadata_gzip_sha256=str(metadata_archive["gzip_sha256"]),
+        metadata_raw_size_bytes=int(metadata_archive["raw_size_bytes"]),
+        metadata_gzip_size_bytes=int(metadata_archive["gzip_size_bytes"]),
         canonical_gzip_sha256=_sha256_file(canonical_path),
         canonical_chain_sha256=writer.chain_sha256,
         fidelity=report["fidelity"],
@@ -1130,9 +1505,18 @@ def compile_formal_large_qmap(
         "qmap_provenance_end": post_provenance,
         "cli_summary": cli_summary,
         "metadata_audit": metadata_audit,
+        "metadata_archive": metadata_archive,
+        "physicalization_stats": physicalization,
+        "placement_semantics": {
+            "ok": placement_semantics_ok,
+            "raw": raw_placement_semantics,
+            "repaired": repaired_placement_semantics,
+        },
         "artifact_hashes": {
+            "raw_native_sha256": result.raw_native_sha256,
             "native_sha256": result.native_sha256,
             "metadata_sha256": result.metadata_sha256,
+            "metadata_gzip_sha256": result.metadata_gzip_sha256,
             "canonical_gzip_sha256": result.canonical_gzip_sha256,
             "canonical_chain_sha256": result.canonical_chain_sha256,
         },

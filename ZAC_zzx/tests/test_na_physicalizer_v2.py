@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 
@@ -11,7 +12,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from evaluation import normalize_na, validate_trace_physics  # noqa: E402
-from experiments_v2.na_physicalizer import physicalize_na  # noqa: E402
+from experiments_v2.na_physicalizer import (  # noqa: E402
+    physicalize_na,
+    physicalize_na_streaming,
+)
+from streaming.formal_large_qmap_compiler import (  # noqa: E402
+    _hash_na_placement_semantics,
+)
+from streaming.na_instruction_stream import normalize_na_incrementally  # noqa: E402
+from streaming.trace_pipeline import IncrementalTraceValidator  # noqa: E402
+
+
+FULL_ARCHITECTURE = ROOT / "hardware_spec" / "full_architecture.json"
+BWT37_FIRST31_MOVES = (
+    ROOT / "tests" / "fixtures" / "formal_m2_bwt37_first31_moves.na"
+)
 
 
 ARCHITECTURE = {
@@ -91,6 +106,58 @@ atom (3, 3) atom1
         self.assertEqual(first, second)
         self.assertEqual(first[1]["ghost_splits"], 0)
         self.assertEqual(first[1]["waypoint_atoms"], 0)
+
+    def test_bwt37_first31_batches_stream_exact_and_strict(self):
+        whole_text, whole_stats = physicalize_na(
+            BWT37_FIRST31_MOVES, FULL_ARCHITECTURE
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repaired = Path(directory) / "native.na"
+            stream_stats = physicalize_na_streaming(
+                BWT37_FIRST31_MOVES, repaired, FULL_ARCHITECTURE
+            )
+            self.assertEqual(repaired.read_text(), whole_text)
+            self.assertEqual(stream_stats, whole_stats)
+            self.assertEqual(
+                _hash_na_placement_semantics(BWT37_FIRST31_MOVES),
+                _hash_na_placement_semantics(repaired),
+            )
+            result = validate_trace_physics(
+                normalize_na(repaired, architecture=FULL_ARCHITECTURE),
+                n_qubits=37,
+            )
+            incremental = IncrementalTraceValidator(
+                37,
+                expected_one_qubit_gates=0,
+                expected_two_qubit_gates=0,
+                require_zero_ghost=True,
+                event_order="chronological",
+            )
+            for event in normalize_na_incrementally(
+                repaired, architecture=FULL_ARCHITECTURE
+            ):
+                incremental.consume(event)
+            incremental_result = incremental.finalize().to_dict()
+
+        self.assertEqual(stream_stats, {
+            "raw_move_batches": 31,
+            "repaired_move_batches": 31,
+            "ghost_splits": 0,
+            "waypoint_atoms": 1,
+        })
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ghost_hits"], 0)
+        self.assertEqual(result["move_batches"], 31)
+        self.assertEqual(result["move_phases"], 32)
+        self.assertTrue(incremental_result["ok"])
+        self.assertEqual(incremental_result["ghost_hits"], 0)
+        self.assertEqual(incremental_result["move_batches"], 31)
+        self.assertIn(
+            "@+ move (63.000000, 291.000000) atom34", whole_text
+        )
+        self.assertIn(
+            "@+ move (73.000000, 307.000000) atom34", whole_text
+        )
 
 
 if __name__ == "__main__":

@@ -14,9 +14,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+import os
 from pathlib import Path
 import re
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Iterator, Mapping, Sequence, TextIO
 
 from zzx.ghost import ghost_hits
 from zzx.zcost import compatible_2d
@@ -277,14 +278,71 @@ def _serialize_waypoint(atom: str, waypoint: tuple[float, float],
     ]
 
 
+def _architecture_spec(
+    architecture: Mapping[str, object] | str | Path,
+) -> dict[str, object]:
+    if isinstance(architecture, Mapping):
+        return dict(architecture)
+    value = json.loads(Path(architecture).read_text(encoding="utf-8"))
+    if not isinstance(value, Mapping):
+        raise ValueError("NA physicalizer architecture root must be an object")
+    return dict(value)
+
+
+def _repair_batch(
+    batch: _MovementBatch,
+    positions: dict[str, tuple[float, float]],
+    candidates: Sequence[tuple[int, int, int, tuple[float, float]]],
+) -> tuple[list[str], dict[str, int]]:
+    """Repair one complete batch using the shared endpoint-preserving policy."""
+
+    output: list[str] = []
+    final = _final_positions(batch, positions)
+    remaining = list(batch.atoms)
+    emitted = 0
+    waypoint_atoms = 0
+    while remaining:
+        selected: list[str] = []
+        changed = True
+        while changed:
+            changed = False
+            for atom in remaining:
+                if atom in selected:
+                    continue
+                candidate = set((*selected, atom))
+                if _replay_subset(batch, candidate, positions):
+                    selected.append(atom)
+                    changed = True
+        if selected:
+            subset = set(selected)
+            output.extend(_serialize_subset(batch, subset))
+            for atom in selected:
+                positions[atom] = final[atom]
+                remaining.remove(atom)
+            emitted += 1
+            continue
+
+        atom = remaining[0]
+        point = _waypoint(atom, final[atom], positions, candidates)
+        if point is None:
+            raise ValueError(f"no ghost-safe NA waypoint for {atom}")
+        output.extend(_serialize_waypoint(atom, point, final[atom]))
+        positions[atom] = final[atom]
+        remaining.remove(atom)
+        emitted += 1
+        waypoint_atoms += 1
+    return output, {
+        "repaired_move_batches": emitted,
+        "ghost_splits": max(0, emitted - 1),
+        "waypoint_atoms": waypoint_atoms,
+    }
+
+
 def physicalize_na(source: str | Path, architecture: Mapping[str, object] | str | Path
                    ) -> tuple[str, dict[str, int]]:
     """Return repaired NA text and an auditable repair counter dictionary."""
     text = Path(source).read_text(encoding="utf-8") if isinstance(source, Path) else str(source)
-    if isinstance(architecture, Mapping):
-        spec = dict(architecture)
-    else:
-        spec = json.loads(Path(architecture).read_text(encoding="utf-8"))
+    spec = _architecture_spec(architecture)
     declarations, positions, segments = _parse(text)
     candidates = _slm_points(spec)
     output = list(declarations)
@@ -297,42 +355,11 @@ def physicalize_na(source: str | Path, architecture: Mapping[str, object] | str 
         if not isinstance(segment, _MovementBatch):
             raise TypeError(f"unknown NA segment {segment!r}")
         raw_batches += 1
-        final = _final_positions(segment, positions)
-        remaining = list(segment.atoms)
-        emitted = 0
-        while remaining:
-            selected: list[str] = []
-            changed = True
-            while changed:
-                changed = False
-                for atom in remaining:
-                    if atom in selected:
-                        continue
-                    candidate = set((*selected, atom))
-                    if _replay_subset(segment, candidate, positions):
-                        selected.append(atom)
-                        changed = True
-            if selected:
-                subset = set(selected)
-                output.extend(_serialize_subset(segment, subset))
-                for atom in selected:
-                    positions[atom] = final[atom]
-                    remaining.remove(atom)
-                emitted += 1
-                continue
-
-            atom = remaining[0]
-            point = _waypoint(atom, final[atom], positions, candidates)
-            if point is None:
-                raise ValueError(f"no ghost-safe NA waypoint for {atom}")
-            output.extend(_serialize_waypoint(atom, point, final[atom]))
-            positions[atom] = final[atom]
-            remaining.remove(atom)
-            emitted += 1
-            waypoint_atoms += 1
-        repaired_batches += emitted
-        if emitted > 1:
-            split_batches += emitted - 1
+        repaired, counters = _repair_batch(segment, positions, candidates)
+        output.extend(repaired)
+        repaired_batches += counters["repaired_move_batches"]
+        split_batches += counters["ghost_splits"]
+        waypoint_atoms += counters["waypoint_atoms"]
 
     return "\n".join(output) + "\n", {
         "raw_move_batches": raw_batches,
@@ -342,4 +369,193 @@ def physicalize_na(source: str | Path, architecture: Mapping[str, object] | str 
     }
 
 
-__all__ = ["physicalize_na"]
+def _meaningful_lines(handle: TextIO) -> Iterator[tuple[int, str]]:
+    for line_number, raw in enumerate(handle, 1):
+        value = raw.strip()
+        if value and not value.startswith(("#", "//")):
+            yield line_number, value
+
+
+def _stream_payload(
+    line: str,
+    line_number: int,
+    match: re.Match[str],
+    lines: Iterator[tuple[int, str]],
+) -> list[str]:
+    suffix = line[match.end():].strip()
+    if suffix != "[":
+        if not suffix:
+            raise ValueError(f"empty NA operation at line {line_number}: {line!r}")
+        return [suffix]
+    values: list[str] = []
+    for payload_line, value in lines:
+        if value == "]":
+            return values
+        values.append(value)
+    raise ValueError(f"unterminated NA block beginning at line {line_number}")
+
+
+def _write_physicalized_lines(handle: TextIO, lines: Iterable[str]) -> None:
+    for line in lines:
+        handle.write(line)
+        handle.write("\n")
+
+
+def physicalize_na_streaming(
+    source: str | Path,
+    destination: str | Path,
+    architecture: Mapping[str, object] | str | Path,
+) -> dict[str, int]:
+    """Bounded-memory form of :func:`physicalize_na`.
+
+    Only the atom-position registry and one open movement batch are retained.
+    Output bytes and the four repair counters are identical to the whole-file
+    implementation for the same valid input and original ZAC architecture.
+    The destination is atomically published only after the source closes at a
+    complete batch boundary.
+    """
+
+    source_path = Path(source).resolve()
+    destination_path = Path(destination).resolve()
+    if not source_path.is_file():
+        raise FileNotFoundError(f"NA physicalizer source is missing: {source_path}")
+    if source_path == destination_path:
+        raise ValueError("streaming NA physicalizer source and destination must differ")
+    if destination_path.exists():
+        raise FileExistsError(
+            f"streaming NA physicalizer destination exists: {destination_path}"
+        )
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination_path.with_name(
+        f".{destination_path.name}.physicalizing"
+    )
+    if temporary.exists():
+        raise FileExistsError(f"stale NA physicalizer temporary file: {temporary}")
+
+    spec = _architecture_spec(architecture)
+    candidates = _slm_points(spec)
+    positions: dict[str, tuple[float, float]] = {}
+    raw_batches = repaired_batches = split_batches = waypoint_atoms = 0
+
+    try:
+        with source_path.open(encoding="utf-8") as source_handle, temporary.open(
+            "x", encoding="utf-8"
+        ) as output_handle:
+            lines = iter(_meaningful_lines(source_handle))
+            current: tuple[int, str] | None = None
+            for line_number, line in lines:
+                declaration = _ATOM_DECL.fullmatch(line)
+                if declaration is None:
+                    current = (line_number, line)
+                    break
+                name = declaration.group(3)
+                if name in positions:
+                    raise ValueError(f"duplicate NA atom declaration {name}")
+                point = (float(declaration.group(1)), float(declaration.group(2)))
+                if point in positions.values():
+                    raise ValueError("NA declarations contain duplicate positions")
+                positions[name] = point
+                _write_physicalized_lines(output_handle, (line,))
+            if not positions:
+                raise ValueError("NA declarations are empty")
+
+            known = set(positions)
+            held: set[str] = set()
+            operations: list[_Operation] = []
+            batch_atoms: list[str] = []
+            while current is not None:
+                line_number, line = current
+                match = _OPERATION.match(line)
+                kind = match.group(1) if match is not None else ""
+                if kind not in {"load", "move", "store"}:
+                    if held:
+                        raise ValueError(
+                            "non-movement operation occurs inside NA batch: "
+                            f"{line}"
+                        )
+                    if _ATOM_DECL.fullmatch(line) is not None:
+                        raise ValueError(
+                            f"late NA atom declaration at line {line_number}"
+                        )
+                    _write_physicalized_lines(output_handle, (line,))
+                else:
+                    assert match is not None
+                    values = _stream_payload(line, line_number, match, lines)
+                    if kind == "move":
+                        atoms: list[str] = []
+                        destinations: list[tuple[float, float]] = []
+                        for value in values:
+                            item = _MOVE_ITEM.fullmatch(value)
+                            if item is None or item.group(3) not in known:
+                                raise ValueError(f"invalid NA move item {value!r}")
+                            atoms.append(item.group(3))
+                            destinations.append(
+                                (float(item.group(1)), float(item.group(2)))
+                            )
+                        if (
+                            not atoms
+                            or len(set(atoms)) != len(atoms)
+                            or not set(atoms) <= held
+                        ):
+                            raise ValueError(
+                                "NA move has duplicate, empty, or unheld atoms"
+                            )
+                        operations.append(
+                            _Operation(kind, tuple(atoms), tuple(destinations))
+                        )
+                    else:
+                        atoms = [_atom_name(value, known) for value in values]
+                        if not atoms or len(set(atoms)) != len(atoms):
+                            raise ValueError(f"invalid NA {kind} atom list")
+                        if kind == "load":
+                            if set(atoms) & held:
+                                raise ValueError("NA loads an already-held atom")
+                            held.update(atoms)
+                            for atom in atoms:
+                                if atom not in batch_atoms:
+                                    batch_atoms.append(atom)
+                        else:
+                            if not set(atoms) <= held:
+                                raise ValueError(
+                                    "NA stores an atom that is not held"
+                                )
+                            held.difference_update(atoms)
+                        operations.append(_Operation(kind, tuple(atoms)))
+                        if not held:
+                            batch = _MovementBatch(
+                                tuple(operations), tuple(batch_atoms)
+                            )
+                            repaired, counters = _repair_batch(
+                                batch, positions, candidates
+                            )
+                            _write_physicalized_lines(output_handle, repaired)
+                            raw_batches += 1
+                            repaired_batches += counters[
+                                "repaired_move_batches"
+                            ]
+                            split_batches += counters["ghost_splits"]
+                            waypoint_atoms += counters["waypoint_atoms"]
+                            operations = []
+                            batch_atoms = []
+                try:
+                    current = next(lines)
+                except StopIteration:
+                    current = None
+            if held or operations:
+                raise ValueError("NA ends inside an incomplete movement batch")
+            output_handle.flush()
+            os.fsync(output_handle.fileno())
+        os.replace(temporary, destination_path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+    return {
+        "raw_move_batches": raw_batches,
+        "repaired_move_batches": repaired_batches,
+        "ghost_splits": split_batches,
+        "waypoint_atoms": waypoint_atoms,
+    }
+
+
+__all__ = ["physicalize_na", "physicalize_na_streaming"]
