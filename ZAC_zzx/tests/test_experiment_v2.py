@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 import os
@@ -198,6 +199,52 @@ class TestAtomicRunner(unittest.TestCase):
             loaded = load_run_manifest(artifact / "manifest.json")
             self.assertEqual(loaded.run_id, manifest.run_id)
             self.assertFalse(any(path.name.endswith(".tmp") for path in (base / "runs").iterdir()))
+
+    def test_terminal_attempt_archives_large_replay_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            payloads = {
+                "trace.zair.json": '{"instructions":[]}\n',
+                "trace.na": "atom (0, 0) atom0\n",
+                "trace.na.raw": "atom (0, 0) atom0\n",
+                "compiler_stats.json": '{"python_version":"test"}\n',
+            }
+            script = (
+                "import json,os,pathlib;"
+                "p=pathlib.Path(os.environ['ZAC_RUN_DIR']);"
+                f"payloads={payloads!r};"
+                "[(p/name).write_text(value) for name,value in payloads.items()];"
+                "(p/'compiler_timing.json').write_text("
+                "json.dumps({'compiler_time_ns':1}))"
+            )
+            manifest = run_attempt(
+                self._spec(base, [sys.executable, "-c", script]),
+                verifier=lambda _: {"ok": True},
+                scorer=lambda _: {
+                    "log_fidelity": 0.0, "fidelity": 1.0,
+                    "fidelity_components": {
+                        "log_one_qubit_gate": 0.0,
+                        "log_two_qubit_gate": 0.0,
+                        "log_idle_excitation": 0.0,
+                        "log_atom_transfer": 0.0,
+                        "log_coherence_linear": 0.0,
+                    },
+                    "move_batches": 0, "move_time_us": 0.0,
+                    "duration_us": 0.0, "qubits": 1,
+                    "expected_gates_1q": 0, "expected_gates_2q": 0,
+                    "observed_gates_1q": 0, "observed_gates_2q": 0,
+                    "expected_gate_ledger_sha256": "a" * 64,
+                    "observed_gate_ledger_sha256": "a" * 64,
+                    "ghost_hits": 0,
+                })
+            artifact = Path(manifest.artifact_dir)
+            self.assertEqual(manifest.status, "success")
+            for name, expected in payloads.items():
+                self.assertFalse((artifact / name).exists())
+                archived = artifact / f"{name}.gz"
+                self.assertTrue(archived.is_file())
+                with gzip.open(archived, "rt", encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), expected)
 
     def test_timeout_kills_process_group_and_never_promotes_stale_output(self):
         with tempfile.TemporaryDirectory() as directory:

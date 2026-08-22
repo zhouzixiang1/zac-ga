@@ -152,6 +152,17 @@ class UnifiedEvaluationGate:
     def trace_name(self) -> str:
         return "trace.na" if self.method == "M2" else "trace.zair.json"
 
+    @staticmethod
+    def _artifact_file(artifact: Path, name: str) -> Path:
+        """Resolve one raw or gzip-archived artifact, never ambiguously."""
+        raw = artifact / name
+        archived = artifact / f"{name}.gz"
+        matches = [path for path in (raw, archived) if path.is_file()]
+        if len(matches) > 1:
+            raise ValueError(
+                f"attempt contains both raw and archived {name}: {artifact}")
+        return matches[0] if matches else raw
+
     def _normalizer(self, trace_path: Path):
         if self.method == "M2":
             return normalize_na(
@@ -166,7 +177,7 @@ class UnifiedEvaluationGate:
         )
 
     def _score(self, artifact: Path) -> FidelityResult:
-        trace_path = artifact / self.trace_name
+        trace_path = self._artifact_file(artifact, self.trace_name)
         if not trace_path.is_file():
             raise FileNotFoundError(f"compiler trace is missing: {trace_path}")
         events = self._normalizer(trace_path)
@@ -246,11 +257,16 @@ class UnifiedEvaluationGate:
 
     @staticmethod
     def _compiler_counters(artifact: Path) -> Mapping[str, int]:
-        path = artifact / "compiler_stats.json"
+        path = UnifiedEvaluationGate._artifact_file(
+            artifact, "compiler_stats.json")
         if not path.is_file():
             return {}
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            if path.suffix == ".gz":
+                with gzip.open(path, "rt", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+            else:
+                payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, TypeError):
             return {}
         decision_log = payload.get("decision_log", [])
@@ -326,13 +342,13 @@ class UnifiedEvaluationGate:
         # Re-normalize for a second, independent physical replay.  This keeps the
         # fidelity accumulator and correctness verifier from sharing mutable state.
         self._physical_validation = validate_trace_physics(
-            self._normalizer(artifact / self.trace_name),
+            self._normalizer(self._artifact_file(artifact, self.trace_name)),
             n_qubits=self.canonical.qubits,
         )
         if self.method != "M2":
             from verify_batches import verify
             raw_validation = verify(
-                artifact / self.trace_name,
+                self._artifact_file(artifact, self.trace_name),
                 Path(self.canonical.canonical_path),
             )
             errors = {name: values for name, values in raw_validation["errors"].items()

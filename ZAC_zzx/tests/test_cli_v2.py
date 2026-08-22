@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import gzip
 import io
 import json
 import os
@@ -453,13 +454,16 @@ class TestUnifiedEvaluationGate(unittest.TestCase):
     def test_compiler_ghost_repairs_are_summed_across_layers(self):
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory)
-            (artifact / "compiler_stats.json").write_text(json.dumps({
-                "decision_log": [
-                    {"stay": 2, "return": 1, "ghost_fix": 1},
-                    {"stay": 3, "return": 2, "ghost_fix": 4},
-                ],
-                "ghost_splits": 2,
-            }), encoding="utf-8")
+            with gzip.open(
+                    artifact / "compiler_stats.json.gz", "wt",
+                    encoding="utf-8") as handle:
+                json.dump({
+                    "decision_log": [
+                        {"stay": 2, "return": 1, "ghost_fix": 1},
+                        {"stay": 3, "return": 2, "ghost_fix": 4},
+                    ],
+                    "ghost_splits": 2,
+                }, handle)
             counters = UnifiedEvaluationGate._compiler_counters(artifact)
             self.assertEqual(counters["ghost_repairs"], 5)
             self.assertEqual(counters["ghost_splits"], 2)
@@ -593,6 +597,10 @@ class TestUnifiedEvaluationGate(unittest.TestCase):
             self.assertTrue(sealed.verifier_ok)
             self.assertEqual(sealed.log_fidelity, 0.0)
             self.assertEqual(sealed.compiler_time_ns, 123)
+            self.assertFalse(
+                (Path(manifest.artifact_dir) / "trace.zair.json").exists())
+            self.assertTrue(
+                (Path(manifest.artifact_dir) / "trace.zair.json.gz").is_file())
 
     def test_verify_run_recomputes_ood_and_exponential_sensitivity(self):
         with tempfile.TemporaryDirectory() as directory:

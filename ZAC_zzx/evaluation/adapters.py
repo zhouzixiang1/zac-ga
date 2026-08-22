@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+import gzip
 import json
 import math
 from pathlib import Path
@@ -147,14 +148,21 @@ class _ArchitectureView:
         return self.entanglement_partners.get(_position_key(left)) == _position_key(right)
 
 
+def _read_path_text(path: Path) -> str:
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            return handle.read()
+    return path.read_text(encoding="utf-8")
+
+
 def _read_json_source(source: Mapping[str, Any] | str | Path) -> tuple[dict[str, Any], Path | None]:
     if isinstance(source, Mapping):
         return dict(source), None
     if isinstance(source, Path):
-        return json.loads(source.read_text()), source.resolve()
+        return json.loads(_read_path_text(source)), source.resolve()
     candidate = Path(source)
     if "\n" not in source and candidate.exists():
-        return json.loads(candidate.read_text()), candidate.resolve()
+        return json.loads(_read_path_text(candidate)), candidate.resolve()
     try:
         value = json.loads(source)
     except json.JSONDecodeError as exc:
@@ -166,10 +174,10 @@ def _read_json_source(source: Mapping[str, Any] | str | Path) -> tuple[dict[str,
 
 def _read_text_source(source: str | Path) -> str:
     if isinstance(source, Path):
-        return source.read_text()
+        return _read_path_text(source)
     candidate = Path(source)
     if "\n" not in source and candidate.exists():
-        return candidate.read_text()
+        return _read_path_text(candidate)
     return source
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import gzip
 import json
 import os
 import resource
@@ -21,6 +22,45 @@ from .contracts import RunManifest, RunStatus, sha256_file, stable_sha256
 
 Verifier = Callable[[Path], Mapping[str, Any] | bool]
 Scorer = Callable[[Path], Mapping[str, Any]]
+
+
+_ARCHIVE_ARTIFACTS = (
+    "trace.zair.json",
+    "trace.na",
+    "trace.na.raw",
+    "compiler_stats.json",
+)
+
+
+def _gzip_artifact(path: Path) -> Path:
+    """Atomically archive one evidence file and remove only its raw duplicate."""
+    destination = path.with_name(path.name + ".gz")
+    if destination.exists():
+        raise FileExistsError(f"refusing to overwrite archive: {destination}")
+    temporary = destination.with_name(destination.name + ".tmp")
+    try:
+        with path.open("rb") as source, temporary.open("wb") as target:
+            with gzip.GzipFile(
+                    filename="", mode="wb", fileobj=target,
+                    compresslevel=6, mtime=0) as archive:
+                shutil.copyfileobj(source, archive, length=1 << 20)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, destination)
+        path.unlink()
+        return destination
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _archive_attempt_artifacts(directory: Path) -> list[str]:
+    archived = []
+    for name in _ARCHIVE_ARTIFACTS:
+        path = directory / name
+        if path.is_file():
+            archived.append(_gzip_artifact(path).name)
+    return archived
 
 
 @dataclass(frozen=True)
@@ -296,6 +336,15 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
         except ValueError as error:
             manifest.status = RunStatus.SCORER_ERROR.value
             manifest.error = f"incomplete success contract: {error}"
+
+    # Verification, unified scoring, and package extraction have consumed the
+    # raw compiler outputs.  Archive them before atomic promotion so every
+    # terminal attempt is compact but remains independently replayable.
+    try:
+        _archive_attempt_artifacts(temporary)
+    except BaseException as error:
+        manifest.warnings.append(
+            f"artifact archival failed: {type(error).__name__}: {error}")
 
     manifest.end_to_end_time_ns = time.perf_counter_ns() - start_wall
     manifest.ended_at_utc = _utc_now()

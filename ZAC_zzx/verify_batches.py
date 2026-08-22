@@ -36,6 +36,7 @@
 """
 from __future__ import annotations
 
+import gzip
 import json
 import sys
 from pathlib import Path
@@ -47,6 +48,13 @@ from zzx.ghost import ghost_hits                  # noqa: E402 ⑨ 鬼点判据
 from zzx.zcost import compatible_2d               # noqa: E402
 
 T_TRANSFER = 15.0    # μs，与 router/架构的 atom_transfer 常数一致
+
+
+def _open_text(path: Path):
+    """Open raw or runner-archived ZAIR evidence transparently."""
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8")
+    return open(path, encoding="utf-8")
 
 
 def load_arch(code: dict, code_path: Path) -> Architecture:
@@ -82,7 +90,7 @@ def qasm_partner_ledger(qasm_path: Path) -> dict[int, list[int]]:
 
 
 def verify(code_path: Path, qasm_path: Path | None = None) -> dict:
-    with open(code_path, encoding="utf-8") as handle:
+    with _open_text(code_path) as handle:
         code = json.load(handle)
     arch = load_arch(code, code_path)
     insts = code["instructions"]
