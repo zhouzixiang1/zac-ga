@@ -21,7 +21,7 @@ from pathlib import Path
 import pickle
 import re
 import time
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 import uuid
 
 from .formal_zac_placement import FormalZacPlacementStream
@@ -29,10 +29,13 @@ from .qasm_sqlite import LayerStore
 from .zac_route_transition import ZACRouteTransitionDriver
 
 
-CHECKPOINT_ENVELOPE_FORMAT = "formal-zac-checkpoint-envelope-v1"
-CHECKPOINT_PAYLOAD_FORMAT = "formal-zac-checkpoint-payload-v1"
+CHECKPOINT_ENVELOPE_FORMAT_V1 = "formal-zac-checkpoint-envelope-v1"
+CHECKPOINT_PAYLOAD_FORMAT_V1 = "formal-zac-checkpoint-payload-v1"
+CHECKPOINT_ENVELOPE_FORMAT = "formal-zac-checkpoint-envelope-v2"
+CHECKPOINT_PAYLOAD_FORMAT = "formal-zac-checkpoint-payload-v2"
 ROLLING_OUTPUT_FORMAT = "formal-zac-output-chain-v1"
 _PAYLOAD_CODEC = "pickle-protocol-5-base64"
+_PICKLE_PROTOCOL = 5
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -245,8 +248,181 @@ def _canonical_state(value: Any) -> Any:
         f"unsupported checkpoint summary state type: {type(value)!r}")
 
 
+class _CanonicalHashWriter:
+    """Hash the legacy canonical JSON without materialising its object tree.
+
+    Version-1 checkpoints stored hashes of ``_canonical_state(value)``.  The
+    tagged tree can be close to a gigabyte for the bounded resident LRUs even
+    when its pickle is only a few megabytes.  This writer emits exactly the
+    same compact JSON byte stream incrementally.  It is retained solely so old
+    checkpoints remain fail-closed and low-memory readable.
+    """
+
+    _FLUSH_BYTES = 256 * 1024
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256()
+        self._buffer = bytearray()
+
+    def write(self, value: str | bytes) -> None:
+        encoded = value.encode("utf-8") if isinstance(value, str) else value
+        self._buffer.extend(encoded)
+        if len(self._buffer) >= self._FLUSH_BYTES:
+            self._flush()
+
+    def _flush(self) -> None:
+        if self._buffer:
+            self._digest.update(self._buffer)
+            self._buffer.clear()
+
+    def json_scalar(self, value: Any) -> None:
+        self.write(json.dumps(
+            value, ensure_ascii=True, separators=(",", ":"), allow_nan=False,
+        ))
+
+    def array(self, emitters: Iterable[Callable[[], None]]) -> None:
+        self.write("[")
+        for index, emit in enumerate(emitters):
+            if index:
+                self.write(",")
+            emit()
+        self.write("]")
+
+    @staticmethod
+    def _sort_key(value: Any) -> str:
+        # Only mapping keys and set members are materialised.  They are tiny in
+        # the formal state; the large cache values remain fully streaming.
+        return json.dumps(
+            _canonical_state(value), sort_keys=True, separators=(",", ":"),
+        )
+
+    def emit(self, value: Any) -> None:
+        if value is None:
+            self.array((lambda: self.json_scalar("none"),))
+            return
+        if isinstance(value, bool):
+            self.array((
+                lambda: self.json_scalar("bool"),
+                lambda: self.json_scalar(value),
+            ))
+            return
+        if isinstance(value, int):
+            self.array((
+                lambda: self.json_scalar("int"),
+                lambda: self.json_scalar(str(value)),
+            ))
+            return
+        if isinstance(value, float):
+            self.array((
+                lambda: self.json_scalar("float"),
+                lambda: self.json_scalar(value.hex()),
+            ))
+            return
+        if isinstance(value, str):
+            self.array((
+                lambda: self.json_scalar("str"),
+                lambda: self.json_scalar(value),
+            ))
+            return
+        if isinstance(value, bytes):
+            encoded = base64.b64encode(value).decode("ascii")
+            self.array((
+                lambda: self.json_scalar("bytes"),
+                lambda: self.json_scalar(encoded),
+            ))
+            return
+        if is_dataclass(value) and not isinstance(value, type):
+            def emit_fields() -> None:
+                self.write("[")
+                for index, field in enumerate(fields(value)):
+                    if index:
+                        self.write(",")
+                    self.array((
+                        lambda field=field: self.json_scalar(field.name),
+                        lambda field=field: self.emit(
+                            getattr(value, field.name)),
+                    ))
+                self.write("]")
+
+            self.array((
+                lambda: self.json_scalar("dataclass"),
+                lambda: self.json_scalar(
+                    f"{type(value).__module__}.{type(value).__qualname__}"),
+                emit_fields,
+            ))
+            return
+        if isinstance(value, OrderedDict):
+            def emit_items() -> None:
+                self.write("[")
+                for index, (key, item) in enumerate(value.items()):
+                    if index:
+                        self.write(",")
+                    self.array((
+                        lambda key=key: self.emit(key),
+                        lambda item=item: self.emit(item),
+                    ))
+                self.write("]")
+
+            self.array((
+                lambda: self.json_scalar("ordered_dict"), emit_items,
+            ))
+            return
+        if isinstance(value, MappingABC):
+            ordered = sorted(
+                value.items(), key=lambda item: self._sort_key(item[0]))
+
+            def emit_items() -> None:
+                self.write("[")
+                for index, (key, item) in enumerate(ordered):
+                    if index:
+                        self.write(",")
+                    self.array((
+                        lambda key=key: self.emit(key),
+                        lambda item=item: self.emit(item),
+                    ))
+                self.write("]")
+
+            self.array((lambda: self.json_scalar("dict"), emit_items))
+            return
+        if isinstance(value, tuple):
+            self.array((
+                lambda: self.json_scalar("tuple"),
+                lambda: self._emit_sequence(value),
+            ))
+            return
+        if isinstance(value, list):
+            self.array((
+                lambda: self.json_scalar("list"),
+                lambda: self._emit_sequence(value),
+            ))
+            return
+        if isinstance(value, (set, frozenset)):
+            ordered = sorted(value, key=self._sort_key)
+            self.array((
+                lambda: self.json_scalar("set"),
+                lambda: self._emit_sequence(ordered),
+            ))
+            return
+        raise TypeError(
+            f"unsupported checkpoint summary state type: {type(value)!r}")
+
+    def _emit_sequence(self, values: Iterable[Any]) -> None:
+        self.write("[")
+        for index, value in enumerate(values):
+            if index:
+                self.write(",")
+            self.emit(value)
+        self.write("]")
+
+    def hexdigest(self) -> str:
+        self._flush()
+        return self._digest.hexdigest()
+
+
 def _content_hash(value: Any) -> str:
-    return _json_hash(_canonical_state(value))
+    writer = _CanonicalHashWriter()
+    writer.emit(value)
+    return writer.hexdigest()
 
 
 def _json_hash(value: Any) -> str:
@@ -270,7 +446,13 @@ def _cache_summary(resident_state: Mapping[str, Any] | None) -> tuple[dict, dict
     )
 
 
-def _summarize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _summarize_payload(
+    payload: Mapping[str, Any],
+    *,
+    state_hash: Callable[[Any], str],
+    state_hash_codec: str | None = None,
+    include_large_state_hashes: bool = True,
+) -> dict[str, Any]:
     placement = payload["placement_state"]
     route = payload["route_state"]
     output = RollingInstructionHash.from_state(payload["output_state"])
@@ -299,8 +481,8 @@ def _summarize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         registry = resident["registry"]
         resident_atoms = len(registry["zone_seat"])
         storage_atoms = len(registry["storage_site"])
-        rng_sha256 = _content_hash(resident["rng_state"])
-        safety_rng_sha256 = _content_hash(resident["safety_rng_state"])
+        rng_sha256 = state_hash(resident["rng_state"])
+        safety_rng_sha256 = state_hash(resident["safety_rng_state"])
         commitment_count = len(resident["residency_commitments"])
 
     dependencies = route["dependencies"]
@@ -311,12 +493,9 @@ def _summarize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         "next_physical_stage": next_layer,
         "physical_stage_count": int(placement["stage_count"]),
         "current_boundary_sha256": _json_hash(placement_boundary),
-        "placement_state_sha256": _content_hash(placement),
         "m1_state_sha256": (
             None if placement.get("m1_state") is None
-            else _content_hash(placement["m1_state"])),
-        "resident_state_sha256": (
-            None if resident is None else _content_hash(resident)),
+            else state_hash(placement["m1_state"])),
         "resident_atoms": resident_atoms,
         "storage_atoms": storage_atoms,
         "rng_state_sha256": rng_sha256,
@@ -339,18 +518,44 @@ def _summarize_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             "rydberg": len(dependencies["rydberg"]),
             "global_1q": int(global_1q is not None),
         },
-        "dependency_state_sha256": _content_hash(dependencies),
+        "dependency_state_sha256": state_hash(dependencies),
         "route_runtime_us": float(route["runtime_us"]),
         "ghost_splits": int(route["ghost_splits"]),
         "output_instruction_count": output.instruction_count,
         "rolling_output_sha256": output.hexdigest,
-        "counters_sha256": _content_hash(payload["counters"]),
+        "counters_sha256": state_hash(payload["counters"]),
     }
+    if include_large_state_hashes:
+        summary["placement_state_sha256"] = state_hash(placement)
+        summary["resident_state_sha256"] = (
+            None if resident is None else state_hash(resident))
+    else:
+        # The outer payload SHA256 covers every byte of both states.  Repeating
+        # their hashes through the legacy tagged-tree representation was the
+        # source of the checkpoint's gigabyte-scale transient allocation.
+        summary["state_integrity"] = "envelope-payload-sha256"
+    if state_hash_codec is not None:
+        summary["state_hash_codec"] = state_hash_codec
     if summary["provider_resume_stage"] != next_layer:
         raise ValueError("provider checkpoint boundary differs from compiler layer")
     if len(summary["provider_cached_stages"]) > summary["provider_cache_limit"]:
         raise ValueError("provider checkpoint cache exceeds its bound")
     return summary
+
+
+def _summarize_payload_v1(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return _summarize_payload(payload, state_hash=_content_hash)
+
+
+def _summarize_payload_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
+    # The envelope payload SHA256 is the authoritative all-state integrity
+    # check.  Only bounded metadata keeps the legacy canonical diagnostics.
+    return _summarize_payload(
+        payload,
+        state_hash=_content_hash,
+        state_hash_codec="canonical-tagged-json-v1-small-state",
+        include_large_state_hashes=False,
+    )
 
 
 def _payload(
@@ -360,21 +565,33 @@ def _payload(
     route: ZACRouteTransitionDriver,
     output_hash: RollingInstructionHash,
     counters: Mapping[str, Any] | None,
+    payload_format: str = CHECKPOINT_PAYLOAD_FORMAT,
 ) -> dict[str, Any]:
     method = placement.method
     expected_placer = "zac" if method == "M1" else "resident"
     if route.placer_kind != expected_placer:
         raise ValueError("placement method/router kind mismatch")
+    if payload_format not in {
+        CHECKPOINT_PAYLOAD_FORMAT_V1, CHECKPOINT_PAYLOAD_FORMAT,
+    }:
+        raise ValueError("unsupported formal ZAC checkpoint payload format")
+    is_v2 = payload_format == CHECKPOINT_PAYLOAD_FORMAT
     value: dict[str, Any] = {
-        "format": CHECKPOINT_PAYLOAD_FORMAT,
+        "format": payload_format,
         "identity": identity.as_dict(),
         "method": method,
-        "placement_state": placement.state_dict(),
+        "placement_state": placement.state_dict(borrow_caches=is_v2),
         "route_state": route.state_dict(),
         "output_state": output_hash.state_dict(),
-        "counters": deepcopy(dict(counters or {})),
+        "counters": (
+            dict(counters or {}) if is_v2
+            else deepcopy(dict(counters or {}))
+        ),
     }
-    value["summary"] = _summarize_payload(value)
+    value["summary"] = (
+        _summarize_payload_v2(value) if is_v2
+        else _summarize_payload_v1(value)
+    )
     return value
 
 
@@ -401,7 +618,7 @@ class FormalZacCheckpointManager:
             output_hash=output_hash,
             counters=counters,
         )
-        raw_payload = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+        raw_payload = pickle.dumps(payload, protocol=_PICKLE_PROTOCOL)
         envelope = {
             "format": CHECKPOINT_ENVELOPE_FORMAT,
             "payload_codec": _PAYLOAD_CODEC,
@@ -411,15 +628,17 @@ class FormalZacCheckpointManager:
             "summary": payload["summary"],
             "payload_b64": base64.b64encode(raw_payload).decode("ascii"),
         }
-        encoded = (json.dumps(
-            envelope, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=True, allow_nan=False,
-        ) + "\n").encode("utf-8")
         temporary = destination.with_name(
             f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
         try:
-            with open(temporary, "xb") as handle:
-                handle.write(encoded)
+            # json.dump avoids allocating a second checkpoint-sized encoded
+            # byte string on top of the raw pickle and base64 payload.
+            with open(temporary, "x", encoding="utf-8", newline="\n") as handle:
+                json.dump(
+                    envelope, handle, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=True, allow_nan=False,
+                )
+                handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, destination)
@@ -447,22 +666,29 @@ class FormalZacCheckpointManager:
         # Pickle is intentionally restricted to locally produced trusted files.
         source = Path(path).resolve()
         try:
-            envelope = json.loads(source.read_text(encoding="utf-8"))
+            with open(source, encoding="utf-8") as handle:
+                envelope = json.load(handle)
         except (OSError, json.JSONDecodeError) as error:
             raise ValueError("invalid formal ZAC checkpoint envelope") from error
+        if not isinstance(envelope, dict):
+            raise ValueError("invalid formal ZAC checkpoint envelope")
         required = {
             "format", "payload_codec", "payload_size", "payload_sha256",
             "identity", "summary", "payload_b64",
         }
         if set(envelope) != required:
             raise ValueError("formal ZAC checkpoint envelope fields differ")
-        if (envelope["format"] != CHECKPOINT_ENVELOPE_FORMAT or
+        envelope_format = envelope["format"]
+        if (envelope_format not in {
+                CHECKPOINT_ENVELOPE_FORMAT_V1, CHECKPOINT_ENVELOPE_FORMAT} or
                 envelope["payload_codec"] != _PAYLOAD_CODEC):
             raise ValueError("unsupported formal ZAC checkpoint envelope")
+        payload_b64 = envelope.pop("payload_b64")
         try:
-            raw_payload = base64.b64decode(envelope["payload_b64"], validate=True)
+            raw_payload = base64.b64decode(payload_b64, validate=True)
         except (ValueError, TypeError) as error:
             raise ValueError("invalid formal ZAC checkpoint payload encoding") from error
+        del payload_b64
         if len(raw_payload) != int(envelope["payload_size"]):
             raise ValueError("formal ZAC checkpoint payload size mismatch")
         if hashlib.sha256(raw_payload).hexdigest() != envelope["payload_sha256"]:
@@ -471,7 +697,14 @@ class FormalZacCheckpointManager:
             payload = pickle.loads(raw_payload)
         except Exception as error:
             raise ValueError("invalid trusted-local formal ZAC payload") from error
-        if not isinstance(payload, dict) or payload.get("format") != CHECKPOINT_PAYLOAD_FORMAT:
+        del raw_payload
+        expected_payload_format = (
+            CHECKPOINT_PAYLOAD_FORMAT_V1
+            if envelope_format == CHECKPOINT_ENVELOPE_FORMAT_V1
+            else CHECKPOINT_PAYLOAD_FORMAT
+        )
+        if (not isinstance(payload, dict) or
+                payload.get("format") != expected_payload_format):
             raise ValueError("unsupported formal ZAC checkpoint payload")
         identity = FormalZacCheckpointIdentity.coerce(payload["identity"])
         expected = FormalZacCheckpointIdentity.coerce(expected_identity)
@@ -479,7 +712,11 @@ class FormalZacCheckpointManager:
             raise ValueError("checkpoint commit/input/config/architecture mismatch")
         if envelope["identity"] != identity.as_dict():
             raise ValueError("checkpoint envelope/payload identity mismatch")
-        actual_summary = _summarize_payload(payload)
+        actual_summary = (
+            _summarize_payload_v1(payload)
+            if expected_payload_format == CHECKPOINT_PAYLOAD_FORMAT_V1
+            else _summarize_payload_v2(payload)
+        )
         if payload.get("summary") != actual_summary:
             raise ValueError("checkpoint payload state summary mismatch")
         if envelope["summary"] != actual_summary:
@@ -491,11 +728,14 @@ class FormalZacCheckpointManager:
             identity=identity,
             method=method,
             next_layer=int(actual_summary["next_physical_stage"]),
-            placement_state=deepcopy(payload["placement_state"]),
-            route_state=deepcopy(payload["route_state"]),
-            output_state=deepcopy(payload["output_state"]),
-            counters=deepcopy(payload["counters"]),
-            summary=deepcopy(actual_summary),
+            # ``payload`` is a fresh unpickled graph with no external owner.
+            # Returning its sections directly avoids a second resident-cache
+            # graph; restore may transfer those OrderedDicts into the placer.
+            placement_state=payload["placement_state"],
+            route_state=payload["route_state"],
+            output_state=payload["output_state"],
+            counters=payload["counters"],
+            summary=actual_summary,
         )
 
     @staticmethod
@@ -518,6 +758,7 @@ class FormalZacCheckpointManager:
             max_gates_per_stage=max_gates_per_stage,
             setting=setting,
             state=loaded.placement_state,
+            take_cache_ownership=True,
         )
         route = ZACRouteTransitionDriver.from_state(
             architecture, initial_mapping, dict(loaded.route_state))

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+from collections import OrderedDict
 from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import pickle
 import sys
 import tempfile
 import unittest
@@ -14,6 +17,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import streaming.formal_zac_checkpoint as checkpoint_module  # noqa: E402
 from streaming.formal_zac_checkpoint import (  # noqa: E402
     CheckpointCadence,
     FormalZacCheckpointIdentity,
@@ -24,6 +28,7 @@ from streaming.formal_zac_placement import FormalZacPlacementStream  # noqa: E40
 from streaming.qasm_sqlite import LayerStore, build_layer_store  # noqa: E402
 from streaming.zac_route_transition import ZACRouteTransitionDriver  # noqa: E402
 from zac.ds.architecture import Architecture  # noqa: E402
+from zzx.algorithm_v2 import MovementPhaseCost  # noqa: E402
 
 
 def _setting(method: str):
@@ -229,6 +234,153 @@ cz q[6],q[7];
             with self.assertRaisesRegex(ValueError, "envelope state summary"):
                 FormalZacCheckpointManager.load(
                     checkpoint, expected_identity=identity)
+
+    def test_v2_borrows_lrus_without_mutating_live_search_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store, input_sha = self.make_store(directory)
+            self.addCleanup(store.close)
+            placement, route, output_hash, setting = self.new_components(
+                "M4", store)
+            self.route_one(placement, route, output_hash)
+            self.route_one(placement, route, output_hash)
+            placer = placement._resident_kernel.placer
+            cache_names = (
+                "transition_cache", "phase_cost_cache",
+                "return_candidate_cache", "rollout_pair_cache",
+                "rollout_site_cache",
+            )
+            borrowed = placement.state_dict(borrow_caches=True)
+            copied = placement.state_dict()
+            for name in cache_names:
+                with self.subTest(cache=name):
+                    self.assertIs(
+                        borrowed["resident_state"]["caches"][name],
+                        getattr(placer, name),
+                    )
+                    self.assertIsNot(
+                        copied["resident_state"]["caches"][name],
+                        getattr(placer, name),
+                    )
+
+            cache_before = {
+                name: list(getattr(placer, name).items())
+                for name in cache_names
+            }
+            rng_before = placer.rng.getstate()
+            safety_rng_before = placer.safety_rng.getstate()
+            stats_before = placer.cache_stats.as_dict()
+            checkpoint = Path(directory) / "v2.checkpoint"
+            identity = self.identity("M4", input_sha)
+            summary = FormalZacCheckpointManager.save(
+                checkpoint,
+                identity=identity,
+                placement=placement,
+                route=route,
+                output_hash=output_hash,
+            )
+            envelope = json.loads(checkpoint.read_text())
+            self.assertEqual(
+                envelope["format"], checkpoint_module.CHECKPOINT_ENVELOPE_FORMAT)
+            self.assertEqual(summary["state_integrity"],
+                             "envelope-payload-sha256")
+            self.assertNotIn("placement_state_sha256", summary)
+            self.assertNotIn("resident_state_sha256", summary)
+            for name in cache_names:
+                self.assertEqual(
+                    list(getattr(placer, name).items()), cache_before[name])
+            self.assertEqual(placer.rng.getstate(), rng_before)
+            self.assertEqual(placer.safety_rng.getstate(), safety_rng_before)
+            self.assertEqual(placer.cache_stats.as_dict(), stats_before)
+
+            loaded = FormalZacCheckpointManager.load(
+                checkpoint, expected_identity=identity)
+            loaded_caches = loaded.placement_state["resident_state"]["caches"]
+            for name in cache_names:
+                self.assertIsInstance(loaded_caches[name], OrderedDict)
+                self.assertEqual(list(loaded_caches[name].items()),
+                                 cache_before[name])
+            ownership_restore = FormalZacPlacementStream.from_state(
+                architecture=self.architecture,
+                initial_mapping=self.initial,
+                store=store,
+                max_gates_per_stage=1,
+                setting=setting,
+                state=loaded.placement_state,
+                take_cache_ownership=True,
+            )
+            restored_placer = ownership_restore._resident_kernel.placer
+            for name in cache_names:
+                self.assertIs(getattr(restored_placer, name),
+                              loaded_caches[name])
+
+    def test_v1_checkpoint_remains_readable_and_resume_exact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store, input_sha = self.make_store(directory)
+            self.addCleanup(store.close)
+            placement, route, output_hash, setting = self.new_components(
+                "M4", store)
+            for _ in range(2):
+                self.route_one(placement, route, output_hash)
+            identity = self.identity("M4", input_sha)
+            payload = checkpoint_module._payload(
+                identity=identity,
+                placement=placement,
+                route=route,
+                output_hash=output_hash,
+                counters={"legacy": True},
+                payload_format=checkpoint_module.CHECKPOINT_PAYLOAD_FORMAT_V1,
+            )
+            raw = pickle.dumps(payload, protocol=5)
+            envelope = {
+                "format": checkpoint_module.CHECKPOINT_ENVELOPE_FORMAT_V1,
+                "payload_codec": checkpoint_module._PAYLOAD_CODEC,
+                "payload_size": len(raw),
+                "payload_sha256": hashlib.sha256(raw).hexdigest(),
+                "identity": identity.as_dict(),
+                "summary": payload["summary"],
+                "payload_b64": base64.b64encode(raw).decode("ascii"),
+            }
+            checkpoint = Path(directory) / "legacy-v1.checkpoint"
+            checkpoint.write_text(json.dumps(
+                envelope, sort_keys=True, separators=(",", ":")))
+
+            expected_chunks = []
+            while placement.next_layer < placement.stage_count:
+                expected_chunks.append(self.route_one(
+                    placement, route, output_hash))
+            expected_hash = output_hash.state_dict()
+            expected_route = route.state_dict()
+
+            resumed = FormalZacCheckpointManager.restore(
+                checkpoint,
+                expected_identity=identity,
+                architecture=self.architecture,
+                initial_mapping=self.initial,
+                store=store,
+                max_gates_per_stage=1,
+                setting=setting,
+            )
+            actual_chunks = []
+            while resumed.next_layer < resumed.placement.stage_count:
+                actual_chunks.append(self.route_one(
+                    resumed.placement, resumed.route, resumed.output_hash))
+            self.assertEqual(actual_chunks, expected_chunks)
+            self.assertEqual(resumed.output_hash.state_dict(), expected_hash)
+            self.assertEqual(resumed.route.state_dict(), expected_route)
+            self.assertEqual(resumed.counters, {"legacy": True})
+
+    def test_streaming_v1_hash_matches_original_canonical_encoding(self):
+        sample = OrderedDict((
+            (("tuple-key", 3), MovementPhaseCost(2, 31.25, 8.5, 4)),
+            ("nested", {
+                "bytes": b"abc\x00",
+                "set": frozenset({("q", 2), ("q", 1)}),
+                "float": -0.0,
+            }),
+        ))
+        expected = checkpoint_module._json_hash(
+            checkpoint_module._canonical_state(sample))
+        self.assertEqual(checkpoint_module._content_hash(sample), expected)
 
     def test_rolling_hash_and_checkpoint_cadence_resume(self):
         records = ({"id": 0, "type": "init"}, {"id": 1, "type": "1qGate"})

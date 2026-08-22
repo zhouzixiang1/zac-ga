@@ -203,8 +203,17 @@ class FormalZacPlacementStream:
         kernel.placer.decision_log = [deepcopy(transition.decision_log)]
         return placement
 
-    def state_dict(self) -> dict[str, Any]:
-        """Return the complete bounded placement state at a safe boundary."""
+    def state_dict(
+        self, *, borrow_caches: bool = False,
+    ) -> dict[str, Any]:
+        """Return the complete bounded placement state at a safe boundary.
+
+        ``borrow_caches`` is reserved for synchronous checkpoint
+        serialization.  The placer cannot advance while the checkpoint is
+        written, so borrowing the five resident LRUs avoids a second large
+        object graph without weakening snapshot consistency.  The public
+        default retains the historical independent-copy behavior.
+        """
         provider_state = self.provider.state_dict(
             resume_stage=self._next_layer)
         state: dict[str, Any] = {
@@ -227,23 +236,28 @@ class FormalZacPlacementStream:
             state["resident_state"] = None
         else:
             state["m1_state"] = None
-            state["resident_state"] = self._resident_state_dict()
+            state["resident_state"] = self._resident_state_dict(
+                borrow_caches=borrow_caches)
         return state
 
-    def _resident_state_dict(self) -> dict[str, Any]:
+    def _resident_state_dict(
+        self, *, borrow_caches: bool = False,
+    ) -> dict[str, Any]:
         kernel = self._resident_kernel
         assert kernel is not None
         placer = kernel.placer
         registry = placer.registry
         if registry is None:
             raise AssertionError("resident placer has no registry")
+        cache_names = (
+            "transition_cache", "phase_cost_cache",
+            "return_candidate_cache", "rollout_pair_cache",
+            "rollout_site_cache",
+        )
         caches = {
-            name: deepcopy(getattr(placer, name))
-            for name in (
-                "transition_cache", "phase_cost_cache",
-                "return_candidate_cache", "rollout_pair_cache",
-                "rollout_site_cache",
-            )
+            name: (getattr(placer, name) if borrow_caches
+                   else deepcopy(getattr(placer, name)))
+            for name in cache_names
         }
         return {
             "format": "resident-transition-state-v1",
@@ -284,6 +298,7 @@ class FormalZacPlacementStream:
         max_gates_per_stage: int,
         state: Mapping[str, Any],
         setting: Mapping[str, Any] | None = None,
+        take_cache_ownership: bool = False,
     ) -> "FormalZacPlacementStream":
         """Restore at ``state['next_layer']`` without replaying prior stages."""
         if state.get("format") != PLACEMENT_STATE_FORMAT:
@@ -359,11 +374,17 @@ class FormalZacPlacementStream:
             assert resolved is not None
             placer = ResidentPlacer(list(initial), **resolved)
             obj._resident_kernel = obj._restore_resident_kernel(
-                placer, state["resident_state"])
+                placer, state["resident_state"],
+                take_cache_ownership=take_cache_ownership,
+            )
         return obj
 
     def _restore_resident_kernel(
-        self, placer: ResidentPlacer, state: Mapping[str, Any],
+        self,
+        placer: ResidentPlacer,
+        state: Mapping[str, Any],
+        *,
+        take_cache_ownership: bool = False,
     ) -> ResidentTransitionKernel:
         if state.get("format") != "resident-transition-state-v1":
             raise ValueError("unsupported resident transition state")
@@ -425,7 +446,11 @@ class FormalZacPlacementStream:
         if dict(state["cache_limits"]) != expected_limits:
             raise ValueError("checkpoint resident cache limits/config mismatch")
         for name, limit in expected_limits.items():
-            cache = OrderedDict(deepcopy(state["caches"][name]))
+            saved_cache = state["caches"][name]
+            if not isinstance(saved_cache, OrderedDict):
+                raise ValueError(f"checkpoint {name} is not an OrderedDict")
+            cache = (saved_cache if take_cache_ownership
+                     else OrderedDict(deepcopy(saved_cache)))
             if len(cache) > limit:
                 raise ValueError(f"checkpoint {name} exceeds its bounded limit")
             setattr(placer, name, cache)
