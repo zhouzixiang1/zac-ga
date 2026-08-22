@@ -231,6 +231,24 @@ class TestPhysicalObjective(unittest.TestCase):
         self.assertGreater(result.transfer_nll, 0.0)
         self.assertGreater(result.coherence_nll, 0.0)
 
+    def test_small_phase_fast_paths_preserve_coordinate_semantics(self):
+        model = PhysicalIncrementalCost(2)
+        # The stored distance is deliberately stale: expanded timing is defined
+        # by endpoint coordinates, exactly as in the router replay.
+        singleton = (999.0, 0.0, 0.0, 10.0, 0.0)
+        with patch("zzx.algorithm_v2.phase_batches",
+                   side_effect=AssertionError("small graph used DSATUR")):
+            one = model.movement_phase([singleton], owners=[0])
+            two = model.movement_phase([
+                (10.0, 0.0, 0.0, 10.0, 0.0),
+                (10.0, 0.0, 1.0, 10.0, 1.0),
+            ], owners=[0, 1])
+        self.assertAlmostEqual(
+            one.move_time_us,
+            30.0 + math.sqrt(10.0 / model.ACCEL_UM_PER_US2),
+            places=12)
+        self.assertEqual(two.batches, 1)
+
     def test_residency_break_even_rejects_two_idle_pulses(self):
         model = PhysicalIncrementalCost(13)
         leg_out = (10.0, 0.0, 0.0, 10.0, 0.0)
@@ -334,6 +352,29 @@ class TestResidentDecisionMechanics(unittest.TestCase):
         self.assertEqual(set(one), {0})
         self.assertEqual(set(two), {0, 1})
         self.assertEqual(len(set(two.values())), 2)
+
+    def test_return_candidate_and_matching_caches_are_exact(self):
+        initial = [(0, i, 0) for i in range(4)]
+        registry = ResidentRegistry(self.arch, initial)
+        registry.enter_zone(0, (1, 0, 0))
+        registry.enter_zone(1, (2, 0, 1))
+        candidate_cache, matching_cache = {}, {}
+        kwargs = {
+            "forecast": ForecastOracle([], 0),
+            "candidate_mode": "nearest",
+            "candidate_cache": candidate_cache,
+            "matching_cache": matching_cache,
+        }
+        first = match_return_sites(
+            registry, [0, 1], NextUse([]), 0, **kwargs)
+        with patch(
+                "zzx.resident.min_weight_full_bipartite_matching",
+                side_effect=AssertionError("matching cache missed")):
+            second = match_return_sites(
+                registry, [0, 1], NextUse([]), 0, **kwargs)
+        self.assertEqual(first, second)
+        self.assertTrue(candidate_cache)
+        self.assertTrue(matching_cache)
 
     def test_partial_sparse_return_match_is_completed_deterministically(self):
         initial = [(0, i, 0) for i in range(4)]

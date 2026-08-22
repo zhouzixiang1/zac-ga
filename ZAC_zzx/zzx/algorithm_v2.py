@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from math import dist, log, log1p, sqrt
 from typing import Callable, Iterable, Sequence
 
-from zzx.zcost import greedy_phase_batches, phase_batches
+from zzx.zcost import compatible_2d, greedy_phase_batches, phase_batches
 
 
 SCHEMA2_METHOD_HORIZON = {"ours_nl": 0, "ours_lk": 2}
@@ -207,15 +207,30 @@ class PhysicalIncrementalCost:
         legs = tuple(legs)
         if not legs:
             return MovementPhaseCost(0, 0.0, 0.0, 0)
-        if batching == "phase":
+        if batching not in {"phase", "greedy"}:
+            raise ValueError(f"unknown movement batching policy: {batching!r}")
+        # A one-leg conflict graph has exactly one color under both registered
+        # batchers.  Pairwise ghost edges cannot exist, so constructing a graph
+        # and running DSATUR is pure overhead on serial circuits.
+        if len(legs) == 1:
+            batches = ((0,),)
+        elif len(legs) == 2:
+            first = (legs[0][1], legs[0][3], legs[0][2], legs[0][4])
+            second = (legs[1][1], legs[1][3], legs[1][2], legs[1][4])
+            conflict = not compatible_2d(first, second)
+            if not conflict and ghosts:
+                from zzx.ghost import pair_edges
+                conflict = bool(pair_edges(legs, ghosts, owners=owners))
+            order = tuple(sorted(
+                range(2), key=lambda index: legs[index][0], reverse=True))
+            batches = ((order[0],), (order[1],)) if conflict else (order,)
+        elif batching == "phase":
             _, batches, _ = phase_batches(
                 legs, ghosts=ghosts, owners=owners,
                 exact_threshold=exact_threshold)
-        elif batching == "greedy":
+        else:
             _, batches, _ = greedy_phase_batches(
                 legs, ghosts=ghosts, owners=owners)
-        else:
-            raise ValueError(f"unknown movement batching policy: {batching!r}")
         move_time = sum(
             self._expanded_batch_time(legs, members) for members in batches)
         return MovementPhaseCost(
@@ -240,6 +255,14 @@ class PhysicalIncrementalCost:
         selected = [legs[int(i)] for i in members]
         if not selected:
             return 0.0
+        if len(selected) == 1:
+            # The general expanded-AOD construction collapses exactly to one
+            # load, one store, and the direct leg duration for a singleton.
+            leg = selected[0]
+            longest = dist((float(leg[1]), float(leg[2])),
+                           (float(leg[3]), float(leg[4])))
+            return (2 * cls.T_TRANSFER_US
+                    + sqrt(longest / cls.ACCEL_UM_PER_US2))
         rows: dict[float, list[tuple]] = {}
         for leg in selected:
             rows.setdefault(float(leg[2]), []).append(leg)
@@ -286,7 +309,15 @@ class PhysicalIncrementalCost:
         phases = tuple(phases)
         if idle_exposures < 0:
             raise ValueError("idle_exposures 不得为负")
-        movers = sum(p.movers for p in phases)
+        movers = 0
+        move_batches = 0
+        move_time_us = 0.0
+        total_distance_um = 0.0
+        for phase in phases:
+            movers += phase.movers
+            move_batches += phase.batches
+            move_time_us += phase.move_time_us
+            total_distance_um += phase.total_distance_um
         transfers = 2 * movers                 # load and store are separate errors
         transfer_nll = -transfers * log(self.F_TRANSFER)
         excitation_nll = -idle_exposures * log(self.F_EXC)
@@ -311,9 +342,9 @@ class PhysicalIncrementalCost:
             transfer_nll=transfer_nll,
             idle_excitation_nll=excitation_nll,
             coherence_nll=coherence_nll,
-            move_batches=sum(p.batches for p in phases),
-            move_time_us=sum(p.move_time_us for p in phases),
-            total_distance_um=sum(p.total_distance_um for p in phases),
+            move_batches=move_batches,
+            move_time_us=move_time_us,
+            total_distance_um=total_distance_um,
             idle_exposures=idle_exposures,
             transfers=transfers,
         )

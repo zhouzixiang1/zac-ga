@@ -145,22 +145,44 @@ class ResidentRegistry:
 
 
 # ---------------------------------------------------------------------- 三方案箱匹配
-def _box_sites(arch, center: tuple, ratio: int, free: set) -> list:
+def _box_sites(arch, center: tuple, ratio: int, occupied: set) -> list:
     """以 storage 位 center 为中心的 (2ratio+1)^2 自由位箱（裁剪到 SLM 边界）。"""
-    slm = arch.dict_SLM[center[0]]
-    out = []
-    for r in range(max(0, center[1] - ratio), min(slm.n_r, center[1] + ratio + 1)):
-        for c in range(max(0, center[2] - ratio), min(slm.n_c, center[2] + ratio + 1)):
-            site = (center[0], r, c)
-            if site in free:
-                out.append(site)
-    return out
+    cache = getattr(arch, "_resident_box_sites", None)
+    if cache is None:
+        cache = {}
+        arch._resident_box_sites = cache
+    key = (tuple(center), int(ratio))
+    domain = cache.get(key)
+    if domain is None:
+        slm = arch.dict_SLM[center[0]]
+        domain = tuple(
+            (center[0], r, c)
+            for r in range(max(0, center[1] - ratio),
+                           min(slm.n_r, center[1] + ratio + 1))
+            for c in range(max(0, center[2] - ratio),
+                           min(slm.n_c, center[2] + ratio + 1)))
+        cache[key] = domain
+    return [site for site in domain if site not in occupied]
+
+
+def _all_storage_sites(arch) -> tuple:
+    """Return the immutable storage domain, constructed once per architecture."""
+    cached = getattr(arch, "_resident_all_storage_sites", None)
+    if cached is None:
+        cached = tuple(
+            (sid, r, c) for sid in arch.storage_zone
+            for r in range(arch.dict_SLM[sid].n_r)
+            for c in range(arch.dict_SLM[sid].n_c))
+        arch._resident_all_storage_sites = cached
+    return cached
 
 
 def match_return_sites(registry: ResidentRegistry, returners: list,
                        next_use: NextUse, after: int,
                        box_ratio: int = 3, alpha_lookahead: float = 0.1,
-                       forecast=None, candidate_mode: str = "legacy") -> dict:
+                       forecast=None, candidate_mode: str = "legacy",
+                       candidate_cache: dict | None = None,
+                       matching_cache: dict | None = None) -> dict:
     """给一批回返者定存储落位：三方案箱候选 ∪ 自由位 → 最小权完美匹配。
 
     三方案（笔记 :123-131，ZAC place_qubit 的箱式化沿用 vmplacer.py:443-450 ratio=3）：
@@ -180,17 +202,19 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     arch = registry.arch
     # 全存储位清单 + 自由位集合（未被任何在储原子占用——occupied 含未来
     # 参与者仍在存储的家，所以回返者永远不会落到别人头上）
-    all_storage = [
-        (sid, r, c) for sid in arch.storage_zone
-        for r in range(arch.dict_SLM[sid].n_r)
-        for c in range(arch.dict_SLM[sid].n_c)]
-    free = set(all_storage) - registry.occupied_storage()    # 未被占用的都可用
+    all_storage = _all_storage_sites(arch)
+    # Occupancy contains at most one entry per atom, whereas the architecture
+    # has 10,000 storage sites.  Testing the small occupied set is equivalent
+    # to rebuilding the full free-site set on every rollout candidate and
+    # removes the dominant terminal-matching allocation.
+    occupied = registry.occupied_storage()
 
     # 二部图：行 = 候选存储位（三族箱并集），列 = 回返者
     site_index: dict = {}
     rows_list: list = []
     rows, cols, data = [], [], []
     fallback_context = {}
+    column_options = [[] for _ in returners]
 
     def _add(site):
         """给候选位编号（建行索引），重复出现的位共用一行。"""
@@ -231,31 +255,78 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
             families = [near_current, anchor_loc]
         else:
             families = [registry.homes[q], near_current, anchor_loc]
-        candidates = set()
-        for center in families:
-            if center[0] in arch.storage_zone:
-                candidates.update(_box_sites(arch, center, box_ratio, free))
-        if candidate_mode == "legacy" and registry.homes[q] in free:
-            candidates.add(registry.homes[q])              # 原位自由时永远给一次机会
+        cache_key = None
+        options = None
+        if candidate_cache is not None:
+            cache_key = (
+                candidate_mode, tuple(zone_loc), tuple(anchor_loc),
+                tuple(registry.homes[q]), int(box_ratio), lookahead_weight,
+                tuple(sorted(occupied)),
+            )
+            options = candidate_cache.get(cache_key)
+        if options is None:
+            candidates = set()
+            for center in families:
+                if center[0] in arch.storage_zone:
+                    candidates.update(_box_sites(
+                        arch, center, box_ratio, occupied))
+            if (candidate_mode == "legacy"
+                    and registry.homes[q] not in occupied):
+                candidates.add(registry.homes[q])
 
-        # 每个候选位的代价：省本次（离激发区近）+ 省未来（离锚点近）
-        for site in candidates:
-            sx, sy = arch.exact_SLM_location_tuple(site)
-            cost = sqrt(math.dist((zx, zy), (sx, sy))) + lookahead_weight * sqrt(
-                math.dist((sx, sy), (ax, ay)))
+            # 每个候选位的代价：省本次（离激发区近）+ 省未来（离锚点近）
+            computed = []
+            for site in candidates:
+                sx, sy = arch.exact_SLM_location_tuple(site)
+                cost = (sqrt(math.dist((zx, zy), (sx, sy)))
+                        + lookahead_weight * sqrt(
+                            math.dist((sx, sy), (ax, ay))))
+                computed.append((cost, site))
+            options = tuple(computed)
+            if candidate_cache is not None:
+                candidate_cache[cache_key] = options
+        for cost, site in options:
             rows.append(_add(site))
             cols.append(i)
             data.append(cost)
+            column_options[i].append((cost, site))
 
     if not returners:
         return {}
-    matrix = coo_matrix((np.array(data), (np.array(rows), np.array(cols))),
-                        shape=(len(rows_list), len(returners)))
+    matching_key = None
+    if matching_cache is not None:
+        matching_key = (
+            tuple(tuple(options) for options in column_options),
+            tuple(fallback_context[q] for q in returners),
+        )
+        cached_sites = matching_cache.get(matching_key)
+        if cached_sites is not None:
+            return {q: site for q, site in zip(returners, cached_sites)}
+    # If every column has a strict local minimum and those minima are already
+    # distinct, their union is the unique global optimum.  Skipping scipy in
+    # this common case is exact; tied or colliding minima retain the original
+    # sparse full-matching path and its deterministic tie behaviour.
+    independent = []
+    for options in column_options:
+        ordered = sorted(options)
+        if not ordered or (len(ordered) > 1
+                           and ordered[0][0] == ordered[1][0]):
+            independent = []
+            break
+        independent.append(ordered[0][1])
+    if independent and len(set(independent)) == len(returners):
+        if matching_cache is not None:
+            matching_cache[matching_key] = tuple(independent)
+        return {q: site for q, site in zip(returners, independent)}
     assignment = {}
     try:
         # 最小权完美匹配：所有回返者各得一个互异自由位，总代价最小
+        matrix = coo_matrix(
+            (np.array(data), (np.array(rows), np.array(cols))),
+            shape=(len(rows_list), len(returners)))
         row_ind, col_ind = min_weight_full_bipartite_matching(matrix)
-        assignment = {returners[c]: rows_list[r] for r, c in zip(row_ind, col_ind)}
+        assignment = {
+            returners[c]: rows_list[r] for r, c in zip(row_ind, col_ind)}
     except ValueError:
         # A structurally singular sparse matrix is completed below by the same
         # deterministic fallback used for a partial scipy result.
@@ -283,13 +354,16 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
                         + lookahead_weight * sqrt(
                             math.dist((sx, sy), (ax, ay))), candidate)
 
-            site = min((candidate for candidate in free
-                        if candidate not in taken), key=global_cost)
+            site = min((candidate for candidate in all_storage
+                        if candidate not in occupied and candidate not in taken),
+                       key=global_cost)
         assignment[q] = site
         taken.add(site)
     if set(assignment) != set(returners) or \
             len(set(assignment.values())) != len(returners):
         raise RuntimeError("RETURN 匹配未形成完整互异存储落位")
+    if matching_cache is not None:
+        matching_cache[matching_key] = tuple(assignment[q] for q in returners)
     return assignment
 
 

@@ -524,6 +524,11 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.cache_stats = CacheStats()
         self.transition_cache = OrderedDict()
         self.transition_cache_limit = 256
+        self.phase_cost_cache = OrderedDict()
+        self.phase_cost_cache_limit = 65_536
+        self.return_candidate_cache = OrderedDict()
+        self.return_matching_cache = OrderedDict()
+        self.return_cache_limit = 8_192
         self.registry = None
         self.nu = None
         self.forecast = None
@@ -1639,6 +1644,37 @@ class ResidentPlacer(VertexMatchingPlacer):
             if q not in participants and q not in potential_returners]
         step_cache = CacheStats()
         physical = PhysicalIncrementalCost(len(self.mapping[0]))
+        phase_cache = {}
+        return_candidate_cache = self.return_candidate_cache
+        return_matching_cache = self.return_matching_cache
+
+        def movement_phase(legs, ghosts=None, owners=None,
+                           exact_threshold=0, batching="phase"):
+            """Memoise immutable physical phase costs within one boundary."""
+            leg_key = tuple(legs)
+            ghost_key = tuple(ghosts) if ghosts else ()
+            owner_key = tuple(owners) if owners else ()
+            key = (batching, int(exact_threshold), leg_key,
+                   ghost_key, owner_key)
+            if self.fitness_cache and key in phase_cache:
+                return phase_cache[key]
+            if (self.fitness_cache and not ghost_key
+                    and key in self.phase_cost_cache):
+                self.phase_cost_cache.move_to_end(key)
+                value = self.phase_cost_cache[key]
+                phase_cache[key] = value
+                return value
+            value = physical.movement_phase(
+                leg_key, ghosts=ghosts, owners=owners,
+                exact_threshold=exact_threshold, batching=batching)
+            if self.fitness_cache:
+                phase_cache[key] = value
+                if not ghost_key:
+                    self.phase_cost_cache[key] = value
+                    self.phase_cost_cache.move_to_end(key)
+                    while len(self.phase_cost_cache) > self.phase_cost_cache_limit:
+                        self.phase_cost_cache.popitem(last=False)
+            return value
 
         # ---- Gate menus and immutable leg cache ---------------------------------
         candidates, gate_cache = [], []
@@ -1771,7 +1807,9 @@ class ResidentPlacer(VertexMatchingPlacer):
             reg, eligible, self.nu, layer,
             self.box_ratio, self.alpha_lookahead,
             forecast=self.forecast,
-            candidate_mode=("forecast" if self.lookahead_horizon else "nearest"))
+            candidate_mode=("forecast" if self.lookahead_horizon else "nearest"),
+            candidate_cache=return_candidate_cache,
+            matching_cache=return_matching_cache)
             if eligible else {})
         physical_guard_details = []
         physical_forced_returns = set()
@@ -1787,8 +1825,8 @@ class ResidentPlacer(VertexMatchingPlacer):
                 leg_out = (distance, *source, *storage)
                 leg_back = (distance, *storage, *source)
                 phases = (
-                    physical.movement_phase([leg_out], owners=[q]),
-                    physical.movement_phase([leg_back], owners=[q]),
+                    movement_phase([leg_out], owners=[q]),
+                    movement_phase([leg_back], owners=[q]),
                 )
                 admit, idle_nll, avoided_move_nll = \
                     physical.residency_break_even(phases, idle_pulses)
@@ -1829,8 +1867,13 @@ class ResidentPlacer(VertexMatchingPlacer):
                     bits[index[q]] = 1
             return bits
 
+        normalize_cache = {}
+
         def normalize_chrom(chrom):
-            raw = list(chrom)
+            source = tuple(chrom)
+            if self.fitness_cache and source in normalize_cache:
+                return list(normalize_cache[source])
+            raw = list(source)
             if len(raw) != n_gates + len(eligible):
                 raise ValueError("Schema 2 染色体长度错误")
             normalized = [raw[i] % gate_domains[i] for i in range(n_gates)]
@@ -1859,7 +1902,10 @@ class ResidentPlacer(VertexMatchingPlacer):
                         selected += 1
                         if selected == min_returns:
                             break
-            return normalized + bits
+            value = tuple(normalized + bits)
+            if self.fitness_cache:
+                normalize_cache[source] = value
+            return list(value)
 
         # ---- Decode cache --------------------------------------------------------
         decode_cache = {}
@@ -1914,7 +1960,9 @@ class ResidentPlacer(VertexMatchingPlacer):
             value = (match_return_sites(
                 reg, list(returners), self.nu, layer,
                 self.box_ratio, self.alpha_lookahead,
-                forecast=self.forecast, candidate_mode=mode)
+                forecast=self.forecast, candidate_mode=mode,
+                candidate_cache=return_candidate_cache,
+                matching_cache=return_matching_cache)
                 if returners else {})
             if self.fitness_cache:
                 return_cache[returners] = value
@@ -1962,9 +2010,15 @@ class ResidentPlacer(VertexMatchingPlacer):
                     match_return_sites(
                         shadow, list(key[0]), self.nu, layer,
                         self.box_ratio, self.alpha_lookahead,
-                        forecast=self.forecast, candidate_mode="forecast")
+                        forecast=self.forecast, candidate_mode="forecast",
+                        candidate_cache=return_candidate_cache,
+                        matching_cache=return_matching_cache)
                     if key[0] else {})
             return terminal_return_cache[key]
+
+        rollout_pair_cache = {}
+        rollout_site_cache = {}
+        rollout_phase_score_cache = {}
 
         def forecast_phases(returners, sites, target_placements):
             """Deterministic multi-layer placement rollout without a nested GA.
@@ -1999,25 +2053,44 @@ class ResidentPlacer(VertexMatchingPlacer):
                     sim_locations[q] = tuple(seat)
 
             def local_pair(q1, q2, site):
+                key = (q1, q2, tuple(site),
+                       tuple(sim_locations[q1]), tuple(sim_locations[q2]))
+                if self.fitness_cache and key in rollout_pair_cache:
+                    return rollout_pair_cache[key]
                 a, b = site, (site[0] + 1, site[1], site[2])
                 p1, p2 = sim_locations[q1], sim_locations[q2]
                 if p1 in (a, b):
-                    return (p1, b if p1 == a else a)
-                if p2 in (a, b):
+                    result = (p1, b if p1 == a else a)
+                elif p2 in (a, b):
                     other = b if p2 == a else a
-                    return other, p2
-                orientations = ((a, b), (b, a))
+                    result = (other, p2)
+                else:
+                    p1_xy = arch.exact_SLM_location_tuple(p1)
+                    p2_xy = arch.exact_SLM_location_tuple(p2)
+                    a_xy = arch.exact_SLM_location_tuple(a)
+                    b_xy = arch.exact_SLM_location_tuple(b)
+                    distances_ab = (
+                        math.dist(p1_xy, a_xy), math.dist(p2_xy, b_xy))
+                    distances_ba = (
+                        math.dist(p1_xy, b_xy), math.dist(p2_xy, a_xy))
 
-                def orientation_cost(pair):
-                    distances = [
-                        arch.distance(*sim_locations[q], *seat)
-                        for q, seat in zip((q1, q2), pair)]
-                    movers = sum(distance > 1e-9 for distance in distances)
-                    return (movers, max(distances), sum(distances), pair)
+                    def orientation_cost(pair, distances):
+                        return (
+                            sum(distance > 1e-9 for distance in distances),
+                            max(distances), sum(distances), pair)
 
-                return min(orientations, key=orientation_cost)
+                    result = min(
+                        (orientation_cost((a, b), distances_ab),
+                         orientation_cost((b, a), distances_ba)))[-1]
+                if self.fitness_cache:
+                    rollout_pair_cache[key] = result
+                return result
 
             def local_sites(q1, q2, gate_count):
+                key = (q1, q2, int(gate_count),
+                       tuple(sim_locations[q1]), tuple(sim_locations[q2]))
+                if self.fitness_cache and key in rollout_site_cache:
+                    return rollout_site_cache[key]
                 radius = max(
                     self.pin_radius,
                     max(1, math.ceil(math.sqrt(gate_count) / 2)))
@@ -2038,7 +2111,10 @@ class ResidentPlacer(VertexMatchingPlacer):
                         for column in range(max(0, base[2] - radius),
                                             min(slm.n_c, base[2] + radius + 1)):
                             result.add((base[0], row, column))
-                return sorted(result)
+                value = tuple(sorted(result))
+                if self.fitness_cache:
+                    rollout_site_cache[key] = value
+                return value
 
             for _, gates in self.forecast.visible_future(layer):
                 future_participants = {q for gate in gates for q in gate}
@@ -2061,8 +2137,16 @@ class ResidentPlacer(VertexMatchingPlacer):
                             distance = math.dist(p0, p1)
                             if distance > 1e-9:
                                 legs.append((distance, *p0, *p1))
-                        phase = physical.movement_phase(legs, batching=batching)
-                        objective, _ = physical.score([phase], 0, (q1, q2))
+                        phase = movement_phase(legs, batching=batching)
+                        score_key = (phase, q1, q2)
+                        if self.fitness_cache and \
+                                score_key in rollout_phase_score_cache:
+                            objective = rollout_phase_score_cache[score_key]
+                        else:
+                            objective, _ = physical.score(
+                                [phase], 0, (q1, q2))
+                            if self.fitness_cache:
+                                rollout_phase_score_cache[score_key] = objective
                         options.append((objective, site, pair))
                     if not options:
                         # The local window is a speed path, not a semantic
@@ -2092,7 +2176,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                 if legs:
                     ghosts = [(q, *arch.exact_SLM_location_tuple(location))
                               for q, location in before.items()]
-                    phases.append(physical.movement_phase(
+                    phases.append(movement_phase(
                         legs, ghosts=ghosts, owners=owners,
                         batching=batching))
                 # Every atom sitting in an illuminated entanglement zone but
@@ -2134,7 +2218,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                         terminal_legs.append((distance, *p0, *p1))
                         terminal_owners.append(q)
                 if terminal_legs:
-                    phases.append(physical.movement_phase(
+                    phases.append(movement_phase(
                         terminal_legs, owners=terminal_owners,
                         batching=batching))
             return phases, exposures
@@ -2204,15 +2288,15 @@ class ResidentPlacer(VertexMatchingPlacer):
                 # one greedy pool even though the executable router must retain
                 # the physical gate boundary.  Ghost correctness remains a hard
                 # post-selection repair and final replay invariant.
-                phases = [physical.movement_phase(
+                phases = [movement_phase(
                     legs_back + legs_out,
                     owners=owners_back + owners_out,
                     batching="greedy")]
             else:
                 phases = [
-                    physical.movement_phase(
+                    movement_phase(
                         legs_back, ghosts=positions_t0, owners=owners_back),
-                    physical.movement_phase(
+                    movement_phase(
                         legs_out, ghosts=positions_t1, owners=owners_out),
                 ]
             if include_forecast:
@@ -2648,13 +2732,13 @@ class ResidentPlacer(VertexMatchingPlacer):
             ghosts_t1 = [(q, *arch.exact_SLM_location_tuple(loc))
                           for q, loc in positions_t1.items()]
             if self.ablation_fitness_mode == "lumped_greedy":
-                phases = [physical.movement_phase(
+                phases = [movement_phase(
                     back + out, owners=back_owners + out_owners,
                     batching="greedy")]
             else:
                 phases = [
-                    physical.movement_phase(back, ghosts_t0, back_owners),
-                    physical.movement_phase(out, ghosts_t1, out_owners),
+                    movement_phase(back, ghosts_t0, back_owners),
+                    movement_phase(out, ghosts_t1, out_owners),
                 ]
             returners = {q for q, value in decisions.items()
                          if value[0] == "RETURN"}
@@ -2747,4 +2831,8 @@ class ResidentPlacer(VertexMatchingPlacer):
             },
             "cache": step_cache.as_dict(),
         })
+        for cache in (self.return_candidate_cache,
+                      self.return_matching_cache):
+            while len(cache) > self.return_cache_limit:
+                cache.popitem(last=False)
         self.search_time += time.time() - t0
