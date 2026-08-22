@@ -353,28 +353,25 @@ class TestResidentDecisionMechanics(unittest.TestCase):
         self.assertEqual(set(two), {0, 1})
         self.assertEqual(len(set(two.values())), 2)
 
-    def test_return_candidate_and_matching_caches_are_exact(self):
+    def test_return_candidate_cache_is_exact(self):
         initial = [(0, i, 0) for i in range(4)]
         registry = ResidentRegistry(self.arch, initial)
         registry.enter_zone(0, (1, 0, 0))
         registry.enter_zone(1, (2, 0, 1))
-        candidate_cache, matching_cache = {}, {}
+        candidate_cache = {}
         kwargs = {
             "forecast": ForecastOracle([], 0),
             "candidate_mode": "nearest",
             "candidate_cache": candidate_cache,
-            "matching_cache": matching_cache,
         }
         first = match_return_sites(
             registry, [0, 1], NextUse([]), 0, **kwargs)
-        with patch(
-                "zzx.resident.min_weight_full_bipartite_matching",
-                side_effect=AssertionError("matching cache missed")):
+        with patch("zzx.resident._box_sites",
+                   side_effect=AssertionError("candidate cache missed")):
             second = match_return_sites(
                 registry, [0, 1], NextUse([]), 0, **kwargs)
         self.assertEqual(first, second)
         self.assertTrue(candidate_cache)
-        self.assertTrue(matching_cache)
 
     def test_partial_sparse_return_match_is_completed_deterministically(self):
         initial = [(0, i, 0) for i in range(4)]

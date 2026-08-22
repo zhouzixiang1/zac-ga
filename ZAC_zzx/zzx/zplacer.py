@@ -527,7 +527,6 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.phase_cost_cache = OrderedDict()
         self.phase_cost_cache_limit = 65_536
         self.return_candidate_cache = OrderedDict()
-        self.return_matching_cache = OrderedDict()
         self.return_cache_limit = 8_192
         self.registry = None
         self.nu = None
@@ -1646,7 +1645,6 @@ class ResidentPlacer(VertexMatchingPlacer):
         physical = PhysicalIncrementalCost(len(self.mapping[0]))
         phase_cache = {}
         return_candidate_cache = self.return_candidate_cache
-        return_matching_cache = self.return_matching_cache
 
         def movement_phase(legs, ghosts=None, owners=None,
                            exact_threshold=0, batching="phase"):
@@ -1808,8 +1806,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             self.box_ratio, self.alpha_lookahead,
             forecast=self.forecast,
             candidate_mode=("forecast" if self.lookahead_horizon else "nearest"),
-            candidate_cache=return_candidate_cache,
-            matching_cache=return_matching_cache)
+            candidate_cache=return_candidate_cache)
             if eligible else {})
         physical_guard_details = []
         physical_forced_returns = set()
@@ -1961,8 +1958,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                 reg, list(returners), self.nu, layer,
                 self.box_ratio, self.alpha_lookahead,
                 forecast=self.forecast, candidate_mode=mode,
-                candidate_cache=return_candidate_cache,
-                matching_cache=return_matching_cache)
+                candidate_cache=return_candidate_cache)
                 if returners else {})
             if self.fitness_cache:
                 return_cache[returners] = value
@@ -2011,8 +2007,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                         shadow, list(key[0]), self.nu, layer,
                         self.box_ratio, self.alpha_lookahead,
                         forecast=self.forecast, candidate_mode="forecast",
-                        candidate_cache=return_candidate_cache,
-                        matching_cache=return_matching_cache)
+                        candidate_cache=return_candidate_cache)
                     if key[0] else {})
             return terminal_return_cache[key]
 
@@ -2831,8 +2826,6 @@ class ResidentPlacer(VertexMatchingPlacer):
             },
             "cache": step_cache.as_dict(),
         })
-        for cache in (self.return_candidate_cache,
-                      self.return_matching_cache):
-            while len(cache) > self.return_cache_limit:
-                cache.popitem(last=False)
+        while len(self.return_candidate_cache) > self.return_cache_limit:
+            self.return_candidate_cache.popitem(last=False)
         self.search_time += time.time() - t0

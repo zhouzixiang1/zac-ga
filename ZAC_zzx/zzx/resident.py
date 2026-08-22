@@ -181,8 +181,7 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
                        next_use: NextUse, after: int,
                        box_ratio: int = 3, alpha_lookahead: float = 0.1,
                        forecast=None, candidate_mode: str = "legacy",
-                       candidate_cache: dict | None = None,
-                       matching_cache: dict | None = None) -> dict:
+                       candidate_cache: dict | None = None) -> dict:
     """给一批回返者定存储落位：三方案箱候选 ∪ 自由位 → 最小权完美匹配。
 
     三方案（笔记 :123-131，ZAC place_qubit 的箱式化沿用 vmplacer.py:443-450 ratio=3）：
@@ -293,15 +292,6 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
 
     if not returners:
         return {}
-    matching_key = None
-    if matching_cache is not None:
-        matching_key = (
-            tuple(tuple(options) for options in column_options),
-            tuple(fallback_context[q] for q in returners),
-        )
-        cached_sites = matching_cache.get(matching_key)
-        if cached_sites is not None:
-            return {q: site for q, site in zip(returners, cached_sites)}
     # If every column has a strict local minimum and those minima are already
     # distinct, their union is the unique global optimum.  Skipping scipy in
     # this common case is exact; tied or colliding minima retain the original
@@ -315,8 +305,6 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
             break
         independent.append(ordered[0][1])
     if independent and len(set(independent)) == len(returners):
-        if matching_cache is not None:
-            matching_cache[matching_key] = tuple(independent)
         return {q: site for q, site in zip(returners, independent)}
     assignment = {}
     try:
@@ -362,8 +350,6 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     if set(assignment) != set(returners) or \
             len(set(assignment.values())) != len(returners):
         raise RuntimeError("RETURN 匹配未形成完整互异存储落位")
-    if matching_cache is not None:
-        matching_cache[matching_key] = tuple(assignment[q] for q in returners)
     return assignment
 
 
