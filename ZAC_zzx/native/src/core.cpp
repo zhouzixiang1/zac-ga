@@ -409,6 +409,81 @@ std::vector<std::vector<std::size_t>> color_phase(
   return batches_from_colors(phase, colors);
 }
 
+namespace {
+struct ReplayBatches {
+  bool feasible{true};
+  std::vector<std::vector<std::size_t>> batches;
+};
+
+ReplayBatches replay_phase_batches(const MovementPhase& phase,
+                                   std::size_t exact_threshold) {
+  auto pending = color_phase(phase, exact_threshold);
+  std::map<std::int64_t, Point> positions;
+  for (const auto& ghost : phase.ghosts) {
+    positions[ghost.atom] = ghost.position;
+  }
+  if (!phase.owners.empty()) {
+    for (std::size_t index = 0; index < phase.legs.size(); ++index) {
+      positions[phase.owners[index]] = phase.legs[index].source;
+    }
+  }
+  const auto safe = [&](const std::vector<std::size_t>& members) {
+    std::set<std::int64_t> owners;
+    std::vector<Leg> legs;
+    legs.reserve(members.size());
+    for (const auto index : members) {
+      legs.push_back(phase.legs[index]);
+      if (!phase.owners.empty()) owners.insert(phase.owners[index]);
+    }
+    std::vector<Ghost> ghosts;
+    ghosts.reserve(positions.size());
+    for (const auto& [atom, point] : positions) {
+      if (owners.count(atom) == 0U) ghosts.push_back({atom, point});
+    }
+    return ghost_hit_atoms(legs, ghosts).empty();
+  };
+
+  ReplayBatches result;
+  while (!pending.empty()) {
+    bool progressed = false;
+    for (std::size_t batch_index = 0; batch_index < pending.size();
+         ++batch_index) {
+      const auto& members = pending[batch_index];
+      if (!safe(members)) continue;
+      result.batches.push_back(members);
+      if (!phase.owners.empty()) {
+        for (const auto index : members) {
+          positions[phase.owners[index]] = phase.legs[index].target;
+        }
+      }
+      pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(batch_index));
+      progressed = true;
+      break;
+    }
+    if (progressed) continue;
+    const auto found = std::find_if(
+        pending.begin(), pending.end(),
+        [](const auto& members) { return members.size() > 1; });
+    if (found == pending.end()) {
+      result.feasible = false;
+      result.batches.clear();
+      return result;
+    }
+    const auto split_index = static_cast<std::size_t>(
+        std::distance(pending.begin(), found));
+    auto members = *found;
+    pending.erase(found);
+    std::vector<std::vector<std::size_t>> singles;
+    singles.reserve(members.size());
+    for (const auto index : members) singles.push_back({index});
+    pending.insert(
+        pending.begin() + static_cast<std::ptrdiff_t>(split_index),
+        singles.begin(), singles.end());
+  }
+  return result;
+}
+}  // namespace
+
 FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
                                  const CandidatePlan& candidate,
                                  const BoundaryConfig& config) {
@@ -441,24 +516,22 @@ FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
         throw std::invalid_argument("ghost coordinates must be finite");
       }
     }
-    if (config.enforce_single_leg_ghost) {
-      for (std::size_t index = 0; index < phase.legs.size(); ++index) {
-        std::vector<Ghost> remaining;
-        for (const auto& ghost : phase.ghosts) {
-          if (!phase.owners.empty() && ghost.atom == phase.owners[index]) continue;
-          remaining.push_back(ghost);
-        }
-        const auto hits = ghost_hit_atoms({phase.legs[index]}, remaining);
-        if (!hits.empty()) {
-          return infeasible(candidate, "phase " + std::to_string(phase_index) +
-                                         " single-leg ghost hit");
-        }
-      }
-    }
     if (phase.legs.size() > architecture.n_atoms()) {
       return infeasible(candidate, "phase has more movers than atoms");
     }
-    auto batches = color_phase(phase, config.exact_coloring_threshold);
+    auto replay = (config.enforce_single_leg_ghost
+                       ? replay_phase_batches(
+                             phase, config.exact_coloring_threshold)
+                       : ReplayBatches{
+                             true, color_phase(
+                                       phase,
+                                       config.exact_coloring_threshold)});
+    if (!replay.feasible) {
+      return infeasible(
+          candidate, "phase " + std::to_string(phase_index) +
+                         " has no ghost-safe straight-leg batch order");
+    }
+    auto batches = std::move(replay.batches);
     double phase_time = 0.0;
     for (const auto& batch : batches) {
       phase_time += expanded_batch_time(phase.legs, batch);

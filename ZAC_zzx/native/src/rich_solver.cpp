@@ -180,6 +180,11 @@ struct PlanGeometry {
   std::size_t ghost_violations{};
 };
 
+struct ReseatRepair {
+  std::vector<ReturnAssignment> reseats;
+  PlanGeometry geometry;
+};
+
 bool evaluated_less(const Evaluated& first, const Evaluated& second) {
   if (first.fitness.feasible != second.fitness.feasible) {
     return first.fitness.feasible;
@@ -870,7 +875,6 @@ class RichSolver {
       const std::vector<ReturnAssignment>& reseats) const {
     PlanGeometry geometry;
     geometry.positions_t1 = problem_.current_points;
-    std::set<std::int64_t> back_movers;
     const auto append_back = [&](const ReturnAssignment& assignment) {
       const auto q = problem_.eligible[assignment.eligible_index];
       const auto& source = problem_.current_points[q];
@@ -880,7 +884,6 @@ class RichSolver {
         geometry.back_owners.push_back(q);
       }
       geometry.positions_t1[q] = assignment.point;
-      back_movers.insert(q);
     };
     for (const auto& assignment : assignments) append_back(assignment);
     for (const auto& reseat : reseats) append_back(reseat);
@@ -926,21 +929,36 @@ class RichSolver {
 
     for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
       const auto atom_id = static_cast<std::int64_t>(atom);
-      if (back_movers.count(atom_id) == 0U) {
-        geometry.ghosts_t0.push_back({atom_id, problem_.current_points[atom]});
-      }
-      if (participants.count(atom_id) == 0U) {
-        geometry.ghosts_t1.push_back({atom_id, geometry.positions_t1[atom]});
-      }
+      geometry.ghosts_t0.push_back({atom_id, problem_.current_points[atom]});
+      geometry.ghosts_t1.push_back({atom_id, geometry.positions_t1[atom]});
     }
-    for (const auto& leg : geometry.back_legs) {
-      const auto hits = ghost_hit_atoms({leg}, geometry.ghosts_t0);
+    const auto stationary_ghosts = [](const std::vector<Ghost>& ghosts,
+                                      const std::set<std::int64_t>& movers) {
+      std::vector<Ghost> result;
+      result.reserve(ghosts.size());
+      for (const auto& ghost : ghosts) {
+        if (movers.count(ghost.atom) == 0U) result.push_back(ghost);
+      }
+      return result;
+    };
+    const std::set<std::int64_t> back_movers(
+        geometry.back_owners.begin(), geometry.back_owners.end());
+    const std::set<std::int64_t> out_movers(
+        geometry.out_owners.begin(), geometry.out_owners.end());
+    const auto back_static = stationary_ghosts(
+        geometry.ghosts_t0, back_movers);
+    const auto out_static = stationary_ghosts(
+        geometry.ghosts_t1, out_movers);
+    for (std::size_t index = 0; index < geometry.back_legs.size(); ++index) {
+      const auto hits = ghost_hit_atoms(
+          {geometry.back_legs[index]}, back_static);
       geometry.violations += hits.size();
       geometry.ghost_violations += hits.size();
       geometry.blockers.insert(hits.begin(), hits.end());
     }
-    for (const auto& leg : geometry.out_legs) {
-      const auto hits = ghost_hit_atoms({leg}, geometry.ghosts_t1);
+    for (std::size_t index = 0; index < geometry.out_legs.size(); ++index) {
+      const auto hits = ghost_hit_atoms(
+          {geometry.out_legs[index]}, out_static);
       geometry.violations += hits.size();
       geometry.ghost_violations += hits.size();
       geometry.blockers.insert(hits.begin(), hits.end());
@@ -966,7 +984,7 @@ class RichSolver {
     return evaluate_candidate(architecture_, candidate, boundary_config);
   }
 
-  std::vector<ReturnAssignment> derive_reseats(
+  ReseatRepair derive_reseats(
       const std::vector<std::int64_t>& chromosome,
       const DecodeResult& decoded,
       const std::vector<ReturnAssignment>& assignments,
@@ -1051,7 +1069,7 @@ class RichSolver {
       reseats = as_vector();
       geometry = build_geometry(decoded, assignments, reseats);
     }
-    return as_vector();
+    return {as_vector(), std::move(geometry)};
   }
 
   Evaluated evaluate_assignment(
@@ -1062,15 +1080,16 @@ class RichSolver {
       std::size_t assignment_rank, std::size_t assignment_count) {
     Evaluated result;
     result.search_nll = std::numeric_limits<double>::infinity();
-    result.decoded = decoded;
     result.assignments = assignments;
     result.return_assignment_rank = assignment_rank + 1;
     result.return_assignment_evaluated = assignment_count;
     for (const auto& assignment : assignments) {
       result.assignment_key.push_back(assignment.site_id);
     }
-    result.reseats = derive_reseats(
+    result.decoded = decoded;
+    auto reseat_repair = derive_reseats(
         chromosome, decoded, assignments, returners.size());
+    result.reseats = std::move(reseat_repair.reseats);
     result.pre_score_reseats = result.reseats.size();
     stats_.pre_score_reseats += result.pre_score_reseats;
     if (!result.reseats.empty()) {
@@ -1081,7 +1100,7 @@ class RichSolver {
         result.assignment_key.push_back(reseat.site_id);
       }
     }
-    const auto geometry = build_geometry(decoded, assignments, result.reseats);
+    const auto& geometry = reseat_repair.geometry;
     if (geometry.violations != 0) {
       result.fitness = infeasible_fitness(
           chromosome,
@@ -1094,7 +1113,7 @@ class RichSolver {
           config_.enforce_single_leg_ghost);
     }
     if (!result.fitness.feasible &&
-        result.fitness.error.find("single-leg ghost hit") != std::string::npos) {
+        result.fitness.error.find("ghost") != std::string::npos) {
       result.current_ghost_rejections = 1;
       ++stats_.current_ghost_rejections;
     }

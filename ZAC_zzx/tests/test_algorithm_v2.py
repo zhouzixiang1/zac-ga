@@ -31,7 +31,7 @@ from zzx.algorithm_v2 import (  # noqa: E402
 )
 from zzx.resident import NextUse, ResidentRegistry, match_return_sites  # noqa: E402
 from zzx.zac_zzx import ZAC_zzx  # noqa: E402
-from zzx.zplacer import ResidentPlacer  # noqa: E402
+from zzx.zplacer import ResidentPlacer, _replay_phase_batches  # noqa: E402
 
 
 def load_setting(name):
@@ -82,7 +82,31 @@ class _ExpansionRouter(Router_mixin):
         self.architecture = _ExpansionArchitecture()
 
 
+class _IdentityCoordinateArchitecture:
+    def exact_SLM_location_tuple(self, location):
+        return tuple(float(value) for value in location)
+
+
 class TestPhysicalExpansion(unittest.TestCase):
+    def test_forecast_replays_movers_at_their_actual_batch_positions(self):
+        architecture = _IdentityCoordinateArchitecture()
+        before = {0: (0, 0), 1: (2, 0)}
+        legs = (
+            (1.0, 0.0, 0.0, 1.0, 0.0),
+            (1.5, 2.0, 0.0, 0.5, 0.0),
+        )
+        with self.assertRaisesRegex(ValueError, "no ghost-safe"):
+            _replay_phase_batches(
+                architecture, legs, (0, 1), before)
+
+        safe_legs = (
+            (10.0, 0.0, 0.0, 0.0, 10.0),
+            (10.0, 2.0, 0.0, 2.0, 10.0),
+        )
+        batches, _phase = _replay_phase_batches(
+            architecture, safe_legs, (0, 1), before)
+        self.assertEqual(((0, 1),), batches)
+
     def test_reused_parked_column_moves_every_held_atom(self):
         details = _ExpansionRouter().expand_arrangement({
             "begin_locs": [

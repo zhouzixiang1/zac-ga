@@ -1,4 +1,11 @@
-"""End-to-end differential checks at the real ResidentPlacer boundary."""
+"""End-to-end native checks at the real ResidentPlacer boundary.
+
+Python/C++ semantic differential truth lives in ``test_native_rich_solver``
+where both implementations consume the exact same rich boundary DTO.  This
+module deliberately checks the separate integration contract: a full native
+run is byte-deterministic and never changes its selected candidate through the
+post-selection ghost safety net.
+"""
 from __future__ import annotations
 
 import json
@@ -20,10 +27,10 @@ from zzx.zplacer import ResidentPlacer  # noqa: E402
 TIMING_KEYS = {
     "horizon_selection_ns", "search_kernel_ns", "marshal_ns",
     "backend_search_kernel_ns", "fitness_ns", "backend_selection_ns",
-    "backend_calls", "backend_candidates", "cache", "rich_search",
+    "backend_calls", "backend_candidates", "cache",
 }
 NATIVE_WHEEL_SHA256 = (
-    "0616479e5bcf116d553dfafba3ca1cbef5ec3a4016d684f61407267710a282cc")
+    "b29219a08106addc19abfe5576601cd1fa603927f53dd44e47883d86a7aaea72")
 
 
 def architecture():
@@ -87,18 +94,23 @@ def stable_log(row):
 
 @unittest.skipUnless(native_available(), "zac_native_core wheel is not installed")
 class TestNativeResidentIntegration(unittest.TestCase):
-    def assertRunParity(self, schedule, *, horizon, seed):
-        reference = run(
-            schedule, backend="reference", horizon=horizon, seed=seed)
-        native = run(schedule, backend="native", horizon=horizon, seed=seed)
-        self.assertEqual(reference.mapping, native.mapping)
-        self.assertEqual(reference.registry.zone_seat, native.registry.zone_seat)
-        self.assertEqual(reference.registry.storage_site,
-                         native.registry.storage_site)
-        self.assertEqual(reference.rng.getstate(), native.rng.getstate())
-        self.assertEqual(len(reference.decision_log), len(native.decision_log))
-        for first, second in zip(reference.decision_log, native.decision_log):
+    def assertNativeRunContract(self, schedule, *, horizon, seed):
+        first_run = run(
+            schedule, backend="native", horizon=horizon, seed=seed)
+        repeated = run(
+            schedule, backend="native", horizon=horizon, seed=seed)
+        self.assertEqual(first_run.mapping, repeated.mapping)
+        self.assertEqual(first_run.registry.zone_seat,
+                         repeated.registry.zone_seat)
+        self.assertEqual(first_run.registry.storage_site,
+                         repeated.registry.storage_site)
+        self.assertEqual(first_run.rng.getstate(), repeated.rng.getstate())
+        self.assertEqual(len(first_run.decision_log),
+                         len(repeated.decision_log))
+        for first, second in zip(first_run.decision_log,
+                                 repeated.decision_log):
             self.assertEqual(stable_log(first), stable_log(second))
+            self.assertEqual(0, first.get("ghost_fix", 0))
             if "physical" not in first:
                 continue
             self.assertEqual(first["physical"]["move_batches"],
@@ -111,18 +123,20 @@ class TestNativeResidentIntegration(unittest.TestCase):
                     first["physical"][key], second["physical"][key],
                     delta=1e-12)
         self.assertTrue(any(
-            row.get("backend_calls", 0) for row in native.decision_log))
-        self.assertGreater(native.boundary_backend_metrics["fitness_ns"], 0)
-        nonterminal = native.backend_timing_log[:-1]
+            row.get("backend_calls", 0)
+            for row in first_run.decision_log))
+        self.assertGreater(
+            first_run.boundary_backend_metrics["fitness_ns"], 0)
+        nonterminal = first_run.backend_timing_log[:-1]
         self.assertTrue(nonterminal)
         self.assertTrue(all(row["calls"] == 1 for row in nonterminal))
         self.assertTrue(all(
             row["rich_search"]["operator_profile"] == "exact"
-            for row in native.decision_log[:-1]))
+            for row in first_run.decision_log[:-1]))
         configured = maximum_lookahead_horizon(horizon)
         self.assertTrue(all(
             row["forecast_objective"]["configured_depth"] == configured
-            for row in native.decision_log[:-1]))
+            for row in first_run.decision_log[:-1]))
 
     def test_real_toy_nl_and_bounded_decay_lk(self):
         schedule = [
@@ -132,9 +146,9 @@ class TestNativeResidentIntegration(unittest.TestCase):
             [[2, 5]],
             [[1, 5]],
         ]
-        self.assertRunParity(
+        self.assertNativeRunContract(
             schedule, horizon=decay_lookahead_spec(0), seed=7)
-        self.assertRunParity(
+        self.assertNativeRunContract(
             schedule, horizon=decay_lookahead_spec(8), seed=7)
 
     def test_seeded_random_boundary_streams(self):
@@ -147,9 +161,9 @@ class TestNativeResidentIntegration(unittest.TestCase):
                 rng.shuffle(atoms)
                 schedule.append([
                     [atoms[0], atoms[1]], [atoms[2], atoms[3]]])
-            self.assertRunParity(
+            self.assertNativeRunContract(
                 schedule, horizon=decay_lookahead_spec(0), seed=seed)
-            self.assertRunParity(
+            self.assertNativeRunContract(
                 schedule, horizon=decay_lookahead_spec(8), seed=seed)
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 import unittest
+from dataclasses import replace
 
 from zzx.boundary_problem import (
     ArchitectureSnapshot,
@@ -429,6 +430,53 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertEqual(((2, 3),), result.reseat_assignments)
         self.assertEqual(1, result.pre_score_reseats)
         self.assertEqual((0, 0), result.winner.chromosome)
+
+    def test_moving_atom_target_is_a_hard_ghost_during_out_phase(self):
+        arch = ArchitectureSnapshot.from_coordinates(
+            2, ((0, 0), (2, 0)))
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(Point(0, 0), Point(2, 0)),
+            participants=(0, 1),
+            gate_domains=((
+                # This short option used to look attractive because atom 1
+                # was omitted from the out-phase ghost set while moving.  Its
+                # target (0.5, 0) lies on atom 0's single-leg trajectory.
+                RichGateOption(
+                    10, 0, 1, Point(1, 0), Point(0.5, 0)),
+                # Parallel vertical legs are longer but strictly ghost-safe.
+                RichGateOption(
+                    11, 0, 1, Point(0, 10), Point(2, 10)),
+            ),),
+            static_ghosts=(),
+            eligible=(),
+            min_returns=0,
+            eviction_order_indices=(),
+            forced_return_mask=(),
+            return_domains=(),
+            matched_gate_genes=(0,),
+            boundary_id="moving-endpoint-ghost",
+        )
+        config = RichSearchConfig(operator_profile="exact")
+        state = random.Random(0).getstate()
+        reference = solve_rich_exact_reference(problem, config, state)
+        native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, state)
+        self.assertEqual((1,), reference.gate_option_indices)
+        self.assertEqual(reference.winner, native.winner)
+        self.assertEqual(reference.gate_option_indices,
+                         native.gate_option_indices)
+        bad_only = replace(
+            problem,
+            gate_domains=((problem.gate_domains[0][0],),),
+            boundary_id="moving-endpoint-ghost-bad-only",
+        )
+        with self.assertRaisesRegex(RuntimeError, "no feasible candidate"):
+            solve_rich_exact_reference(bad_only, config, state)
+        with self.assertRaisesRegex(
+                NativeBackendError, "no feasible candidate"):
+            NativeResidentBackend(arch).solve_rich_boundary(
+                bad_only, config, state)
 
     def test_indexed_and_legacy_geometry_are_identical(self):
         config = RichSearchConfig(operator_profile="exact")

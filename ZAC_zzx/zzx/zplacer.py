@@ -70,7 +70,7 @@ from zzx.boundary_problem import (
 )
 from zzx.algorithm_v2 import (AdaptiveHorizonDecision, CacheStats,
                               ForecastOracle, PhysicalCostBreakdown,
-                              PhysicalIncrementalCost,
+                              PhysicalIncrementalCost, MovementPhaseCost,
                               build_seed_population, is_adaptive_lookahead,
                               is_decay_lookahead,
                               maximum_lookahead_horizon,
@@ -111,6 +111,34 @@ class _BackendMovementPhase:
     @property
     def movers(self):
         return self.physical.movers
+
+
+def _replay_phase_batches(architecture, legs, owners, positions,
+                          *, batching="phase"):
+    """Replay a colored phase against each atom's position before every batch.
+
+    Movers are not conservatively frozen at both endpoints.  They remain at
+    their source until their selected batch and at their target afterwards.
+    This mirrors the router's real batch-order audit and declares infeasible
+    only a cycle of straight legs that cannot be ordered safely.
+    """
+    if len(legs) != len(owners):
+        raise ValueError("phase legs and owners are not aligned")
+    phase = BoundaryMovementPhase(
+        legs=tuple(BoundaryLeg(
+            float(leg[0]),
+            BoundaryPoint(float(leg[1]), float(leg[2])),
+            BoundaryPoint(float(leg[3]), float(leg[4])))
+            for leg in legs),
+        ghosts=tuple(BoundaryGhost(
+            int(atom), BoundaryPoint(*map(float,
+                architecture.exact_SLM_location_tuple(location))))
+            for atom, location in sorted(positions.items())),
+        owners=tuple(int(owner) for owner in owners),
+        batching=batching,
+    )
+    from zzx.reference_backend import replay_phase_batches
+    return replay_phase_batches(phase), phase
 
 
 class BatchAwarePlacer(VertexMatchingPlacer):
@@ -573,7 +601,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.return_candidate_limit: int = int(
             params.get("return_candidate_limit", 6))
         self.return_assignment_k: int = int(
-            params.get("return_assignment_k", 4))
+            params.get("return_assignment_k", 8))
         self.operator_profile: str = params.get("operator_profile", "exact")
         if not 1 <= self.elite_count <= self.population_size:
             raise ValueError("elite_count must be in [1, population_size]")
@@ -2090,6 +2118,21 @@ class ResidentPlacer(VertexMatchingPlacer):
                 opts = self._filter_menu_ghosts(
                     opts, q1, q2, static_ghosts,
                     max(1, len(list_gate)))
+            if use_rich_boundary:
+                # Candidate-level deterministic gate repair must see the same
+                # complete zone domain as the final Python safety net.  A seat
+                # promised by an earlier forecast stays first in the menu, but
+                # it is not allowed to make the real target boundary
+                # impossible.  Exact ghost replay may therefore override a
+                # stale commitment by selecting another executable gate site.
+                seen = {tuple(option[0]) for option in opts}
+                complete = self._build_opts(
+                    set(self._all_zone_sites()), q1, q2, blocked)
+                for option in sorted(
+                        complete, key=lambda row: (row[1], row[0])):
+                    if tuple(option[0]) not in seen:
+                        opts.append(option)
+                        seen.add(tuple(option[0]))
             if not opts:
                 raise RuntimeError(f"layer {next_layer} 门 ({q1},{q2}) 无合法门位")
             candidates.append(opts)
@@ -2261,7 +2304,13 @@ class ResidentPlacer(VertexMatchingPlacer):
                 for i, q in enumerate(eligible):
                     if q in physical_forced_returns:
                         bits[i] = 1
-            if active_horizon > 0 and self.ablation_policy == "optimize":
+            if (not self.decay_lookahead
+                    and active_horizon > 0
+                    and self.ablation_policy == "optimize"):
+                # The pairwise commitment projection belongs to the legacy
+                # discrete-horizon search.  Formal decay M4 has already scored
+                # the coupled future geometry and its native winner must not be
+                # rewritten by a second Python-only normalization rule.
                 bits = resolve_commitment_conflicts(bits)
             selected = sum(bits)
             if selected < min_returns:
@@ -2411,6 +2460,21 @@ class ResidentPlacer(VertexMatchingPlacer):
             phases, exposures, terms = [], 0, []
             batching = ("greedy" if self.ablation_fitness_mode == "lumped_greedy"
                         else "phase")
+
+            def replayed_movement_phase(legs, owners, positions):
+                batches, boundary = _replay_phase_batches(
+                    arch, tuple(legs), tuple(owners), positions,
+                    batching=batching)
+                physical_value = MovementPhaseCost(
+                    batches=len(batches),
+                    move_time_us=sum(
+                        physical._expanded_batch_time(legs, members)
+                        for members in batches),
+                    total_distance_um=sum(float(leg[0]) for leg in legs),
+                    movers=len(legs),
+                )
+                return _BackendMovementPhase(physical_value, boundary)
+
             sim_locations = {
                 q: tuple(sites[q]) if q in returners
                 else tuple(reg.current_pos(q))
@@ -2546,35 +2610,64 @@ class ResidentPlacer(VertexMatchingPlacer):
                     location for q, location in sim_locations.items()
                     if q not in future_participants and reg._is_zone(location)}
                 chosen_rows, used_sites = [], set()
+
+                def future_gate_geometry(locations, rows):
+                    after = dict(locations)
+                    legs, owners = [], []
+                    for gate, pair in rows:
+                        for q, target in zip(gate, pair):
+                            p0 = arch.exact_SLM_location_tuple(locations[q])
+                            p1 = arch.exact_SLM_location_tuple(target)
+                            distance = math.dist(p0, p1)
+                            if distance > 1e-9:
+                                legs.append((distance, *p0, *p1))
+                                owners.append(q)
+                            after[q] = tuple(target)
+                    movers = set(owners)
+                    static_ghosts = [
+                        (atom, *arch.exact_SLM_location_tuple(location))
+                        for atom, location in locations.items()
+                        if atom not in movers]
+                    hits = tuple(sorted({
+                        int(hit[0])
+                        for leg in legs
+                        for hit in leg_hits(leg, static_ghosts)
+                    }))
+                    try:
+                        batches, boundary = _replay_phase_batches(
+                            arch, legs, owners, locations,
+                            batching=batching)
+                    except ValueError:
+                        batches, boundary = None, None
+                    return legs, owners, after, hits, batches, boundary
+
                 for q1, q2 in gates:
+                    rejection_counts = {
+                        "occupied_target": 0,
+                        "no_reseat_site": 0,
+                        "gate_endpoint": 0,
+                        "reseat_endpoint": 0,
+                    }
+
                     def score_future_site(site):
                         pair = local_pair(q1, q2, site)
                         if pair[0] in blocked or pair[1] in blocked:
+                            rejection_counts["occupied_target"] += 1
                             return None
                         local_locations = dict(sim_locations)
-                        legs, owners = [], []
-                        ghosts = [
-                            (atom, *arch.exact_SLM_location_tuple(location))
-                            for atom, location in local_locations.items()
-                            if atom not in future_participants
-                        ]
-                        for q, target in zip((q1, q2), pair):
-                            p0 = arch.exact_SLM_location_tuple(local_locations[q])
-                            p1 = arch.exact_SLM_location_tuple(target)
-                            distance = math.dist(p0, p1)
-                            if distance <= 1e-9:
-                                continue
-                            leg = (distance, *p0, *p1)
-                            legs.append(leg)
-                            owners.append(q)
-                        hit_atoms = sorted({
-                            int(hit[0])
-                            for leg in legs
-                            for hit in leg_hits(leg, ghosts)
-                        })
+                        prospective_rows = chosen_rows + [((q1, q2), pair)]
+                        (combined_legs, combined_owners, _combined_after,
+                         hit_atoms, _combined_batches,
+                         _combined_boundary) = future_gate_geometry(
+                            local_locations, prospective_rows)
+                        # A hit future participant is not treated as a static
+                        # obstacle or ignored.  It performs an explicit
+                        # pre-gate cycle to storage and then re-enters with its
+                        # gate.  Nonparticipants use the same deterministic
+                        # RESEAT phase.  Both movements are included in the
+                        # rollout cost and endpoint replay below.
                         relocations = {}
-                        relocation_legs, relocation_owners = [], []
-                        for atom in hit_atoms:
+                        for atom in sorted(set(hit_atoms)):
                             source = tuple(local_locations[atom])
                             source_xy = arch.exact_SLM_location_tuple(source)
                             center = (tuple(arch.nearest_storage_site(*source))
@@ -2597,40 +2690,57 @@ class ResidentPlacer(VertexMatchingPlacer):
                                 target_xy = arch.exact_SLM_location_tuple(candidate)
                                 move_distance = math.dist(source_xy, target_xy)
                                 move_leg = (move_distance, *source_xy, *target_xy)
-                                stationary = [
-                                    (other, *arch.exact_SLM_location_tuple(location))
-                                    for other, location in local_locations.items()
-                                    if other != atom
-                                    and other not in future_participants]
-                                if (move_distance > 1e-9
-                                        and leg_hits(move_leg, stationary)):
-                                    continue
-                                candidate_ghost = [(atom, *target_xy)]
-                                if any(leg_hits(leg, candidate_ghost)
-                                       for leg in legs):
+                                try:
+                                    _replay_phase_batches(
+                                        arch, (move_leg,), (atom,),
+                                        local_locations, batching=batching)
+                                except ValueError:
                                     continue
                                 chosen = tuple(candidate)
-                                if move_distance > 1e-9:
-                                    relocation_legs.append(move_leg)
-                                    relocation_owners.append(atom)
                                 break
                             if chosen is None:
+                                rejection_counts["no_reseat_site"] += 1
                                 return None
                             relocations[atom] = chosen
                             local_locations[atom] = chosen
-                        updated_ghosts = [
-                            (atom, *arch.exact_SLM_location_tuple(location))
-                            for atom, location in local_locations.items()
-                            if atom not in future_participants
-                        ]
-                        if any(leg_hits(leg, updated_ghosts) for leg in legs):
+
+                        (combined_legs, combined_owners, _combined_after,
+                         remaining_hits, combined_batches,
+                         combined_boundary) = future_gate_geometry(
+                            local_locations, prospective_rows)
+                        if remaining_hits or combined_batches is None:
+                            rejection_counts["gate_endpoint"] += 1
                             return None
-                        relocation_phase = movement_phase(
-                            relocation_legs, ghosts=ghosts,
-                            owners=relocation_owners, batching=batching)
-                        phase = movement_phase(
-                            legs, ghosts=updated_ghosts, owners=owners,
-                            batching=batching)
+
+                        relocation_legs, relocation_owners = [], []
+                        for atom, target in sorted(relocations.items()):
+                            p0 = arch.exact_SLM_location_tuple(
+                                sim_locations[atom])
+                            p1 = arch.exact_SLM_location_tuple(target)
+                            distance = math.dist(p0, p1)
+                            if distance > 1e-9:
+                                relocation_legs.append(
+                                    (distance, *p0, *p1))
+                                relocation_owners.append(atom)
+                        try:
+                            relocation_phase = replayed_movement_phase(
+                                relocation_legs, relocation_owners,
+                                sim_locations)
+                        except ValueError:
+                            rejection_counts["reseat_endpoint"] += 1
+                            return None
+                        phase_physical = MovementPhaseCost(
+                            batches=len(combined_batches),
+                            move_time_us=sum(
+                                physical._expanded_batch_time(
+                                    combined_legs, members)
+                                for members in combined_batches),
+                            total_distance_um=sum(
+                                float(leg[0]) for leg in combined_legs),
+                            movers=len(combined_legs),
+                        )
+                        phase = _BackendMovementPhase(
+                            phase_physical, combined_boundary)
                         score_key = (relocation_phase, phase, q1, q2)
                         if (self.fitness_cache
                                 and score_key in rollout_phase_score_cache):
@@ -2651,21 +2761,32 @@ class ResidentPlacer(VertexMatchingPlacer):
                             objective, pair, relocations, relocation_phase = scored
                             options.append((objective, site, pair, relocations,
                                             relocation_phase))
-                    if not options:
-                        # The local window is a speed path, not a semantic
-                        # restriction.  Fall back to the complete zone domain,
-                        # retaining the same single-leg ghost hard condition.
+                    if not options and not self.decay_lookahead:
+                        # Preserve the historical discrete-H regression
+                        # contract.  Formal decay M4 intentionally stops at the
+                        # bounded support and lets the audited outer surrogate
+                        # handle a missing continuation.
                         for site in self._all_zone_sites():
                             if site in used_sites:
                                 continue
                             scored = score_future_site(site)
                             if scored is not None:
-                                objective, pair, relocations, relocation_phase = scored
-                                options.append((objective, site, pair, relocations,
-                                                relocation_phase))
+                                (objective, pair, relocations,
+                                 relocation_phase) = scored
+                                options.append((
+                                    objective, site, pair, relocations,
+                                    relocation_phase))
                     if not options:
+                        # This is deliberately a bounded rollout rather than a
+                        # nested placement search.  Failure is propagated to
+                        # the outer forecast surrogate; it never removes the
+                        # corresponding current candidate from the native GA.
                         raise RuntimeError(
-                            "bounded forecast has no ghost-safe gate placement")
+                            "bounded forecast has no ghost-safe gate placement: "
+                            f"boundary={layer}, future_layer={_absolute_layer}, "
+                            f"offset={offset}, gate=({q1},{q2}), "
+                            f"chosen_gates={len(chosen_rows)}, "
+                            f"rejections={rejection_counts}")
                     _, site, pair, relocations, relocation_phase = min(options)
                     if relocation_phase.boundary.legs:
                         phases.append(relocation_phase)
@@ -2676,23 +2797,24 @@ class ResidentPlacer(VertexMatchingPlacer):
                     chosen_rows.append(((q1, q2), pair))
 
                 before = dict(sim_locations)
-                legs, owners = [], []
-                for gate, pair in chosen_rows:
-                    for q, target in zip(gate, pair):
-                        p0 = arch.exact_SLM_location_tuple(before[q])
-                        p1 = arch.exact_SLM_location_tuple(target)
-                        distance = math.dist(p0, p1)
-                        if distance > 1e-9:
-                            legs.append((distance, *p0, *p1))
-                            owners.append(q)
-                        sim_locations[q] = tuple(target)
+                (legs, owners, after, static_hits,
+                 replayed_batches, replayed_boundary) = future_gate_geometry(
+                    before, chosen_rows)
+                if static_hits or replayed_batches is None:
+                    raise RuntimeError(
+                        "bounded forecast retained an unsafe gate phase")
+                sim_locations = after
                 if legs:
-                    ghosts = [(q, *arch.exact_SLM_location_tuple(location))
-                              for q, location in before.items()
-                              if q not in future_participants]
-                    phases.append(movement_phase(
-                        legs, ghosts=ghosts, owners=owners,
-                        batching=batching))
+                    phases.append(_BackendMovementPhase(
+                        MovementPhaseCost(
+                            batches=len(replayed_batches),
+                            move_time_us=sum(
+                                physical._expanded_batch_time(legs, members)
+                                for members in replayed_batches),
+                            total_distance_um=sum(
+                                float(leg[0]) for leg in legs),
+                            movers=len(legs)),
+                        replayed_boundary))
                 # Every atom sitting in an illuminated entanglement zone but
                 # absent from this future gate layer is physically exposed.
                 # Restricting this to the current boundary's decision genes
@@ -2739,11 +2861,67 @@ class ResidentPlacer(VertexMatchingPlacer):
                         terminal_legs.append((distance, *p0, *p1))
                         terminal_owners.append(q)
                 if terminal_legs:
-                    terminal_phase = movement_phase(
-                        terminal_legs, owners=terminal_owners,
-                        batching=batching)
-                    phases.append(terminal_phase)
-                    terminal_phases = (terminal_phase,)
+                    try:
+                        terminal_phase = replayed_movement_phase(
+                            terminal_legs, terminal_owners, sim_locations)
+                    except ValueError:
+                        terminal_phase = None
+                    if terminal_phase is not None:
+                        phases.append(terminal_phase)
+                        terminal_phases = (terminal_phase,)
+                    else:
+                        # A combined terminal assignment can be individually
+                        # impossible even though its Hungarian distance is
+                        # small.  Fall back to deterministic one-atom phases,
+                        # selecting the nearest currently free storage point
+                        # whose complete source/target endpoint replay is safe.
+                        # This is a real schedule (and therefore potentially
+                        # slower), not a finite ghost penalty.
+                        sequential_locations = dict(sim_locations)
+                        occupied = {
+                            tuple(location)
+                            for q, location in sequential_locations.items()
+                            if q not in terminal and not reg._is_zone(location)
+                        }
+                        sequential_phases = []
+                        for q in terminal:
+                            source = tuple(sequential_locations[q])
+                            source_xy = arch.exact_SLM_location_tuple(source)
+                            preferred = tuple(terminal_sites[q])
+                            alternatives = [preferred]
+                            alternatives.extend(sorted(
+                                (tuple(site) for site in _all_storage_sites(arch)
+                                 if tuple(site) != preferred),
+                                key=lambda site: (
+                                    math.dist(
+                                        source_xy,
+                                        arch.exact_SLM_location_tuple(site)),
+                                    site)))
+                            selected_site = None
+                            selected_phase = None
+                            for site in alternatives:
+                                if site in occupied:
+                                    continue
+                                target_xy = arch.exact_SLM_location_tuple(site)
+                                distance = math.dist(source_xy, target_xy)
+                                leg = (distance, *source_xy, *target_xy)
+                                try:
+                                    candidate_phase = replayed_movement_phase(
+                                        (leg,), (q,), sequential_locations)
+                                except ValueError:
+                                    continue
+                                selected_site = site
+                                selected_phase = candidate_phase
+                                break
+                            if selected_site is None:
+                                raise RuntimeError(
+                                    "terminal RETURN has no ghost-safe storage site")
+                            sequential_locations[q] = selected_site
+                            occupied.add(selected_site)
+                            if selected_phase.boundary.legs:
+                                sequential_phases.append(selected_phase)
+                        phases.extend(sequential_phases)
+                        terminal_phases = tuple(sequential_phases)
                 else:
                     terminal_phases = ()
                 # Terminal closure is valued at the last actually visible
@@ -3140,29 +3318,13 @@ class ResidentPlacer(VertexMatchingPlacer):
         rich_forecast_terms = ()
         return_option_reasons = {}
         selected_return_audit = []
+        native_candidates = candidates
         if self.decay_lookahead:
             if forced_cycle_candidates or cycle_candidates:
                 raise RuntimeError(
                     "formal decay boundary cannot contain legacy cycle search")
             if rich_config is None:
                 raise RuntimeError("formal decay search config was not resolved")
-
-            rich_gate_domains = []
-            for column, domain in enumerate(candidates):
-                rich_domain = []
-                for site, _weight, q1, q2 in domain:
-                    site = tuple(site)
-                    target1, target2 = self._pair_seats(q1, q2, site)
-                    rich_domain.append(RichGateOption(
-                        site_id=self.boundary_site_id[site],
-                        q1=int(q1),
-                        q2=int(q2),
-                        target1=None,
-                        target2=None,
-                        target1_site_id=self.boundary_site_id[tuple(target1)],
-                        target2_site_id=self.boundary_site_id[tuple(target2)],
-                    ))
-                rich_gate_domains.append(tuple(rich_domain))
 
             occupied_storage = reg.occupied_storage()
             eligible_index = {q: index for index, q in enumerate(eligible)}
@@ -3299,91 +3461,310 @@ class ResidentPlacer(VertexMatchingPlacer):
                     return_option_reasons[(q, site)] = reasons
                 provisional_return_domains.append(tuple(domain))
 
+            replay_by_depth_cache = {}
+            replay_failure = object()
+
             def replay_by_depth(returners, sites, target_placements):
-                _phases, _exposures, replay_terms = forecast_phases(
-                    frozenset(returners), sites, target_placements)
-                by_depth = {}
-                for replay_term in replay_terms:
-                    _objective, breakdown = physical.score(
-                        replay_term["phases"],
-                        replay_term["idle_exposures"], ())
-                    offset = int(replay_term["offset"])
-                    by_depth[offset] = (
-                        by_depth.get(offset, 0.0)
-                        + breakdown.negative_log_fidelity)
+                placement_rows = []
+                for value in target_placements:
+                    if isinstance(value, dict):
+                        gate = tuple(int(q) for q in value["gate"])
+                        seats = tuple(tuple(seat) for seat in value["seats"])
+                    else:
+                        gate = (int(value[2]), int(value[3]))
+                        seats = tuple(
+                            tuple(seat) for seat in self._pair_seats(
+                                gate[0], gate[1], value[0]))
+                    placement_rows.append((gate, seats))
+                cache_key = (
+                    tuple(sorted(int(q) for q in returners)),
+                    tuple(sorted(
+                        (int(q), tuple(site)) for q, site in sites.items())),
+                    tuple(placement_rows),
+                )
+                cached = replay_by_depth_cache.get(cache_key, None)
+                if cached is replay_failure:
+                    raise RuntimeError("cached bounded forecast failure")
+                if cached is not None:
+                    return dict(cached)
+                try:
+                    _phases, _exposures, replay_terms = forecast_phases(
+                        frozenset(returners), sites, target_placements)
+                    by_depth = {}
+                    for replay_term in replay_terms:
+                        _objective, breakdown = physical.score(
+                            replay_term["phases"],
+                            replay_term["idle_exposures"], ())
+                        offset = int(replay_term["offset"])
+                        by_depth[offset] = (
+                            by_depth.get(offset, 0.0)
+                            + breakdown.negative_log_fidelity)
+                except RuntimeError:
+                    replay_by_depth_cache[cache_key] = replay_failure
+                    raise
+                replay_by_depth_cache[cache_key] = tuple(sorted(by_depth.items()))
                 return by_depth
 
             terms = []
             return_future_raw = {}
+            future_rollout_fallbacks = 0
+            future_rollout_evaluated = 0
+            future_rollout_failed = 0
+            future_rollout_skipped_budget = 0
+            future_rollout_unavailable = False
             if active_horizon:
-                stay_replay = replay_by_depth((), {}, matched)
-                for q in eligible:
-                    index = eligible_index[q]
-                    choices = [("stay", None, stay_replay)]
-                    for site, _current_nll, _reasons in \
-                            provisional_return_domains[index]:
-                        replay = replay_by_depth((q,), {q: site}, matched)
-                        return_future_raw[(q, site)] = replay
-                        choices.append(("return_site", site, replay))
-                    depths = sorted({depth for _kind, _site, replay in choices
-                                     for depth in replay})
-                    for depth in depths:
-                        minimum = min(replay.get(depth, 0.0)
-                                      for _kind, _site, replay in choices)
-                        for kind, site, replay in choices:
-                            marginal = replay.get(depth, 0.0) - minimum
-                            if marginal <= 1e-15:
-                                continue
-                            terms.append(RichForecastTerm(
-                                depth=depth,
-                                kind=kind,
-                                category="routing",
-                                index=index,
-                                selector=(-1 if site is None else
-                                          self.boundary_storage_site_id[site]),
-                                nll=marginal,
-                            ))
+                # Establish one physically replayable reference placement
+                # before forming per-gene marginal terms.  The distance-only
+                # Hungarian incumbent is a useful first try, but it is not a
+                # semantic requirement and can be future-ghost-infeasible.
+                baseline_trials = []
 
-                for column, domain in enumerate(candidates):
-                    option_replays = []
-                    for selector, option in enumerate(domain):
-                        placements = list(matched)
-                        placements[column] = option
-                        option_replays.append((
-                            selector,
-                            replay_by_depth((), {}, placements),
-                        ))
-                    depths = sorted({depth for _selector, replay in option_replays
-                                     for depth in replay})
-                    for depth in depths:
-                        minimum = min(replay.get(depth, 0.0)
-                                      for _selector, replay in option_replays)
-                        for selector, replay in option_replays:
-                            marginal = replay.get(depth, 0.0) - minimum
-                            if marginal <= 1e-15:
+                def add_baseline(placements):
+                    try:
+                        replay = replay_by_depth((), {}, placements)
+                    except RuntimeError:
+                        return
+                    key = (
+                        sum(replay.values()),
+                        tuple(tuple(value["site"]) if isinstance(value, dict)
+                              else tuple(value[0]) for value in placements),
+                    )
+                    baseline_trials.append((key, list(placements), replay))
+
+                add_baseline(matched)
+                if not baseline_trials:
+                    found = False
+                    for column, domain in enumerate(candidates):
+                        # Reference repair follows the same bounded forecast
+                        # support; searching the complete current gate domain
+                        # here would turn lookahead into a second placer.
+                        for option in domain[:self.return_candidate_limit]:
+                            placements = list(matched)
+                            placements[column] = option
+                            add_baseline(placements)
+                            if baseline_trials:
+                                found = True
+                                break
+                        if found:
+                            break
+                if not baseline_trials:
+                    joint_space = math.prod(
+                        len(domain) for domain in candidates)
+                    if joint_space <= self.direct_enumeration_limit:
+                        for placements in product(*candidates):
+                            add_baseline(placements)
+                            if baseline_trials:
+                                break
+                    else:
+                        # Bounded two-column repair for a wide current front.
+                        # It is deterministic placement preparation, not a
+                        # nested future GA, and runs only after every one-gene
+                        # repair failed.
+                        support = 6
+                        found = False
+                        for first in range(len(candidates)):
+                            for second in range(first + 1, len(candidates)):
+                                for left in candidates[first][:support]:
+                                    for right in candidates[second][:support]:
+                                        placements = list(matched)
+                                        placements[first] = left
+                                        placements[second] = right
+                                        add_baseline(placements)
+                                        if baseline_trials:
+                                            found = True
+                                            break
+                                    if found:
+                                        break
+                                if found:
+                                    break
+                            if found:
+                                break
+                if not baseline_trials:
+                    # Forecasting is a ranking aid, never a current-feasibility
+                    # constraint.  If the bounded deterministic rollout cannot
+                    # construct a safe reference, keep the complete current
+                    # domain and omit future terms for this boundary.  No
+                    # synthetic ghost penalty is introduced.
+                    baseline_placements = list(matched)
+                    stay_replay = {}
+                    future_rollout_unavailable = True
+                else:
+                    _baseline_key, baseline_placements, stay_replay = min(
+                        baseline_trials, key=lambda value: value[0])
+
+                    def conservative_replay(safe_replays):
+                        """Worst componentwise cost from real safe rollouts.
+
+                        A failed forecast option receives this executable
+                        physical surrogate only for ranking.  The option stays
+                        in the current domain and the current native evaluator
+                        remains solely responsible for feasibility.
+                        """
+                        depths = sorted({
+                            depth for replay in safe_replays for depth in replay
+                        })
+                        return {
+                            depth: max(replay.get(depth, 0.0)
+                                       for replay in safe_replays)
+                            for depth in depths
+                        }
+
+                    for column, domain in enumerate(candidates):
+                        raw_replays = []
+                        safe_replays = []
+                        # The current native domain remains complete so rare
+                        # ghost-safe distant placements are always reachable.
+                        # Forecast preparation is a bounded deterministic
+                        # proxy: replay the current-cost-leading support plus
+                        # the selected safe reference, and assign the measured
+                        # conservative surrogate to the unsampled tail.
+                        reference_selector = next(
+                            (selector for selector, option in enumerate(domain)
+                             if option == baseline_placements[column]), 0)
+                        forecast_selectors = set(range(min(
+                            len(domain), self.return_candidate_limit)))
+                        forecast_selectors.add(reference_selector)
+                        for selector, option in enumerate(domain):
+                            if selector not in forecast_selectors:
+                                raw_replays.append(None)
+                                future_rollout_skipped_budget += 1
                                 continue
-                            terms.append(RichForecastTerm(
-                                depth=depth,
-                                kind="gate_option",
-                                category="routing",
-                                index=column,
-                                selector=selector,
-                                nll=marginal,
-                            ))
+                            future_rollout_evaluated += 1
+                            placements = list(baseline_placements)
+                            placements[column] = option
+                            try:
+                                replay = replay_by_depth((), {}, placements)
+                            except RuntimeError:
+                                replay = None
+                                future_rollout_failed += 1
+                            raw_replays.append(replay)
+                            if replay is not None:
+                                safe_replays.append(replay)
+                        # Replacing a column with the reference option is always
+                        # replayable, but fail closed if that invariant drifts.
+                        if not safe_replays:
+                            raise RuntimeError(
+                                f"M4 gate {column} lost its safe reference")
+                        fallback = conservative_replay(safe_replays)
+                        option_replays = []
+                        for selector, replay in enumerate(raw_replays):
+                            if replay is None:
+                                replay = fallback
+                                future_rollout_fallbacks += 1
+                            option_replays.append((selector, replay))
+                        depths = sorted({
+                            depth for _selector, replay in option_replays
+                            for depth in replay
+                        })
+                        for depth in depths:
+                            minimum = min(
+                                replay.get(depth, 0.0)
+                                for _selector, replay in option_replays)
+                            for selector, replay in option_replays:
+                                marginal = replay.get(depth, 0.0) - minimum
+                                if marginal <= 1e-15:
+                                    continue
+                                terms.append(RichForecastTerm(
+                                    depth=depth,
+                                    kind="gate_option",
+                                    category="routing",
+                                    index=column,
+                                    selector=selector,
+                                    nll=marginal,
+                                ))
+
+                    # RETURN-position marginals use the same safe gate
+                    # reference.  Unsafe bounded forecasts receive the worst
+                    # cost of an actually executable choice; domains are never
+                    # filtered by lookahead.
+                    for q in eligible:
+                        index = eligible_index[q]
+                        raw_choices = [("stay", None, stay_replay)]
+                        safe_replays = [stay_replay]
+                        for site, _current_nll, _reasons in \
+                                provisional_return_domains[index]:
+                            future_rollout_evaluated += 1
+                            try:
+                                replay = replay_by_depth(
+                                    (q,), {q: site}, baseline_placements)
+                            except RuntimeError:
+                                replay = None
+                                future_rollout_failed += 1
+                            raw_choices.append(("return_site", site, replay))
+                            if replay is not None:
+                                safe_replays.append(replay)
+                        fallback = conservative_replay(safe_replays)
+                        choices = []
+                        for kind, site, replay in raw_choices:
+                            if replay is None:
+                                replay = fallback
+                                future_rollout_fallbacks += 1
+                            choices.append((kind, site, replay))
+                            if site is not None:
+                                return_future_raw[(q, site)] = replay
+                        depths = sorted({
+                            depth for _kind, _site, replay in choices
+                            for depth in replay
+                        })
+                        for depth in depths:
+                            minimum = min(
+                                replay.get(depth, 0.0)
+                                for _kind, _site, replay in choices)
+                            for kind, site, replay in choices:
+                                marginal = replay.get(depth, 0.0) - minimum
+                                if marginal <= 1e-15:
+                                    continue
+                                terms.append(RichForecastTerm(
+                                    depth=depth,
+                                    kind=kind,
+                                    category="routing",
+                                    index=index,
+                                    selector=(-1 if site is None else
+                                              self.boundary_storage_site_id[site]),
+                                    nll=marginal,
+                                ))
+
+            rich_gate_domains = []
+            for domain in native_candidates:
+                rich_domain = []
+                for site, _weight, q1, q2 in domain:
+                    site = tuple(site)
+                    target1, target2 = self._pair_seats(q1, q2, site)
+                    rich_domain.append(RichGateOption(
+                        site_id=self.boundary_site_id[site],
+                        q1=int(q1),
+                        q2=int(q2),
+                        target1=None,
+                        target2=None,
+                        target1_site_id=self.boundary_site_id[tuple(target1)],
+                        target2_site_id=self.boundary_site_id[tuple(target2)],
+                    ))
+                rich_gate_domains.append(tuple(rich_domain))
+            native_matched = self._match_gates(
+                native_candidates, list_gate) if n_gates else []
+            native_matched_genes = []
+            for column, placement in enumerate(native_matched):
+                site = tuple(placement["site"])
+                native_matched_genes.append(next(
+                    (index for index, option in enumerate(
+                        native_candidates[column])
+                     if tuple(option[0]) == site), 0))
 
             rich_return_domains = []
             for index, q in enumerate(eligible):
                 domain = []
                 for site, current_nll, reasons in \
                         provisional_return_domains[index]:
-                    future_nll = sum(
-                        forecast.future_weight(depth) * nll
-                        for depth, nll in return_future_raw.get(
-                            (q, site), {}).items())
                     domain.append(RichReturnOption(
                         site_id=self.boundary_storage_site_id[site],
                         point=None,
-                        cost=float(current_nll + future_nll),
+                        # K-best matching is generated from executable current
+                        # transfer physics.  Decayed future site value is
+                        # applied exactly once by the return_site forecast term
+                        # when those assignments are compared.  Mixing it into
+                        # this preselection cost could hide every ghost-safe
+                        # current assignment behind a speculative forecast.
+                        cost=float(current_nll),
                         site_location=site,
                     ))
                     return_option_reasons[(q, site)] = reasons
@@ -3410,7 +3791,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                     or q in physical_forced_returns
                     for q in eligible),
                 return_domains=tuple(rich_return_domains),
-                matched_gate_genes=tuple(matched_genes),
+                matched_gate_genes=tuple(native_matched_genes),
                 decision_policy=self.ablation_policy,
                 occupied_storage_site_ids=tuple(sorted(
                     self.boundary_storage_site_id[tuple(site)]
@@ -3540,6 +3921,15 @@ class ResidentPlacer(VertexMatchingPlacer):
                 "forecast_terms_skipped_cutoff": int(
                     native_rich_result.forecast_terms_skipped_cutoff),
                 "forecast_nll": float(native_rich_result.forecast_nll),
+                "future_rollout_fallbacks": int(
+                    future_rollout_fallbacks),
+                "future_rollout_evaluated": int(
+                    future_rollout_evaluated),
+                "future_rollout_failed": int(future_rollout_failed),
+                "future_rollout_skipped_budget": int(
+                    future_rollout_skipped_budget),
+                "future_rollout_unavailable": bool(
+                    future_rollout_unavailable),
                 "search_negative_log_fidelity": float(
                     native_rich_result.search_negative_log_fidelity),
                 "return_assignment_rank": int(
@@ -3869,15 +4259,14 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.transition_cache.move_to_end(state_key)
         while len(self.transition_cache) > self.transition_cache_limit:
             self.transition_cache.popitem(last=False)
-        placed = decode(best_chrom)
         if native_rich_result is not None:
-            replayed_option_indices = tuple(
-                candidates[column].index(chosen)
-                for column, chosen in enumerate(placed))
-            if replayed_option_indices != tuple(
-                    native_rich_result.gate_option_indices):
-                raise RuntimeError(
-                    "native rich gate decode disagrees with Python replay")
+            placed = [
+                native_candidates[column][option_index]
+                for column, option_index in enumerate(
+                    native_rich_result.gate_option_indices)
+            ]
+        else:
+            placed = decode(best_chrom)
         bits = best_chrom[n_gates:]
         returners = ({q for q, bit in zip(eligible, bits) if bit}
                      | selected_cycles)
@@ -3903,6 +4292,22 @@ class ResidentPlacer(VertexMatchingPlacer):
         placements = self._repair_placements(
             deepcopy(decoded_placements), list_gate, vacated=vacated)
         placement_repaired = placements != decoded_placements
+        selected_gate_seats = {
+            int(q): tuple(seat)
+            for placement in placements
+            for q, seat in zip(placement["gate"], placement["seats"])
+        }
+        commitment_overrides = [
+            {
+                "q": int(q),
+                "pinned_seat": list(target_pins[q]),
+                "selected_seat": list(selected_gate_seats[q]),
+                "reason": "current_ghost_safe_override",
+            }
+            for q in sorted(target_pins)
+            if q in selected_gate_seats
+            and tuple(selected_gate_seats[q]) != tuple(target_pins[q])
+        ]
         if sum(1 for value in decisions.values() if value[0] == "STAY") + demand \
                 > self.theta_capacity * reg.zone_sites + 1e-12:
             raise AssertionError("Schema 2 容量约束未在 fitness 前满足")
@@ -3911,9 +4316,47 @@ class ResidentPlacer(VertexMatchingPlacer):
         # below, so the ledger never reports the stale pre-repair objective.
         pre_ghost_placements = deepcopy(placements)
         pre_ghost_decisions = dict(decisions)
-        commitment_repairs, commitment_ghost_fallback = \
-            self._repair_ghosts_with_commitments(
-                placements, decisions, target_pins)
+        if native_rich_result is not None:
+            # The native winner was already evaluated by the same two-phase,
+            # batch-order replay contract.  Recheck independently in Python,
+            # but never run the legacy double-endpoint repair that can mutate a
+            # valid ordered schedule after selection.
+            positions_t0 = {
+                q: reg.current_pos(q) for q in range(len(self.mapping[0]))}
+            positions_t1 = dict(positions_t0)
+            back_legs, back_owners = [], []
+            for q, (kind, location) in decisions.items():
+                if kind == "STAY":
+                    continue
+                p0 = arch.exact_SLM_location_tuple(positions_t0[q])
+                p1 = arch.exact_SLM_location_tuple(location)
+                distance = math.dist(p0, p1)
+                if distance > 1e-9:
+                    back_legs.append((distance, *p0, *p1))
+                    back_owners.append(q)
+                positions_t1[q] = tuple(location)
+            out_legs, out_owners = [], []
+            for placement in placements:
+                for q, seat in zip(placement["gate"], placement["seats"]):
+                    p0 = arch.exact_SLM_location_tuple(positions_t1[q])
+                    p1 = arch.exact_SLM_location_tuple(seat)
+                    distance = math.dist(p0, p1)
+                    if distance > 1e-9:
+                        out_legs.append((distance, *p0, *p1))
+                        out_owners.append(q)
+            try:
+                _replay_phase_batches(
+                    arch, back_legs, back_owners, positions_t0)
+                _replay_phase_batches(
+                    arch, out_legs, out_owners, positions_t1)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "native winner failed independent batch-order replay") from exc
+            commitment_repairs, commitment_ghost_fallback = {}, False
+        else:
+            commitment_repairs, commitment_ghost_fallback = \
+                self._repair_ghosts_with_commitments(
+                    placements, decisions, target_pins)
         physical_repair_applied = (
             placement_repaired
             or placements != pre_ghost_placements
@@ -4035,6 +4478,15 @@ class ResidentPlacer(VertexMatchingPlacer):
                         native_reference_forecast[4]),
                     "weighted_negative_log_fidelity": float(
                         native_rich_result.forecast_nll),
+                    "future_rollout_fallbacks": int(
+                        future_rollout_fallbacks),
+                    "future_rollout_evaluated": int(
+                        future_rollout_evaluated),
+                    "future_rollout_failed": int(future_rollout_failed),
+                    "future_rollout_skipped_budget": int(
+                        future_rollout_skipped_budget),
+                    "future_rollout_unavailable": bool(
+                        future_rollout_unavailable),
                     "search_negative_log_fidelity": float(
                         native_rich_result.search_negative_log_fidelity),
                 }
@@ -4103,6 +4555,15 @@ class ResidentPlacer(VertexMatchingPlacer):
                     "forecast_terms_skipped_cutoff", 0),
                 "weighted_negative_log_fidelity": selected_forecast_audit.get(
                     "weighted_negative_log_fidelity", 0.0),
+                "future_rollout_fallbacks": int(
+                    future_rollout_fallbacks),
+                "future_rollout_evaluated": int(
+                    future_rollout_evaluated),
+                "future_rollout_failed": int(future_rollout_failed),
+                "future_rollout_skipped_budget": int(
+                    future_rollout_skipped_budget),
+                "future_rollout_unavailable": bool(
+                    future_rollout_unavailable),
                 "search_negative_log_fidelity": selected_forecast_audit.get(
                     "search_negative_log_fidelity",
                     breakdown.negative_log_fidelity
@@ -4158,6 +4619,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             "physical_guard_returns": len(physical_forced_returns),
             "physical_guard": physical_guard_details,
             "committed_target_atoms": len(target_pins),
+            "commitment_overrides": commitment_overrides,
             "commitment_ghost_fallback": commitment_ghost_fallback,
             "commitment_repairs": [
                 {"q": q, "pinned_seat": list(target_pins[q]),

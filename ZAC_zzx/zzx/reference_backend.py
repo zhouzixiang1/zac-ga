@@ -247,6 +247,61 @@ def color_phase(phase: MovementPhase,
     ))
 
 
+def replay_phase_batches(
+        phase: MovementPhase,
+        exact_threshold: int = 0,
+) -> tuple[tuple[int, ...], ...]:
+    """Color, then replay batches against each atom's *current* position.
+
+    Other movers are not ghosts at both endpoints simultaneously.  They remain
+    stationary at their source until their batch executes and at their target
+    afterwards.  A blocked batch is deferred; if no batch can advance, a
+    multi-leg batch is split deterministically.  A cycle of blocked singleton
+    legs is genuinely infeasible under the registered straight-leg contract.
+    """
+    if not phase.legs:
+        return ()
+    batches = [list(value) for value in color_phase(
+        phase, exact_threshold)]
+    positions = {ghost.atom: ghost.position for ghost in phase.ghosts}
+    if phase.owners:
+        for owner, leg in zip(phase.owners, phase.legs):
+            positions[owner] = leg.source
+
+    def is_safe(members: Sequence[int]) -> bool:
+        owners = ({phase.owners[index] for index in members}
+                  if phase.owners else set())
+        ghosts = tuple(
+            Ghost(atom, point) for atom, point in sorted(positions.items())
+            if atom not in owners)
+        legs = tuple(phase.legs[index] for index in members)
+        return not ghost_hit_atoms(legs, ghosts)
+
+    replayed = []
+    while batches:
+        progressed = False
+        for batch_index, members in enumerate(batches):
+            if not is_safe(members):
+                continue
+            replayed.append(tuple(members))
+            if phase.owners:
+                for index in members:
+                    positions[phase.owners[index]] = phase.legs[index].target
+            batches.pop(batch_index)
+            progressed = True
+            break
+        if progressed:
+            continue
+        split_index = next(
+            (index for index, members in enumerate(batches)
+             if len(members) > 1), None)
+        if split_index is None:
+            raise ValueError("phase has no ghost-safe straight-leg batch order")
+        members = batches.pop(split_index)
+        batches[split_index:split_index] = [[index] for index in members]
+    return tuple(replayed)
+
+
 def _expanded_batch_time(legs: Sequence[Leg], members: Sequence[int]) -> float:
     selected = [legs[index] for index in members]
     if not selected:
@@ -304,14 +359,16 @@ def evaluate_candidate(problem: BoundaryProblem, candidate: CandidatePlan,
     movers = 0
     coherence_nll = -candidate.idle_exposures * log1p(-T_RYDBERG_US / T2_US)
     for phase_index, phase in enumerate(candidate.phases):
-        violations = (_single_leg_violation(phase)
-                      if config.enforce_single_leg_ghost else ())
-        if violations:
+        try:
+            batches = (replay_phase_batches(
+                phase, config.exact_coloring_threshold)
+                if config.enforce_single_leg_ghost else
+                color_phase(phase, config.exact_coloring_threshold))
+        except ValueError as exc:
             return FitnessResult(
                 candidate.chromosome, False, inf, inf, inf, inf, 0, 0.0,
                 0.0, candidate.idle_exposures, 0, (),
-                f"phase {phase_index} single-leg ghost hit: {list(violations)}")
-        batches = color_phase(phase, config.exact_coloring_threshold)
+                f"phase {phase_index} {exc}")
         phase_batches.append(batches)
         phase_time = sum(_expanded_batch_time(phase.legs, batch)
                          for batch in batches)
@@ -483,6 +540,22 @@ def _new_ghost_conflict(existing: Sequence[Leg], added: Sequence[Leg],
 
 def _rich_decode(problem: RichH0Problem, chromosome: Sequence[int]
                  ) -> tuple[int, ...] | None:
+    current = _rich_points(problem)
+
+    def option_geometry(option):
+        if not problem.indexed_geometry:
+            return option.legs, option.seated_ghosts
+        target1, target2 = _gate_targets(problem, option)
+        legs = []
+        ghosts = []
+        for atom, target in ((option.q1, target1), (option.q2, target2)):
+            leg = Leg.between(current[atom], target)
+            if leg.distance_um > EPS:
+                legs.append(leg)
+            else:
+                ghosts.append(Ghost(atom, target))
+        return tuple(legs), tuple(ghosts)
+
     used_sites: set[int] = set()
     accumulated_legs: list[Leg] = []
     accumulated_ghosts = list(problem.static_ghosts)
@@ -495,8 +568,9 @@ def _rich_decode(problem: RichH0Problem, chromosome: Sequence[int]
             option = domain[index]
             if option.site_id in used_sites:
                 continue
+            option_legs, _option_ghosts = option_geometry(option)
             if _new_ghost_conflict(
-                    accumulated_legs, option.legs, accumulated_ghosts):
+                    accumulated_legs, option_legs, accumulated_ghosts):
                 continue
             choice = index
             break
@@ -511,8 +585,9 @@ def _rich_decode(problem: RichH0Problem, chromosome: Sequence[int]
         option = domain[choice]
         selected.append(choice)
         used_sites.add(option.site_id)
-        accumulated_legs.extend(option.legs)
-        accumulated_ghosts.extend(option.seated_ghosts)
+        option_legs, option_ghosts = option_geometry(option)
+        accumulated_legs.extend(option_legs)
+        accumulated_ghosts.extend(option_ghosts)
     return tuple(selected)
 
 
@@ -569,7 +644,6 @@ def _rich_geometry(problem: RichH0Problem,
     positions = list(current)
     back_legs: list[Leg] = []
     back_owners: list[int] = []
-    back_movers: set[int] = set()
     for eligible_index, _site_id, target in (*assignments, *reseats):
         atom = problem.eligible[eligible_index]
         source = current[atom]
@@ -578,7 +652,6 @@ def _rich_geometry(problem: RichH0Problem,
             back_legs.append(leg)
             back_owners.append(atom)
         positions[atom] = target
-        back_movers.add(atom)
 
     violations = 0
     blockers: set[int] = set()
@@ -606,20 +679,23 @@ def _rich_geometry(problem: RichH0Problem,
             if leg.distance_um > EPS:
                 out_legs.append(leg)
                 out_owners.append(atom)
-
     ghosts_t0 = tuple(Ghost(atom, point)
-                      for atom, point in enumerate(current)
-                      if atom not in back_movers)
+                      for atom, point in enumerate(current))
     ghosts_t1 = tuple(Ghost(atom, point)
-                      for atom, point in enumerate(positions)
-                      if atom not in participants)
+                      for atom, point in enumerate(positions))
+    back_movers = set(back_owners)
+    out_movers = set(out_owners)
+    back_static = tuple(ghost for ghost in ghosts_t0
+                        if ghost.atom not in back_movers)
+    out_static = tuple(ghost for ghost in ghosts_t1
+                       if ghost.atom not in out_movers)
     ghost_violations = 0
     for leg in back_legs:
-        hits = ghost_hit_atoms((leg,), ghosts_t0)
+        hits = ghost_hit_atoms((leg,), back_static)
         ghost_violations += len(hits)
         blockers.update(hits)
     for leg in out_legs:
-        hits = ghost_hit_atoms((leg,), ghosts_t1)
+        hits = ghost_hit_atoms((leg,), out_static)
         ghost_violations += len(hits)
         blockers.update(hits)
     violations += ghost_violations
@@ -757,7 +833,7 @@ def evaluate_rich_exact_candidate(
                 enforce_ghost=config.enforce_single_leg_ghost)
             rejected = int(
                 not fitness.feasible and fitness.error is not None
-                and "single-leg ghost hit" in fitness.error)
+                and "ghost-safe" in fitness.error)
         ghost_rejections += rejected
         assignment_key = tuple(value[1] for value in assignments)
         if reseats:

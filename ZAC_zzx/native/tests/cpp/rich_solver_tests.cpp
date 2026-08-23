@@ -154,6 +154,30 @@ int main() {
   assert(reseated.pre_score_reseats == 1);
   ++tests;
 
+  ArchitectureSnapshot moving_endpoint_architecture(
+      2, {{0.0, 0.0}, {2.0, 0.0}});
+  RichH0Problem moving_endpoint;
+  moving_endpoint.n_atoms = 2;
+  moving_endpoint.current_points = {{0.0, 0.0}, {2.0, 0.0}};
+  moving_endpoint.participants = {0, 1};
+  moving_endpoint.gate_domains = {{
+      {10, 0, 1, {1.0, 0.0}, {0.5, 0.0}},
+      {11, 0, 1, {0.0, 10.0}, {2.0, 10.0}},
+  }};
+  moving_endpoint.matched_gate_genes = {0};
+  const auto endpoint_safe = solve_rich_h0(
+      moving_endpoint_architecture, moving_endpoint, exact_config(),
+      rng_fixture());
+  assert(endpoint_safe.winner.feasible);
+  assert(endpoint_safe.gate_option_indices == std::vector<std::size_t>({1}));
+  moving_endpoint.gate_domains.front().resize(1);
+  const auto endpoint_blocked = solve_rich_h0(
+      moving_endpoint_architecture, moving_endpoint, exact_config(),
+      rng_fixture());
+  assert(!endpoint_blocked.winner.feasible);
+  assert(endpoint_blocked.current_ghost_rejections == 1);
+  ++tests;
+
   problem = one_resident_problem();
   problem.forced_return_mask = {true};
   problem.forecast_terms = {

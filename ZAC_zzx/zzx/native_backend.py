@@ -392,6 +392,10 @@ class NativeResidentBackend:
             )
             marshal_out_started = perf_counter_ns()
             winner = FitnessResult.from_wire(dict(value["winner"]))
+            if not winner.feasible:
+                raise NativeBackendError(
+                    f"native rich search found no feasible candidate for "
+                    f"boundary {problem.boundary_id!r}: {winner.error}")
             stats = dict(value["stats"])
             native_timing = {
                 key: int(item) for key, item in dict(value["timing"]).items()
