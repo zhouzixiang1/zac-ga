@@ -571,7 +571,14 @@ def compile_formal_large_zac(
 
                 consume_native(route.instructions)
                 if row.decision_log is not None:
-                    decision_writer.write(dict(row.decision_log))
+                    # Wall-clock samples are aggregated in compiler_core_ns.  They
+                    # are deliberately excluded from the deterministic decision
+                    # ledger so checkpoint/resume remains byte-identical to an
+                    # uninterrupted compile.
+                    decision_writer.write({
+                        key: value for key, value in row.decision_log.items()
+                        if key not in {"horizon_selection_ns", "search_kernel_ns"}
+                    })
                 for entry in route.route_log:
                     route_writer.write(entry)
                 stages_completed += 1

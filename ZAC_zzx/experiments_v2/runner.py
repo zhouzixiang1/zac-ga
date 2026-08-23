@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import gzip
 import json
+import math
 import os
 import resource
 import shutil
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 from .contracts import RunManifest, RunStatus, sha256_file, stable_sha256
+from .plan import effective_zac_setting
 from .protocol import (ghost_policy_for_method,
                        physicalization_policy_for_method,
                        trace_protocol_for_method)
@@ -87,6 +89,8 @@ class AttemptSpec:
     expected_gates_1q: Optional[int] = None
     expected_gates_2q: Optional[int] = None
     expected_gate_ledger_sha256: str = ""
+    layer_ledger_sha256: str = ""
+    transition_count: Optional[int] = None
     require_clean_git: bool = False
     timeout_seconds: float = 600.0
     rss_limit_bytes: Optional[int] = None
@@ -113,6 +117,16 @@ class AttemptSpec:
                 raise ValueError("ablation attempt requires ablation_variant")
         elif self.ablation_variant:
             raise ValueError("ablation_variant is forbidden outside ablation attempts")
+        if self.layer_ledger_sha256 and (
+                len(self.layer_ledger_sha256) != 64 or any(
+                    value not in "0123456789abcdef"
+                    for value in self.layer_ledger_sha256)):
+            raise ValueError("layer_ledger_sha256 must be a lowercase SHA256")
+        if (self.transition_count is not None and
+                (isinstance(self.transition_count, bool) or
+                 not isinstance(self.transition_count, int) or
+                 self.transition_count < 0)):
+            raise ValueError("transition_count must be a non-negative integer")
 
 
 def _utc_now() -> str:
@@ -178,6 +192,26 @@ def _apply_metrics(manifest: RunManifest, metrics: Mapping[str, Any]) -> None:
         "observed_gates_2q": "observed_gates_2q",
         "expected_gate_ledger_sha256": "expected_gate_ledger_sha256",
         "observed_gate_ledger_sha256": "observed_gate_ledger_sha256",
+        "algorithm_revision": "algorithm_revision", "backend": "backend",
+        "native_abi_version": "native_abi_version",
+        "native_wheel_sha256": "native_wheel_sha256",
+        "compiler_and_flags": "compiler_and_flags",
+        "tuning_protocol_id": "tuning_protocol_id",
+        "rng_version": "rng_version",
+        "transition_decision_ns": "transition_decision_ns",
+        "search_kernel_ns": "search_kernel_ns", "marshal_ns": "marshal_ns",
+        "fitness_ns": "fitness_ns", "native_parse_ns": "native_parse_ns",
+        "native_serialize_ns": "native_serialize_ns",
+        "horizon_selection_ns": "horizon_selection_ns",
+        "initial_placement_ns": "initial_placement_ns",
+        "routing_ns": "routing_ns", "full_compile_ns": "full_compile_ns",
+        "observed_transition_layer_ledger_sha256":
+            "observed_transition_layer_ledger_sha256",
+        "observed_transition_count": "observed_transition_count",
+        "observed_transition_layer_ledger_source":
+            "observed_transition_layer_ledger_source",
+        "selected_horizon_counts": "selected_horizon_counts",
+        "forecast_summary": "forecast_summary",
     }
     for source, destination in aliases.items():
         if source in metrics:
@@ -229,6 +263,10 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
         qubits=spec.qubits, expected_gates_1q=spec.expected_gates_1q,
         expected_gates_2q=spec.expected_gates_2q,
         expected_gate_ledger_sha256=spec.expected_gate_ledger_sha256,
+        layer_ledger_sha256=spec.layer_ledger_sha256,
+        transition_count=spec.transition_count,
+        canonical_input_layer_ledger_sha256=spec.layer_ledger_sha256,
+        canonical_input_transition_count=spec.transition_count,
         trace_protocol=trace_protocol_for_method(spec.method),
         ghost_policy=ghost_policy_for_method(spec.method),
         physicalization_policy=physicalization_policy_for_method(spec.method),
@@ -322,6 +360,13 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
             manifest.compiler_time_ns = int(timing["compiler_time_ns"])
             if "cpu_time_ns" in timing:
                 manifest.cpu_time_ns = int(timing["cpu_time_ns"])
+            for key in (
+                    "transition_decision_ns", "search_kernel_ns", "marshal_ns",
+                    "fitness_ns", "native_parse_ns", "native_serialize_ns",
+                    "horizon_selection_ns", "initial_placement_ns", "routing_ns",
+                    "full_compile_ns"):
+                if key in timing and timing[key] is not None:
+                    setattr(manifest, key, int(timing[key]))
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
             manifest.warnings.append(f"invalid compiler_timing.json: {error}")
 
@@ -331,10 +376,46 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
             stats = json.loads(stats_path.read_text(encoding="utf-8"))
             if not isinstance(stats, Mapping):
                 raise TypeError("compiler_stats.json must contain a JSON object")
-            for key in ("qiskit_version", "mqt_qmap_version",
-                        "mqt_core_version", "python_version"):
+            for key in (
+                    "qiskit_version", "mqt_qmap_version",
+                    "instrumented_mqt_qmap_version", "mqt_core_version",
+                    "python_version", "qmap_timing_protocol",
+                    "qmap_timing_patch_sha256",
+                    "qmap_timing_parity_report_sha256",
+                    "qmap_timing_wheel_sha256",
+                    "qmap_timing_environment_lock_sha256"):
                 if key in stats:
-                    manifest.package_versions[key] = str(stats[key])
+                    reported = str(stats[key])
+                    frozen = manifest.package_versions.get(key)
+                    if (key.startswith("qmap_timing_") and frozen is not None
+                            and str(frozen) != reported):
+                        raise ValueError(
+                            f"QMAP timing provenance mismatch for {key}: "
+                            f"{reported} != {frozen}")
+                    manifest.package_versions[key] = reported
+            for key in (
+                    "algorithm_revision", "backend", "native_abi_version",
+                    "native_wheel_sha256", "compiler_and_flags",
+                    "tuning_protocol_id", "rng_version",
+                    "observed_transition_layer_ledger_sha256",
+                    "observed_transition_count",
+                    "selected_horizon_counts", "forecast_summary"):
+                if key in stats:
+                    setattr(manifest, key, stats[key])
+            reported_ledger_source = stats.get(
+                "observed_transition_layer_ledger_source")
+            if (reported_ledger_source is not None
+                    and stats.get(
+                        "observed_transition_layer_ledger_sha256")
+                    and stats.get("observed_transition_count") is not None
+                    and
+                    not manifest.observed_transition_layer_ledger_source):
+                # QMAP's timing-only C++ patch currently exposes counters but
+                # no layer container.  Its placeholder declaration may never
+                # replace the independently normalised placement-trace proof
+                # supplied by the scorer.
+                manifest.observed_transition_layer_ledger_source = str(
+                    reported_ledger_source)
             if manifest.status == RunStatus.SUCCESS.value:
                 expected_protocol = {
                     "trace_protocol": manifest.trace_protocol,
@@ -401,6 +482,149 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
                             stats.get("native_sha256") != sha256_file(native_path)):
                         raise ValueError(
                             "M2 native trace differs from the official compiler output hash")
+                if manifest.method in {"M3", "M4"}:
+                    try:
+                        config_payload = json.loads(
+                            Path(spec.config_path).read_text(encoding="utf-8"))
+                        if not isinstance(config_payload, Mapping):
+                            raise TypeError("native configuration must be an object")
+                        config = effective_zac_setting(config_payload)
+                    except (OSError, TypeError, json.JSONDecodeError) as error:
+                        raise ValueError(
+                            f"cannot read frozen native configuration: {error}") from error
+                    formal_native = (
+                        config.get("backend") == "native" or
+                        manifest.run_kind in {
+                            "coverage", "main", "timing", "ablation", "large"
+                        })
+                    if not formal_native:
+                        config = None
+                if manifest.method in {"M3", "M4"} and config is not None:
+                    flags = stats.get("compiler_and_flags")
+                    if not isinstance(flags, Mapping):
+                        flags = {}
+                    native_identity = {
+                        "backend": (stats.get("backend"), "native"),
+                        "fallback": (stats.get("fallback"), False),
+                        "algorithm_revision": (
+                            stats.get("algorithm_revision"),
+                            config.get("algorithm_revision")),
+                        "native_abi_version": (
+                            stats.get("native_abi_version"),
+                            config.get("native_abi_version")),
+                        "native_wheel_sha256": (
+                            stats.get("native_wheel_sha256"),
+                            config.get("native_wheel_sha256")),
+                        "tuning_protocol_id": (
+                            stats.get("tuning_protocol_id"),
+                            config.get("tuning_protocol_id")),
+                        "rng_version": (
+                            stats.get("rng_version"), config.get("rng_version")),
+                        "cxx_standard": (flags.get("cxx_standard"), 17),
+                        "openmp": (flags.get("openmp"), False),
+                        "fast_math": (flags.get("fast_math"), False),
+                    }
+                    identity_drift = {
+                        key: value for key, value in native_identity.items()
+                        if value[0] != value[1]
+                    }
+                    if identity_drift:
+                        raise ValueError(
+                            f"M3/M4 fail-closed native identity mismatch: "
+                            f"{identity_drift}")
+                    reported_transition_count = stats.get("transition_count")
+                    if manifest.run_kind in {
+                            "coverage", "main", "timing", "ablation", "large"}:
+                        if not manifest.canonical_input_layer_ledger_sha256:
+                            raise ValueError(
+                                "M3/M4 is missing the canonical-input "
+                                "2Q-layer ledger")
+                        if (not manifest.observed_transition_layer_ledger_sha256
+                                or manifest.observed_transition_layer_ledger_source !=
+                                "compiler.gate_scheduling"):
+                            raise ValueError(
+                                "M3/M4 is missing its independently observed "
+                                "gate_scheduling ledger")
+                        if (reported_transition_count !=
+                                manifest.observed_transition_count):
+                            raise ValueError(
+                                "native decision count differs from the observed "
+                                "gate_scheduling transitions: "
+                                f"{reported_transition_count} != "
+                                f"{manifest.observed_transition_count}")
+                    if manifest.selected_horizon_counts:
+                        raise ValueError(
+                            "formal decay run may not publish legacy "
+                            "selected_horizon_counts")
+                    summary = manifest.forecast_summary
+                    if not isinstance(summary, Mapping) or not summary:
+                        raise ValueError(
+                            "formal decay run is missing forecast_summary")
+                    lookahead = config.get("lookahead_horizon")
+                    if not isinstance(lookahead, Mapping):
+                        raise ValueError("formal lookahead spec must be an object")
+                    expected_depth = 0 if manifest.method == "M3" else 8
+                    expected_forecast = {
+                        "mode": lookahead.get("mode"),
+                        "policy": lookahead.get("policy"),
+                        "decay": lookahead.get("decay"),
+                        "configured_depth": expected_depth,
+                        "rho": float(lookahead.get("rho")),
+                        "epsilon": float(lookahead.get("epsilon")),
+                        "alpha_lookahead": float(config.get("alpha_lookahead")),
+                        "transition_count": int(reported_transition_count),
+                    }
+                    drift = {
+                        key: (summary.get(key), value)
+                        for key, value in expected_forecast.items()
+                        if summary.get(key) != value
+                    }
+                    if drift:
+                        raise ValueError(
+                            f"forecast_summary/config drift: {drift}")
+                    factor = 1.0
+                    expected_weights = []
+                    for offset in range(1, expected_depth + 1):
+                        factor = float(lookahead["rho"]) ** (offset - 1)
+                        if factor < float(lookahead["epsilon"]):
+                            break
+                        expected_weights.append({
+                            "offset": offset,
+                            "decay_factor": factor,
+                            "weight": float(config["alpha_lookahead"]) * factor,
+                        })
+                    if summary.get("offset_weights") != expected_weights:
+                        raise ValueError(
+                            "forecast_summary offset weights do not match the "
+                            "bare-factor cutoff contract")
+                    effective_depth = len(expected_weights)
+                    effective_counts = summary.get("effective_depth_counts")
+                    visible_counts = summary.get("visible_depth_counts")
+                    if (not isinstance(effective_counts, Mapping)
+                            or sum(effective_counts.values()) !=
+                            int(reported_transition_count)
+                            or any(int(key) != effective_depth
+                                   for key in effective_counts)):
+                        raise ValueError(
+                            "forecast effective-depth counts are inconsistent")
+                    if (not isinstance(visible_counts, Mapping)
+                            or sum(visible_counts.values()) !=
+                            int(reported_transition_count)
+                            or any(int(key) > effective_depth
+                                   for key in visible_counts)):
+                        raise ValueError(
+                            "forecast visible-depth counts are inconsistent")
+                    weighted_total = summary.get(
+                        "weighted_negative_log_fidelity_total")
+                    if (isinstance(weighted_total, bool)
+                            or not isinstance(weighted_total, (int, float))
+                            or not math.isfinite(float(weighted_total))
+                            or float(weighted_total) < 0.0):
+                        raise ValueError("invalid forecast weighted NLL total")
+                    if manifest.method == "M3" and not math.isclose(
+                            float(weighted_total), 0.0,
+                            rel_tol=0.0, abs_tol=1e-15):
+                        raise ValueError("M3 consumed non-zero future heuristic")
         except (OSError, TypeError, ValueError, KeyError,
                 json.JSONDecodeError) as error:
             if manifest.status == RunStatus.SUCCESS.value:

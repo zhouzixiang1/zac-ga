@@ -17,8 +17,9 @@ their registered residency policy:
     Physical-cost resident decision with the frozen NL horizon ``H=0``.  The
     oracle exposes the target CZ layer but no extra forecast layer.
 ``M4``
-    The identical physical-cost resident decision with ``H=2``.  It may keep an
-    atom across non-adjacent CZ layers when the bounded forecast proves that
+    The identical physical-cost resident decision with the formal bounded
+    geometric-decay window (registered maximum eight).  It may keep an
+    atom across non-adjacent CZ layers when the bounded forecast predicts that
     avoiding RETURN plus re-entry is cheaper than idle Rydberg exposure.
 
 Movement is intentionally conservative for the first executable Large core:
@@ -51,7 +52,12 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from evaluation import CanonicalTraceEvent, EventType, FidelityModel
 from zac.ds.architecture import Architecture
-from zzx.algorithm_v2 import PhysicalIncrementalCost
+from zzx.algorithm_v2 import (
+    FORMAL_LK_LOOKAHEAD_V1,
+    FORMAL_NL_LOOKAHEAD_V1,
+    PhysicalIncrementalCost,
+    maximum_lookahead_horizon,
+)
 from zzx.ghost import ghost_hits
 
 from .checkpoint import Checkpoint, EventStreamWriter, load_checkpoint
@@ -211,11 +217,18 @@ def _validate_config(
     if forbidden:
         raise ValueError(f"Schema 2 Large config contains forbidden keys: {forbidden}")
 
-    expected_horizon = {"M1": 0, "M2": 0, "M3": 0, "M4": 2}[method]
-    horizon = int(setting.get("lookahead_horizon", expected_horizon))
-    if horizon != expected_horizon:
+    expected_spec = {
+        "M1": 0,
+        "M2": 0,
+        "M3": FORMAL_NL_LOOKAHEAD_V1,
+        "M4": FORMAL_LK_LOOKAHEAD_V1,
+    }[method]
+    horizon_spec = setting.get("lookahead_horizon", expected_spec)
+    if horizon_spec != expected_spec:
         raise ValueError(
-            f"{method} requires lookahead_horizon={expected_horizon}, got {horizon}")
+            f"{method} requires lookahead_horizon={expected_spec}, "
+            f"got {horizon_spec}")
+    horizon = maximum_lookahead_horizon(horizon_spec)
 
     if method in {"M3", "M4"}:
         frozen = {

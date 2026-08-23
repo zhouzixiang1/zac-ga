@@ -15,12 +15,14 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 from .ablation import validate_ablation_config
 from .protocol import (ghost_policy_for_method,
                        physicalization_policy_for_method,
                        trace_protocol_for_method)
+from .qmap_timing_provenance import validate_qmap_timing_freeze
+from .runtime_benchmark import ordered_two_qubit_layer_ledger
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +44,9 @@ M2_FROZEN_CONFIG: Dict[str, Any] = {
     "mqt_qmap_version": "3.2.0",
     "reuse_level": 5.0,
 }
+QMAP_TIMING_PATCH_SHA256 = (
+    "459298a31560a2af0367bee522047da48ae33296071f951b4b55b3add86f02c0")
+QMAP_TIMING_PACKAGE_VERSION = "3.2.1.dev0+g745d56b26.d20260823"
 
 
 def _load(path: str | Path) -> Dict[str, Any]:
@@ -67,6 +72,213 @@ def _write_json(path: Path, payload: object) -> None:
         # runner's compiler-time definition unchanged.
         json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
         handle.write("\n")
+
+
+def _seconds_to_ns(value: Any) -> int:
+    return max(0, round(float(value or 0.0) * 1_000_000_000))
+
+
+def _transition_decisions(compiler) -> list[dict]:
+    """Return only real L->L+1 choices, excluding the terminal bookkeeping row."""
+    return [
+        row for row in list(getattr(compiler, "zzx_decision_log", []) or [])
+        if row.get("horizon_reason") != "terminal_boundary"
+    ]
+
+
+def _observed_zac_transition_layer_ledger(compiler) -> Dict[str, Any]:
+    """Read the realised ZAC schedule, never the canonical-input receipt.
+
+    ``gate_scheduling`` is populated by the compiler's actual scheduling pass
+    and is the layer sequence consumed by intermediate placement and routing.
+    Keeping this extraction after ``solve`` makes the timing comparability
+    evidence independent of the canonical ASAP ledger registered by the
+    parent process.
+    """
+    raw_layers = getattr(compiler, "gate_scheduling", None)
+    if not isinstance(raw_layers, (list, tuple)):
+        raise ValueError("ZAC compiler did not expose its realised gate_scheduling")
+    ledger = ordered_two_qubit_layer_ledger(
+        int(getattr(compiler, "n_q")), raw_layers)
+    expected_gates = int(getattr(compiler, "n_g"))
+    if int(ledger["gates_2q"]) != expected_gates:
+        raise ValueError(
+            "realised ZAC layer ledger gate count differs from compiler state: "
+            f"{ledger['gates_2q']} != {expected_gates}")
+    return ledger
+
+
+def _zac_stage_timing(compiler, method: str, full_compile_ns: int) -> Dict[str, int]:
+    runtime = dict(getattr(compiler, "runtime_analysis", {}) or {})
+    # ZAC_zzx instruments the actual method boundaries with perf_counter_ns.
+    # Prefer those integer intervals to the historic time.time-derived floats;
+    # retaining the latter only as a compatibility fallback keeps M1 and old
+    # diagnostic fixtures readable without weakening the formal timer.
+    precise = dict(getattr(compiler, "zzx_stage_timing_ns", {}) or {})
+    decisions = _transition_decisions(compiler)
+    backend_timings = list(
+        getattr(compiler, "zzx_backend_timing_log", []) or [])
+    result = {
+        "transition_decision_ns": int(precise.get(
+            "transition_decision_ns",
+            _seconds_to_ns(runtime.get("intermediate placement", 0.0)))),
+        "search_kernel_ns": sum(int(row.get("search_kernel_ns", 0) or 0)
+                                for row in backend_timings),
+        "marshal_ns": sum(int(row.get("marshal_ns", 0) or 0)
+                          for row in backend_timings),
+        "fitness_ns": sum(int(row.get("fitness_ns", 0) or 0)
+                          for row in backend_timings),
+        "native_parse_ns": sum(int(row.get("native_parse_ns", 0) or 0)
+                               for row in backend_timings),
+        "native_serialize_ns": sum(
+            int(row.get("native_serialize_ns", 0) or 0)
+            for row in backend_timings),
+        "horizon_selection_ns": sum(
+            int(row.get("horizon_selection_ns", 0) or 0)
+            for row in decisions),
+        "initial_placement_ns": int(precise.get(
+            "initial_placement_ns",
+            _seconds_to_ns(runtime.get("initial placement", 0.0)))),
+        "routing_ns": int(precise.get(
+            "routing_ns", _seconds_to_ns(runtime.get("routing", 0.0)))),
+        "full_compile_ns": int(full_compile_ns),
+    }
+    if method == "M1":
+        result.update(search_kernel_ns=0, marshal_ns=0,
+                      fitness_ns=0, native_parse_ns=0,
+                      native_serialize_ns=0, horizon_selection_ns=0)
+    return result
+
+
+def _selected_horizon_counts(decisions: list[dict]) -> Dict[str, int]:
+    """Aggregate legacy discrete-horizon decisions without a fixed bucket set.
+
+    Formal decay runs use :func:`_forecast_summary` instead.  Keeping this
+    dynamic helper lets old H=0/1/2 regression manifests remain readable while
+    ensuring a depth greater than two can never crash the method driver.
+    """
+    counts: Dict[str, int] = {}
+    for row in decisions:
+        raw = row.get("selected_horizon", row.get("lookahead_horizon"))
+        if raw is None:
+            continue
+        key = str(int(raw))
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: int(item[0])))
+
+
+def _forecast_summary(decisions: list[dict],
+                      setting: Mapping[str, Any] | None = None) -> Dict[str, Any]:
+    """Aggregate the auditable bounded-decay forecast evidence for one run."""
+    spec = None
+    if setting is not None:
+        candidate = setting.get("lookahead_horizon")
+        if isinstance(candidate, Mapping) and candidate.get("mode") == "decay":
+            spec = dict(candidate)
+    rows = []
+    for row in decisions:
+        audit = row.get("forecast_objective")
+        configured = row.get("configured_lookahead_horizon")
+        if spec is None and isinstance(configured, Mapping) and \
+                configured.get("mode") == "decay":
+            spec = dict(configured)
+        if isinstance(audit, Mapping):
+            rows.append(dict(audit))
+    if spec is None:
+        return {}
+    if len(rows) != len(decisions):
+        raise ValueError(
+            "formal decay decision log is missing forecast_objective evidence")
+
+    expected = {
+        "configured_depth": int(spec["max_horizon"]),
+        "rho": float(spec["rho"]),
+        "epsilon": float(spec["epsilon"]),
+    }
+    alpha = (float(setting["alpha_lookahead"])
+             if setting is not None and "alpha_lookahead" in setting
+             else (float(rows[0]["alpha_lookahead"]) if rows else None))
+    effective_depths: Dict[str, int] = {}
+    visible_depths: Dict[str, int] = {}
+    offset_weights = None
+    weighted_nll = 0.0
+    for row in rows:
+        for key, value in expected.items():
+            if float(row.get(key, float("nan"))) != float(value):
+                raise ValueError(
+                    f"forecast {key} drift: {row.get(key)!r} != {value!r}")
+        if alpha is None or float(row.get("alpha_lookahead", float("nan"))) != alpha:
+            raise ValueError("forecast alpha_lookahead drift")
+        effective = str(int(row.get("effective_depth", -1)))
+        visible = str(int(row.get("visible_depth", -1)))
+        if int(effective) < 0 or int(visible) < 0:
+            raise ValueError("forecast depth must be non-negative")
+        effective_depths[effective] = effective_depths.get(effective, 0) + 1
+        visible_depths[visible] = visible_depths.get(visible, 0) + 1
+        weights = list(row.get("offset_weights", ()))
+        if offset_weights is None:
+            offset_weights = weights
+        elif weights != offset_weights:
+            raise ValueError("forecast offset weights drift between boundaries")
+        weighted_nll += float(row.get("weighted_negative_log_fidelity", 0.0))
+    if offset_weights is None:
+        # Empty schedules have no boundary rows, but their registered window is
+        # still reconstructible without reading a future layer.
+        offset_weights = []
+        if alpha is not None:
+            for offset in range(1, int(spec["max_horizon"]) + 1):
+                factor = float(spec["rho"]) ** (offset - 1)
+                if factor < float(spec["epsilon"]):
+                    break
+                offset_weights.append({
+                    "offset": offset,
+                    "decay_factor": factor,
+                    "weight": alpha * factor,
+                })
+    return {
+        "mode": spec["mode"],
+        "policy": spec["policy"],
+        "decay": spec["decay"],
+        "configured_depth": int(spec["max_horizon"]),
+        "effective_depth_counts": effective_depths,
+        "visible_depth_counts": visible_depths,
+        "rho": float(spec["rho"]),
+        "epsilon": float(spec["epsilon"]),
+        "alpha_lookahead": alpha,
+        "offset_weights": offset_weights,
+        "weighted_negative_log_fidelity_total": weighted_nll,
+        "transition_count": len(rows),
+    }
+
+
+def _load_qmap_timing_freeze() -> Dict[str, Any]:
+    # This validation is deliberately executed inside the timing-only QMAP
+    # interpreter.  It binds the patch, parity report, environment lock and
+    # wheel, then proves every installed native binary is byte-identical to the
+    # frozen wheel.  Merely rereading the tracked JSON is not sufficient.
+    return dict(validate_qmap_timing_freeze())
+
+
+def _instrument_m1_transition_timing(compiler) -> None:
+    """Time only M1's original intermediate placer without changing semantics.
+
+    The original implementation is frozen, so instrumentation is attached to
+    this compiler instance rather than patched into ``ZAC/``.  The wrapper
+    delegates exactly once, preserves its return value/exception, and writes to
+    an out-of-band timing dictionary that cannot affect the emitted trace.
+    """
+    original = compiler.place_qubit_intermedeiate
+    compiler.zzx_stage_timing_ns = {}
+
+    def timed_intermediate():
+        started_ns = time.perf_counter_ns()
+        try:
+            return original()
+        finally:
+            compiler.zzx_stage_timing_ns["transition_decision_ns"] = (
+                time.perf_counter_ns() - started_ns)
+
+    compiler.place_qubit_intermedeiate = timed_intermediate
 
 
 def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
@@ -96,6 +308,7 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
             raise RuntimeError(
                 f"M1 did not load the original ZAC implementation: {implementation}")
         compiler = ZAC()
+        _instrument_m1_transition_timing(compiler)
     else:
         from zac.ds.architecture import Architecture
         from zzx.zac_zzx import ZAC_zzx
@@ -148,14 +361,22 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
             raise ValueError(
                 "M1 config must contain only experiment_schema=2 and method_id=M1")
     else:
+        from zzx.algorithm_v2 import (
+            SCHEMA2_METHOD_HORIZON,
+            validate_decay_lookahead_spec,
+            validate_schema2_setting,
+        )
+
         setting.update(placer="resident", routing_strategy="coloring")
         setting.update(user_config)
-        expected = 0 if method == "M3" else 2
-        if setting.get("lookahead_horizon") != expected:
-            raise ValueError(f"{method} requires lookahead_horizon={expected}")
         expected_id = "ours_nl" if method == "M3" else "ours_lk"
+        expected = SCHEMA2_METHOD_HORIZON[expected_id]["max_horizon"]
+        validate_decay_lookahead_spec(
+            setting.get("lookahead_horizon"),
+            expected_max_horizon=expected)
         if setting.get("method_id") != expected_id:
             raise ValueError(f"method_id/config mismatch for {method}")
+        validate_schema2_setting(setting)
 
     # Provenance fields in the frozen config are validated above, but an
     # attempt may never escape its unique runner directory or substitute a
@@ -180,19 +401,27 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
     native_payload = compiler.solve(save_file=False)
     core_cpu_ns = time.process_time_ns() - core_cpu_start
     core_wall_ns = time.perf_counter_ns() - core_wall_start
+    stage_timing = _zac_stage_timing(compiler, method, core_wall_ns)
     _write_json(output / "compiler_timing.json", {
         "compiler_time_ns": core_wall_ns,
         "cpu_time_ns": core_cpu_ns,
         "definition": "compiler scheduling through native routing; excludes input/arch parse and scoring",
+        **stage_timing,
     })
     _write_json(output / "trace.zair.json", native_payload)
-    _write_json(output / "compiler_stats.json", {
+    decisions = list(getattr(compiler, "zzx_decision_log", []) or [])
+    transition_decisions = _transition_decisions(compiler)
+    observed_layer_ledger = _observed_zac_transition_layer_ledger(compiler)
+    forecast_summary = (
+        _forecast_summary(transition_decisions, setting)
+        if method in {"M3", "M4"} else {})
+    compiler_stats: Dict[str, Any] = {
         "runtime_analysis": compiler.runtime_analysis,
         "qiskit_version": qiskit.__version__,
         "python_version": sys.version.split()[0],
         "qubits": compiler.n_q,
         "gates_2q": compiler.n_g,
-        "decision_log": getattr(compiler, "zzx_decision_log", []),
+        "decision_log": decisions,
         "route_log": getattr(compiler, "zzx_route_log", []),
         "ghost_splits": getattr(compiler, "zzx_ghost_splits", 0),
         "run_kind": run_kind or "unregistered",
@@ -205,7 +434,44 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
         "trace_protocol": trace_protocol_for_method(method),
         "ghost_policy": ghost_policy_for_method(method),
         "physicalization": physicalization_policy_for_method(method),
-    })
+        "algorithm_revision": (
+            "zac-paper-native-v1" if method == "M1"
+            else str(setting.get("algorithm_revision", "resident-ga-v2"))),
+        "backend": (
+            "python-paper-zac" if method == "M1"
+            else str(setting.get("backend", "python-reference"))),
+        "tuning_protocol_id": str(setting.get("tuning_protocol_id", "")),
+        "rng_version": str(setting.get("rng_version", "")),
+        "observed_transition_layer_ledger_sha256":
+            observed_layer_ledger["layer_ledger_sha256"],
+        "observed_transition_count": observed_layer_ledger["transitions"],
+        "observed_transition_layer_ledger_source":
+            "compiler.gate_scheduling",
+        # Kept solely for legacy discrete-H regression.  Formal M3/M4 evidence
+        # lives in forecast_summary and never masquerades as 0/1/2 buckets.
+        "selected_horizon_counts": (
+            {} if forecast_summary else
+            _selected_horizon_counts(transition_decisions)),
+        "forecast_summary": forecast_summary,
+        "transition_count": len(transition_decisions),
+        # A formal M3/M4 attempt is fail-closed: no Python/reference fallback
+        # is permitted after the native backend was requested.
+        "fallback": False,
+    }
+    if method in {"M3", "M4"} and compiler_stats["backend"] == "native":
+        from zzx.boundary_problem import NATIVE_ABI_VERSION, RNG_VERSION
+        from zzx.native_backend import build_info
+
+        compiler_stats.update(
+            native_abi_version=NATIVE_ABI_VERSION,
+            native_wheel_sha256=str(setting.get("native_wheel_sha256", "")),
+            compiler_and_flags=build_info(
+                require_registered_wheel=True,
+                expected_wheel_sha256=str(
+                    setting.get("native_wheel_sha256", ""))),
+            rng_version=str(setting.get("rng_version", RNG_VERSION)),
+        )
+    _write_json(output / "compiler_stats.json", compiler_stats)
 
 
 def _validated_m2_config(config_path: Path) -> Dict[str, Any]:
@@ -221,7 +487,7 @@ def _validated_m2_config(config_path: Path) -> Dict[str, Any]:
 
 
 def compile_qmap(input_path: Path, config_path: Path,
-                 architecture_path: Path) -> None:
+                 architecture_path: Path, *, run_kind: str = "") -> None:
     """Run only the paper-native QMAP 3.2 routing-aware A* compiler."""
     import mqt.core
     import mqt.qmap
@@ -233,11 +499,16 @@ def compile_qmap(input_path: Path, config_path: Path,
     config = _validated_m2_config(config_path)
     qmap_version = importlib.metadata.version("mqt.qmap")
     core_version = importlib.metadata.version("mqt.core")
+    timing_instrumented = run_kind == "timing"
+    allowed_qmap_version = (QMAP_TIMING_PACKAGE_VERSION if timing_instrumented
+                            else config["mqt_qmap_version"])
     if (qmap_version, core_version) != (
-            config["mqt_qmap_version"], config["mqt_core_version"]):
+            allowed_qmap_version, config["mqt_core_version"]):
         raise RuntimeError(
-            "M2 requires mqt.qmap==3.2.0 and mqt-core==3.1.0; "
+            f"M2 requires mqt.qmap=={allowed_qmap_version} and "
+            "mqt-core==3.1.0; "
             f"found {qmap_version} and {core_version}")
+    timing_freeze = _load_qmap_timing_freeze() if timing_instrumented else None
     output = _run_dir()
     zac_spec = _load(architecture_path)
     converted = convert(zac_spec)
@@ -267,13 +538,41 @@ def compile_qmap(input_path: Path, config_path: Path,
     # ghost hits without rejecting this baseline.
     (output / "trace.na").write_bytes(native.encode("utf-8"))
     stats = compiler.stats()
+    stage_timing: Dict[str, int | None] = {
+        "transition_decision_ns": None,
+        "search_kernel_ns": None,
+        "marshal_ns": 0,
+        "horizon_selection_ns": 0,
+        "initial_placement_ns": None,
+        "routing_ns": int(stats.get("routingTime", 0)) * 1_000,
+        "full_compile_ns": compiler_time_ns,
+    }
+    if timing_instrumented:
+        required = {"initialPlacementTime", "layerPlacementTime",
+                    "reuseAnalysisTime", "routingTime"}
+        missing = sorted(required - set(stats))
+        if missing:
+            raise RuntimeError(
+                f"timing-instrumented QMAP is missing counters: {missing}")
+        stage_timing.update(
+            transition_decision_ns=(
+                int(stats["reuseAnalysisTime"])
+                + int(stats["layerPlacementTime"])) * 1_000,
+            initial_placement_ns=int(stats["initialPlacementTime"]) * 1_000,
+        )
     _write_json(output / "compiler_timing.json", {
         "compiler_time_ns": compiler_time_ns,
         "cpu_time_ns": cpu_time_ns,
         "definition": "RoutingAwareCompiler.compile only; canonical input and architecture preloaded",
+        **stage_timing,
     })
     _write_json(output / "compiler_stats.json", {
-        "mqt_qmap_version": qmap_version,
+        # The semantic algorithm remains the frozen paper implementation.  The
+        # timing build version is recorded separately and is accepted only for
+        # run_kind=timing after its native-trace parity gate passed.
+        "mqt_qmap_version": config["mqt_qmap_version"],
+        "instrumented_mqt_qmap_version": (
+            qmap_version if timing_instrumented else None),
         "mqt_core_version": core_version,
         "qiskit_version": importlib.metadata.version("qiskit"),
         "python_version": sys.version.split()[0],
@@ -286,6 +585,28 @@ def compile_qmap(input_path: Path, config_path: Path,
         "physicalization": physicalization_policy_for_method("M2"),
         "ghost_splits": 0,
         "ghost_repairs": 0,
+        "algorithm_revision": "qmap-3.2-paper-native-v1",
+        "backend": "qmap-cpp-astar",
+        "tuning_protocol_id": "",
+        "rng_version": "qmap-3.2-upstream",
+        # The frozen timing patch exposes stage counters, not its private layer
+        # container.  The parent evaluator derives the observed ledger from
+        # the emitted placement/native trace.  Never echo the canonical input
+        # hash here: absence of trace proof must remain visibly unproven.
+        "observed_transition_layer_ledger_source":
+            "normalized_qmap_placement_trace_required",
+        "selected_horizon_counts": {},
+        "forecast_summary": {},
+        "timing_instrumentation": timing_freeze,
+        **({
+            "qmap_timing_protocol": timing_freeze["protocol"],
+            "qmap_timing_patch_sha256": timing_freeze["patch_sha256"],
+            "qmap_timing_parity_report_sha256":
+                timing_freeze["parity_report_sha256"],
+            "qmap_timing_wheel_sha256": timing_freeze["wheel_sha256"],
+            "qmap_timing_environment_lock_sha256":
+                timing_freeze["environment_lock_sha256"],
+        } if timing_freeze is not None else {}),
     })
 
 
@@ -311,7 +632,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.method == "M2":
         if args.run_kind == "ablation" or args.ablation_variant:
             raise ValueError("M2 is not an ablation implementation")
-        compile_qmap(args.input, args.config, args.architecture)
+        compile_qmap(
+            args.input, args.config, args.architecture,
+            run_kind=args.run_kind)
     else:
         compile_zac(
             args.input, args.config, args.architecture, args.method,

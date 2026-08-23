@@ -7,7 +7,12 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterator, Mapping, Sequence
 
-from zzx.algorithm_v2 import CacheStats, ForecastOracle, validate_schema2_setting
+from zzx.algorithm_v2 import (
+    CacheStats,
+    ForecastOracle,
+    maximum_lookahead_horizon,
+    validate_schema2_setting,
+)
 from zzx.resident import NextUse, ResidentRegistry
 from zzx.zplacer import ResidentPlacer
 
@@ -86,7 +91,8 @@ class FormalZacPlacementStream:
                 raise ValueError(
                     f"{method} requires method_id={expected_id!r}")
         cache_limit = (3 if method == "M1" else
-                       int(resolved["lookahead_horizon"]) + 2)
+                       maximum_lookahead_horizon(
+                           resolved["lookahead_horizon"]) + 2)
         self.provider = LayerStoreZacStageProvider(
             store, self.max_gates_per_stage,
             max_cached_stages=cache_limit)
@@ -322,7 +328,8 @@ class FormalZacPlacementStream:
             expected_id = "ours_nl" if method == "M3" else "ours_lk"
             if resolved["method_id"] != expected_id:
                 raise ValueError(f"{method} requires method_id={expected_id!r}")
-            cache_limit = int(resolved["lookahead_horizon"]) + 2
+            cache_limit = maximum_lookahead_horizon(
+                resolved["lookahead_horizon"]) + 2
 
         obj = cls.__new__(cls)
         obj.method = method

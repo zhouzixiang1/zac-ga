@@ -46,7 +46,12 @@ class ZAC_zzx(ZAC):
                     "w_resident", "pin_radius", "w_pin",
                     # ---- 正式实验 Schema 2（NL/LK 只允许 horizon 不同）----
                     "experiment_schema", "method_id", "objective",
-                    "lookahead_horizon", "fitness_cache",
+                    "lookahead_horizon", "fitness_cache", "backend",
+                    "native_fail_closed", "formal_native",
+                    "algorithm_revision", "tuning_protocol_id",
+                    "native_abi_version", "native_wheel_sha256",
+                    "rng_version", "elite_count", "early_stop_patience",
+                    "max_unique_evaluations", "operator_profile",
                     # ---- 初始布局引擎（"ga" = GAInitialPlacer 换掉 ZAC 的 SA）----
                     "init_engine", "init_pop", "init_gens")
     # ZAC 原版认识的键（消费断言用； Zac.parse_setting 同步维护）
@@ -64,6 +69,8 @@ class ZAC_zzx(ZAC):
         self.zzx_route_log: list = []    # 路由账本：每段搬运的 (层, 相位, 批数, 解法)
         self.zzx_placer_preview: list = []   # 放置预演账本（对账用）
         self.zzx_decision_log: list = []     # 驻留决策账本（每层 STAY/RETURN 计数）
+        self.zzx_backend_timing_log: list = []  # 原生阶段计时，与确定性决策证据分离
+        self.zzx_stage_timing_ns: dict[str, int] = {}
         # A single global 1Q beam executes every authored 1Q gate sequentially.
         # ZAC's atom-local dependency ledger alone lets disjoint 1Q blocks
         # overlap, which is outside the frozen Schema-2 physical model.
@@ -207,19 +214,30 @@ class ZAC_zzx(ZAC):
         if (self.zzx_params.get("init_engine", "sa") != "ga"
                 or self.given_initial_mapping is not None
                 or self.trivial_placement):
-            return super().place_qubit_initial()
-        import time
+            started_ns = time.perf_counter_ns()
+            result = super().place_qubit_initial()
+            elapsed_ns = time.perf_counter_ns() - started_ns
+            self.zzx_stage_timing_ns["initial_placement_ns"] = elapsed_ns
+            self.runtime_analysis["initial placement"] = elapsed_ns / 1e9
+            return result
         from zzx.gainit import GAInitialPlacer
-        t0 = time.time()
+        t0 = time.perf_counter_ns()
         gp = GAInitialPlacer(self.zzx_params)
         gp.run(self.architecture, self.n_q, self.gate_scheduling)
         self.qubit_mapping.append(gp.best_mapping)
-        self.runtime_analysis["initial placement"] = time.time() - t0
+        elapsed_ns = time.perf_counter_ns() - t0
+        self.zzx_stage_timing_ns["initial_placement_ns"] = elapsed_ns
+        self.runtime_analysis["initial placement"] = elapsed_ns / 1e9
 
     def place_qubit_intermedeiate(self):
         """第⑤道工序的入口（ZAC 源码里就是这个拼写）。"""
         if self.placer_kind not in ("batch", "resident"):
-            return super().place_qubit_intermedeiate()   # 对照组走原版
+            started_ns = time.perf_counter_ns()
+            result = super().place_qubit_intermedeiate()   # 对照组走原版
+            elapsed_ns = time.perf_counter_ns() - started_ns
+            self.zzx_stage_timing_ns["transition_decision_ns"] = elapsed_ns
+            self.runtime_analysis["intermediate placement"] = elapsed_ns / 1e9
+            return result
 
         if self.placer_kind == "batch":
             from zzx.zplacer import BatchAwarePlacer     # ZAC_new 对照模式
@@ -228,7 +246,7 @@ class ZAC_zzx(ZAC):
             from zzx.zplacer import ResidentPlacer       # 驻留主模式
             placer_cls, preview_attr = ResidentPlacer, "decision_log"
 
-        t_p = time.time()
+        t_p = time.perf_counter_ns()
         placer = placer_cls(deepcopy(self.qubit_mapping[0]), **self.zzx_params)
         # 驻留模式中和复用机制（ResidentPlacer 内部还会再置空一次，双保险）：
         # 复用点名 + 两世界 filter_mapping 与驻留决策互斥——同时开会座位双订。
@@ -238,7 +256,9 @@ class ZAC_zzx(ZAC):
                    self.dynamic_placement, self.reuse_qubit)
         self.qubit_mapping = placer.mapping       # 放置结果交回流水线
 
-        self.runtime_analysis["intermediate placement"] = time.time() - t_p
+        elapsed_ns = time.perf_counter_ns() - t_p
+        self.zzx_stage_timing_ns["transition_decision_ns"] = elapsed_ns
+        self.runtime_analysis["intermediate placement"] = elapsed_ns / 1e9
         self.runtime_analysis["zzx gate placement"] = placer.search_time
         self.zzx_placer_preview = getattr(placer, preview_attr)
         if self.placer_kind == "resident":
@@ -246,6 +266,8 @@ class ZAC_zzx(ZAC):
             # the historic preview alias, but never leave the formal decision
             # ledger empty after a resident run.
             self.zzx_decision_log = list(placer.decision_log)
+            self.zzx_backend_timing_log = deepcopy(
+                placer.backend_timing_log)
 
     # ------------------------------------------------------------ 路由接线
     def _expanded_batch_conflicts(self, members, owner, mapping_from,

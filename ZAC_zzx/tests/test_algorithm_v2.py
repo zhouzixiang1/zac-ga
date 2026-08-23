@@ -15,11 +15,16 @@ sys.path.insert(0, str(ROOT))
 from zac.ds.architecture import Architecture  # noqa: E402
 from zac.router.router import Router_mixin  # noqa: E402
 from zzx.algorithm_v2 import (  # noqa: E402
+    ADAPTIVE_HORIZON_V1,
+    AdaptiveHorizonDecision,
+    FORMAL_LK_LOOKAHEAD_V1,
+    FORMAL_NL_LOOKAHEAD_V1,
     ForecastBoundaryError,
     ForecastLayerProvider,
     ForecastOracle,
     PhysicalIncrementalCost,
     build_seed_population,
+    decay_lookahead_spec,
     resident_decision_candidates,
     validate_schema2_pair,
     validate_schema2_setting,
@@ -31,6 +36,15 @@ from zzx.zplacer import ResidentPlacer  # noqa: E402
 
 def load_setting(name):
     return json.loads((ROOT / "exp_setting" / name).read_text())["zac_setting"][0]
+
+
+def semantic_decision_log(rows):
+    """Drop deliberately volatile wall-clock evidence from semantic equality."""
+    return [
+        {key: value for key, value in row.items()
+         if key not in {"horizon_selection_ns", "search_kernel_ns"}}
+        for row in rows
+    ]
 
 
 def make_arch():
@@ -151,6 +165,27 @@ class TestPhysicalExpansion(unittest.TestCase):
 
 
 class TestSchema2Contract(unittest.TestCase):
+    def test_native_search_knobs_reach_resident_placer(self):
+        setting = load_setting("ours_nl_v2.json")
+        setting.update({
+            "elite_count": 2,
+            "early_stop_patience": 3,
+            "max_unique_evaluations": 321,
+            "operator_profile": "exact",
+        })
+        compiler = ZAC_zzx()
+        compiler.parse_setting({**setting, "name": "native-knob-consumption"})
+        self.assertEqual(compiler.zzx_params["elite_count"], 2)
+        self.assertEqual(compiler.zzx_params["early_stop_patience"], 3)
+        self.assertEqual(compiler.zzx_params["max_unique_evaluations"], 321)
+        self.assertEqual(compiler.zzx_params["operator_profile"], "exact")
+        placer = ResidentPlacer([(0, 0, 0), (0, 1, 0)],
+                                **compiler.zzx_params)
+        self.assertEqual(placer.elite_count, 2)
+        self.assertEqual(placer.early_stop_patience, 3)
+        self.assertEqual(placer.max_unique_evaluations, 321)
+        self.assertEqual(placer.operator_profile, "exact")
+
     def test_registered_pair_differs_only_in_horizon_identity_and_output(self):
         nl = load_setting("ours_nl_v2.json")
         lk = load_setting("ours_lk_v2.json")
@@ -164,11 +199,28 @@ class TestSchema2Contract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "旧代理权重"):
             validate_schema2_setting(setting)
 
-    def test_method_horizon_is_fixed(self):
+    def test_nl_horizon_is_fixed_zero(self):
         setting = load_setting("ours_nl_v2.json")
+        self.assertEqual(setting["lookahead_horizon"],
+                         FORMAL_NL_LOOKAHEAD_V1)
         setting["lookahead_horizon"] = 2
-        with self.assertRaisesRegex(ValueError, "必须使用"):
+        with self.assertRaisesRegex(ValueError, "decay spec"):
             validate_schema2_setting(setting)
+
+    def test_lk_requires_registered_decay_strategy(self):
+        setting = load_setting("ours_lk_v2.json")
+        self.assertEqual(setting["lookahead_horizon"],
+                         FORMAL_LK_LOOKAHEAD_V1)
+        setting["lookahead_horizon"] = 2
+        with self.assertRaisesRegex(ValueError, "decay spec"):
+            validate_schema2_setting(setting)
+
+    def test_pair_rejects_hidden_decay_difference(self):
+        nl = load_setting("ours_nl_v2.json")
+        lk = load_setting("ours_lk_v2.json")
+        lk["lookahead_horizon"]["rho"] = 0.8
+        with self.assertRaisesRegex(ValueError, "decay spec"):
+            validate_schema2_pair(nl, lk)
 
     def test_pair_rejects_hidden_budget_difference(self):
         nl = load_setting("ours_nl_v2.json")
@@ -205,6 +257,16 @@ class TestForecastBoundary(unittest.TestCase):
         with self.assertRaises(ForecastBoundaryError):
             oracle.future_layer(0, 3)
 
+    def test_bounded_oracle_can_only_narrow(self):
+        oracle = ForecastOracle(self.SCHEDULE, 2)
+        h1 = oracle.bounded(1)
+        self.assertEqual(list(h1.visible_future(0)), [
+            (2, ((0, 2),))])
+        with self.assertRaises(ForecastBoundaryError):
+            h1.future_layer(0, 2)
+        with self.assertRaises(ForecastBoundaryError):
+            ForecastOracle(self.SCHEDULE, 0).bounded(1)
+
     def test_provider_path_is_equivalent_and_h0_never_reads_future(self):
         class RecordingProvider(ForecastLayerProvider):
             def __init__(self, schedule):
@@ -220,7 +282,8 @@ class TestForecastBoundary(unittest.TestCase):
                 return self.schedule[layer]
 
         h0_provider = RecordingProvider(self.SCHEDULE)
-        h0 = ForecastOracle(h0_provider, 0)
+        h0 = ForecastOracle(h0_provider, decay_lookahead_spec(0),
+                            alpha_lookahead=0.1)
         self.assertEqual(h0.target_layer(0), ((2, 3),))
         self.assertIsNone(h0.next_use(0, 0))
         self.assertEqual(h0_provider.reads, [1])
@@ -234,6 +297,93 @@ class TestForecastBoundary(unittest.TestCase):
         )
         self.assertEqual(streamed.next_use(0, 0), frozen.next_use(0, 0))
 
+    def test_decay_cutoff_uses_bare_factor_and_never_reads_offset_seven(self):
+        class RecordingProvider(ForecastLayerProvider):
+            def __init__(self):
+                self.reads = []
+                self.schedule = [((2 * i, 2 * i + 1),)
+                                 for i in range(10)]
+
+            @property
+            def layer_count(self):
+                return len(self.schedule)
+
+            def read_layer(self, layer):
+                self.reads.append(layer)
+                return self.schedule[layer]
+
+        provider = RecordingProvider()
+        oracle = ForecastOracle(
+            provider, decay_lookahead_spec(8), alpha_lookahead=0.05)
+        rows = list(oracle.weighted_future(0))
+        self.assertEqual(oracle.effective_horizon, 6)
+        self.assertEqual([row[2] for row in rows], [1, 2, 3, 4, 5, 6])
+        expected = [0.05 * 0.6 ** index for index in range(6)]
+        for row, weight in zip(rows, expected):
+            self.assertAlmostEqual(row[3], weight, places=15)
+        # L+1 is the target and is intentionally not read by weighted_future;
+        # offsets 1..6 map to absolute layers 2..7.  Offset 7/layer 8 is cut
+        # off from the bare factor before the provider can observe it.
+        self.assertEqual(provider.reads, [2, 3, 4, 5, 6, 7])
+        self.assertEqual(oracle.future_decay_factor(7), 0.0)
+
+        higher_alpha = ForecastOracle(
+            provider, decay_lookahead_spec(8), alpha_lookahead=0.2)
+        self.assertEqual(higher_alpha.effective_horizon, 6)
+
+
+class TestAdaptiveHorizon(unittest.TestCase):
+    def _decision(self, schedule, **kwargs):
+        return AdaptiveHorizonDecision.select(
+            ForecastOracle(schedule, 2),
+            0,
+            residents=kwargs.get("residents", {4}),
+            target_participants=kwargs.get("target", {0, 1}),
+            zone_sites=kwargs.get("zone_sites", 20),
+            theta_capacity=kwargs.get("theta", 0.9),
+            active_commitments=kwargs.get("commitments", ()),
+        )
+
+    def test_adaptive_selects_zero_without_actionable_reuse(self):
+        decision = self._decision([
+            ((8, 9),), ((0, 1),), ((2, 3),), ((6, 7),),
+        ])
+        self.assertEqual(decision.selected_horizon, 0)
+        self.assertEqual(decision.reason, "no_actionable_visible_reuse")
+        self.assertLess(decision.scores[1], decision.scores[0])
+        self.assertLess(decision.scores[2], decision.scores[0])
+
+    def test_adaptive_selects_one_for_adjacent_reuse_only(self):
+        decision = self._decision([
+            ((8, 9),), ((0, 1),), ((0, 2),), ((6, 7),),
+        ])
+        self.assertEqual(decision.selected_horizon, 1)
+        self.assertEqual(decision.reason, "adjacent_reuse_only")
+        self.assertEqual(decision.target_reuse_by_offset, (1, 0))
+
+    def test_adaptive_selects_two_for_second_layer_reuse(self):
+        decision = self._decision([
+            ((8, 9),), ((0, 1),), ((2, 3),), ((4, 6),),
+        ])
+        self.assertEqual(decision.selected_horizon, 2)
+        self.assertEqual(decision.reason, "second_future_layer_adds_reuse")
+        self.assertEqual(decision.resident_reuse_by_offset, (0, 1))
+
+    def test_decision_pressure_is_audited_and_changes_scores(self):
+        schedule = [
+            ((8, 9),), ((0, 1),), ((4, 2),), ((4, 3),),
+        ]
+        low = self._decision(schedule, residents={4}, zone_sites=20)
+        high = self._decision(
+            schedule, residents={4, 5, 6, 7, 8, 9}, zone_sites=4,
+            commitments={4, 5})
+        self.assertGreater(high.decision_pressure, low.decision_pressure)
+        self.assertGreater(high.scores[2], low.scores[2])
+        self.assertEqual(low.selected_horizon, 1)
+        self.assertEqual(high.selected_horizon, 2)
+        self.assertEqual(high.reason, "multi_layer_reuse_under_pressure")
+        self.assertEqual(high.as_log()["selected_horizon"],
+                         high.selected_horizon)
 
 class TestPhysicalObjective(unittest.TestCase):
     def test_idle_excitation_is_part_of_negative_log_fidelity(self):
@@ -335,7 +485,9 @@ class TestResidentDecisionMechanics(unittest.TestCase):
 
     def test_empty_two_qubit_schedule_is_a_valid_fast_path_for_nl_and_lk(self):
         initial = [(0, i, 0) for i in range(4)]
-        for method, horizon in (("ours_nl", 0), ("ours_lk", 2)):
+        for method, horizon in (
+                ("ours_nl", decay_lookahead_spec(0)),
+                ("ours_lk", decay_lookahead_spec(8))):
             placer = ResidentPlacer(
                 initial, seed=0, experiment_schema=2,
                 method_id=method, objective="physical_log_fidelity",
@@ -345,6 +497,39 @@ class TestResidentDecisionMechanics(unittest.TestCase):
             self.assertEqual(placer.decision_log, [])
             self.assertEqual(list(placer.forecast.visible_future(0)), [])
             self.assertEqual(placer.nu.rounds, {})
+
+    def test_decay_config_records_depth_weights_and_timing(self):
+        initial = [(0, i, 0) for i in range(8)]
+        schedule = [
+            [[0, 1]], [[2, 3]], [[0, 4]], [[1, 5]],
+        ]
+        setting = load_setting("ours_lk_v2.json")
+        placer = ResidentPlacer(initial, **setting)
+        placer.run(self.arch, [initial], schedule, True,
+                   [set() for _ in schedule])
+
+        self.assertFalse(placer.adaptive_lookahead)
+        self.assertTrue(placer.decay_lookahead)
+        self.assertEqual(placer.lookahead_horizon, 8)
+        self.assertEqual(len(placer.decision_log), len(schedule))
+        for row in placer.decision_log[:-1]:
+            self.assertEqual(row["selected_horizon"], 8)
+            self.assertEqual(row["horizon_reason"], "fixed_bounded_decay")
+            self.assertEqual(set(row["horizon_scores"]),
+                             {str(index) for index in range(9)})
+            self.assertGreaterEqual(row["horizon_selection_ns"], 0)
+            self.assertGreaterEqual(row["search_kernel_ns"], 0)
+            audit = row["forecast_objective"]
+            self.assertEqual(audit["configured_depth"], 8)
+            self.assertEqual(audit["effective_depth"], 6)
+            self.assertEqual(audit["rho"], 0.6)
+            self.assertEqual(audit["epsilon"], 0.05)
+            self.assertEqual(
+                [item["offset"] for item in audit["offset_weights"]],
+                [1, 2, 3, 4, 5, 6])
+        self.assertEqual(placer.decision_log[-1]["selected_horizon"], 0)
+        self.assertEqual(
+            placer.decision_log[-1]["horizon_reason"], "terminal_boundary")
 
     def test_schema2_compiler_never_runs_an_auxiliary_full_schedule_baseline(self):
         """H=0 must not bypass ForecastOracle through a post-hoc ZAC stream."""
@@ -365,6 +550,18 @@ class TestResidentDecisionMechanics(unittest.TestCase):
                 side_effect=AssertionError("full-schedule baseline leaked")):
             compiler.place_qubit_intermedeiate()
         self.assertEqual(len(compiler.qubit_mapping), 2 * len(schedule) + 1)
+        self.assertTrue(all(
+            row["selected_horizon"] == 0
+            for row in compiler.zzx_decision_log))
+        self.assertEqual(
+            len(compiler.zzx_backend_timing_log), len(schedule))
+        for row in compiler.zzx_backend_timing_log:
+            self.assertEqual(
+                set(row), {
+                    "layer", "backend", "marshal_ns", "search_kernel_ns",
+                    "fitness_ns", "selection_ns", "native_parse_ns",
+                    "native_serialize_ns", "calls", "candidates",
+                })
 
     def test_return_matching_uses_the_selected_subset(self):
         initial = [(0, i, 0) for i in range(4)]
@@ -635,7 +832,7 @@ class TestResidentDecisionMechanics(unittest.TestCase):
                        [set() for _ in schedule])
             outputs.append(json.dumps({
                 "mapping": placer.mapping,
-                "decision_log": placer.decision_log,
+                "decision_log": semantic_decision_log(placer.decision_log),
             }, sort_keys=True, separators=(",", ":")))
         self.assertEqual(outputs[0], outputs[1])
 
@@ -803,7 +1000,8 @@ class TestResidentDecisionMechanics(unittest.TestCase):
             schedule = [[[0, 1]], [[2, 3]], *tail]
             placer.run(self.arch, [initial], schedule, True,
                        [set() for _ in schedule])
-            return placer.mapping[2], placer.decision_log[0]
+            return placer.mapping[2], semantic_decision_log(
+                [placer.decision_log[0]])[0]
 
         neutral = [[[4, 5]], [[4, 5]], [[4, 5]]]
         visible_l2 = [[[0, 2]], [[4, 5]], [[4, 5]]]

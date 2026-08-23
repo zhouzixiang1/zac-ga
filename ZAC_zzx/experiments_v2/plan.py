@@ -74,13 +74,21 @@ def _path(base: Path, value: str | os.PathLike[str]) -> Path:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
         candidate = base / candidate
-    return candidate.absolute()
+    return candidate.resolve()
 
 
 def _executable(base: Path, value: str | os.PathLike[str]) -> str:
     text = os.fspath(value)
     if os.sep in text or (os.altsep is not None and os.altsep in text):
-        return str(_path(base, text))
+        # Do not call Path.resolve() here.  A virtual environment's ``python``
+        # is normally a symlink to the base interpreter; resolving it silently
+        # drops the venv identity and launches the compiler without the frozen
+        # packages.  ``abspath`` normalizes a relative executable path while
+        # deliberately preserving the final symlink.
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        return os.path.abspath(os.fspath(candidate))
     return text
 
 

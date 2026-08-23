@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from zzx.algorithm_v2 import validate_schema2_setting
+from zzx.algorithm_v2 import (maximum_lookahead_horizon,
+                              validate_schema2_setting)
 
 from .contracts import CanonicalCircuitManifest, stable_sha256
 
@@ -43,22 +44,22 @@ class AblationVariant:
         }
 
 
-# ``h2_phase_coloring`` is both the H=2 reference and the phase-coloring arm.
-# This avoids running the byte-identical M4 schedule twice while still covering
-# both requested contrasts.
+# ``decay_phase_coloring`` is the complete formal M4 reference.  Its registered
+# maximum is eight and the shared geometric cutoff determines the effective
+# depth; no formal ablation revives the legacy adaptive H=0/1/2 selector.
 ABLATION_VARIANTS: Mapping[str, AblationVariant] = {
     item.name: item for item in (
         AblationVariant("h0", "M3", 0, "optimize", "phase", "coloring"),
         AblationVariant(
-            "h2_phase_coloring", "M4", 2, "optimize", "phase", "coloring"),
+            "decay_phase_coloring", "M4", 8, "optimize", "phase", "coloring"),
         AblationVariant(
-            "always_stay", "M4", 2, "always_stay", "phase", "coloring"),
+            "always_stay", "M4", 8, "always_stay", "phase", "coloring"),
         AblationVariant(
-            "always_return", "M4", 2, "always_return", "phase", "coloring"),
+            "always_return", "M4", 8, "always_return", "phase", "coloring"),
         AblationVariant(
-            "adjacent_only", "M4", 2, "adjacent_only", "phase", "coloring"),
+            "adjacent_only", "M4", 8, "adjacent_only", "phase", "coloring"),
         AblationVariant(
-            "lumped_greedy", "M4", 2, "optimize", "lumped_greedy", "greedy"),
+            "lumped_greedy", "M4", 8, "optimize", "lumped_greedy", "greedy"),
     )
 }
 
@@ -90,9 +91,10 @@ def build_ablation_config(variant_name: str,
     if setting.get("method_id") != expected_method_id:
         raise ValueError(
             f"{variant_name} requires {variant.base_method}/{expected_method_id}")
-    if setting.get("lookahead_horizon") != variant.lookahead_horizon:
+    if maximum_lookahead_horizon(
+            setting.get("lookahead_horizon")) != variant.lookahead_horizon:
         raise ValueError(
-            f"{variant_name} base horizon differs from registered controls")
+            f"{variant_name} base maximum horizon differs from registered controls")
     payload = {
         "experiment_schema": 2,
         "run_kind": "ablation",
@@ -148,8 +150,9 @@ def validate_ablation_config(payload: Mapping[str, Any], *,
     setting = _effective_setting(base)
     validate_schema2_setting(setting)
     expected_id = "ours_nl" if variant.base_method == "M3" else "ours_lk"
-    if (setting.get("method_id"), setting.get("lookahead_horizon")) != (
-            expected_id, variant.lookahead_horizon):
+    if (setting.get("method_id") != expected_id or
+            maximum_lookahead_horizon(setting.get("lookahead_horizon")) !=
+            variant.lookahead_horizon):
         raise ValueError("ablation base config identity/horizon mismatch")
     return copy.deepcopy(dict(base)), variant
 

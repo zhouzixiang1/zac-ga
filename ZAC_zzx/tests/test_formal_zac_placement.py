@@ -22,6 +22,14 @@ from zac.zac import ZAC  # noqa: E402
 from zzx.zplacer import ResidentPlacer  # noqa: E402
 
 
+def semantic_decision_log(rows):
+    return [
+        {key: value for key, value in row.items()
+         if key not in {"horizon_selection_ns", "search_kernel_ns"}}
+        for row in rows
+    ]
+
+
 def setting(name):
     value = json.loads((ROOT / "exp_setting" / name).read_text())
     return dict(value["zac_setting"][0])
@@ -119,8 +127,9 @@ cz q[0],q[5];
                     self.assertEqual(
                         self.rebuild_mapping(self.initial, rows), batch.mapping)
                     self.assertEqual(
-                        [dict(row.decision_log) for row in rows],
-                        batch.decision_log,
+                        semantic_decision_log(
+                            [dict(row.decision_log) for row in rows]),
+                        semantic_decision_log(batch.decision_log),
                     )
                     self.assertLessEqual(len(stream.provider.cached_stages), 4)
 

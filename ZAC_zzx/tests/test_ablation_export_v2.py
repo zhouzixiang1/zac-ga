@@ -24,7 +24,7 @@ class TestAblationExport(unittest.TestCase):
             root = Path(directory)
             paths = []
             for circuit in ("c0", "c1"):
-                for variant in ("h0", "h2_phase_coloring"):
+                for variant in ("h0", "decay_phase_coloring"):
                     for seed in range(5):
                         run = _success_run(circuit, variant, seed)
                         path = root / f"{run.run_id}.json"
@@ -33,7 +33,7 @@ class TestAblationExport(unittest.TestCase):
             report = aggregate_ablation(
                 paths, dataset="zac18", frozen_circuits=["c0", "c1"],
                 experiment_id="frozen-ablation",
-                expected_variants=("h0", "h2_phase_coloring"),
+                expected_variants=("h0", "decay_phase_coloring"),
                 bootstrap_iterations=100)
             output = root / "delivery"
             manifest = export_ablation_report(report, output)

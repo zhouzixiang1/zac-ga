@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +23,9 @@ from experiments_v2.cli import (  # noqa: E402
     UnifiedEvaluationGate,
     _attempt_spec,
     _manifest_paths,
+    _run_matrix,
     _resume_manifest_is_current,
+    command_run_main,
     command_verify_run,
     main,
 )
@@ -37,7 +40,7 @@ from experiments_v2.protocol import (  # noqa: E402
 from experiments_v2.runner import AttemptSpec, run_attempt  # noqa: E402
 from streaming.large_contract import (  # noqa: E402
     LARGE_CIRCUITS, QASMBENCH_COMMIT)
-from zzx.algorithm_v2 import ADAPTIVE_HORIZON_V1  # noqa: E402
+from zzx.algorithm_v2 import decay_lookahead_spec  # noqa: E402
 
 
 ARCHITECTURE = {
@@ -62,13 +65,14 @@ ARCHITECTURE = {
 
 
 def algorithm_config(method: str, horizon: int) -> dict:
-    horizon_spec = (dict(ADAPTIVE_HORIZON_V1)
-                    if method == "ours_lk" else horizon)
+    horizon_spec = decay_lookahead_spec(
+        8 if method == "ours_lk" else 0)
     return {
         "experiment_schema": 2,
         "method_id": method,
         "objective": "physical_log_fidelity",
         "lookahead_horizon": horizon_spec,
+        "alpha_lookahead": 0.1,
         "population_size": 6,
         "iterations": 8,
         "neighbors_per_solution": 2,
@@ -212,6 +216,27 @@ class PlanFixture:
 
 
 class TestCliPlan(unittest.TestCase):
+    @mock.patch("experiments_v2.cli._atomic_json")
+    @mock.patch("experiments_v2.cli._run_matrix")
+    @mock.patch("experiments_v2.cli._assert_formal_selection_gates")
+    def test_non_dry_main_requires_and_records_both_selection_gates(
+            self, selection_gate, run_matrix, atomic_json):
+        selection_gate.return_value = {
+            "initial_placement_engine": "sa",
+            "shared_candidate_id": "candidate",
+        }
+        run_matrix.return_value = {"experiment_schema": 2, "attempted": []}
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = PlanFixture(Path(directory))
+            plan = load_experiment_plan(fixture.plan_path)
+            report = command_run_main(
+                plan, ["zac"], [0, 1, 2, 3, 4],
+                dry_run=False, resume=False)
+        selection_gate.assert_called_once_with(plan)
+        self.assertEqual(report["formal_selection"],
+                         selection_gate.return_value)
+        atomic_json.assert_called_once()
+
     def test_formal_resume_requires_same_clean_commit(self):
         repository = {"commit": "a" * 40, "dirty": False}
         current = RunManifest(
@@ -233,6 +258,38 @@ class TestCliPlan(unittest.TestCase):
             path = (plan.path.parent / plan.reproduction[key]).resolve()
             self.assertTrue(path.is_file())
             self.assertTrue(path.is_relative_to(ROOT.parent.resolve()))
+
+    def test_plan_preserves_virtual_environment_executable_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = PlanFixture(Path(directory))
+            venv = Path(directory) / "venv" / "bin"
+            venv.mkdir(parents=True)
+            python_link = venv / "python"
+            python_link.symlink_to(Path(sys.executable))
+            qmap_venv = Path(directory) / "qmap-venv" / "bin"
+            qmap_venv.mkdir(parents=True)
+            qmap_link = qmap_venv / "python"
+            qmap_link.symlink_to(Path(sys.executable))
+            payload = fixture.payload()
+            payload["python"] = os.path.relpath(
+                python_link, fixture.plan_path.parent)
+            payload["qmap_python"] = os.path.relpath(
+                qmap_link, fixture.plan_path.parent)
+            fixture.write_plan(payload)
+
+            plan = load_experiment_plan(fixture.plan_path)
+
+            expected_python = os.path.abspath(
+                os.fspath(plan.path.parent / payload["python"]))
+            expected_qmap = os.path.abspath(
+                os.fspath(plan.path.parent / payload["qmap_python"]))
+            self.assertEqual(plan.python, expected_python)
+            self.assertEqual(plan.qmap_python, expected_qmap)
+            self.assertEqual(plan.methods["M1"].python,
+                             expected_python)
+            self.assertEqual(plan.methods["M2"].python,
+                             expected_qmap)
+            self.assertNotEqual(plan.python, str(python_link.resolve()))
 
     def test_canonicalize_reexecutes_the_plan_python_once(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -392,6 +449,89 @@ class TestCliPlan(unittest.TestCase):
             self.assertEqual(len(report["skipped_existing"]), 1)
             self.assertEqual(len(report["commands"]), 11)
 
+    @mock.patch("experiments_v2.cli.run_attempt")
+    @mock.patch("experiments_v2.cli.repository_snapshot")
+    @mock.patch("experiments_v2.cli._assert_reproduction_gate")
+    def test_interrupted_main_resume_closes_one_complete_manifest_registry(
+            self, reproduction_gate, repository_snapshot_mock, run_attempt_mock):
+        del reproduction_gate
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = PlanFixture(Path(directory))
+            plan = load_experiment_plan(fixture.plan_path)
+            dataset = plan.datasets["zac"]
+            canonical = plan.load_suite(dataset)[0]
+            repository_snapshot_mock.return_value = {
+                "commit": "a" * 40, "dirty": False,
+            }
+
+            interrupted_spec = _attempt_spec(
+                plan, dataset, canonical, "M1", 0, 0, "main")
+            interrupted_dir = (fixture.output / "runs" / "main" / "zac" /
+                               "interrupted-complete")
+            interrupted_dir.mkdir(parents=True)
+            interrupted = RunManifest(
+                run_id="interrupted", dataset="zac", circuit="toy",
+                method="M1", seed=0, repetition=0, run_kind="main",
+                experiment_id=interrupted_spec.experiment_id,
+                status="compiler_error", git_commit="a" * 40,
+                git_dirty=False,
+                input_sha256=sha256_file(interrupted_spec.input_path),
+                config_sha256=sha256_file(interrupted_spec.config_path),
+                architecture_sha256=sha256_file(
+                    interrupted_spec.architecture_path),
+                model_sha256=sha256_file(interrupted_spec.model_path),
+                trace_protocol=trace_protocol_for_method("M1"),
+                ghost_policy=ghost_policy_for_method("M1"),
+                physicalization_policy=physicalization_policy_for_method("M1"),
+                artifact_dir=str(interrupted_dir),
+            )
+            interrupted.write(interrupted_dir / "manifest.json")
+
+            counter = 0
+
+            def complete(spec, **_kwargs):
+                nonlocal counter
+                counter += 1
+                artifact = (spec.output_root /
+                            f"resumed-{counter:02d}-{spec.method}-{spec.seed}")
+                artifact.mkdir(parents=True)
+                manifest = RunManifest(
+                    run_id=f"resumed-{counter:02d}", dataset=spec.dataset,
+                    circuit=spec.circuit, method=spec.method, seed=spec.seed,
+                    repetition=spec.repetition, run_kind=spec.run_kind,
+                    experiment_id=spec.experiment_id, status="compiler_error",
+                    git_commit="a" * 40, git_dirty=False,
+                    input_sha256=sha256_file(spec.input_path),
+                    config_sha256=sha256_file(spec.config_path),
+                    architecture_sha256=sha256_file(spec.architecture_path),
+                    model_sha256=sha256_file(spec.model_path),
+                    trace_protocol=trace_protocol_for_method(spec.method),
+                    ghost_policy=ghost_policy_for_method(spec.method),
+                    physicalization_policy=physicalization_policy_for_method(
+                        spec.method),
+                    artifact_dir=str(artifact),
+                )
+                manifest.write(artifact / "manifest.json")
+                return manifest
+
+            run_attempt_mock.side_effect = complete
+            jobs = [("M1", 0, 0), ("M2", 0, 0)]
+            jobs.extend((method, seed, 0)
+                        for seed in range(5) for method in ("M3", "M4"))
+            report = _run_matrix(
+                plan, [dataset], jobs, phase="main", resume=True,
+                dry_run=False)
+            self.assertEqual(report["planned_jobs"], 12)
+            self.assertEqual(len(report["cohort_manifests"]), 12)
+            self.assertEqual(len(report["attempted"]), 11)
+            self.assertEqual(len(report["skipped_existing"]), 1)
+            self.assertEqual(
+                report["skipped_existing"][0]["manifest"],
+                str((interrupted_dir / "manifest.json").resolve()))
+            self.assertEqual(
+                [row["identity"] for row in report["cohort_manifests"]],
+                sorted(row["identity"] for row in report["cohort_manifests"]))
+
     def test_timing_dry_run_has_excluded_warmups_and_five_repetitions(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = PlanFixture(Path(directory))
@@ -413,6 +553,99 @@ class TestCliPlan(unittest.TestCase):
                            if row["method"] == method),
                     list(range(5)),
                 )
+
+    def test_timing_resume_preserves_remaining_frozen_schedule_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = PlanFixture(Path(directory))
+            first_stdout = io.StringIO()
+            with contextlib.redirect_stdout(first_stdout):
+                code = main([
+                    "run-timing", "--plan", str(fixture.plan_path),
+                    "--datasets", "zac", "--dry-run",
+                ])
+            self.assertEqual(code, 0)
+            first = json.loads(first_stdout.getvalue())
+            commands = first["timed"]["commands"]
+            completed = commands[len(commands) // 2]
+
+            plan = load_experiment_plan(fixture.plan_path)
+            dataset = plan.datasets[completed["dataset"]]
+            canonical = next(
+                item for item in plan.load_suite(dataset)
+                if Path(item.canonical_path).stem == completed["circuit"])
+            spec = _attempt_spec(
+                plan, dataset, canonical, completed["method"], 0,
+                completed["repetition"], "timing")
+            artifact = (fixture.output / "runs" / "timing" /
+                        completed["dataset"] / "existing")
+            artifact.mkdir(parents=True)
+            manifest = RunManifest(
+                run_id="existing", dataset=completed["dataset"],
+                circuit=completed["circuit"], method=completed["method"],
+                seed=0, repetition=completed["repetition"], run_kind="timing",
+                experiment_id=spec.experiment_id, status="compiler_error",
+                input_sha256=sha256_file(spec.input_path),
+                config_sha256=sha256_file(spec.config_path),
+                architecture_sha256=sha256_file(spec.architecture_path),
+                model_sha256=sha256_file(spec.model_path),
+                package_versions={
+                    "timing_schedule_sha256": first["schedule_sha256"],
+                    "timing_schedule_order": str(completed["schedule_order"]),
+                },
+                trace_protocol=trace_protocol_for_method(completed["method"]),
+                ghost_policy=ghost_policy_for_method(completed["method"]),
+                physicalization_policy=physicalization_policy_for_method(
+                    completed["method"]),
+                artifact_dir=str(artifact),
+            )
+            manifest.write(artifact / "manifest.json")
+
+            resumed_stdout = io.StringIO()
+            with contextlib.redirect_stdout(resumed_stdout):
+                code = main([
+                    "run-timing", "--plan", str(fixture.plan_path),
+                    "--datasets", "zac", "--resume", "--dry-run",
+                ])
+            self.assertEqual(code, 0)
+            resumed = json.loads(resumed_stdout.getvalue())
+            remaining_orders = [
+                row["schedule_order"]
+                for row in resumed["timed"]["commands"]
+            ]
+            self.assertEqual(
+                remaining_orders,
+                [row["schedule_order"] for row in commands
+                 if row["schedule_order"] != completed["schedule_order"]],
+            )
+            self.assertEqual(
+                [row["schedule_order"]
+                 for row in resumed["timed"]["skipped_existing"]],
+                [completed["schedule_order"]],
+            )
+            skipped = resumed["timed"]["skipped_existing"][0]
+            manifest_path = (artifact / "manifest.json").resolve()
+            self.assertEqual(skipped["manifest"], str(manifest_path))
+            self.assertEqual(
+                skipped["manifest_sha256"], sha256_file(manifest_path))
+
+    def test_timing_refuses_tampered_immutable_schedule(self):
+        from experiments_v2.runtime_benchmark import build_balanced_schedule
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = PlanFixture(Path(directory))
+            schedule = build_balanced_schedule(["zac/toy"], repetitions=5)
+            schedule["jobs"][0]["repetition"] = 4
+            schedule_path = fixture.output / "timing" / "randomized_schedule.json"
+            schedule_path.parent.mkdir(parents=True)
+            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = main([
+                    "run-timing", "--plan", str(fixture.plan_path),
+                    "--datasets", "zac", "--dry-run",
+                ])
+            self.assertEqual(code, 2)
+            self.assertIn("schedule SHA256 seal mismatch", stderr.getvalue())
 
     def test_run_large_dry_run_is_an_explicit_non_executable_plan(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -534,6 +767,47 @@ class TestUnifiedEvaluationGate(unittest.TestCase):
             ))
             self.assertEqual(
                 (artifact / "trace.na").read_text(encoding="utf-8"), native)
+
+    def test_m2_observed_transition_ledger_comes_from_native_trace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = PlanFixture(Path(directory))
+            canonical_path = Path(
+                fixture.datasets["zac"]["canonical_directory"]
+            ) / "toy.qasm"
+            canonical_path.write_text(
+                'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+                'qreg q[2];\ncz q[0],q[1];\n',
+                encoding="utf-8",
+            )
+            suite_path = canonical_path.parent / "suite.manifest.json"
+            suite_payload = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite_payload[0].update({
+                "canonical_sha256": sha256_file(canonical_path),
+                "qubits": 2,
+                "gates_2q": 1,
+                "depth": 1,
+            })
+            suite_path.write_text(json.dumps(suite_payload), encoding="utf-8")
+            plan = load_experiment_plan(fixture.plan_path)
+            canonical = plan.load_suite(plan.datasets["zac"])[0]
+            artifact = Path(directory) / "attempt-ledger"
+            artifact.mkdir()
+            (artifact / "trace.na").write_text(
+                "atom (10, 0) atom0\n"
+                "atom (12, 0) atom1\n"
+                "@+ cz zone_cz0\n",
+                encoding="utf-8",
+            )
+            gate = UnifiedEvaluationGate(
+                plan, canonical, "M2", write_artifacts=False)
+            self.assertTrue(gate.verifier(artifact)["ok"])
+            metrics = gate.scorer(artifact)
+            self.assertEqual(metrics["observed_transition_count"], 0)
+            self.assertEqual(
+                metrics["observed_transition_layer_ledger_source"],
+                "normalized_qmap_placement_trace")
+            self.assertEqual(
+                len(metrics["observed_transition_layer_ledger_sha256"]), 64)
 
     def test_normalize_score_and_gate_ledger_are_mandatory(self):
         with tempfile.TemporaryDirectory() as directory:

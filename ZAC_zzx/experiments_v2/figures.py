@@ -580,7 +580,8 @@ def _plot_ablation_effects(rows: Sequence[Mapping[str, Any]], output: Path,
             ax.plot(estimate, position, marker="o", markersize=3.5, color=color)
         ax.axvline(1.0, color="#767676", linestyle="--", linewidth=0.7)
         ax.set_yticks(y, [str(row.get("variant")) for row in selected], fontsize=5.8)
-        ax.set_xlabel(f"{labels[metric]} (variant / H=2 reference)")
+        ax.set_xlabel(
+            f"{labels[metric]} (variant / bounded-decay reference)")
         if not selected:
             ax.text(0.5, 0.5, "No eligible paired comparison",
                     transform=ax.transAxes, ha="center", va="center",

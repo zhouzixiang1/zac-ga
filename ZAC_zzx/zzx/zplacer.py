@@ -41,6 +41,7 @@ import random
 import time
 from collections import OrderedDict
 from copy import deepcopy
+from dataclasses import dataclass
 from itertools import product
 from math import sqrt
 
@@ -52,14 +53,64 @@ from scipy.sparse.csgraph import min_weight_full_bipartite_matching
 # 所以下面的 zac.* 解析到 ZAC_zzx/zac/（本地副本）。
 from zac.placer.vmplacer import VertexMatchingPlacer
 
-from zzx.algorithm_v2 import (CacheStats, ForecastOracle,
-                              PhysicalIncrementalCost, build_seed_population,
+from zzx.boundary_problem import (
+    ArchitectureSnapshot as BoundaryArchitectureSnapshot,
+    BoundaryConfig,
+    BoundaryProblem,
+    CandidatePlan,
+    Ghost as BoundaryGhost,
+    Leg as BoundaryLeg,
+    MovementPhase as BoundaryMovementPhase,
+    Point as BoundaryPoint,
+    RichForecastTerm,
+    RichGateOption,
+    RichH0Problem,
+    RichReturnOption,
+    RichSearchConfig,
+)
+from zzx.algorithm_v2 import (AdaptiveHorizonDecision, CacheStats,
+                              ForecastOracle, PhysicalCostBreakdown,
+                              PhysicalIncrementalCost,
+                              build_seed_population, is_adaptive_lookahead,
+                              is_decay_lookahead,
+                              maximum_lookahead_horizon,
                               resident_decision_candidates)
+from zzx.native_backend import select_backend
 from zzx.zcost import batch_cost, compatible_2d, conflict_graph
 from zzx.ghost import (ghost_hits, hit_count, leg_hits, new_conflicts,
                        pair_edges)
 from zzx.resident import (NextUse, ResidentRegistry, boundary_legs,
-                          decide_lazy, match_return_sites)
+                          decide_lazy, match_return_sites,
+                          _all_storage_sites, _box_sites)
+
+
+@dataclass(frozen=True)
+class _BackendMovementPhase:
+    """One phase represented in both legacy and native-exact forms.
+
+    ``PhysicalIncrementalCost`` deliberately consumes objects structurally, so
+    these proxy properties keep all pre-migration callers byte-for-byte stable
+    while retaining the exact legs/ghosts/owners needed by ``BoundaryProblem``.
+    """
+
+    physical: object
+    boundary: BoundaryMovementPhase
+
+    @property
+    def batches(self):
+        return self.physical.batches
+
+    @property
+    def move_time_us(self):
+        return self.physical.move_time_us
+
+    @property
+    def total_distance_um(self):
+        return self.physical.total_distance_um
+
+    @property
+    def movers(self):
+        return self.physical.movers
 
 
 class BatchAwarePlacer(VertexMatchingPlacer):
@@ -458,9 +509,8 @@ class ResidentPlacer(VertexMatchingPlacer):
     def __init__(self, mapping: list, l2: bool = False, seed: int = 0, **params):
         super().__init__(mapping, l2)
         self.rng = random.Random(seed)              # RNG 隔离（审计 MAJOR-6：模块级共享会毁 SA 确定性）
-        # Independent current-transition stream.  M4 advances this exactly as
-        # M3 advances ``rng``; H=2 exploration therefore cannot perturb the
-        # reproducible H=0 safety incumbent used at the next boundary.
+        # Independent current-transition stream retained for legacy adaptive
+        # H=0/1/2 regression.  Formal decay uses the ABI3 one-call solver.
         self.safety_rng = random.Random(seed)
         self.theta_capacity: float = params.get("theta_capacity", 0.9)
         self.box_ratio: int = params.get("box_ratio", 3)
@@ -502,10 +552,58 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.iterations: int = params.get("iterations", 8)
         self.neighbors_per_solution: int = params.get("neighbors_per_solution", 2)
         self.neighbor_sample_size: int = params.get("neighbor_sample_size", 24)
+        # Shared Python/native search-budget contract.  An omitted unique-
+        # evaluation budget is deterministically derived from the historical GA
+        # knobs so M3 and M4 cannot receive different effective work by accident.
+        self.elite_count: int = int(params.get("elite_count", 1))
+        self.early_stop_patience: int = int(
+            params.get("early_stop_patience", 0))
+        configured_unique_budget = params.get("max_unique_evaluations")
+        self.max_unique_evaluations: int = int(
+            configured_unique_budget
+            if configured_unique_budget is not None
+            else (self.population_size * self.iterations
+                  * self.neighbor_sample_size))
+        self.operator_profile: str = params.get("operator_profile", "exact")
+        if not 1 <= self.elite_count <= self.population_size:
+            raise ValueError("elite_count must be in [1, population_size]")
+        if self.early_stop_patience < 0:
+            raise ValueError("early_stop_patience must be non-negative")
+        if self.max_unique_evaluations <= 0:
+            raise ValueError("max_unique_evaluations must be positive")
+        if self.operator_profile not in {"exact", "tuned"}:
+            raise ValueError("operator_profile must be 'exact' or 'tuned'")
         self.experiment_schema: int = params.get("experiment_schema", 1)
         self.method_id: str = params.get("method_id", "legacy")
         self.objective: str = params.get("objective", "legacy")
-        self.lookahead_horizon: int = params.get("lookahead_horizon", 0)
+        # Explicit migration switch.  Existing research fixtures intentionally
+        # default to the Python oracle; formal runners set backend="native" and
+        # formal_native=True, which makes extension load/ABI failures fatal.
+        self.resident_backend_requested: str = params.get(
+            "backend", params.get("resident_backend", "reference"))
+        # Public Schema-2 configs use ``native_fail_closed``.  The older
+        # ``formal_native`` spelling remains a compatibility alias for golden
+        # fixtures; an explicit public value takes precedence.
+        self.formal_native: bool = bool(params.get(
+            "native_fail_closed", params.get("formal_native", False)))
+        self.native_wheel_sha256: str = str(
+            params.get("native_wheel_sha256", ""))
+        if self.resident_backend_requested not in {"reference", "native"}:
+            raise ValueError(
+                "resident backend must be explicitly 'reference' or 'native'")
+        if self.formal_native and self.resident_backend_requested != "native":
+            raise ValueError("formal resident runs require backend='native'")
+        self.lookahead_horizon_config = deepcopy(
+            params.get("lookahead_horizon", 0))
+        # ``lookahead_horizon`` is the maximum readable window.  Formal M3/M4
+        # share one geometric-decay spec and differ only in max_horizon=0/8;
+        # the old adaptive 0/1/2 form remains a legacy regression path.
+        self.lookahead_horizon: int = maximum_lookahead_horizon(
+            self.lookahead_horizon_config)
+        self.adaptive_lookahead: bool = is_adaptive_lookahead(
+            self.lookahead_horizon_config)
+        self.decay_lookahead: bool = is_decay_lookahead(
+            self.lookahead_horizon_config)
         self.fitness_cache: bool = params.get("fitness_cache", True)
         # Formal ablation controls are injected by method_driver only after the
         # frozen main Schema-2 config has passed its strict validation.  They are
@@ -534,12 +632,74 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.registry = None
         self.nu = None
         self.forecast = None
+        self.boundary_backend = None
+        self.boundary_architecture_snapshot = None
+        self.boundary_site_locations: tuple[tuple[int, int, int], ...] = ()
+        self.boundary_site_id: dict[tuple[int, int, int], int] = {}
+        self.boundary_storage_locations: tuple[tuple[int, int, int], ...] = ()
+        self.boundary_storage_site_id: dict[tuple[int, int, int], int] = {}
+        self.boundary_backend_metrics = {
+            "marshal_ns": 0,
+            "search_kernel_ns": 0,
+            "fitness_ns": 0,
+            "selection_ns": 0,
+            "native_parse_ns": 0,
+            "native_serialize_ns": 0,
+            "calls": 0,
+            "candidates": 0,
+        }
+        self.backend_timing_log: list[dict] = []
         # q -> (visible use layer, exact zone seat).  A lookahead STAY is a
         # physical residency commitment, not merely a promise that a later
         # greedy placement may immediately undo with a zone-to-zone transfer.
         self.residency_commitments: dict[int, tuple[int, tuple]] = {}
 
     # ------------------------------------------------------------------ 轮循环
+    def _prepare_boundary_architecture(self):
+        """Preload immutable storage geometry once for the native solver.
+
+        Rich H=0 RETURN matching occasionally needs the global free-site
+        fallback used by :func:`match_return_sites`.  Sending all storage sites
+        at every layer would dominate marshalling, so site ids and coordinates
+        live in the persistent ``ArchitectureSnapshot``.  Per-boundary payloads
+        contain only the small local matching columns and occupied ids.
+        """
+        storage_locations = tuple(sorted(_all_storage_sites(self.architecture)))
+        # One immutable index covers storage, entanglement, and every current
+        # mapping position.  Rich boundary DTOs can therefore send compact ids
+        # instead of repeating coordinates, legs, owners, and ghost rows for
+        # every gate option at every layer.
+        all_locations = set(storage_locations)
+        for array, slm in sorted(self.architecture.dict_SLM.items()):
+            all_locations.update(
+                (int(array), row, column)
+                for row in range(slm.n_r)
+                for column in range(slm.n_c)
+            )
+        site_locations = tuple(sorted(all_locations))
+        site_id = {
+            tuple(location): index
+            for index, location in enumerate(site_locations)
+        }
+        storage_site_id = {
+            tuple(location): site_id[tuple(location)]
+            for location in storage_locations
+        }
+        coordinates = tuple(
+            BoundaryPoint(*self.architecture.exact_SLM_location_tuple(location))
+            for location in site_locations
+        )
+        self.boundary_site_locations = site_locations
+        self.boundary_site_id = site_id
+        # Backwards-compatible name: site ids are global ABI3 ids, so native
+        # RETURN assignments are decoded through the complete location table.
+        self.boundary_storage_locations = site_locations
+        self.boundary_storage_site_id = storage_site_id
+        self.boundary_architecture_snapshot = BoundaryArchitectureSnapshot(
+            len(self.mapping[0]), coordinates,
+            tuple(storage_site_id[location] for location in storage_locations))
+        return self.boundary_architecture_snapshot
+
     def _initialize_run_state(self, architecture, qubit_mapping,
                               gate_scheduling, *, forecast_source=None):
         """Initialize the state shared by batch and bounded-memory execution.
@@ -559,13 +719,35 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.mapping = [list(qubit_mapping[0])]
         self.registry = ResidentRegistry(architecture, qubit_mapping[0],
                                          self.theta_capacity)
+        if self.experiment_schema == 2 and self.engine == "ga":
+            snapshot = self._prepare_boundary_architecture()
+            self.boundary_backend = select_backend(
+                snapshot,
+                backend=self.resident_backend_requested,
+                formal=self.formal_native,
+                require_registered_wheel=self.formal_native,
+                expected_wheel_sha256=(
+                    self.native_wheel_sha256 if self.formal_native else None),
+            )
+            self.boundary_backend_metrics = {
+                "marshal_ns": 0,
+                "search_kernel_ns": 0,
+                "fitness_ns": 0,
+                "selection_ns": 0,
+                "native_parse_ns": 0,
+                "native_serialize_ns": 0,
+                "calls": 0,
+                "candidates": 0,
+            }
+            self.backend_timing_log = []
         # Schema 2 makes ForecastOracle the sole future-information channel.
         # Keep a deliberately empty legacy helper so accidental next-use reads
         # cannot leak L+2+ even though older function signatures still accept it.
         self.nu = NextUse([] if self.experiment_schema == 2 else gate_scheduling)
         self.forecast = ForecastOracle(
             gate_scheduling if forecast_source is None else forecast_source,
-            self.lookahead_horizon)
+            self.lookahead_horizon_config,
+            alpha_lookahead=self.alpha_lookahead)
         self.residency_commitments = {}
         return n
 
@@ -597,8 +779,30 @@ class ResidentPlacer(VertexMatchingPlacer):
                 elif kind == "RESEAT":
                     self.registry.reseat(q, loc)
         self._append_boundary(decisions)
-        self.decision_log.append({"layer": layer, **stats,
-                                  "ghost_fix": getattr(self, "ghost_fixes", 0)})
+        terminal_horizon = AdaptiveHorizonDecision.fixed(
+            0, reason="terminal_boundary")
+        self.backend_timing_log.append({
+            "layer": layer,
+            "backend": getattr(
+                self.boundary_backend, "name", self.resident_backend_requested),
+            "marshal_ns": 0,
+            "search_kernel_ns": 0,
+            "fitness_ns": 0,
+            "selection_ns": 0,
+            "native_parse_ns": 0,
+            "native_serialize_ns": 0,
+            "calls": 0,
+            "candidates": 0,
+        })
+        self.decision_log.append({
+            "layer": layer,
+            **stats,
+            **terminal_horizon.as_log(),
+            "configured_lookahead_horizon": self.lookahead_horizon_config,
+            "horizon_selection_ns": 0,
+            "search_kernel_ns": 0,
+            "ghost_fix": getattr(self, "ghost_fixes", 0),
+        })
 
     def run(self, architecture, qubit_mapping, gate_scheduling,
             dynamic_placement, reuse_qubit):
@@ -1644,15 +1848,66 @@ class ResidentPlacer(VertexMatchingPlacer):
     def _ga_step_v2(self, layer: int):
         """Formal M3/M4 transition with a physical, horizon-bounded objective.
 
-        M3 and M4 execute this exact function.  Their only behavioral difference is
-        the ``ForecastOracle`` horizon (0 versus 2); ghost safety and current-phase
-        scoring are shared hard invariants.
+        M3 and M4 execute this exact function.  M3 owns a hard H=0 oracle; M4
+        consumes a bounded geometric-decay window.  The current boundary is
+        always exact and undiscounted; only predicted future terms are weighted.
+        Ghost safety and current-phase scoring are shared invariants.
         """
         t0 = time.time()
         next_layer = layer + 1
         list_gate = self.forecast.target_layer(layer)
         reg, arch = self.registry, self.architecture
         participants = {q for gate in list_gate for q in gate}
+        horizon_selection_started_ns = time.perf_counter_ns()
+        if self.adaptive_lookahead:
+            horizon_decision = AdaptiveHorizonDecision.select(
+                self.forecast,
+                layer,
+                residents=reg.zone_seat,
+                target_participants=participants,
+                zone_sites=reg.zone_sites,
+                theta_capacity=self.theta_capacity,
+                active_commitments=self.residency_commitments,
+            )
+        elif self.decay_lookahead:
+            horizon_decision = AdaptiveHorizonDecision.fixed(
+                self.lookahead_horizon,
+                reason=("strict_zero_no_future_access"
+                        if self.lookahead_horizon == 0
+                        else "fixed_bounded_decay"),
+            )
+        else:
+            # Crucially, fixed H=0 chooses without calling visible_future().
+            # Its backing provider therefore sees only the target-layer read.
+            horizon_decision = AdaptiveHorizonDecision.fixed(
+                self.lookahead_horizon)
+        active_horizon = horizon_decision.selected_horizon
+        forecast = (self.forecast if self.decay_lookahead
+                    else self.forecast.bounded(active_horizon))
+        # Materialise the bounded oracle exactly once.  H=0 executes an empty
+        # loop and therefore performs no provider read beyond target_layer().
+        visible_forecast = tuple(forecast.weighted_future(layer))
+        visible_window = tuple(
+            (absolute_layer, gates)
+            for absolute_layer, gates, _offset, _weight in visible_forecast)
+        next_visible_use = {}
+        for absolute_layer, gates, _offset, _weight in visible_forecast:
+            for q0, q1 in gates:
+                next_visible_use.setdefault(int(q0), (absolute_layer, int(q1)))
+                next_visible_use.setdefault(int(q1), (absolute_layer, int(q0)))
+
+        def visible_use(q):
+            return next_visible_use.get(int(q))
+
+        # Both formal methods use the same generic rich solve.  The strict H=0
+        # DTO contains no forecast term; M4 carries the bounded term table.
+        use_rich_boundary = (
+            self.resident_backend_requested == "native"
+            and self.decay_lookahead
+            and self.ablation_fitness_mode == "phase"
+        )
+        horizon_selection_ns = (
+            time.perf_counter_ns() - horizon_selection_started_ns)
         # The boundary is physically split into ``back`` then ``out``.  A
         # non-participating resident may therefore RETURN before the target
         # gates enter and its old zone seat is a legitimate target.  Earlier
@@ -1701,9 +1956,27 @@ class ResidentPlacer(VertexMatchingPlacer):
                 value = self.phase_cost_cache[key]
                 phase_cache[key] = value
                 return value
-            value = physical.movement_phase(
+            physical_value = physical.movement_phase(
                 leg_key, ghosts=ghosts, owners=owners,
                 exact_threshold=exact_threshold, batching=batching)
+            boundary_value = BoundaryMovementPhase(
+                legs=tuple(
+                    BoundaryLeg(
+                        float(leg[0]),
+                        BoundaryPoint(float(leg[1]), float(leg[2])),
+                        BoundaryPoint(float(leg[3]), float(leg[4])),
+                    )
+                    for leg in leg_key),
+                ghosts=tuple(
+                    BoundaryGhost(
+                        int(ghost[0]),
+                        BoundaryPoint(float(ghost[1]), float(ghost[2])),
+                    )
+                    for ghost in ghost_key),
+                owners=owner_key,
+                batching=batching,
+            )
+            value = _BackendMovementPhase(physical_value, boundary_value)
             if self.fitness_cache:
                 phase_cache[key] = value
                 if not ghost_key:
@@ -1728,7 +2001,8 @@ class ResidentPlacer(VertexMatchingPlacer):
             }
             if len(committed_sites) > 1:
                 released = {q for q in (q1, q2) if q in target_pins}
-                forced_cycle_candidates.update(released)
+                if not self.decay_lookahead:
+                    forced_cycle_candidates.update(released)
                 movable_before_out.update(released)
                 for q in released:
                     target_pins.pop(q, None)
@@ -1773,7 +2047,8 @@ class ResidentPlacer(VertexMatchingPlacer):
                 # pinned endpoint(s) through a mandatory physical cycle, then
                 # rebuild the menu over the ordinary complete domain.
                 released = {q for q in (q1, q2) if q in target_pins}
-                forced_cycle_candidates.update(released)
+                if not self.decay_lookahead:
+                    forced_cycle_candidates.update(released)
                 movable_before_out.update(released)
                 for q in released:
                     target_pins.pop(q, None)
@@ -1832,7 +2107,8 @@ class ResidentPlacer(VertexMatchingPlacer):
         # coupled placement, so keep the local extension fail-closed there.
         optional_cycle_candidates = (
             adjacent_resident_participants
-            if (self.ablation_policy == "optimize"
+            if (not self.decay_lookahead
+                and self.ablation_policy == "optimize"
                 and len(list_gate) == 1
                 and len(adjacent_resident_participants) == 1)
             else [])
@@ -1849,7 +2125,7 @@ class ResidentPlacer(VertexMatchingPlacer):
 
         # Capacity is normalized before fitness, never patched onto the winner.
         def eviction_key(q):
-            visible = self.forecast.next_use(q, layer)
+            visible = visible_use(q)
             return (visible is None, visible[0] if visible else -1, q)
 
         eviction_order = sorted(eligible, key=eviction_key, reverse=True)
@@ -1862,9 +2138,10 @@ class ResidentPlacer(VertexMatchingPlacer):
         # contract is the exact current transition.
         horizon_forced_returns = {
             q for q in eligible
-            if (self.ablation_policy == "optimize"
-                and self.lookahead_horizon > 0
-                and self.forecast.next_use(q, layer) is None)
+            if (not self.decay_lookahead
+                and self.ablation_policy == "optimize"
+                and active_horizon > 0
+                and visible_use(q) is None)
         }
 
         # A visible future use is necessary but not sufficient for residency.
@@ -1872,20 +2149,24 @@ class ResidentPlacer(VertexMatchingPlacer):
         # all-RETURN reference using only the current state and ForecastOracle.
         # The guard credits transfer fidelity and the moving atom's coherence,
         # but not stationary-atom coherence that may disappear when moves share
-        # a batch.  This prevents a rolling H=2 forecast from buying two idle
-        # Rydberg exposures to save a cheaper RETURN/re-entry pair.
+        # a batch.  This guard belongs only to the legacy discrete-horizon path;
+        # formal decay expresses future residency explicitly in forecast_terms.
         all_return_sites = (match_return_sites(
             reg, eligible, self.nu, layer,
             self.box_ratio, self.alpha_lookahead,
-            forecast=self.forecast,
-            candidate_mode=("forecast" if self.lookahead_horizon else "nearest"),
+            forecast=forecast,
+            candidate_mode=(
+                "forecast" if active_horizon and not self.decay_lookahead
+                else "nearest"),
             candidate_cache=return_candidate_cache)
-            if eligible else {})
+            if eligible and not use_rich_boundary else {})
         physical_guard_details = []
         physical_forced_returns = set()
-        if self.ablation_policy == "optimize" and self.lookahead_horizon > 0:
+        if (not self.decay_lookahead
+                and self.ablation_policy == "optimize"
+                and active_horizon > 0):
             for q in eligible:
-                visible = self.forecast.next_use(q, layer)
+                visible = visible_use(q)
                 if visible is None:
                     continue
                 idle_pulses = visible[0] - next_layer
@@ -1919,7 +2200,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             for q, bit in zip(eligible, bits):
                 if bit:
                     continue
-                visible = self.forecast.next_use(q, layer)
+                visible = visible_use(q)
                 if visible is None:
                     continue
                 use_layer, partner = visible
@@ -1960,7 +2241,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                 for i, q in enumerate(eligible):
                     if q in physical_forced_returns:
                         bits[i] = 1
-            if self.lookahead_horizon > 0 and self.ablation_policy == "optimize":
+            if active_horizon > 0 and self.ablation_policy == "optimize":
                 bits = resolve_commitment_conflicts(bits)
             selected = sum(bits)
             if selected < min_returns:
@@ -2026,11 +2307,15 @@ class ResidentPlacer(VertexMatchingPlacer):
             if self.fitness_cache and returners in return_cache:
                 step_cache.return_match_hits += 1
                 return return_cache[returners]
-            mode = "forecast" if self.lookahead_horizon else "nearest"
+            # Formal decay exposes future information only through the audited
+            # forecast term table.  RETURN matching itself stays current-state
+            # exact and therefore uses the same nearest-site domain as M3.
+            mode = ("forecast" if active_horizon and not self.decay_lookahead
+                    else "nearest")
             value = (match_return_sites(
                 reg, list(returners), self.nu, layer,
                 self.box_ratio, self.alpha_lookahead,
-                forecast=self.forecast, candidate_mode=mode,
+                forecast=forecast, candidate_mode=mode,
                 candidate_cache=return_candidate_cache)
                 if returners else {})
             if self.fitness_cache:
@@ -2064,8 +2349,8 @@ class ResidentPlacer(VertexMatchingPlacer):
                 # Architecture (large nested distance tables), while terminal
                 # matching only needs the immutable architecture/home metadata
                 # plus simulated occupancy.  Reconstructing this lightweight
-                # state is semantically identical and removes the dominant H=2
-                # profiling cost.
+                # state is semantically identical and removes the dominant
+                # legacy discrete-rollout profiling cost.
                 shadow = ResidentRegistry(
                     reg.arch, reg.homes, reg.theta)
                 shadow.zone_seat = {}
@@ -2079,7 +2364,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                     match_return_sites(
                         shadow, list(key[0]), self.nu, layer,
                         self.box_ratio, self.alpha_lookahead,
-                        forecast=self.forecast, candidate_mode="forecast",
+                        forecast=forecast, candidate_mode="forecast",
                         candidate_cache=return_candidate_cache,
                         assignment_mode="greedy")
                     if key[0] else {})
@@ -2103,7 +2388,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             using a deterministic local physical minimum.  It still reads future
             gates exclusively through ``ForecastOracle``.
             """
-            phases, exposures = [], 0
+            phases, exposures, terms = [], 0, []
             batching = ("greedy" if self.ablation_fitness_mode == "lumped_greedy"
                         else "phase")
             sim_locations = {
@@ -2189,7 +2474,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                             result.add((base[0], row, column))
                 # A forecast is a deterministic rollout proxy, not a nested
                 # placement search.  Evaluating every point in two 5x5 anchor
-                # windows made each H=2 chromosome perform roughly 40--50 full
+                # windows made each legacy H=2 chromosome perform 40--50 full
                 # physical phase simulations.  Keep a fixed bounded support
                 # that always contains both participant anchors and their
                 # midpoint, then fill it with the nearest joint neighbours.
@@ -2231,7 +2516,11 @@ class ResidentPlacer(VertexMatchingPlacer):
                     rollout_site_cache.move_to_end(key)
                 return value
 
-            for _, gates in self.forecast.visible_future(layer):
+            last_visible_offset = 0
+            for _absolute_layer, gates, offset, weight in visible_forecast:
+                last_visible_offset = offset
+                term_phase_start = len(phases)
+                term_exposures_start = exposures
                 future_participants = {q for gate in gates for q in gate}
                 blocked = {
                     location for q, location in sim_locations.items()
@@ -2298,11 +2587,18 @@ class ResidentPlacer(VertexMatchingPlacer):
                 # absent from this future gate layer is physically exposed.
                 # Restricting this to the current boundary's decision genes
                 # misses atoms that entered in the target or first forecast
-                # layer and then became idle inside the same H=2 window.
+                # layer and then became idle inside the legacy rollout window.
                 exposures += sum(
                     1 for q in range(len(self.mapping[0]))
                     if reg._is_zone(sim_locations[q])
                     and q not in future_participants)
+                terms.append({
+                    "kind": "future_layer",
+                    "offset": offset,
+                    "weight": weight,
+                    "phases": tuple(phases[term_phase_start:]),
+                    "idle_exposures": exposures - term_exposures_start,
+                })
             # Receding-horizon optimisation otherwise has a procrastination
             # failure: an atom with no visible use can choose STAY because one
             # RETURN phase is slightly dearer than H+1 excitation pulses, make
@@ -2312,7 +2608,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             # This terminal value reads no layer outside ForecastOracle and is
             # intentionally absent for H=0, whose registered contract is the
             # exact current transition only.
-            if self.lookahead_horizon:
+            if active_horizon and last_visible_offset:
                 # Close every candidate on the same physical terminal state.
                 # Limiting this to the boundary's original decision genes
                 # omitted target/future-layer partners that entered the zone
@@ -2333,12 +2629,185 @@ class ResidentPlacer(VertexMatchingPlacer):
                         terminal_legs.append((distance, *p0, *p1))
                         terminal_owners.append(q)
                 if terminal_legs:
-                    phases.append(movement_phase(
+                    terminal_phase = movement_phase(
                         terminal_legs, owners=terminal_owners,
-                        batching=batching))
-            return phases, exposures
+                        batching=batching)
+                    phases.append(terminal_phase)
+                    terminal_phases = (terminal_phase,)
+                else:
+                    terminal_phases = ()
+                # Terminal closure is valued at the last actually visible
+                # depth.  It never reads or discounts once more at H+1, and no
+                # terminal term exists when the circuit has no visible future.
+                terminal_offset = last_visible_offset
+                terminal_weight = forecast.future_weight(terminal_offset)
+                terms.append({
+                    "kind": "terminal_return",
+                    "offset": terminal_offset,
+                    "weight": terminal_weight,
+                    "phases": terminal_phases,
+                    "idle_exposures": 0,
+                })
+            return phases, exposures, tuple(terms)
 
-        def score_plan(chrom, include_forecast=True, cycle_returners=()):
+        def score_decay_objective(current_phases, current_exposures,
+                                   chromosome, gate_option_indices,
+                                   return_assignments):
+            """Exact current physics plus a weighted, non-executable forecast.
+
+            Only the primary search NLL receives future heuristic terms.  Move
+            batches/time/distance and the returned physical breakdown describe
+            the executable current boundary exactly and are never discounted or
+            inflated by a predicted layer.
+            """
+            current_objective, current_breakdown = physical.score(
+                current_phases, current_exposures, chromosome)
+            if native_rich_problem is None or rich_config is None:
+                raise RuntimeError("decay forecast term table is unavailable")
+            # This independent Python evaluator is also the differential oracle
+            # for the C++ generic solver.  Both consume the same immutable term
+            # table; current physical fidelity is scored separately above.
+            from zzx.reference_backend import evaluate_decay_forecast
+            (weighted_nll, by_depth, category_breakdown,
+             terms_applied, terms_skipped) = evaluate_decay_forecast(
+                native_rich_problem, rich_config, chromosome,
+                gate_option_indices, return_assignments)
+            search_objective = (
+                current_breakdown.negative_log_fidelity + weighted_nll,
+                current_objective[1], current_objective[2],
+                current_objective[3], current_objective[4],
+            )
+            return search_objective, current_breakdown, {
+                "configured_depth": self.lookahead_horizon,
+                "effective_depth": forecast.effective_horizon,
+                "rho": float(self.lookahead_horizon_config["rho"]),
+                "epsilon": float(self.lookahead_horizon_config["epsilon"]),
+                "alpha_lookahead": self.alpha_lookahead,
+                "forecast_by_depth": list(by_depth),
+                "forecast_breakdown": dict(category_breakdown),
+                "forecast_terms_applied": terms_applied,
+                "forecast_terms_skipped_cutoff": terms_skipped,
+                "weighted_negative_log_fidelity": weighted_nll,
+            }
+
+        boundary_architecture = self.boundary_architecture_snapshot
+        if boundary_architecture is None:
+            # Focused transition tests may invoke _ga_step_v2 directly instead
+            # of entering through run(); keep that diagnostic path exact while
+            # constructing the same persistent snapshot only once.
+            boundary_architecture = self._prepare_boundary_architecture()
+        boundary_config = BoundaryConfig(
+            exact_coloring_threshold=0,
+            horizon_policy=("dynamic" if self.adaptive_lookahead else "fixed"),
+            max_horizon=active_horizon,
+            # Preserve the frozen Python search semantics.  Executable ghost
+            # safety is still enforced by _repair_ghosts_with_commitments and
+            # the independent replay after winner selection.
+            enforce_single_leg_ghost=False,
+        )
+        rich_config = None
+        if self.decay_lookahead:
+            lookahead_spec = self.lookahead_horizon_config
+            rich_config = RichSearchConfig(
+                operator_profile=self.operator_profile,
+                forecast_mode="decay",
+                forecast_policy=str(lookahead_spec["policy"]),
+                decay_kind=str(lookahead_spec["decay"]),
+                max_horizon=active_horizon,
+                alpha_lookahead=self.alpha_lookahead,
+                decay_rho=float(lookahead_spec["rho"]),
+                decay_epsilon=float(lookahead_spec["epsilon"]),
+                population_size=self.population_size,
+                iterations=self.iterations,
+                neighbors_per_solution=self.neighbors_per_solution,
+                neighbor_sample_size=self.neighbor_sample_size,
+                elite_count=self.elite_count,
+                early_stop_patience=self.early_stop_patience,
+                max_unique_evaluations=self.max_unique_evaluations,
+                exact_coloring_threshold=0,
+                enforce_single_leg_ghost=False,
+                fitness_cache=self.fitness_cache,
+            )
+        step_backend = {
+            "marshal_ns": 0,
+            "search_kernel_ns": 0,
+            "fitness_ns": 0,
+            "selection_ns": 0,
+            "native_parse_ns": 0,
+            "native_serialize_ns": 0,
+            "calls": 0,
+            "candidates": 0,
+        }
+
+        def score_from_backend(value):
+            breakdown = PhysicalCostBreakdown(
+                negative_log_fidelity=value.negative_log_fidelity,
+                transfer_nll=value.transfer_nll,
+                idle_excitation_nll=value.idle_excitation_nll,
+                coherence_nll=value.coherence_nll,
+                move_batches=value.move_batches,
+                move_time_us=value.move_time_us,
+                total_distance_um=value.total_distance_um,
+                idle_exposures=value.idle_exposures,
+                transfers=value.transfers,
+            )
+            return value.objective, breakdown
+
+        def evaluate_prepared(prepared):
+            """Evaluate decoded plans through one coarse backend call."""
+            if not prepared:
+                return []
+            # A few focused transition tests construct the registry/oracle
+            # directly and invoke _ga_step_v2 without run().  Lazily create the
+            # exact same persistent backend for that supported diagnostic path.
+            if self.boundary_backend is None:
+                self.boundary_backend = select_backend(
+                    boundary_architecture,
+                    backend=self.resident_backend_requested,
+                    formal=self.formal_native,
+                    require_registered_wheel=self.formal_native,
+                    expected_wheel_sha256=(
+                        self.native_wheel_sha256
+                        if self.formal_native else None),
+                )
+            problem = BoundaryProblem(
+                boundary_architecture,
+                tuple(item[0] for item in prepared),
+                boundary_id=f"{self.method_id}:L{layer}",
+                effective_horizon=active_horizon,
+            )
+            started_ns = time.perf_counter_ns()
+            values = self.boundary_backend.evaluate_many(
+                problem, config=boundary_config)
+            elapsed_ns = time.perf_counter_ns() - started_ns
+            native_timing = getattr(
+                self.boundary_backend, "last_evaluate_timing", {}) or {}
+            marshal_ns = int(native_timing.get("marshal_ns", 0))
+            fitness_ns = int(native_timing.get("fitness_ns", elapsed_ns))
+            selection_ns = 0
+            kernel_ns = fitness_ns + selection_ns
+            delta = {
+                "marshal_ns": marshal_ns,
+                "search_kernel_ns": kernel_ns,
+                "fitness_ns": fitness_ns,
+                "selection_ns": selection_ns,
+                "native_parse_ns": int(
+                    native_timing.get("native_parse_ns", 0)),
+                "native_serialize_ns": int(
+                    native_timing.get("native_serialize_ns", 0)),
+                "calls": 1,
+                "candidates": len(values),
+            }
+            for key, value in delta.items():
+                step_backend[key] += value
+                self.boundary_backend_metrics[key] += value
+            if len(values) != len(prepared):
+                raise RuntimeError("resident backend candidate count mismatch")
+            return [score_from_backend(value) for value in values]
+
+        forecast_audit_cache = {}
+
+        def build_plan(chrom, include_forecast=True, cycle_returners=()):
             chrom = normalize_chrom(chrom)
             cycle_returners = tuple(sorted(
                 (set(cycle_returners) | forced_cycle_candidates)
@@ -2352,10 +2821,11 @@ class ResidentPlacer(VertexMatchingPlacer):
                 # Hall's condition even though the layer has other legal
                 # placements.  Such a chromosome is infeasible, not a compiler
                 # failure; the seeded full matching remains a finite incumbent.
-                return ((float("inf"), float("inf"), float("inf"),
-                         float("inf"), scored_chrom),
-                        PhysicalIncrementalCost(len(self.mapping[0])).score(
-                            (), 0, scored_chrom)[1])
+                return (None, (), 0,
+                        ((float("inf"), float("inf"), float("inf"),
+                          float("inf"), scored_chrom),
+                         PhysicalIncrementalCost(len(self.mapping[0])).score(
+                             (), 0, scored_chrom)[1]))
             bits = chrom[n_gates:]
             returners = tuple(sorted(
                 {q for q, bit in zip(eligible, bits) if bit}
@@ -2381,10 +2851,12 @@ class ResidentPlacer(VertexMatchingPlacer):
                 for target in (s1, s2):
                     target_xy = arch.exact_SLM_location_tuple(target)
                     if target_xy in occupied_t1:
-                        return ((float("inf"), float("inf"), float("inf"),
-                                 float("inf"), scored_chrom),
-                                PhysicalIncrementalCost(len(self.mapping[0])).score(
-                                    (), 0, scored_chrom)[1])
+                        return (None, (), 0,
+                                ((float("inf"), float("inf"), float("inf"),
+                                  float("inf"), scored_chrom),
+                                 PhysicalIncrementalCost(
+                                     len(self.mapping[0])).score(
+                                         (), 0, scored_chrom)[1]))
             # Compute out legs from the actual post-decision positions.  Main
             # NL/LK results are unchanged, while always-RETURN can faithfully
             # model a next-layer participant returning and re-entering.
@@ -2415,43 +2887,93 @@ class ResidentPlacer(VertexMatchingPlacer):
                     movement_phase(
                         legs_out, ghosts=positions_t1, owners=owners_out),
                 ]
-            if include_forecast:
-                future_phases, future_exposures = forecast_phases(
-                    returned, sites, placed)
-                phases.extend(future_phases)
-            else:
-                future_exposures = 0
-            idle_exposures = sum(
+            current_phases = tuple(phases)
+            current_exposures = sum(
                 1 for q in eligible
                 if q not in returned and q not in participants)
-            idle_exposures += future_exposures
-            return physical.score(phases, idle_exposures, scored_chrom)
+            if include_forecast and self.decay_lookahead:
+                gate_option_indices = tuple(
+                    candidates[column].index(chosen)
+                    for column, chosen in enumerate(placed))
+                return_assignments = tuple(
+                    (q, self.boundary_storage_site_id[tuple(sites[q])])
+                    for q in returners)
+                objective, current_breakdown, audit = score_decay_objective(
+                    current_phases, current_exposures, scored_chrom,
+                    gate_option_indices, return_assignments)
+                forecast_audit_cache[scored_chrom] = audit
+                return None, (), 0, (objective, current_breakdown)
+            if include_forecast:
+                future_phases, future_exposures, forecast_terms = \
+                    forecast_phases(returned, sites, placed)
+            else:
+                future_phases, future_exposures, forecast_terms = (), 0, ()
+            phases.extend(future_phases)
+            idle_exposures = current_exposures + future_exposures
+            candidate = CandidatePlan(
+                chromosome=scored_chrom,
+                phases=tuple(phase.boundary for phase in phases),
+                idle_exposures=idle_exposures,
+            )
+            return candidate, tuple(phases), idle_exposures, None
 
         fitness_cache = {}
 
-        def fitness(chrom, include_forecast=True, cycle_returners=()):
-            key = tuple(normalize_chrom(chrom))
+        def fitness_many(chromosomes, include_forecast=True,
+                         cycle_returners=()):
+            chromosomes = list(chromosomes)
             cycles = tuple(sorted(
                 (set(cycle_returners) | forced_cycle_candidates)
                 & set(cycle_candidates)))
-            cache_key = (bool(include_forecast), key, cycles)
-            step_cache.evaluations += 1
-            if self.fitness_cache and cache_key in fitness_cache:
-                step_cache.fitness_hits += 1
-                return fitness_cache[cache_key]
-            step_cache.unique_evaluations += 1
-            value = score_plan(
-                key, include_forecast=include_forecast,
-                cycle_returners=cycles)
-            if self.fitness_cache:
-                fitness_cache[cache_key] = value
-            return value
+            values = [None] * len(chromosomes)
+            pending = []
+            for index, chrom in enumerate(chromosomes):
+                key = tuple(normalize_chrom(chrom))
+                cache_key = (bool(include_forecast), key, cycles)
+                step_cache.evaluations += 1
+                if self.fitness_cache and cache_key in fitness_cache:
+                    step_cache.fitness_hits += 1
+                    values[index] = fitness_cache[cache_key]
+                    continue
+                step_cache.unique_evaluations += 1
+                candidate, phases, idle_exposures, ready = build_plan(
+                    key, include_forecast=include_forecast,
+                    cycle_returners=cycles)
+                if ready is not None:
+                    value = ready
+                elif any(phase.boundary.batching == "greedy"
+                         for phase in phases):
+                    value = physical.score(
+                        phases, idle_exposures, candidate.chromosome)
+                else:
+                    pending.append((index, cache_key, candidate, phases,
+                                    idle_exposures))
+                    continue
+                values[index] = value
+                if self.fitness_cache:
+                    fitness_cache[cache_key] = value
+            if pending:
+                evaluated = evaluate_prepared([
+                    (candidate, phases, idle_exposures)
+                    for _, _, candidate, phases, idle_exposures in pending])
+                for (index, cache_key, _candidate, _phases,
+                     _idle_exposures), value in zip(pending, evaluated):
+                    values[index] = value
+                    if self.fitness_cache:
+                        fitness_cache[cache_key] = value
+            return values
+
+        def fitness(chrom, include_forecast=True, cycle_returners=()):
+            return fitness_many(
+                [chrom], include_forecast=include_forecast,
+                cycle_returners=cycle_returners)[0]
 
         # The direct path below exhaustively scores every normalized chromosome.
         # Any stochastic/greedy seed refinement before that enumeration cannot
         # change its winner; it only repeats physical rollouts.  Decide this
         # once so small-space layers retain exact search while skipping redundant
         # seed work (the dominant case in long random circuits).
+        search_kernel_started_ns = time.perf_counter_ns()
         direct_search_space = 1
         for domain in gate_domains:
             direct_search_space *= domain
@@ -2460,6 +2982,22 @@ class ResidentPlacer(VertexMatchingPlacer):
         if direct_search_space <= 64 and self.ablation_policy == "optimize":
             direct_search_space *= 2 ** len(eligible)
         will_enumerate = direct_search_space <= 64
+
+        # The LRU key is constructed before either backend starts searching so
+        # the same previous-boundary elite is supplied to Python and C++.
+        # H=0's bounded oracle returns an empty window without reading a future
+        # layer from its provider.
+        state_key = (
+            active_horizon, self.ablation_policy,
+            self.ablation_fitness_mode,
+            tuple(tuple(reg.current_pos(q)) for q in range(len(self.mapping[0]))),
+            tuple(list_gate), visible_window, tuple(gate_domains), tuple(eligible),
+            min_returns, tuple(sorted(physical_forced_returns)),
+            tuple(sorted((q, use_layer, tuple(seat))
+                         for q, (use_layer, seat)
+                         in self.residency_commitments.items())),
+        )
+        cached_winner = self.transition_cache.get(state_key)
 
         # Physical greedy seed: first solve the ZAC-style global gate/site
         # matching, then start with every non-participant RETURNed so every
@@ -2474,19 +3012,314 @@ class ResidentPlacer(VertexMatchingPlacer):
             matched_genes.append(next(
                 (index for index, option in enumerate(candidates[col])
                  if tuple(option[0]) == site), 0))
-        seed_chromosomes = [normalize_chrom(
-            matched_genes + [1] * len(eligible))]
 
-        # M4 carries an explicit H=0 safety incumbent on the *same current
+        native_rich_result = None
+        native_rich_problem = None
+        native_return_sites = None
+        native_reference_forecast = None
+        rich_search_stats = {}
+        rich_forecast_terms = ()
+        if self.decay_lookahead:
+            if forced_cycle_candidates or cycle_candidates:
+                raise RuntimeError(
+                    "formal decay boundary cannot contain legacy cycle search")
+            if rich_config is None:
+                raise RuntimeError("formal decay search config was not resolved")
+
+            rich_gate_domains = []
+            for column, domain in enumerate(candidates):
+                rich_domain = []
+                for site, _weight, q1, q2 in domain:
+                    site = tuple(site)
+                    target1, target2 = self._pair_seats(q1, q2, site)
+                    rich_domain.append(RichGateOption(
+                        site_id=self.boundary_site_id[site],
+                        q1=int(q1),
+                        q2=int(q2),
+                        target1=None,
+                        target2=None,
+                        target1_site_id=self.boundary_site_id[tuple(target1)],
+                        target2_site_id=self.boundary_site_id[tuple(target2)],
+                    ))
+                rich_gate_domains.append(tuple(rich_domain))
+
+            occupied_storage = reg.occupied_storage()
+            rich_return_domains = []
+            for q in eligible:
+                zone_location = tuple(reg.zone_seat[q])
+                nearest = tuple(arch.nearest_storage_site(*zone_location))
+                cache_key = (
+                    "nearest", zone_location, nearest,
+                    tuple(reg.homes[q]), int(self.box_ratio), 0.0,
+                )
+                options = return_candidate_cache.get(cache_key)
+                if options is None:
+                    source_xy = arch.exact_SLM_location_tuple(zone_location)
+                    options = tuple(sorted(
+                        (sqrt(math.dist(
+                            source_xy,
+                            arch.exact_SLM_location_tuple(site))), tuple(site))
+                        for site in set(_box_sites(
+                            arch, nearest, self.box_ratio, set()))
+                    ))
+                    return_candidate_cache[cache_key] = options
+                rich_return_domains.append(tuple(
+                    RichReturnOption(
+                        site_id=self.boundary_storage_site_id[tuple(site)],
+                        point=None,
+                        cost=float(cost),
+                        site_location=tuple(site),
+                    )
+                    for cost, site in options
+                    if tuple(site) not in occupied_storage
+                ))
+
+            eligible_index = {q: index for index, q in enumerate(eligible)}
+            future_atoms = {
+                offset: {q for gate in gates for q in gate}
+                for _absolute, gates, offset, _weight in visible_forecast
+            }
+            last_visible_offset = max(future_atoms, default=0)
+            transfer_move_nll = -2.0 * math.log(physical.F_TRANSFER)
+            idle_pulse_nll = -(
+                math.log(physical.F_EXC)
+                + math.log1p(-physical.T_RYDBERG_US / physical.T2_US))
+
+            def mover_coherence_nll(source_location, target_location):
+                source = arch.exact_SLM_location_tuple(source_location)
+                target = arch.exact_SLM_location_tuple(target_location)
+                distance = math.dist(source, target)
+                if distance <= 1e-12:
+                    return 0.0
+                mover_idle = math.sqrt(distance / physical.ACCEL_UM_PER_US2)
+                if mover_idle >= physical.T2_US:
+                    raise RuntimeError("forecast mover coherence is outside T2")
+                return -math.log1p(-mover_idle / physical.T2_US)
+
+            terms = []
+            for q in eligible:
+                index = eligible_index[q]
+                use_offsets = [
+                    offset for offset in sorted(future_atoms)
+                    if q in future_atoms[offset]
+                ]
+                first_use = use_offsets[0] if use_offsets else None
+                for offset in sorted(future_atoms):
+                    if first_use is not None and offset >= first_use:
+                        break
+                    terms.append(RichForecastTerm(
+                        depth=offset,
+                        kind="stay",
+                        category="residency",
+                        index=index,
+                        nll=idle_pulse_nll,
+                    ))
+                if first_use is not None:
+                    # RETURN now implies one later storage->zone re-entry.  Its
+                    # transfer part is site-independent; atom-local movement
+                    # coherence is tied to the actual matched RETURN site.
+                    terms.append(RichForecastTerm(
+                        depth=first_use,
+                        kind="return",
+                        category="reentry",
+                        index=index,
+                        nll=transfer_move_nll,
+                    ))
+                    target = tuple(reg.zone_seat[q])
+                    for option in rich_return_domains[index]:
+                        terms.append(RichForecastTerm(
+                            depth=first_use,
+                            kind="return_site",
+                            category="reentry",
+                            index=index,
+                            selector=option.site_id,
+                            nll=mover_coherence_nll(
+                                option.site_location, target),
+                        ))
+                elif last_visible_offset:
+                    # No visible reuse leaves a STAYing atom in the zone at
+                    # window close.  Charge its deterministic terminal exit at
+                    # the last actual visible offset, never at H+1.
+                    source = tuple(reg.zone_seat[q])
+                    target = tuple(arch.nearest_storage_site(*source))
+                    terms.append(RichForecastTerm(
+                        depth=last_visible_offset,
+                        kind="stay",
+                        category="terminal",
+                        index=index,
+                        nll=(transfer_move_nll
+                             + mover_coherence_nll(source, target)),
+                    ))
+
+            if last_visible_offset:
+                # Current target participants are resident after this boundary.
+                # Their terminal exit depends on the decoded gate-site gene, so
+                # preserve that physical distinction with gate-option terms.
+                for column, domain in enumerate(candidates):
+                    for selector, (site, _weight, q1, q2) in enumerate(domain):
+                        target1, target2 = self._pair_seats(q1, q2, tuple(site))
+                        terminal_nll = 0.0
+                        for target in (tuple(target1), tuple(target2)):
+                            storage = tuple(arch.nearest_storage_site(*target))
+                            terminal_nll += (
+                                transfer_move_nll
+                                + mover_coherence_nll(target, storage))
+                        terms.append(RichForecastTerm(
+                            depth=last_visible_offset,
+                            kind="gate_option",
+                            category="terminal",
+                            index=column,
+                            selector=selector,
+                            nll=terminal_nll,
+                        ))
+            rich_forecast_terms = tuple(terms)
+            native_rich_problem = RichH0Problem(
+                architecture=boundary_architecture,
+                current_points=(),
+                current_site_ids=tuple(
+                    self.boundary_site_id[tuple(reg.current_pos(q))]
+                    for q in range(len(self.mapping[0]))),
+                participants=tuple(sorted(participants)),
+                gate_domains=tuple(rich_gate_domains),
+                static_ghosts=tuple(BoundaryGhost(
+                    int(row[0]),
+                    BoundaryPoint(float(row[1]), float(row[2])))
+                    for row in static_ghosts),
+                eligible=tuple(eligible),
+                min_returns=min_returns,
+                eviction_order_indices=tuple(
+                    eligible_index[q] for q in eviction_order),
+                forced_return_mask=tuple(
+                    q in horizon_forced_returns
+                    or q in physical_forced_returns
+                    for q in eligible),
+                return_domains=tuple(rich_return_domains),
+                matched_gate_genes=tuple(matched_genes),
+                decision_policy=self.ablation_policy,
+                occupied_storage_site_ids=tuple(sorted(
+                    self.boundary_storage_site_id[tuple(site)]
+                    for site in occupied_storage)),
+                forecast_terms=rich_forecast_terms,
+                boundary_id=f"{self.method_id}:L{layer}",
+                selected_horizon=active_horizon,
+            )
+
+        if use_rich_boundary:
+            if self.boundary_backend is None:
+                self.boundary_backend = select_backend(
+                    boundary_architecture,
+                    backend=self.resident_backend_requested,
+                    formal=self.formal_native,
+                    require_registered_wheel=self.formal_native,
+                    expected_wheel_sha256=(
+                        self.native_wheel_sha256
+                        if self.formal_native else None),
+                )
+            native_rich_result = self.boundary_backend.solve_rich_boundary(
+                native_rich_problem,
+                rich_config,
+                self.rng.getstate(),
+                cached_winner=cached_winner,
+            )
+            if native_rich_result.operator_profile != self.operator_profile:
+                raise RuntimeError(
+                    "native rich operator profile differs from resolved config")
+            self.rng.setstate(native_rich_result.rng_state)
+            native_return_sites = {
+                int(q): self.boundary_storage_locations[int(site_id)]
+                for q, site_id in native_rich_result.return_assignments
+            }
+            if set(native_return_sites) != {
+                    q for q, bit in zip(
+                        eligible,
+                        native_rich_result.winner.chromosome[n_gates:])
+                    if bit}:
+                raise RuntimeError(
+                    "native rich RETURN assignments disagree with winner bits")
+            from zzx.reference_backend import evaluate_decay_forecast
+            reference_forecast = evaluate_decay_forecast(
+                native_rich_problem, rich_config,
+                native_rich_result.winner.chromosome,
+                native_rich_result.gate_option_indices,
+                native_rich_result.return_assignments)
+            native_reference_forecast = reference_forecast
+            if not math.isclose(
+                    reference_forecast[0], native_rich_result.forecast_nll,
+                    rel_tol=0.0, abs_tol=1e-12):
+                raise RuntimeError(
+                    "native decay forecast differs from Python oracle")
+            expected_search_nll = (
+                native_rich_result.winner.negative_log_fidelity
+                + native_rich_result.forecast_nll)
+            if not math.isclose(
+                    expected_search_nll,
+                    native_rich_result.search_negative_log_fidelity,
+                    rel_tol=0.0, abs_tol=1e-12):
+                raise RuntimeError(
+                    "native search NLL does not equal current plus forecast")
+            step_cache.evaluations = native_rich_result.evaluations
+            step_cache.unique_evaluations = \
+                native_rich_result.unique_evaluations
+            step_cache.fitness_hits = native_rich_result.fitness_hits
+            step_cache.decode_hits = native_rich_result.decode_hits
+            step_cache.return_match_hits = native_rich_result.return_match_hits
+            native_timing = dict(native_rich_result.timing)
+            rich_delta = {
+                "marshal_ns": int(native_timing.get("marshal_ns", 0)),
+                "search_kernel_ns": int(
+                    native_timing.get("search_kernel_ns", 0)),
+                "fitness_ns": int(native_timing.get("fitness_ns", 0)),
+                "selection_ns": int(native_timing.get("selection_ns", 0)),
+                "native_parse_ns": int(
+                    native_timing.get("native_parse_ns", 0)),
+                "native_serialize_ns": int(
+                    native_timing.get("native_serialize_ns", 0)),
+                "calls": 1,
+                "candidates": int(native_rich_result.evaluations),
+            }
+            for key, value in rich_delta.items():
+                step_backend[key] += value
+                self.boundary_backend_metrics[key] += value
+            rich_search_stats = {
+                "deterministic_unique_evaluations": int(
+                    native_rich_result.deterministic_unique_evaluations),
+                "stochastic_unique_evaluations": int(
+                    native_rich_result.stochastic_unique_evaluations),
+                "generations": int(native_rich_result.generations),
+                "early_stopped": bool(native_rich_result.early_stopped),
+                "early_stop_reason": str(
+                    native_rich_result.early_stop_reason),
+                "stochastic_budget": int(
+                    native_rich_result.stochastic_budget),
+                "operator_profile": self.operator_profile,
+                "operator_stats": dict(
+                    getattr(native_rich_result, "operator_stats", {}) or {}),
+                "forecast_terms": len(rich_forecast_terms),
+                "forecast_terms_applied": int(
+                    native_rich_result.forecast_terms_applied),
+                "forecast_terms_skipped_cutoff": int(
+                    native_rich_result.forecast_terms_skipped_cutoff),
+                "forecast_nll": float(native_rich_result.forecast_nll),
+                "search_negative_log_fidelity": float(
+                    native_rich_result.search_negative_log_fidelity),
+            }
+        seed_chromosomes = [
+            list(native_rich_result.winner.chromosome)
+            if native_rich_result is not None
+            else normalize_chrom(matched_genes + [1] * len(eligible))]
+
+        # Legacy adaptive M4 carries an explicit H=0 safety incumbent on the *same current
         # registry state*.  It is obtained once per boundary, outside fitness,
         # so this is not a nested GA and cannot read L+2 through a side channel.
-        # Gate genes are first improved for the exact current transition; H=2
+        # Gate genes are first improved for the exact current transition; legacy H=2
         # may then toggle residency genes while those gate sites stay fixed.
-        # The unrestricted H=2 GA can replace this candidate only when its
+        # The unrestricted legacy H=2 GA can replace this candidate only when its
         # current physical objective is non-inferior (see winner guard below).
         safe_chrom = list(seed_chromosomes[0])
         myopic_chrom = list(safe_chrom)
-        if self.lookahead_horizon > 0 and self.ablation_policy == "optimize":
+        if (not self.decay_lookahead
+                and active_horizon > 0
+                and self.ablation_policy == "optimize"):
             myopic_score = fitness(myopic_chrom, include_forecast=False)[0]
             for i in range(len(eligible)):
                 trial = list(myopic_chrom)
@@ -2535,10 +3368,14 @@ class ResidentPlacer(VertexMatchingPlacer):
                     if trial_score < safe_score:
                         safe_chrom, safe_score = trial, trial_score
                 seed_chromosomes.append(list(safe_chrom))
-        greedy_score, greedy_chrom = min(
-            (fitness(chromosome)[0], chromosome)
-            for chromosome in seed_chromosomes)
-        if not will_enumerate:
+        if native_rich_result is not None:
+            greedy_chrom = list(native_rich_result.winner.chromosome)
+            greedy_score = native_rich_result.search_objective
+        else:
+            greedy_score, greedy_chrom = min(
+                (fitness(chromosome)[0], chromosome)
+                for chromosome in seed_chromosomes)
+        if native_rich_result is None and not will_enumerate:
             for i in range(len(eligible)):
                 trial = list(greedy_chrom)
                 trial[n_gates + i] ^= 1
@@ -2549,11 +3386,11 @@ class ResidentPlacer(VertexMatchingPlacer):
 
         # Joint physical-greedy gate seed.  Menu index zero is ordered by the
         # legacy sqrt-distance proxy and can be poor once transfer fidelity,
-        # phase makespan, stationary coherence, and the H=2 terminal value are
+        # phase makespan, stationary coherence, and legacy terminal value are
         # evaluated together.  Spend a deterministic *per-layer* budget across
         # gate genes: narrow layers see most/all of each menu, while wide Ising
         # layers remain bounded instead of multiplying runtime by menu size.
-        if n_gates and not will_enumerate:
+        if native_rich_result is None and n_gates and not will_enumerate:
             trials_per_gate = max(
                 2, self.neighbor_sample_size // max(1, n_gates))
             for i, domain in enumerate(gate_domains):
@@ -2595,9 +3432,11 @@ class ResidentPlacer(VertexMatchingPlacer):
             for chromosome in chromosomes:
                 key = tuple(normalize_chrom(chromosome))
                 unique.setdefault(key, list(key))
-            scored = [(fitness(
-                chromosome, include_forecast=include_forecast)[0], chromosome)
-                      for chromosome in unique.values()]
+            chromosomes = list(unique.values())
+            objectives = fitness_many(
+                chromosomes, include_forecast=include_forecast)
+            scored = [(value[0], chromosome)
+                      for value, chromosome in zip(objectives, chromosomes)]
             return sorted(scored, key=lambda item: (item[0], tuple(item[1])))
 
         def neighbor_with_rng(chrom, rng):
@@ -2616,30 +3455,21 @@ class ResidentPlacer(VertexMatchingPlacer):
             return neighbor_with_rng(chrom, self.rng)
 
         # ``myopic_chrom`` above is a deterministic current-transition safety
-        # candidate.  Earlier versions ran a second full H=0 GA here before the
-        # registered H=2 GA.  That doubled M4's search budget, obscured the
+        # candidate.  Earlier legacy versions ran a second full H=0 GA here
+        # before the registered H=2 GA.  That doubled the search budget and obscured the
         # horizon-only comparison with M3, and dominated large-circuit runtime.
         # The Pareto guard below still compares the horizon winner against the
         # deterministic H=0 incumbent, but M3 and M4 now each execute exactly
         # one stochastic GA per boundary.
 
-        # Deterministic fast paths are shared by NL/LK.  The state key contains
-        # exactly the visible forecast window, so H=0 cannot acquire hidden
-        # future information through the LRU cache.
-        visible_window = tuple(self.forecast.visible_future(layer))
-        state_key = (
-            self.lookahead_horizon, self.ablation_policy,
-            self.ablation_fitness_mode,
-            tuple(tuple(reg.current_pos(q)) for q in range(len(self.mapping[0]))),
-            tuple(list_gate), visible_window, tuple(gate_domains), tuple(eligible),
-            min_returns, tuple(sorted(physical_forced_returns)),
-            tuple(sorted((q, use_layer, tuple(seat))
-                         for q, (use_layer, seat)
-                         in self.residency_commitments.items())),
-        )
-        cached_winner = self.transition_cache.get(state_key)
+        # Deterministic fast paths are shared by NL/LK.  ``state_key`` and its
+        # optional cached elite were frozen before backend-specific search.
         search_mode = "ga"
-        if cached_winner is not None:
+        if native_rich_result is not None:
+            scored = [(native_rich_result.search_objective,
+                       list(native_rich_result.winner.chromosome))]
+            search_mode = native_rich_result.search_mode
+        elif cached_winner is not None:
             self.transition_cache.move_to_end(state_key)
             scored = score_unique([cached_winner])
             search_mode = "lru"
@@ -2658,8 +3488,9 @@ class ResidentPlacer(VertexMatchingPlacer):
                     gate_domains, len(eligible), greedy, self.population_size,
                     self.rng, normalize=normalize_chrom,
                     greedy_gate_genes=greedy_chrom[:n_gates])
-                if self.lookahead_horizon > 0 and \
-                        self.ablation_policy == "optimize":
+                if (not self.decay_lookahead
+                        and active_horizon > 0
+                        and self.ablation_policy == "optimize"):
                     population.extend((list(safe_chrom), list(greedy_chrom)))
                 scored = score_unique(population)[:self.population_size]
                 for _ in range(self.iterations):
@@ -2678,7 +3509,9 @@ class ResidentPlacer(VertexMatchingPlacer):
         lookahead_selection = "horizon"
         safe_current_objective = None
         horizon_current_objective = None
-        if self.lookahead_horizon > 0 and self.ablation_policy == "optimize":
+        if (not self.decay_lookahead
+                and active_horizon > 0
+                and self.ablation_policy == "optimize"):
             # Ensure the safety candidate participates even in an LRU or
             # truncated-population path, then apply a registered current-step
             # Pareto guard.  No completed-circuit score is observed here.
@@ -2709,15 +3542,19 @@ class ResidentPlacer(VertexMatchingPlacer):
         # gene of its target gate.  This is the neutral-atom analogue of deciding
         # when a chain should advance the interaction site instead of pinning it.
         selected_cycles: set[int] = set(forced_cycle_candidates)
-        cycle_objective = fitness(
-            best_chrom, cycle_returners=selected_cycles)[0]
+        cycle_objective = (
+            native_rich_result.search_objective
+            if native_rich_result is not None and not selected_cycles
+            else fitness(best_chrom, cycle_returners=selected_cycles)[0])
         cycle_search_log = []
         # A rollout improvement smaller than one extra load+store fidelity pair
         # is not robust enough to justify changing the executable current state.
         # This physical hysteresis suppresses receding-horizon chattering without
         # introducing a tunable proxy weight.
         min_cycle_gain = -2.0 * math.log(physical.F_TRANSFER)
-        if self.lookahead_horizon > 0 and self.ablation_policy == "optimize":
+        if (not self.decay_lookahead
+                and active_horizon > 0
+                and self.ablation_policy == "optimize"):
             gate_of = {
                 q: gate_index for gate_index, gate in enumerate(list_gate)
                 for q in gate}
@@ -2775,15 +3612,30 @@ class ResidentPlacer(VertexMatchingPlacer):
                         "gate_gene": best_chrom[gate_index],
                     })
 
+        search_kernel_ns = time.perf_counter_ns() - search_kernel_started_ns
+
         self.transition_cache[state_key] = cache_chrom
         self.transition_cache.move_to_end(state_key)
         while len(self.transition_cache) > self.transition_cache_limit:
             self.transition_cache.popitem(last=False)
         placed = decode(best_chrom)
+        if native_rich_result is not None:
+            replayed_option_indices = tuple(
+                candidates[column].index(chosen)
+                for column, chosen in enumerate(placed))
+            if replayed_option_indices != tuple(
+                    native_rich_result.gate_option_indices):
+                raise RuntimeError(
+                    "native rich gate decode disagrees with Python replay")
         bits = best_chrom[n_gates:]
         returners = ({q for q, bit in zip(eligible, bits) if bit}
                      | selected_cycles)
-        sites = return_sites_for_atoms(returners)
+        sites = (dict(native_return_sites)
+                 if native_rich_result is not None
+                 else return_sites_for_atoms(returners))
+        if set(sites) != returners:
+            raise RuntimeError(
+                "native rich RETURN site set disagrees with selected returners")
         decisions = {
             q: (("RETURN", sites[q]) if bit else ("STAY", reg.zone_seat[q]))
             for q, bit in zip(eligible, bits)
@@ -2814,7 +3666,10 @@ class ResidentPlacer(VertexMatchingPlacer):
             or bool(commitment_repairs)
             or commitment_ghost_fallback)
 
+        selected_forecast_audit = {}
+
         def score_repaired():
+            nonlocal selected_forecast_audit
             positions_t0 = {
                 q: reg.current_pos(q) for q in range(len(self.mapping[0]))}
             positions_t1 = dict(positions_t0)
@@ -2854,12 +3709,35 @@ class ResidentPlacer(VertexMatchingPlacer):
             returners = {q for q, value in decisions.items()
                          if value[0] == "RETURN"}
             repaired_sites = {q: decisions[q][1] for q in returners}
-            future, future_exposures = forecast_phases(
-                returners, repaired_sites, placements)
-            phases.extend(future)
+            current_phases = tuple(phases)
             current_exposures = sum(
                 1 for q in eligible
                 if q not in participants and decisions[q][0] != "RETURN")
+            if self.decay_lookahead:
+                repaired_gate_indices = []
+                for column, placement in enumerate(placements):
+                    site = tuple(placement["site"])
+                    repaired_gate_indices.append(next(
+                        (index for index, option in enumerate(candidates[column])
+                         if tuple(option[0]) == site), -1))
+                repaired_bits = tuple(
+                    1 if decisions[q][0] == "RETURN" else 0
+                    for q in eligible)
+                repaired_chromosome = (
+                    tuple(repaired_gate_indices) + repaired_bits)
+                return_assignments = tuple(
+                    (q, self.boundary_storage_site_id[
+                        tuple(decisions[q][1])])
+                    for q in sorted(returners))
+                objective, current_breakdown, selected_forecast_audit = \
+                    score_decay_objective(
+                        current_phases, current_exposures,
+                        repaired_chromosome, repaired_gate_indices,
+                        return_assignments)
+                return objective, current_breakdown
+            future, future_exposures, forecast_terms = forecast_phases(
+                returners, repaired_sites, placements)
+            phases.extend(future)
             return physical.score(
                 phases, current_exposures + future_exposures,
                 tuple(best_chrom) + tuple(
@@ -2870,13 +3748,48 @@ class ResidentPlacer(VertexMatchingPlacer):
             # A changed executable state must be replayed and rescored; no
             # stale chromosome fitness may enter the evidence ledger.
             repaired_score, breakdown = score_repaired()
+        elif native_rich_result is not None:
+            repaired_score, breakdown = score_from_backend(
+                native_rich_result.winner)
         else:
             # The chromosome score already used the exact same back/out phases,
             # rollout and terminal state.  Re-evaluating it once per boundary
-            # duplicated millions of H=2 rollouts on long circuits.  The formal
-            # cache returns both the exact objective and its physical breakdown.
+            # duplicated millions of legacy rollouts on long circuits.  The
+            # reference cache returns the objective and physical breakdown.
             repaired_score, breakdown = fitness(
                 best_chrom, cycle_returners=selected_cycles)
+        if self.decay_lookahead and not selected_forecast_audit:
+            if native_rich_result is not None:
+                selected_forecast_audit = {
+                    "configured_depth": self.lookahead_horizon,
+                    "effective_depth": forecast.effective_horizon,
+                    "rho": float(self.lookahead_horizon_config["rho"]),
+                    "epsilon": float(self.lookahead_horizon_config["epsilon"]),
+                    "alpha_lookahead": self.alpha_lookahead,
+                    "forecast_by_depth": list(
+                        native_rich_result.forecast_by_depth),
+                    "forecast_breakdown": dict(
+                        native_rich_result.forecast_breakdown),
+                    "forecast_terms_applied": int(
+                        native_reference_forecast[3]),
+                    "forecast_terms_skipped_cutoff": int(
+                        native_reference_forecast[4]),
+                    "weighted_negative_log_fidelity": float(
+                        native_rich_result.forecast_nll),
+                    "search_negative_log_fidelity": float(
+                        native_rich_result.search_negative_log_fidelity),
+                }
+            else:
+                forecast_key = tuple(best_chrom) + tuple(
+                    1 if q in selected_cycles else 0
+                    for q in cycle_candidates)
+                selected_forecast_audit = deepcopy(
+                    forecast_audit_cache.get(forecast_key, {}))
+        if self.decay_lookahead:
+            # ``score`` is executable current-boundary physics only.  The
+            # non-executable forecast contribution is audited separately and
+            # never leaks into the final fidelity decomposition.
+            repaired_score = breakdown.objective(tuple(best_chrom))
         for field in step_cache.as_dict():
             setattr(self.cache_stats, field,
                     getattr(self.cache_stats, field) + getattr(step_cache, field))
@@ -2888,28 +3801,80 @@ class ResidentPlacer(VertexMatchingPlacer):
             elif kind == "RESEAT":
                 self.residency_commitments.pop(q, None)
                 reg.reseat(q, loc)
-            elif kind == "STAY" and self.lookahead_horizon > 0:
-                visible = self.forecast.next_use(q, layer)
+            elif kind == "STAY" and active_horizon > 0:
+                visible = visible_use(q)
                 if visible is None:
                     self.residency_commitments.pop(q, None)
                 else:
                     self.residency_commitments[q] = (
                         visible[0], tuple(reg.zone_seat[q]))
+            elif kind == "STAY":
+                # A boundary that selected H=0 must not keep a commitment made
+                # by an earlier deeper window as a hidden future-information
+                # channel.  The atom may still physically stay, but uncommitted.
+                self.residency_commitments.pop(q, None)
         self._append_boundary(decisions)
         self._commit_round(next_layer, placements)
         for q in participants:
             commitment = self.residency_commitments.get(q)
             if commitment is not None and commitment[0] <= next_layer:
                 self.residency_commitments.pop(q, None)
+        if self.decay_lookahead:
+            selected_forecast_audit = {
+                "configured_depth": self.lookahead_horizon,
+                "effective_depth": forecast.effective_horizon,
+                "visible_depth": max(
+                    (int(offset) for offset in future_atoms), default=0),
+                "rho": float(self.lookahead_horizon_config["rho"]),
+                "epsilon": float(self.lookahead_horizon_config["epsilon"]),
+                "alpha_lookahead": self.alpha_lookahead,
+                "offset_weights": [
+                    {"offset": offset,
+                     "decay_factor": forecast.future_decay_factor(offset),
+                     "weight": forecast.future_weight(offset)}
+                    for offset in range(1, forecast.effective_horizon + 1)
+                ],
+                "forecast_by_depth": selected_forecast_audit.get(
+                    "forecast_by_depth", []),
+                "forecast_breakdown": selected_forecast_audit.get(
+                    "forecast_breakdown", {}),
+                "forecast_terms_applied": selected_forecast_audit.get(
+                    "forecast_terms_applied", 0),
+                "forecast_terms_skipped_cutoff": selected_forecast_audit.get(
+                    "forecast_terms_skipped_cutoff", 0),
+                "weighted_negative_log_fidelity": selected_forecast_audit.get(
+                    "weighted_negative_log_fidelity", 0.0),
+                "search_negative_log_fidelity": selected_forecast_audit.get(
+                    "search_negative_log_fidelity",
+                    breakdown.negative_log_fidelity
+                    + selected_forecast_audit.get(
+                        "weighted_negative_log_fidelity", 0.0)),
+            }
+        self.backend_timing_log.append({
+            "layer": layer,
+            "backend": getattr(
+                self.boundary_backend, "name", self.resident_backend_requested),
+            **step_backend,
+        })
         self.decision_log.append({
             "layer": layer,
             "engine": "ga-v2",
             "method_id": self.method_id,
-            "lookahead_horizon": self.lookahead_horizon,
+            "lookahead_horizon": active_horizon,
+            "configured_lookahead_horizon": self.lookahead_horizon_config,
+            **horizon_decision.as_log(),
+            "horizon_selection_ns": horizon_selection_ns,
+            "search_kernel_ns": search_kernel_ns,
+            "backend": getattr(
+                self.boundary_backend, "name", self.resident_backend_requested),
+            "backend_calls": step_backend["calls"],
+            "backend_candidates": step_backend["candidates"],
             "ablation_policy": self.ablation_policy,
             "fitness_phase_mode": self.ablation_fitness_mode,
             "search_mode": search_mode,
+            "rich_search": rich_search_stats,
             "lookahead_selection": lookahead_selection,
+            "forecast_objective": selected_forecast_audit,
             "safe_current_objective": (
                 list(safe_current_objective[:4])
                 if safe_current_objective is not None else None),
@@ -2926,7 +3891,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             "adjacent_cycle_search": cycle_search_log,
             "no_visible_use": sum(
                 1 for q in eligible
-                if self.forecast.next_use(q, layer) is None),
+                if visible_use(q) is None),
             "forced_e2": 0,
             "capacity": min_returns,
             "horizon_guard_returns": len(horizon_forced_returns),

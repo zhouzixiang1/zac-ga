@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -281,6 +282,53 @@ class TestAtomicRunner(unittest.TestCase):
                 with gzip.open(archived, "rt", encoding="utf-8") as handle:
                     self.assertEqual(handle.read(), expected)
 
+    def test_native_wrapper_config_is_resolved_before_identity_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self._files(base)
+            setting = {
+                "algorithm_revision": "native-ga-v1",
+                "backend": "native",
+                "native_abi_version": 2,
+                "native_wheel_sha256": "d" * 64,
+                "tuning_protocol_id": "resident-ga-native-v1",
+                "rng_version": "candidate-order-v1",
+            }
+            (base / "config.json").write_text(json.dumps({
+                "zac_setting": [setting],
+            }), encoding="utf-8")
+            stats = self._compiler_stats("M3", **setting, **{
+                "fallback": False,
+                "compiler_and_flags": {
+                    "cxx_standard": 17,
+                    "openmp": False,
+                    "fast_math": False,
+                },
+                "layer_ledger_sha256": "e" * 64,
+                "transition_count": 0,
+                "selected_horizon_counts": {"0": 0, "1": 0, "2": 0},
+            })
+            script = (
+                "import json,os,pathlib;"
+                "p=pathlib.Path(os.environ['ZAC_RUN_DIR']);"
+                f"(p/'compiler_stats.json').write_text({json.dumps(stats)!r});"
+                "(p/'compiler_timing.json').write_text(json.dumps({"
+                "'compiler_time_ns':1,'transition_decision_ns':0,"
+                "'search_kernel_ns':0,'marshal_ns':0,"
+                "'horizon_selection_ns':0,'initial_placement_ns':0,"
+                "'routing_ns':0,'full_compile_ns':1}))"
+            )
+            spec = replace(
+                self._spec(base, [sys.executable, "-c", script]),
+                layer_ledger_sha256="e" * 64,
+                transition_count=0,
+            )
+            manifest = run_attempt(
+                spec, verifier=lambda _: {"ok": True},
+                scorer=lambda _: self._zero_metrics())
+            self.assertEqual(manifest.status, "success", manifest.error)
+            self.assertEqual(manifest.backend, "native")
+
     def test_success_fails_closed_when_compiler_protocol_is_missing(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -432,6 +480,44 @@ class TestAtomicRunner(unittest.TestCase):
             )
             self.assertEqual(manifest.status, "scorer_error")
             self.assertIn("official compiler output hash", manifest.error)
+
+    def test_m2_missing_internal_ledger_never_echoes_canonical_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            native = "atom (0, 0) atom0\n"
+            stats = json.dumps(self._compiler_stats(
+                "M2",
+                native_sha256=hashlib.sha256(native.encode()).hexdigest(),
+                observed_transition_layer_ledger_source=
+                    "normalized_qmap_placement_trace_required",
+            ))
+            script = (
+                "import json,os,pathlib;"
+                "p=pathlib.Path(os.environ['ZAC_RUN_DIR']);"
+                f"(p/'trace.na').write_text({native!r});"
+                f"(p/'compiler_stats.json').write_text({stats!r});"
+                "(p/'compiler_timing.json').write_text("
+                "json.dumps({'compiler_time_ns':1}))"
+            )
+            canonical_hash = "e" * 64
+            manifest = run_attempt(
+                replace(
+                    self._spec(
+                        base, [sys.executable, "-c", script], method="M2"),
+                    layer_ledger_sha256=canonical_hash,
+                    transition_count=0,
+                ),
+                verifier=lambda _: {"ok": True},
+                scorer=lambda _: self._zero_metrics(),
+            )
+            self.assertEqual(manifest.status, "success", manifest.error)
+            self.assertEqual(
+                manifest.canonical_input_layer_ledger_sha256, canonical_hash)
+            self.assertEqual(
+                manifest.observed_transition_layer_ledger_sha256, "")
+            self.assertIsNone(manifest.observed_transition_count)
+            self.assertEqual(
+                manifest.observed_transition_layer_ledger_source, "")
 
     def test_strict_ours_policy_still_rejects_ghost_hits(self):
         with tempfile.TemporaryDirectory() as directory:

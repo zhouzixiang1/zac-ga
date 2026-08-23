@@ -631,7 +631,9 @@ def par2_seconds(manifests: Sequence[RunManifest], timeout_seconds: float = 600.
 
 
 def _timing_report(runs: Sequence[RunManifest], circuits: Sequence[str],
-                   timeout_seconds: float) -> Mapping[str, object]:
+                   timeout_seconds: float, *, dataset: str,
+                   strata: Mapping[str, str], bootstrap_iterations: int,
+                   bootstrap_seed: int) -> Mapping[str, object]:
     if not runs:
         return {"available": False, "valid": 0, "N": len(circuits),
                 "status": "not_run", "gate": {"passed": False}}
@@ -641,6 +643,26 @@ def _timing_report(runs: Sequence[RunManifest], circuits: Sequence[str],
     methods: Dict[str, object] = {}
     all_protocol_complete = True
     all_runtime_observed = True
+    circuit_method_medians: Dict[Tuple[str, str], float] = {}
+    circuit_canonical_ledgers: Dict[str, set[str]] = defaultdict(set)
+    circuit_canonical_counts: Dict[str, set[int]] = defaultdict(set)
+    circuit_observed_ledgers: Dict[str, set[str]] = defaultdict(set)
+    circuit_observed_counts: Dict[str, set[int]] = defaultdict(set)
+    circuit_ledger_proven: Dict[str, bool] = defaultdict(lambda: True)
+    accepted_ledger_sources = {
+        "M1": {"compiler.gate_scheduling"},
+        "M2": {"normalized_qmap_placement_trace",
+               "qmap.stats.two_qubit_gate_layers"},
+        "M3": {"compiler.gate_scheduling"},
+        "M4": {"compiler.gate_scheduling"},
+    }
+
+    def quartiles(values: Sequence[float]) -> Tuple[float, float]:
+        if len(values) == 1:
+            return values[0], values[0]
+        cuts = statistics.quantiles(values, n=4, method="inclusive")
+        return float(cuts[0]), float(cuts[2])
+
     for method in METHODS:
         circuit_rows: Dict[str, object] = {}
         penalties: List[float] = []
@@ -660,6 +682,7 @@ def _timing_report(runs: Sequence[RunManifest], circuits: Sequence[str],
                 and all(by_rep[index][0].seed == 0 for index in QUALITY_SEEDS)
             )
             successful: List[float] = []
+            successful_full: List[float] = []
             circuit_penalties: List[float] = []
             for repetition in range(5):
                 candidates = sorted(by_rep.get(repetition, []), key=lambda run: run.run_id)
@@ -667,10 +690,37 @@ def _timing_report(runs: Sequence[RunManifest], circuits: Sequence[str],
                     value = 2.0 * timeout_seconds
                 else:
                     record = candidates[0]
-                    if (record.status == RunStatus.SUCCESS.value and
-                            record.compiler_time_ns is not None):
-                        value = record.compiler_time_ns / 1e9
+                    stage_complete = (
+                        record.status == RunStatus.SUCCESS.value
+                        and record.transition_decision_ns is not None
+                        and record.initial_placement_ns is not None
+                        and record.routing_ns is not None
+                        and record.full_compile_ns is not None
+                    )
+                    if stage_complete:
+                        value = float(record.transition_decision_ns) / 1e9
                         successful.append(value)
+                        successful_full.append(
+                            float(record.full_compile_ns) / 1e9)
+                        ledger_proven = (
+                            len(record.canonical_input_layer_ledger_sha256) == 64
+                            and record.canonical_input_transition_count is not None
+                            and len(
+                                record.observed_transition_layer_ledger_sha256) == 64
+                            and record.observed_transition_count is not None
+                            and record.observed_transition_layer_ledger_source
+                            in accepted_ledger_sources[method]
+                        )
+                        circuit_ledger_proven[circuit] &= ledger_proven
+                        if ledger_proven:
+                            circuit_canonical_ledgers[circuit].add(
+                                record.canonical_input_layer_ledger_sha256)
+                            circuit_canonical_counts[circuit].add(
+                                int(record.canonical_input_transition_count))
+                            circuit_observed_ledgers[circuit].add(
+                                record.observed_transition_layer_ledger_sha256)
+                            circuit_observed_counts[circuit].add(
+                                int(record.observed_transition_count))
                     else:
                         value = 2.0 * timeout_seconds
                 penalties.append(value)
@@ -682,35 +732,142 @@ def _timing_report(runs: Sequence[RunManifest], circuits: Sequence[str],
                 all_protocol_complete = False
             if not runtime_observed:
                 all_runtime_observed = False
-            circuit_rows[circuit] = {
+            row: Dict[str, object] = {
                 "protocol_complete": protocol_ok, "attempts": len(records),
                 "successful": len(successful),
                 "runtime_observed": runtime_observed,
                 "median_success_seconds": (
                     statistics.median(successful) if successful else None),
+                "transition_decision_seconds_median": (
+                    statistics.median(successful) if successful else None),
+                "full_compile_seconds_median": (
+                    statistics.median(successful_full)
+                    if successful_full else None),
                 "PAR2_seconds": statistics.fmean(circuit_penalties),
             }
+            if successful:
+                q1, q3 = quartiles(successful)
+                row.update(
+                    transition_decision_seconds_q1=q1,
+                    transition_decision_seconds_q3=q3,
+                    transition_decision_seconds_iqr=q3 - q1,
+                )
+                circuit_method_medians[(circuit, method)] = float(
+                    statistics.median(successful))
+            circuit_rows[circuit] = row
+        positive_medians = [
+            value for (circuit, row_method), value in circuit_method_medians.items()
+            if row_method == method and value > 0
+        ]
         methods[method] = {
             "valid": complete, "N": len(circuits),
             "status": "complete" if complete == len(circuits) else "incomplete",
             "PAR2_seconds": statistics.fmean(penalties) if penalties else math.nan,
+            "transition_decision_seconds_geometric_mean": (
+                geometric_mean_from_logs([math.log(value)
+                                          for value in positive_medians])
+                if positive_medians else None),
             "status_counts": _status_counts(
                 method_runs, max(0, len(circuits) * 5 - len(method_runs)),
                 max(0, len(method_runs) - len(circuits) * 5)),
             "circuits": circuit_rows,
         }
+
+    per_circuit: List[Mapping[str, object]] = []
+    strict_circuits: List[str] = []
+    for circuit in circuits:
+        complete_methods = all(
+            (circuit, method) in circuit_method_medians
+            and methods[method]["circuits"][circuit]["protocol_complete"]
+            for method in METHODS)
+        strict = (
+            complete_methods
+            and circuit_ledger_proven[circuit]
+            and len(circuit_canonical_ledgers[circuit]) == 1
+            and len(circuit_canonical_counts[circuit]) == 1
+            and len(circuit_observed_ledgers[circuit]) == 1
+            and len(circuit_observed_counts[circuit]) == 1
+        )
+        record: Dict[str, object] = {
+            "circuit": circuit,
+            "strict_stage_aligned": strict,
+            "canonical_input_layer_ledger_sha256": (
+                next(iter(circuit_canonical_ledgers[circuit]))
+                if len(circuit_canonical_ledgers[circuit]) == 1 else None),
+            "observed_transition_layer_ledger_sha256": (
+                next(iter(circuit_observed_ledgers[circuit]))
+                if len(circuit_observed_ledgers[circuit]) == 1 else None),
+            "layer_ledger_proven": circuit_ledger_proven[circuit],
+            "methods": {
+                method: methods[method]["circuits"][circuit]
+                for method in METHODS
+            },
+        }
+        if strict:
+            strict_circuits.append(circuit)
+            m2 = circuit_method_medians[(circuit, "M2")]
+            for method in ("M3", "M4"):
+                ours = circuit_method_medians[(circuit, method)]
+                record[f"{method}_speedup_vs_M2"] = (
+                    m2 / ours if ours > 0 else None)
+        per_circuit.append(record)
+
+    labels: Dict[str, str] = {}
+    for circuit in strict_circuits:
+        if circuit in strata:
+            labels[circuit] = strata[circuit]
+            continue
+        sample = next((run for run in runs if run.circuit == circuit), None)
+        if sample is None:
+            raise AssertionError(f"missing timing manifest for {circuit}")
+        labels[circuit] = _default_stratum(dataset, sample)
+    comparisons: Dict[str, Mapping[str, object]] = {}
+    for offset, method in enumerate(("M3", "M4")):
+        differences = {
+            circuit: (
+                math.log(circuit_method_medians[(circuit, "M2")])
+                - math.log(circuit_method_medians[(circuit, method)]))
+            for circuit in strict_circuits
+            if circuit_method_medians[(circuit, "M2")] > 0
+            and circuit_method_medians[(circuit, method)] > 0
+        }
+        if differences:
+            comparisons[f"{method}_vs_M2"] = {
+                **stratified_bootstrap_log_ratio(
+                    differences,
+                    {key: labels[key] for key in differences},
+                    iterations=bootstrap_iterations,
+                    seed=bootstrap_seed + 100 + offset,
+                ),
+                "n": len(differences),
+                "ratio_definition": "M2 transition time / ours transition time",
+            }
+        else:
+            comparisons[f"{method}_vs_M2"] = {
+                "n": 0, "ratio": None, "ci95_low": None,
+                "ci95_high": None,
+                "ratio_definition": "M2 transition time / ours transition time",
+            }
+    all_stage_aligned = len(strict_circuits) == len(circuits)
     return {
         "available": True,
         "valid": min(int(methods[m]["valid"]) for m in METHODS),
         "N": len(circuits),
-        "status": "pass" if (all_protocol_complete and all_runtime_observed) else "fail",
+        "status": "pass" if (
+            all_protocol_complete and all_runtime_observed and all_stage_aligned
+        ) else "fail",
         "timeout_seconds": timeout_seconds,
         "PAR2_timeout_penalty_seconds": 2.0 * timeout_seconds,
         "methods": methods,
+        "strict_stage_aligned_circuits": strict_circuits,
+        "per_circuit": per_circuit,
+        "comparisons": comparisons,
         "gate": {
-            "passed": all_protocol_complete and all_runtime_observed,
+            "passed": (all_protocol_complete and all_runtime_observed
+                       and all_stage_aligned),
             "all_protocol_complete": all_protocol_complete,
             "all_circuit_methods_have_successful_runtime": all_runtime_observed,
+            "all_circuits_stage_aligned": all_stage_aligned,
         },
     }
 
@@ -785,7 +942,10 @@ def aggregate_experiment(
         bootstrap_iterations=bootstrap_iterations,
         bootstrap_seed=bootstrap_seed)
     timing = _timing_report(
-        by_kind.get("timing", []), circuits, timeout_seconds)
+        by_kind.get("timing", []), circuits, timeout_seconds,
+        dataset=dataset, strata=dict(strata or {}),
+        bootstrap_iterations=bootstrap_iterations,
+        bootstrap_seed=bootstrap_seed)
 
     required_sections = bool(
         coverage["available"] and main["available"] and timing["available"])
@@ -832,6 +992,52 @@ def aggregate_experiment(
                 "compiler_time_seconds": (
                     item.compiler_time_ns / 1e9
                     if item.compiler_time_ns is not None else None),
+                "transition_decision_seconds": (
+                    item.transition_decision_ns / 1e9
+                    if item.transition_decision_ns is not None else None),
+                "search_kernel_seconds": (
+                    item.search_kernel_ns / 1e9
+                    if item.search_kernel_ns is not None else None),
+                "marshal_seconds": (
+                    item.marshal_ns / 1e9
+                    if item.marshal_ns is not None else None),
+                "fitness_seconds": (
+                    item.fitness_ns / 1e9
+                    if item.fitness_ns is not None else None),
+                "native_parse_seconds": (
+                    item.native_parse_ns / 1e9
+                    if item.native_parse_ns is not None else None),
+                "native_serialize_seconds": (
+                    item.native_serialize_ns / 1e9
+                    if item.native_serialize_ns is not None else None),
+                "initial_placement_seconds": (
+                    item.initial_placement_ns / 1e9
+                    if item.initial_placement_ns is not None else None),
+                "routing_seconds": (
+                    item.routing_ns / 1e9
+                    if item.routing_ns is not None else None),
+                "full_compile_seconds": (
+                    item.full_compile_ns / 1e9
+                    if item.full_compile_ns is not None else None),
+                "layer_ledger_sha256": item.layer_ledger_sha256,
+                "transition_count": item.transition_count,
+                "canonical_input_layer_ledger_sha256":
+                    item.canonical_input_layer_ledger_sha256,
+                "canonical_input_transition_count":
+                    item.canonical_input_transition_count,
+                "observed_transition_layer_ledger_sha256":
+                    item.observed_transition_layer_ledger_sha256,
+                "observed_transition_count": item.observed_transition_count,
+                "observed_transition_layer_ledger_source":
+                    item.observed_transition_layer_ledger_source,
+                "algorithm_revision": item.algorithm_revision,
+                "backend": item.backend,
+                "native_abi_version": item.native_abi_version,
+                "native_wheel_sha256": item.native_wheel_sha256,
+                "tuning_protocol_id": item.tuning_protocol_id,
+                "rng_version": item.rng_version,
+                "selected_horizon_counts": item.selected_horizon_counts,
+                "forecast_summary": item.forecast_summary,
                 "compiler_process_wall_seconds": (
                     item.compiler_process_wall_ns / 1e9
                     if item.compiler_process_wall_ns is not None else None),

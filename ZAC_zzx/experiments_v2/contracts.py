@@ -183,6 +183,13 @@ class RunManifest:
     git_dirty: bool = True
     package_versions: Dict[str, str] = field(default_factory=dict)
     machine: Dict[str, Any] = field(default_factory=machine_snapshot)
+    algorithm_revision: str = ""
+    backend: str = ""
+    native_abi_version: Optional[int] = None
+    native_wheel_sha256: str = ""
+    compiler_and_flags: Dict[str, Any] = field(default_factory=dict)
+    tuning_protocol_id: str = ""
+    rng_version: str = ""
     input_sha256: str = ""
     config_sha256: str = ""
     architecture_sha256: str = ""
@@ -197,6 +204,30 @@ class RunManifest:
     end_to_end_time_ns: Optional[int] = None
     cpu_time_ns: Optional[int] = None
     peak_rss_bytes: Optional[int] = None
+    transition_decision_ns: Optional[int] = None
+    search_kernel_ns: Optional[int] = None
+    marshal_ns: Optional[int] = None
+    fitness_ns: Optional[int] = None
+    native_parse_ns: Optional[int] = None
+    native_serialize_ns: Optional[int] = None
+    horizon_selection_ns: Optional[int] = None
+    initial_placement_ns: Optional[int] = None
+    routing_ns: Optional[int] = None
+    full_compile_ns: Optional[int] = None
+    # ``layer_ledger_sha256``/``transition_count`` are retained as the
+    # canonical-input aliases used by legacy Schema-2 diagnostics.  Formal
+    # timing evidence uses the explicitly separated fields below.
+    layer_ledger_sha256: str = ""
+    transition_count: Optional[int] = None
+    canonical_input_layer_ledger_sha256: str = ""
+    canonical_input_transition_count: Optional[int] = None
+    observed_transition_layer_ledger_sha256: str = ""
+    observed_transition_count: Optional[int] = None
+    observed_transition_layer_ledger_source: str = ""
+    # Legacy discrete H=0/1/2 regression evidence only.  Formal decay runs use
+    # forecast_summary so configured/effective/visible depth cannot be conflated.
+    selected_horizon_counts: Dict[str, int] = field(default_factory=dict)
+    forecast_summary: Dict[str, Any] = field(default_factory=dict)
     log_fidelity: Optional[float] = None
     fidelity: Optional[float] = None
     fidelity_components: Dict[str, Optional[float]] = field(default_factory=dict)
@@ -270,6 +301,111 @@ class RunManifest:
                 raise ValueError(
                     f"{self.method} requires physicalization_policy="
                     f"{expected_physicalization}")
+        if self.backend == "native":
+            if (not isinstance(self.native_abi_version, int)
+                    or isinstance(self.native_abi_version, bool)
+                    or self.native_abi_version <= 0):
+                raise ValueError("native backend requires a positive native_abi_version")
+            if (len(self.native_wheel_sha256) != 64 or any(
+                    ch not in "0123456789abcdef"
+                    for ch in self.native_wheel_sha256)):
+                raise ValueError("native backend requires native_wheel_sha256")
+            if not self.compiler_and_flags:
+                raise ValueError("native backend requires compiler_and_flags")
+            if not self.rng_version:
+                raise ValueError("native backend requires rng_version")
+            required_flags = {
+                "cxx_standard": 17,
+                "openmp": False,
+                "fast_math": False,
+            }
+            flag_drift = {
+                key: (self.compiler_and_flags.get(key), expected)
+                for key, expected in required_flags.items()
+                if self.compiler_and_flags.get(key) != expected
+            }
+            if flag_drift:
+                raise ValueError(
+                    f"native backend compiler flags are not frozen: {flag_drift}")
+        for label, value in (
+                ("layer_ledger_sha256", self.layer_ledger_sha256),
+                ("canonical_input_layer_ledger_sha256",
+                 self.canonical_input_layer_ledger_sha256),
+                ("observed_transition_layer_ledger_sha256",
+                 self.observed_transition_layer_ledger_sha256)):
+            if value and (len(value) != 64 or any(
+                    ch not in "0123456789abcdef" for ch in value)):
+                raise ValueError(f"{label} must be a lowercase SHA256")
+        for label, value in (
+                ("transition_count", self.transition_count),
+                ("canonical_input_transition_count",
+                 self.canonical_input_transition_count),
+                ("observed_transition_count", self.observed_transition_count)):
+            if value is not None and (
+                    isinstance(value, bool) or not isinstance(value, int)
+                    or value < 0):
+                raise ValueError(f"{label} must be a non-negative integer")
+        if (self.layer_ledger_sha256 and
+                self.canonical_input_layer_ledger_sha256 and
+                self.layer_ledger_sha256 !=
+                self.canonical_input_layer_ledger_sha256):
+            raise ValueError(
+                "legacy/canonical input layer-ledger aliases disagree")
+        if (self.transition_count is not None and
+                self.canonical_input_transition_count is not None and
+                self.transition_count != self.canonical_input_transition_count):
+            raise ValueError(
+                "legacy/canonical input transition-count aliases disagree")
+        canonical_evidence = (
+            bool(self.canonical_input_layer_ledger_sha256),
+            self.canonical_input_transition_count is not None,
+        )
+        if any(canonical_evidence) and not all(canonical_evidence):
+            raise ValueError(
+                "canonical input transition-layer ledger evidence is partial")
+        observed_evidence = (
+            bool(self.observed_transition_layer_ledger_sha256),
+            self.observed_transition_count is not None,
+            bool(self.observed_transition_layer_ledger_source),
+        )
+        if any(observed_evidence) and not all(observed_evidence):
+            raise ValueError(
+                "observed transition-layer ledger evidence is partial")
+        for label, value in self.selected_horizon_counts.items():
+            try:
+                if int(label) < 0 or str(int(label)) != str(label):
+                    raise ValueError
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"invalid selected horizon bucket: {label!r}") from error
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"invalid selected horizon count: {label}={value!r}")
+        if self.forecast_summary:
+            required_forecast = {
+                "mode", "policy", "decay", "configured_depth",
+                "effective_depth_counts", "visible_depth_counts", "rho",
+                "epsilon", "alpha_lookahead", "offset_weights",
+                "weighted_negative_log_fidelity_total", "transition_count",
+            }
+            missing = required_forecast - set(self.forecast_summary)
+            if missing:
+                raise ValueError(
+                    f"forecast_summary missing fields: {sorted(missing)}")
+            if self.forecast_summary["mode"] != "decay":
+                raise ValueError("forecast_summary mode must be decay")
+            for key in ("configured_depth", "transition_count"):
+                value = self.forecast_summary[key]
+                if (isinstance(value, bool) or not isinstance(value, int)
+                        or value < 0):
+                    raise ValueError(f"invalid forecast_summary {key}")
+            for key in ("effective_depth_counts", "visible_depth_counts"):
+                counts = self.forecast_summary[key]
+                if not isinstance(counts, Mapping):
+                    raise ValueError(f"forecast_summary {key} must be an object")
+                for depth, count in counts.items():
+                    if (not str(depth).isdigit() or isinstance(count, bool)
+                            or not isinstance(count, int) or count < 0):
+                        raise ValueError(f"invalid forecast_summary {key}")
         if require_success_metrics and self.status == RunStatus.SUCCESS.value:
             required = (self.move_batches, self.move_time_us,
                         self.compiler_time_ns, self.duration_us, self.qubits,
@@ -325,6 +461,18 @@ class RunManifest:
                 "exponential_sensitivity_fidelity":
                     self.exponential_sensitivity_fidelity,
             }
+            numeric_values.update({
+                "transition_decision_ns": self.transition_decision_ns,
+                "search_kernel_ns": self.search_kernel_ns,
+                "marshal_ns": self.marshal_ns,
+                "fitness_ns": self.fitness_ns,
+                "native_parse_ns": self.native_parse_ns,
+                "native_serialize_ns": self.native_serialize_ns,
+                "horizon_selection_ns": self.horizon_selection_ns,
+                "initial_placement_ns": self.initial_placement_ns,
+                "routing_ns": self.routing_ns,
+                "full_compile_ns": self.full_compile_ns,
+            })
             numeric_values.update({
                 f"fidelity_components.{key}": value
                 for key, value in self.fidelity_components.items()

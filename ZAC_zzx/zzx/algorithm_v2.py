@@ -13,9 +13,181 @@ from typing import Callable, Iterable, Sequence
 from zzx.zcost import compatible_2d, greedy_phase_batches, phase_batches
 
 
-SCHEMA2_METHOD_HORIZON = {"ours_nl": 0, "ours_lk": 2}
+ADAPTIVE_HORIZON_V1 = {
+    "mode": "adaptive",
+    "max_horizon": 2,
+    "policy": "reuse_pressure_v1",
+}
+# Legacy adaptive H=0/1/2 remains importable for regression only.  Formal M3
+# and M4 use the same geometric-decay contract and differ solely in the maximum
+# future depth made visible by ForecastOracle.
+DECAY_LOOKAHEAD_POLICY_V1 = "physical_terminal_decay_v1"
+DECAY_LOOKAHEAD_BASE_V1 = {
+    "mode": "decay",
+    "policy": DECAY_LOOKAHEAD_POLICY_V1,
+    "decay": "geometric",
+    "rho": 0.6,
+    "epsilon": 0.05,
+}
+
+
+def decay_lookahead_spec(max_horizon: int, *, rho: float = 0.6) -> dict:
+    return {
+        **DECAY_LOOKAHEAD_BASE_V1,
+        "rho": float(rho),
+        "max_horizon": int(max_horizon),
+    }
+
+
+FORMAL_NL_LOOKAHEAD_V1 = decay_lookahead_spec(0)
+FORMAL_LK_LOOKAHEAD_V1 = decay_lookahead_spec(8)
+SCHEMA2_METHOD_HORIZON = {
+    "ours_nl": FORMAL_NL_LOOKAHEAD_V1,
+    "ours_lk": FORMAL_LK_LOOKAHEAD_V1,
+}
 SCHEMA2_FORBIDDEN_KEYS = {"w_ghost", "w_ord", "gamma0", "gamma_batch"}
-SCHEMA2_PAIR_EXEMPT_KEYS = {"method_id", "dir", "lookahead_horizon"}
+SCHEMA2_PAIR_EXEMPT_KEYS = {"method_id", "dir"}
+
+# A native run is an auditable experiment contract, not a best-effort backend
+# preference.  Keeping the registered values here makes an ABI/RNG change an
+# explicit experiment-revision event instead of a silent wheel substitution.
+FORMAL_NATIVE_ALGORITHM_REVISION = "native-ga-v1"
+FORMAL_NATIVE_TUNING_PROTOCOL_ID = "resident-ga-native-v1"
+FORMAL_NATIVE_ABI_VERSION = 3
+FORMAL_NATIVE_RNG_VERSION = "python-random-mt19937-v1"
+SCHEMA2_NATIVE_REQUIRED_KEYS = {
+    "algorithm_revision",
+    "backend",
+    "early_stop_patience",
+    "elite_count",
+    "formal_native",
+    "native_abi_version",
+    "native_fail_closed",
+    "native_wheel_sha256",
+    "operator_profile",
+    "rng_version",
+    "tuning_protocol_id",
+}
+SCHEMA2_NATIVE_MARKER_KEYS = (
+    SCHEMA2_NATIVE_REQUIRED_KEYS
+    - {"backend", "early_stop_patience", "elite_count", "operator_profile"}
+)
+
+
+def _is_integer(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _require_nonempty_string(setting: dict, key: str) -> str:
+    value = setting[key]
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} 必须是非空字符串")
+    return value
+
+
+def _validate_native_contract(setting: dict) -> None:
+    """Validate the frozen native-GA provenance and fail-closed controls."""
+    missing = sorted(SCHEMA2_NATIVE_REQUIRED_KEYS - set(setting))
+    if missing:
+        raise ValueError(f"正式 native Schema 2 缺少必需设置键: {missing}")
+    if setting["backend"] != "native":
+        raise ValueError("正式 native Schema 2 必须设置 backend='native'")
+    if setting["native_fail_closed"] is not True:
+        raise ValueError("正式 native Schema 2 必须设置 native_fail_closed=true")
+    if setting["formal_native"] is not True:
+        raise ValueError("正式 native Schema 2 必须设置 formal_native=true")
+    if setting["operator_profile"] != "tuned":
+        raise ValueError(
+            "正式 native Schema 2 必须显式设置 operator_profile='tuned'")
+
+    revision = _require_nonempty_string(setting, "algorithm_revision")
+    if revision != FORMAL_NATIVE_ALGORITHM_REVISION:
+        raise ValueError(
+            "正式 native algorithm_revision 必须为 "
+            f"{FORMAL_NATIVE_ALGORITHM_REVISION!r}")
+    protocol = _require_nonempty_string(setting, "tuning_protocol_id")
+    if protocol != FORMAL_NATIVE_TUNING_PROTOCOL_ID:
+        raise ValueError(
+            "正式 native tuning_protocol_id 必须为 "
+            f"{FORMAL_NATIVE_TUNING_PROTOCOL_ID!r}")
+
+    abi = setting["native_abi_version"]
+    if not _is_integer(abi) or abi != FORMAL_NATIVE_ABI_VERSION:
+        raise ValueError(
+            "正式 native native_abi_version 必须为 "
+            f"{FORMAL_NATIVE_ABI_VERSION}")
+    wheel_sha256 = _require_nonempty_string(setting, "native_wheel_sha256")
+    if (len(wheel_sha256) != 64
+            or any(character not in "0123456789abcdefABCDEF"
+                   for character in wheel_sha256)):
+        raise ValueError("native_wheel_sha256 必须是64位十六进制SHA256")
+    rng_version = _require_nonempty_string(setting, "rng_version")
+    if rng_version != FORMAL_NATIVE_RNG_VERSION:
+        raise ValueError(
+            "正式 native rng_version 必须为 "
+            f"{FORMAL_NATIVE_RNG_VERSION!r}")
+
+    elite_count = setting["elite_count"]
+    if not _is_integer(elite_count) or elite_count <= 0:
+        raise ValueError("elite_count 必须是正整数")
+    if elite_count > setting["population_size"]:
+        raise ValueError("elite_count 不能超过 population_size")
+    patience = setting["early_stop_patience"]
+    if not _is_integer(patience) or patience < 0:
+        raise ValueError("early_stop_patience 必须是非负整数")
+    max_unique = setting.get("max_unique_evaluations")
+    if max_unique is not None:
+        if not _is_integer(max_unique) or max_unique <= 0:
+            raise ValueError("max_unique_evaluations 必须是正整数")
+        if max_unique < setting["population_size"]:
+            raise ValueError(
+                "max_unique_evaluations 不能小于 population_size")
+
+
+def resolved_max_unique_evaluations(setting: dict) -> int:
+    """Return the effective unique-fitness budget for a resolved config."""
+    explicit = setting.get("max_unique_evaluations")
+    if explicit is not None:
+        if not _is_integer(explicit) or explicit <= 0:
+            raise ValueError("max_unique_evaluations 必须是正整数")
+        return explicit
+    return (int(setting["population_size"]) * int(setting["iterations"])
+            * int(setting["neighbor_sample_size"]))
+
+
+def validate_decay_lookahead_spec(spec, *, expected_max_horizon: int) -> dict:
+    """Validate the registered bounded geometric forecast contract."""
+    if not isinstance(spec, dict):
+        raise ValueError("正式 lookahead_horizon 必须是 decay spec 对象")
+    expected_keys = {
+        "mode", "policy", "decay", "rho", "epsilon", "max_horizon"}
+    if set(spec) != expected_keys:
+        raise ValueError(
+            "decay lookahead spec 键必须恰好为 " + str(sorted(expected_keys)))
+    if spec["mode"] != "decay":
+        raise ValueError("正式 lookahead mode 必须为 decay")
+    if spec["policy"] != DECAY_LOOKAHEAD_POLICY_V1:
+        raise ValueError(
+            f"正式 lookahead policy 必须为 {DECAY_LOOKAHEAD_POLICY_V1}")
+    if spec["decay"] != "geometric":
+        raise ValueError("正式 lookahead decay 必须为 geometric")
+    horizon = spec["max_horizon"]
+    if (not _is_integer(horizon) or horizon != expected_max_horizon):
+        raise ValueError(
+            f"正式 max_horizon 必须为 {expected_max_horizon}")
+    rho = spec["rho"]
+    if (not isinstance(rho, (int, float)) or isinstance(rho, bool)
+            or float(rho) not in {0.4, 0.6, 0.8}):
+        raise ValueError("正式 rho 必须来自注册集合 {0.4,0.6,0.8}")
+    epsilon = spec["epsilon"]
+    if (not isinstance(epsilon, (int, float)) or isinstance(epsilon, bool)
+            or float(epsilon) != 0.05):
+        raise ValueError("正式 epsilon 必须固定为 0.05")
+    return {
+        **spec,
+        "rho": float(rho),
+        "epsilon": float(epsilon),
+    }
 
 
 def validate_schema2_setting(setting: dict) -> None:
@@ -31,7 +203,7 @@ def validate_schema2_setting(setting: dict) -> None:
         "method_id", "objective", "lookahead_horizon", "population_size",
         "iterations", "neighbors_per_solution", "neighbor_sample_size",
         "seed", "placer", "engine", "routing_strategy", "resyn",
-        "fitness_cache",
+        "fitness_cache", "alpha_lookahead",
     }
     missing = sorted(required - set(setting))
     if missing:
@@ -43,11 +215,10 @@ def validate_schema2_setting(setting: dict) -> None:
     method = setting["method_id"]
     if method not in SCHEMA2_METHOD_HORIZON:
         raise ValueError(f"未知 Schema 2 method_id: {method!r}")
-    expected_horizon = SCHEMA2_METHOD_HORIZON[method]
-    if setting["lookahead_horizon"] != expected_horizon:
-        raise ValueError(
-            f"{method} 必须使用 lookahead_horizon={expected_horizon}，"
-            f"实际为 {setting['lookahead_horizon']!r}")
+    expected_horizon = SCHEMA2_METHOD_HORIZON[method]["max_horizon"]
+    validate_decay_lookahead_spec(
+        setting["lookahead_horizon"],
+        expected_max_horizon=expected_horizon)
     if setting["objective"] != "physical_log_fidelity":
         raise ValueError("Schema 2 objective 必须为 physical_log_fidelity")
     if setting["placer"] != "resident" or setting["engine"] != "ga":
@@ -67,6 +238,22 @@ def validate_schema2_setting(setting: dict) -> None:
         raise ValueError("seed 必须是整数")
     if not isinstance(setting["fitness_cache"], bool):
         raise ValueError("fitness_cache 必须是布尔值")
+    alpha = setting["alpha_lookahead"]
+    if (not isinstance(alpha, (int, float)) or isinstance(alpha, bool)
+            or float(alpha) <= 0.0):
+        raise ValueError("alpha_lookahead 必须是正数")
+
+    # Legacy/reference Schema-2 fixtures remain a deliberate Python-oracle
+    # compatibility path.  Requesting native execution, however, always opts
+    # into the complete formal contract; a partial set of provenance keys is
+    # rejected rather than downgraded to reference execution.
+    native_contract_present = bool(
+        SCHEMA2_NATIVE_MARKER_KEYS & set(setting))
+    backend = setting.get("backend")
+    if backend not in {None, "reference", "native"}:
+        raise ValueError("Schema 2 backend 只允许 reference 或 native")
+    if backend == "native" or native_contract_present:
+        _validate_native_contract(setting)
 
 
 def validate_schema2_pair(first: dict, second: dict) -> None:
@@ -75,7 +262,18 @@ def validate_schema2_pair(first: dict, second: dict) -> None:
     validate_schema2_setting(second)
     if {first["method_id"], second["method_id"]} != set(SCHEMA2_METHOD_HORIZON):
         raise ValueError("Schema 2 公平对必须恰好包含 ours_nl 与 ours_lk")
-    keys = (set(first) | set(second)) - SCHEMA2_PAIR_EXEMPT_KEYS
+    first_lookahead = dict(first["lookahead_horizon"])
+    second_lookahead = dict(second["lookahead_horizon"])
+    first_max = first_lookahead.pop("max_horizon")
+    second_max = second_lookahead.pop("max_horizon")
+    if {first_max, second_max} != {0, 8}:
+        raise ValueError("NL/LK max_horizon 必须恰好为 0/8")
+    if first_lookahead != second_lookahead:
+        raise ValueError(
+            "NL/LK decay spec 除 max_horizon 外必须逐项相同: "
+            f"{first_lookahead!r} != {second_lookahead!r}")
+    keys = ((set(first) | set(second)) - SCHEMA2_PAIR_EXEMPT_KEYS
+            - {"lookahead_horizon"})
     missing = object()
     differences = {}
     for key in sorted(keys):
@@ -127,22 +325,33 @@ class _FrozenForecastLayerProvider(ForecastLayerProvider):
 
 
 class ForecastOracle:
-    """Read-only, horizon-limited view of layers after the current transition.
+    """Read-only, contract-limited view after the current transition.
 
-    At boundary ``L`` the target layer ``L+1`` is current work and is always visible.
-    A horizon of two additionally exposes ``L+2`` and ``L+3``.  H=0 therefore has
-    no API path to future partners, which makes the no-lookahead ablation auditable.
+    The target layer ``L+1`` is current work and never discounted.  Formal
+    future reads use ``alpha * rho**(offset-1)`` and stop *before reading* the
+    first layer whose bare decay factor is below epsilon.  Alpha scales the
+    heuristic magnitude but never changes visible depth.  Thus M3 (H=0)
+    has no API path to any future provider read, while M4 remains bounded by 8.
+    Integer and legacy-adaptive inputs remain available only for regression.
     """
 
     def __init__(self, gate_scheduling: Sequence[Sequence[Sequence[int]]] |
                  ForecastLayerProvider,
-                 horizon: int):
-        if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon < 0:
-            raise ValueError("lookahead_horizon 必须是非负整数")
+                 horizon,
+                 alpha_lookahead: float = 1.0):
+        resolved_horizon = maximum_lookahead_horizon(horizon)
+        if (not isinstance(alpha_lookahead, (int, float))
+                or isinstance(alpha_lookahead, bool)
+                or float(alpha_lookahead) < 0.0):
+            raise ValueError("alpha_lookahead 必须是非负数")
         self._provider = (
             gate_scheduling if isinstance(gate_scheduling, ForecastLayerProvider)
             else _FrozenForecastLayerProvider(gate_scheduling))
-        self.horizon = horizon
+        self.lookahead_spec = (
+            dict(horizon) if isinstance(horizon, dict) else horizon)
+        self.horizon = resolved_horizon
+        self.alpha_lookahead = float(alpha_lookahead)
+        self.decay_mode = is_decay_lookahead(horizon)
 
     @property
     def layer_count(self) -> int:
@@ -161,10 +370,61 @@ class ForecastOracle:
 
     def visible_future(self, boundary_layer: int):
         for offset in range(1, self.horizon + 1):
+            if self.future_decay_factor(offset) == 0.0:
+                break
             layer = boundary_layer + 1 + offset
             if layer >= self.layer_count:
                 break
             yield layer, self.future_layer(boundary_layer, offset)
+
+    def future_decay_factor(self, offset: int) -> float:
+        """Return the bare decay factor, or zero once the cutoff is reached.
+
+        Visibility is deliberately independent of ``alpha_lookahead``.  In
+        particular, changing alpha may scale every forecast term but can never
+        change which provider layers the registered lookahead window exposes.
+        """
+        if (not isinstance(offset, int) or isinstance(offset, bool)
+                or offset < 1):
+            raise ForecastBoundaryError("future offset 必须从 1 开始")
+        if offset > self.horizon:
+            raise ForecastBoundaryError(
+                f"future offset {offset} 超出 H={self.horizon}")
+        if not self.decay_mode:
+            return 1.0
+        spec = self.lookahead_spec
+        decay_factor = float(spec["rho"]) ** (offset - 1)
+        if decay_factor < float(spec["epsilon"]):
+            return 0.0
+        return decay_factor
+
+    def future_weight(self, offset: int) -> float:
+        """Return ``alpha_lookahead * decay_factor`` after bare-factor cutoff."""
+        decay_factor = self.future_decay_factor(offset)
+        if not self.decay_mode:
+            return decay_factor
+        return self.alpha_lookahead * decay_factor
+
+    def weighted_future(self, boundary_layer: int):
+        """Yield ``(absolute layer, gates, offset, weight)`` without hidden reads."""
+        for offset in range(1, self.horizon + 1):
+            if self.future_decay_factor(offset) == 0.0:
+                break
+            weight = self.future_weight(offset)
+            layer = boundary_layer + 1 + offset
+            if layer >= self.layer_count:
+                break
+            yield (layer, self.future_layer(boundary_layer, offset),
+                   offset, weight)
+
+    @property
+    def effective_horizon(self) -> int:
+        result = 0
+        for offset in range(1, self.horizon + 1):
+            if self.future_decay_factor(offset) == 0.0:
+                break
+            result = offset
+        return result
 
     def next_use(self, q: int, boundary_layer: int):
         """First visible *future* use, never the current target layer."""
@@ -175,6 +435,27 @@ class ForecastOracle:
                 if q == q1:
                     return layer, q0
         return None
+
+    def bounded(self, horizon: int) -> "ForecastOracle":
+        """Return a narrower view backed by the same provider without reading it.
+
+        This is a legacy-regression helper and a useful strictness primitive.
+        Formal decay M4 normally consumes its complete registered bounded window;
+        refusing expansion is still important because an H=0 oracle can never be
+        turned into a future-reading oracle through this helper.
+        """
+        if not isinstance(horizon, int) or isinstance(horizon, bool):
+            raise ValueError("bounded horizon 必须是整数")
+        if horizon < 0 or horizon > self.horizon:
+            raise ForecastBoundaryError(
+                f"不能将 H={self.horizon} 的 oracle 扩展为 H={horizon}")
+        if self.decay_mode:
+            narrowed = dict(self.lookahead_spec)
+            narrowed["max_horizon"] = horizon
+            return ForecastOracle(
+                self._provider, narrowed, self.alpha_lookahead)
+        return ForecastOracle(
+            self._provider, horizon, self.alpha_lookahead)
 
     def _read(self, boundary_layer: int, layer: int, allow_target: bool):
         lower = boundary_layer + 1 if allow_target else boundary_layer + 2
@@ -187,6 +468,218 @@ class ForecastOracle:
         return tuple(
             (int(gate[0]), int(gate[1]))
             for gate in self._provider.read_layer(layer))
+
+
+def maximum_lookahead_horizon(spec) -> int:
+    """Resolve the storage horizon used to construct the sole ForecastOracle."""
+    if isinstance(spec, int) and not isinstance(spec, bool) and spec >= 0:
+        return spec
+    if isinstance(spec, dict):
+        mode = spec.get("mode")
+        if mode == "decay":
+            if spec.get("policy") != DECAY_LOOKAHEAD_POLICY_V1:
+                raise ValueError(f"未知衰减前瞻策略: {spec!r}")
+            if spec.get("decay") != "geometric":
+                raise ValueError(f"未知衰减函数: {spec!r}")
+            rho = spec.get("rho")
+            epsilon = spec.get("epsilon")
+            if (not isinstance(rho, (int, float)) or isinstance(rho, bool)
+                    or not 0.0 < float(rho) < 1.0):
+                raise ValueError("decay rho 必须在 (0,1) 内")
+            if (not isinstance(epsilon, (int, float))
+                    or isinstance(epsilon, bool)
+                    or not 0.0 < float(epsilon) <= 1.0):
+                raise ValueError("decay epsilon 必须在 (0,1] 内")
+        elif mode == "adaptive":
+            if spec.get("policy") != "reuse_pressure_v1":
+                raise ValueError(f"未知动态前瞻策略: {spec!r}")
+        else:
+            raise ValueError(f"未知动态前瞻模式: {spec!r}")
+        value = spec.get("max_horizon")
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError("max_horizon 必须是非负整数")
+        return value
+    raise ValueError(f"无效 lookahead_horizon: {spec!r}")
+
+
+def is_adaptive_lookahead(spec) -> bool:
+    return isinstance(spec, dict) and spec.get("mode") == "adaptive"
+
+
+def is_decay_lookahead(spec) -> bool:
+    return isinstance(spec, dict) and spec.get("mode") == "decay"
+
+
+@dataclass(frozen=True)
+class AdaptiveHorizonDecision:
+    """Auditable deterministic 0/1/2 choice for one resident boundary.
+
+    The selector values only reuse that can still be influenced by the current
+    boundary: non-participating residents may STAY/RETURN, while target-layer
+    participants may have their gate seats chosen for later reuse.  A bounded
+    pressure term favours the second future layer only when the boundary has many
+    decisions, forced capacity evictions, or already active commitments.  The
+    fixed depth penalty makes H=0 win when no visible reuse exists and breaks ties
+    toward the shallower (faster) horizon.  Policy v1 is deliberately integer/
+    count based and fixed in code for reproducibility:
+
+    ``S_h = 4R_h + 2.5T_h + 0.5G_h + 0.5C_h + pL_h - 1.25h``
+
+    where R/T are unique reused resident/target atoms, G is the number of coupled
+    future gates, C is repeated reuse, L is the number of useful future layers,
+    and ``p=min(decision_pressure, 8)/8``.
+    """
+
+    selected_horizon: int
+    reason: str
+    scores: tuple[float | None, ...]
+    available_horizon: int
+    resident_reuse_by_offset: tuple[int, ...]
+    target_reuse_by_offset: tuple[int, ...]
+    decision_pressure: int
+    capacity_deficit: int
+
+    @classmethod
+    def fixed(cls, horizon: int, *, reason: str | None = None):
+        if (not isinstance(horizon, int) or isinstance(horizon, bool)
+                or horizon < 0):
+            raise ValueError("registered fixed horizon 必须为非负整数")
+        scores: list[float | None] = [None] * (horizon + 1)
+        scores[horizon] = 0.0
+        return cls(
+            selected_horizon=horizon,
+            reason=reason or ("fixed_zero_no_future_access" if horizon == 0
+                              else "fixed_horizon"),
+            scores=tuple(scores),
+            available_horizon=horizon,
+            resident_reuse_by_offset=(0,) * horizon,
+            target_reuse_by_offset=(0,) * horizon,
+            decision_pressure=0,
+            capacity_deficit=0,
+        )
+
+    @classmethod
+    def select(cls, oracle: ForecastOracle, boundary_layer: int, *,
+               residents: Iterable[int],
+               target_participants: Iterable[int],
+               zone_sites: int,
+               theta_capacity: float,
+               active_commitments: Iterable[int] = ()):
+        """Choose the smallest useful horizon from a registered H<=2 oracle."""
+        if oracle.horizon < 1 or oracle.horizon > 2:
+            raise ValueError("adaptive reuse_pressure_v1 要求 max_horizon 为 1 或 2")
+        if zone_sites <= 0:
+            raise ValueError("zone_sites 必须为正整数")
+        if not 0.0 < theta_capacity <= 1.0:
+            raise ValueError("theta_capacity 必须在 (0, 1] 内")
+
+        resident_set = {int(q) for q in residents}
+        target_set = {int(q) for q in target_participants}
+        eligible = resident_set - target_set
+        visible = {}
+        for absolute_layer, gates in oracle.visible_future(boundary_layer):
+            offset = absolute_layer - boundary_layer - 1
+            if offset <= 2:
+                visible[offset] = tuple(
+                    (int(gate[0]), int(gate[1])) for gate in gates)
+        available = max(visible, default=0)
+
+        resident_reuse = [0, 0]
+        target_reuse = [0, 0]
+        relevant_by_offset: list[set[int]] = [set(), set()]
+        coupled_gates = [0, 0]
+        for offset in (1, 2):
+            gates = visible.get(offset, ())
+            atoms = {q for gate in gates for q in gate}
+            resident_atoms = atoms & eligible
+            target_atoms = atoms & target_set
+            relevant = resident_atoms | target_atoms
+            resident_reuse[offset - 1] = len(resident_atoms)
+            target_reuse[offset - 1] = len(target_atoms)
+            relevant_by_offset[offset - 1] = relevant
+            coupled_gates[offset - 1] = sum(
+                1 for gate in gates if set(gate) & relevant)
+
+        capacity = int(theta_capacity * zone_sites + 1e-12)
+        capacity_deficit = max(0, len(eligible) + len(target_set) - capacity)
+        commitment_count = len({int(q) for q in active_commitments})
+        decision_pressure = (
+            len(eligible) + 2 * capacity_deficit + commitment_count)
+        pressure_scale = min(decision_pressure, 8) / 8.0
+
+        scores: list[float | None] = [0.0, None, None]
+        seen: set[int] = set()
+        appearances: dict[int, int] = {}
+        reuse_layers = 0
+        coupled_total = 0
+        for horizon in range(1, available + 1):
+            relevant = relevant_by_offset[horizon - 1]
+            if relevant:
+                reuse_layers += 1
+            seen.update(relevant)
+            for q in relevant:
+                appearances[q] = appearances.get(q, 0) + 1
+            coupled_total += coupled_gates[horizon - 1]
+            resident_seen = len(seen & eligible)
+            target_seen = len(seen & target_set)
+            continuity = sum(max(0, count - 1)
+                             for count in appearances.values())
+            scores[horizon] = round(
+                4.0 * resident_seen
+                + 2.5 * target_seen
+                + 0.5 * coupled_total
+                + 0.5 * continuity
+                + pressure_scale * reuse_layers
+                - 1.25 * horizon,
+                12,
+            )
+
+        candidates = [(score, -horizon, horizon)
+                      for horizon, score in enumerate(scores)
+                      if score is not None]
+        selected = max(candidates)[2]
+        if selected == 0:
+            reason = ("no_visible_future" if available == 0
+                      else "no_actionable_visible_reuse")
+        elif selected == 1:
+            reason = ("adjacent_reuse_only"
+                      if not relevant_by_offset[1]
+                      else "adjacent_reuse_dominates")
+        else:
+            new_second = relevant_by_offset[1] - relevant_by_offset[0]
+            if new_second:
+                reason = "second_future_layer_adds_reuse"
+            elif pressure_scale >= 0.25:
+                reason = "multi_layer_reuse_under_pressure"
+            else:
+                reason = "multi_layer_reuse_continuity"
+        return cls(
+            selected_horizon=selected,
+            reason=reason,
+            scores=tuple(scores),
+            available_horizon=available,
+            resident_reuse_by_offset=tuple(resident_reuse),
+            target_reuse_by_offset=tuple(target_reuse),
+            decision_pressure=decision_pressure,
+            capacity_deficit=capacity_deficit,
+        )
+
+    def as_log(self) -> dict:
+        return {
+            "selected_horizon": self.selected_horizon,
+            "horizon_reason": self.reason,
+            "horizon_scores": {
+                str(index): score for index, score in enumerate(self.scores)
+            },
+            "horizon_features": {
+                "available_horizon": self.available_horizon,
+                "resident_reuse_by_offset": list(
+                    self.resident_reuse_by_offset),
+                "target_reuse_by_offset": list(self.target_reuse_by_offset),
+                "decision_pressure": self.decision_pressure,
+                "capacity_deficit": self.capacity_deficit,
+            },
+        }
 
 
 @dataclass(frozen=True)

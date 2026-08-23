@@ -16,6 +16,18 @@ from zac.ds.architecture import Architecture  # noqa: E402
 from zzx.zplacer import ResidentPlacer  # noqa: E402
 
 
+def semantic_decision_log(rows):
+    return [
+        {key: value for key, value in row.items()
+         if key not in {
+             "horizon_selection_ns", "search_kernel_ns", "marshal_ns",
+             "backend_search_kernel_ns", "fitness_ns",
+             "backend_selection_ns",
+         }}
+        for row in rows
+    ]
+
+
 def make_architecture():
     spec = json.loads((ROOT / "hardware_spec/toy_architecture.json").read_text())
     architecture = Architecture(spec)
@@ -89,7 +101,10 @@ class TestResidentTransitionKernel(unittest.TestCase):
         streamed_logs.append(terminal.decision_log)
 
         self.assertEqual(rebuilt, batch.mapping)
-        self.assertEqual(streamed_logs, batch.decision_log)
+        self.assertEqual(
+            semantic_decision_log(streamed_logs),
+            semantic_decision_log(batch.decision_log),
+        )
         self.assertEqual(streamed.registry.storage_site,
                          batch.registry.storage_site)
         self.assertEqual(streamed.registry.zone_seat, batch.registry.zone_seat)

@@ -176,7 +176,7 @@ cz q[6],q[7];
                         self.assertEqual(resume.next_layer, cut)
                         self.assertEqual(
                             resume.counters, {"core_runtime_ns": 123 + cut})
-                        expected_cache = {"M1": 3, "M3": 2, "M4": 4}[method]
+                        expected_cache = {"M1": 3, "M3": 2, "M4": 10}[method]
                         self.assertEqual(
                             resume.placement.provider.max_cached_stages,
                             expected_cache,

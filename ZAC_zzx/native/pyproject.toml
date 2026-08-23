@@ -1,0 +1,15 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "zac-native"
+version = "0.3.0"
+description = "Deterministic C++17 kernels for the ZAC resident genetic placer"
+requires-python = ">=3.10"
+
+[tool.scikit-build]
+cmake.build-type = "Release"
+wheel.packages = []
+build-dir = "build/{wheel_tag}"
+sdist.include = ["CMakeLists.txt", "include/**", "src/**", "bindings/**", "tests/**"]

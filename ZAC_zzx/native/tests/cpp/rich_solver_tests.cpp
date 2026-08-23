@@ -1,0 +1,189 @@
+#include "zac_native/rich_solver.hpp"
+
+#include <cassert>
+#include <cmath>
+#include <iostream>
+#include <set>
+
+using namespace zac_native;
+
+namespace {
+PythonRandomState rng_fixture() {
+  PythonRandomState state;
+  for (std::size_t index = 0; index < state.words.size(); ++index) {
+    state.words[index] = static_cast<std::uint32_t>(
+        0x6c078965U * static_cast<std::uint32_t>(index + 11));
+  }
+  state.index = 624;
+  return state;
+}
+
+RichSearchConfig exact_config() {
+  RichSearchConfig config;
+  config.operator_profile = RichOperatorProfile::kExact;
+  config.max_unique_evaluations = 256;
+  return config;
+}
+
+RichH0Problem one_resident_problem() {
+  RichH0Problem problem;
+  problem.n_atoms = 3;
+  problem.current_points = {{0.0, 0.0}, {1.0, 0.0}, {2.0, 2.0}};
+  problem.participants = {0, 1};
+  problem.gate_domains = {{{10, 0, 1, {0.0, 0.0}, {1.0, 0.0}, {}, {}, {}}}};
+  problem.eligible = {2};
+  problem.eviction_order_indices = {0};
+  problem.forced_return_mask = {false};
+  problem.return_domains = {{{3, {2.0, 3.0}, 1.0}}};
+  problem.matched_gate_genes = {0};
+  return problem;
+}
+}  // namespace
+
+int main() {
+  std::size_t tests = 0;
+  ArchitectureSnapshot small_architecture(
+      3, {{0.0, 0.0}, {1.0, 0.0}, {2.0, 2.0}, {2.0, 3.0}}, {3});
+
+  auto problem = one_resident_problem();
+  const auto direct = solve_rich_h0(
+      small_architecture, problem, exact_config(), rng_fixture());
+  assert(direct.search_mode == "enumerate");
+  assert(direct.winner.chromosome == std::vector<std::int64_t>({0, 1}));
+  const std::vector<std::pair<std::int64_t, std::int64_t>> expected_return{{2, 3}};
+  assert(direct.return_assignments == expected_return);
+  ++tests;
+
+  problem.min_returns = 1;
+  problem.decision_policy = RichDecisionPolicy::kAlwaysStay;
+  const auto capacity = solve_rich_h0(
+      small_architecture, problem, exact_config(), rng_fixture());
+  assert(capacity.winner.chromosome.back() == 1);
+  ++tests;
+
+  ArchitectureSnapshot injection_architecture(
+      4, {{0.0, 0.0}, {1.0, 0.0}, {2.0, 0.0}, {3.0, 0.0}});
+  RichH0Problem injection;
+  injection.n_atoms = 4;
+  injection.current_points = {{0.0, 0.0}, {1.0, 0.0},
+                              {2.0, 0.0}, {3.0, 0.0}};
+  injection.participants = {0, 1, 2, 3};
+  injection.gate_domains = {
+      {{10, 0, 1, {0.0, 0.0}, {1.0, 0.0}},
+       {11, 0, 1, {0.0, 0.0}, {1.0, 0.0}}},
+      {{10, 2, 3, {2.0, 0.0}, {3.0, 0.0}},
+       {12, 2, 3, {2.0, 0.0}, {3.0, 0.0}}},
+  };
+  injection.matched_gate_genes = {0, 0};
+  const auto injected = solve_rich_h0(
+      injection_architecture, injection, exact_config(), rng_fixture());
+  assert(injected.gate_option_indices == std::vector<std::size_t>({0, 1}));
+  ++tests;
+
+  ArchitectureSnapshot fallback_architecture(
+      2, {{0.0, 0.0}, {1.0, 0.0}, {0.0, 2.0}, {1.0, 2.0}}, {2, 3});
+  RichH0Problem fallback;
+  fallback.n_atoms = 2;
+  fallback.current_points = {{0.0, 0.0}, {1.0, 0.0}};
+  fallback.eligible = {0, 1};
+  fallback.min_returns = 2;
+  fallback.eviction_order_indices = {0, 1};
+  fallback.forced_return_mask = {true, true};
+  fallback.return_domains = {{{2, {0.0, 2.0}, 1.0}},
+                             {{2, {0.0, 2.0}, 1.0}}};
+  fallback.decision_policy = RichDecisionPolicy::kAlwaysReturn;
+  const auto fallback_value = solve_rich_h0(
+      fallback_architecture, fallback, exact_config(), rng_fixture());
+  assert(fallback_value.return_assignments.size() == 2);
+  const std::set<std::int64_t> fallback_sites{
+      fallback_value.return_assignments[0].second,
+      fallback_value.return_assignments[1].second};
+  const std::set<std::int64_t> expected_sites{2, 3};
+  assert(fallback_sites == expected_sites);
+  ++tests;
+
+  problem = one_resident_problem();
+  problem.forced_return_mask = {true};
+  problem.forecast_terms = {
+      {2, RichForecastKind::kReturn, RichForecastCategory::kReentry,
+       0, -1, -1, 0.5},
+      {8, RichForecastKind::kConstant, RichForecastCategory::kTerminal,
+       -1, -1, -1, 10.0},
+  };
+  auto decay_config = exact_config();
+  decay_config.max_horizon = 8;
+  decay_config.alpha_lookahead = 0.2;
+  decay_config.decay_rho = 0.5;
+  decay_config.decay_epsilon = 0.05;
+  const auto decay = solve_rich_h0(
+      small_architecture, problem, decay_config, rng_fixture());
+  assert(std::abs(decay.forecast_nll - 0.05) < 1e-15);
+  assert(std::abs(decay.search_negative_log_fidelity -
+                  decay.winner.negative_log_fidelity - 0.05) < 1e-15);
+  assert(decay.stats.forecast_terms_applied > 0);
+  assert(decay.stats.forecast_terms_skipped_cutoff > 0);
+  ++tests;
+
+  constexpr std::size_t kAtoms = 9;
+  std::vector<Point> coordinates;
+  for (std::size_t atom = 0; atom < kAtoms; ++atom) {
+    coordinates.push_back({static_cast<double>(atom), 0.0});
+  }
+  for (std::size_t site = 0; site < 5; ++site) {
+    coordinates.push_back({static_cast<double>(site + 4), 4.0});
+  }
+  ArchitectureSnapshot ga_architecture(kAtoms, coordinates, {9, 10, 11, 12, 13});
+  RichH0Problem ga;
+  ga.n_atoms = kAtoms;
+  ga.current_points.assign(coordinates.begin(), coordinates.begin() + kAtoms);
+  ga.participants = {0, 1, 2, 3};
+  for (std::size_t gate = 0; gate < 2; ++gate) {
+    std::vector<RichGateOption> domain;
+    for (std::size_t option = 0; option < 10; ++option) {
+      const auto q1 = static_cast<std::int64_t>(gate * 2);
+      const auto q2 = q1 + 1;
+      domain.push_back({static_cast<std::int64_t>(100 + gate * 20 + option),
+                        q1, q2, coordinates[q1], coordinates[q2]});
+    }
+    ga.gate_domains.push_back(std::move(domain));
+  }
+  ga.eligible = {4, 5, 6, 7, 8};
+  ga.eviction_order_indices = {0, 1, 2, 3, 4};
+  ga.forced_return_mask = {true, true, true, true, true};
+  for (std::size_t index = 0; index < ga.eligible.size(); ++index) {
+    ga.return_domains.push_back({{
+        static_cast<std::int64_t>(9 + index), coordinates[9 + index], 1.0}});
+  }
+  ga.matched_gate_genes = {0, 0};
+  auto tuned_config = exact_config();
+  tuned_config.operator_profile = RichOperatorProfile::kTuned;
+  tuned_config.population_size = 6;
+  tuned_config.iterations = 8;
+  tuned_config.neighbor_sample_size = 64;
+  tuned_config.neighbors_per_solution = 2;
+  tuned_config.early_stop_patience = 2;
+  tuned_config.max_unique_evaluations = 12;
+  std::vector<std::int64_t> cached(7, 1);
+  const auto tuned = solve_rich_h0(
+      ga_architecture, ga, tuned_config, rng_fixture(), cached);
+  assert(tuned.stats.cached_winner_elites == 1);
+  assert(tuned.stats.stochastic_unique_evaluations <= 12);
+  assert(tuned.stats.generations > 0 && !tuned.stats.early_stop_reason.empty());
+  assert(tuned.stats.gate_mutations > 0);
+  assert(tuned.stats.residency_mutations > 0);
+  assert(tuned.stats.high_cost_gate_reselections > 0);
+  assert(tuned.stats.conflict_cluster_swaps > 0);
+  assert(tuned.stats.marginal_return_flips > 0);
+  ++tests;
+
+  const auto repeated = solve_rich_h0(
+      ga_architecture, ga, tuned_config, rng_fixture(), cached);
+  assert(tuned.winner.chromosome == repeated.winner.chromosome);
+  assert(tuned.return_assignments == repeated.return_assignments);
+  assert(tuned.rng_state.words == repeated.rng_state.words &&
+         tuned.rng_state.index == repeated.rng_state.index);
+  ++tests;
+
+  std::cout << "rich_solver_tests: " << tests << " sections ok\n";
+  return 0;
+}

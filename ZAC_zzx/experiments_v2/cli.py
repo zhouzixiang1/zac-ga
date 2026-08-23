@@ -12,11 +12,11 @@ import gzip
 import json
 import math
 import os
-import random
 import re
 import subprocess
 import sys
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -51,6 +51,10 @@ from .protocol import (enforces_ghost_safety, ghost_policy_for_method,
                        trace_protocol_for_method)
 from .reproduction import reproduce_baselines
 from .runner import AttemptSpec, run_attempt
+from .runtime_benchmark import (build_balanced_schedule,
+                                ordered_two_qubit_layer_ledger,
+                                two_qubit_layer_ledger,
+                                validate_balanced_schedule)
 from .statistics import aggregate_experiment
 from streaming.large_contract import LargeExperimentContract
 
@@ -90,6 +94,20 @@ def _report_path(plan: ExperimentPlan, name: str) -> Path:
 def _canonical_identity(manifest: CanonicalCircuitManifest) -> tuple[str, Path]:
     path = Path(manifest.canonical_path).resolve()
     return path.stem, path
+
+
+def _canonical_layer_ledger(manifest: CanonicalCircuitManifest) -> Mapping[str, Any]:
+    pairs: list[tuple[int, int]] = []
+    for line in Path(manifest.canonical_path).read_text(
+            encoding="utf-8").splitlines():
+        match = _CANONICAL_CZ.match(line)
+        if match:
+            pairs.append((int(match.group(1)), int(match.group(2))))
+    if len(pairs) != manifest.gates_2q:
+        raise ValueError(
+            f"canonical CZ ledger mismatch: manifest={manifest.gates_2q}, "
+            f"parsed={len(pairs)}")
+    return two_qubit_layer_ledger(manifest.qubits, pairs)
 
 
 def _canonical_gate_ledger(manifest: CanonicalCircuitManifest
@@ -149,6 +167,7 @@ class UnifiedEvaluationGate:
         self._result: FidelityResult | None = None
         self._metrics: Mapping[str, Any] | None = None
         self._observed_ledger: tuple[Counter[int], dict[int, tuple[str, ...]]] | None = None
+        self._observed_transition_layers: list[list[tuple[int, int]]] | None = None
         self._physical_validation: Mapping[str, Any] | None = None
 
     @property
@@ -190,6 +209,7 @@ class UnifiedEvaluationGate:
         events = self._normalizer(trace_path)
         one_qubit: Counter[int] = Counter()
         operation_sequence: dict[int, list[str]] = {}
+        transition_layers: list[list[tuple[int, int]]] = []
 
         def audited_events():
             for event in events:
@@ -198,6 +218,9 @@ class UnifiedEvaluationGate:
                     for qubit in event.atoms:
                         operation_sequence.setdefault(qubit, []).append("1q")
                 elif event.kind == "two_qubit_gate":
+                    transition_layers.append([
+                        (int(q0), int(q1)) for q0, q1 in event.gate_pairs
+                    ])
                     for q0, q1 in event.gate_pairs:
                         operation_sequence.setdefault(q0, []).append(f"cz:{q1}")
                         operation_sequence.setdefault(q1, []).append(f"cz:{q0}")
@@ -210,6 +233,7 @@ class UnifiedEvaluationGate:
                 one_qubit,
                 {q: tuple(value) for q, value in sorted(operation_sequence.items())},
             )
+            self._observed_transition_layers = transition_layers
             return result
 
         output = artifact / "canonical_trace.jsonl.gz"
@@ -231,6 +255,7 @@ class UnifiedEvaluationGate:
                 one_qubit,
                 {q: tuple(value) for q, value in sorted(operation_sequence.items())},
             )
+            self._observed_transition_layers = transition_layers
             return result
         except BaseException:
             temporary.unlink(missing_ok=True)
@@ -346,6 +371,21 @@ class UnifiedEvaluationGate:
             "physicalization_policy": physicalization_policy_for_method(self.method),
             "warnings": warnings,
         }
+        if self.method == "M2":
+            if self._observed_transition_layers is None:
+                raise RuntimeError(
+                    "QMAP placement trace was not consumed before ledger scoring")
+            # Preserve the native CZ pulse boundaries instead of rebuilding an
+            # ASAP schedule from the flattened gate order.
+            observed = ordered_two_qubit_layer_ledger(
+                self.canonical.qubits, self._observed_transition_layers)
+            metrics.update({
+                "observed_transition_layer_ledger_sha256":
+                    observed["layer_ledger_sha256"],
+                "observed_transition_count": observed["transitions"],
+                "observed_transition_layer_ledger_source":
+                    "normalized_qmap_placement_trace",
+            })
         metrics.update(self._compiler_counters(artifact))
         return metrics
 
@@ -412,6 +452,70 @@ def _pythonpath(plan: ExperimentPlan) -> str:
     return os.pathsep.join(values)
 
 
+def _compiler_python(plan: ExperimentPlan, method: str, phase: str) -> str:
+    if method == "M2" and phase == "timing":
+        # The timing-only QMAP wheel lives under the existing artifact root and
+        # is trace-hash-equivalent to the official 3.2.0 package.  Quality runs
+        # continue to use plan.methods[M2].python unchanged.
+        return str(
+            Path(plan.repo_root).resolve().parent / "artifacts" /
+            "native-ga-v1" / "build" /
+            "qmap-timing-venv" / "bin" / "python")
+    return plan.methods[method].python
+
+
+def _qmap_timing_package_evidence(plan: ExperimentPlan) -> Mapping[str, str]:
+    """Bind a timing AttemptSpec to the frozen wheel/parity/lock artifacts.
+
+    The compiler-side validator additionally compares the *installed* native
+    binaries byte-for-byte with the wheel.  This parent-side check records the
+    expected identities before the subprocess starts, preventing the official
+    QMAP quality lock from being mislabeled as the timing environment.
+    """
+    freeze_path = (plan.package_root / "third_party" / "qmap32_streaming" /
+                   "timing_freeze_manifest.json")
+    freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
+    if (freeze.get("status") != "frozen"
+            or freeze.get("parity", {}).get(
+                "all_native_trace_hashes_equal") is not True):
+        raise RuntimeError("QMAP timing provenance is not frozen and parity-valid")
+    base = freeze_path.parent
+    declared = {
+        "qmap_timing_wheel_sha256": freeze["build"]["wheel_sha256"],
+        "qmap_timing_environment_lock_sha256":
+            freeze["build"]["environment_lock_sha256"],
+        "qmap_timing_parity_report_sha256":
+            freeze["parity"]["report_sha256"],
+        "qmap_timing_patch_sha256":
+            freeze["instrumentation"]["patch_sha256"],
+    }
+    paths = {
+        "qmap_timing_wheel_sha256":
+            (base / freeze["build"]["wheel_path"]).resolve(),
+        "qmap_timing_environment_lock_sha256":
+            (base / freeze["build"]["environment_lock"]).resolve(),
+        "qmap_timing_parity_report_sha256":
+            (base / freeze["parity"]["report"]).resolve(),
+        "qmap_timing_patch_sha256":
+            (base / freeze["instrumentation"]["patch"]).resolve(),
+    }
+    for key, path in paths.items():
+        if not path.is_file() or sha256_file(path) != declared[key]:
+            raise RuntimeError(f"QMAP timing provenance drift: {key} at {path}")
+    return {
+        "qmap_timing_protocol": str(freeze["protocol"]),
+        **{key: str(value) for key, value in declared.items()},
+    }
+
+
+def _qmap_timing_environment_lock(plan: ExperimentPlan) -> Path:
+    freeze_path = (plan.package_root / "third_party" / "qmap32_streaming" /
+                   "timing_freeze_manifest.json")
+    freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
+    return (freeze_path.parent /
+            freeze["build"]["environment_lock"]).resolve()
+
+
 def _attempt_spec(plan: ExperimentPlan, dataset: DatasetSpec,
                   canonical: CanonicalCircuitManifest, method: str,
                   seed: int, repetition: int, phase: str, *,
@@ -426,8 +530,10 @@ def _attempt_spec(plan: ExperimentPlan, dataset: DatasetSpec,
     circuit, input_path = _canonical_identity(canonical)
     config = config_path or plan.resolved_config(method, seed)
     expected_ledger_sha256 = _ledger_sha256(_canonical_gate_ledger(canonical))
+    layer_ledger = _canonical_layer_ledger(canonical)
+    compiler_python = _compiler_python(plan, method, phase)
     command = [
-        plan.methods[method].python,
+        compiler_python,
         "-m", "experiments_v2.method_driver",
         "--method", method,
         "--input", str(input_path),
@@ -438,16 +544,27 @@ def _attempt_spec(plan: ExperimentPlan, dataset: DatasetSpec,
     if ablation_variant:
         command.extend(("--ablation-variant", ablation_variant))
     is_large = phase == "large"
+    timing_m2 = method == "M2" and phase == "timing"
     lock_name = ENVIRONMENT_LOCKS[1 if method == "M2" else 0]
     lock_path = plan.path.parent / lock_name
+    timing_evidence: Mapping[str, str] = {}
+    if timing_m2:
+        timing_evidence = _qmap_timing_package_evidence(plan)
+        lock_path = _qmap_timing_environment_lock(plan)
     runtime_packages = {
         **plan.package_versions,
-        "compiler_python_path": plan.methods[method].python,
-        "compiler_environment": "iccad_qmap320" if method == "M2" else
-                                "zac_qiskit124",
+        **timing_evidence,
+        "compiler_python_path": compiler_python,
+        "compiler_environment": (
+            "iccad_qmap320_timing_instrumented" if timing_m2 else
+            "iccad_qmap320" if method == "M2" else "zac_qiskit124"),
     }
     if lock_path.is_file():
         runtime_packages["environment_lock_sha256"] = sha256_file(lock_path)
+    if timing_m2 and runtime_packages.get("environment_lock_sha256") != \
+            runtime_packages["qmap_timing_environment_lock_sha256"]:
+        raise RuntimeError(
+            "QMAP timing AttemptSpec environment lock differs from freeze")
     return AttemptSpec(
         dataset=dataset.name,
         circuit=circuit,
@@ -470,6 +587,8 @@ def _attempt_spec(plan: ExperimentPlan, dataset: DatasetSpec,
         expected_gates_1q=canonical.gates_1q,
         expected_gates_2q=canonical.gates_2q,
         expected_gate_ledger_sha256=expected_ledger_sha256,
+        layer_ledger_sha256=str(layer_ledger["layer_ledger_sha256"]),
+        transition_count=int(layer_ledger["transitions"]),
         require_clean_git=True,
         timeout_seconds=(plan.large_timeout_seconds if is_large
                          else plan.timeout_seconds),
@@ -529,6 +648,80 @@ def _spec_key(spec: AttemptSpec) -> tuple[Any, ...]:
     )
 
 
+def _manifest_path(manifest: RunManifest) -> Path:
+    """Return and verify the one canonical path owned by ``manifest``."""
+    path = (Path(manifest.artifact_dir) / "manifest.json").resolve()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"run manifest disappeared from its artifact directory: {path}")
+    loaded = load_run_manifest(path)
+    if loaded.run_id != manifest.run_id or loaded.to_dict() != manifest.to_dict():
+        raise ValueError(f"returned run manifest differs from disk: {path}")
+    return path
+
+
+def _cohort_manifest_row(manifest: RunManifest, path: Path, *,
+                         schedule_order: int | None = None,
+                         schedule_sha256: str | None = None
+                         ) -> Mapping[str, Any]:
+    """Build the exact, hash-bound registry row consumed by final sealing."""
+    resolved = path.resolve()
+    expected = (Path(manifest.artifact_dir) / "manifest.json").resolve()
+    if resolved != expected:
+        raise ValueError(
+            f"manifest path is outside its declared artifact directory: {resolved}")
+    row: dict[str, Any] = {
+        "path": str(resolved),
+        "sha256": sha256_file(resolved),
+        "run_id": manifest.run_id,
+        "status": manifest.status,
+        "identity": [
+            manifest.dataset, manifest.circuit, manifest.method,
+            manifest.seed, manifest.repetition,
+        ],
+    }
+    if schedule_order is not None:
+        row["schedule_order"] = int(schedule_order)
+    if schedule_sha256 is not None:
+        row["schedule_sha256"] = str(schedule_sha256)
+    return row
+
+
+def _sorted_complete_cohort(
+        registry: Mapping[tuple[Any, ...], tuple[RunManifest, Path]],
+        expected_keys: Sequence[tuple[Any, ...]], *,
+        timing_orders: Mapping[tuple[Any, ...], int] | None = None,
+        schedule_sha256: str | None = None) -> list[Mapping[str, Any]]:
+    """Close a completed formal cohort, rejecting gaps and ambiguity."""
+    if len(expected_keys) != len(set(expected_keys)):
+        raise ValueError("formal run plan contains duplicate attempt identities")
+    expected = set(expected_keys)
+    actual = set(registry)
+    if actual != expected or len(registry) != len(expected_keys):
+        raise RuntimeError(
+            "formal cohort is incomplete or contains unexpected attempts: "
+            f"expected={len(expected)}, actual={len(actual)}, "
+            f"missing={len(expected - actual)}, extra={len(actual - expected)}")
+    paths = [path.resolve() for _, path in registry.values()]
+    if len(paths) != len(set(paths)):
+        raise ValueError("formal cohort reuses one manifest path for multiple jobs")
+    rows: list[Mapping[str, Any]] = []
+    ordered = sorted(
+        registry.items(),
+        key=lambda item: (
+            item[1][0].dataset, item[1][0].circuit,
+            item[1][0].method, item[1][0].seed,
+            item[1][0].repetition),
+    )
+    for key, (manifest, path) in ordered:
+        rows.append(_cohort_manifest_row(
+            manifest, path,
+            schedule_order=(None if timing_orders is None
+                            else timing_orders[key]),
+            schedule_sha256=schedule_sha256))
+    return rows
+
+
 def _reproduction_report(plan: ExperimentPlan) -> Path:
     value = plan.reproduction.get("output", _report_path(plan, "baseline_reproduction"))
     return _relative_plan_path(plan, value)
@@ -575,6 +768,36 @@ def _assert_reproduction_gate(plan: ExperimentPlan) -> None:
         raise RuntimeError(f"baseline reproduction gate did not pass: {path}")
 
 
+def _assert_formal_selection_gates(plan: ExperimentPlan) -> Mapping[str, Any]:
+    """Require the audited initializer and tuning selections before a run.
+
+    Imports are deliberately local: ``tuning_runner`` uses this module's
+    attempt construction helpers, so importing it at module initialization
+    would create a cycle.
+    """
+    from .initial_placement_runner import validate_initial_selection_for_plan
+    from .tuning_runner import validate_tuning_selection_for_plan
+
+    initial_path = (
+        plan.output_root / "initial-placement" / "selected_engine.json")
+    tuning_path = plan.output_root / "tuning" / "selected_config_manifest.json"
+    initial = validate_initial_selection_for_plan(
+        plan, initial_path, enforce_pre_tuning_core=False)
+    tuning = validate_tuning_selection_for_plan(plan, tuning_path)
+    if (tuning.get("initial_selection_record_sha256") !=
+            initial.get("record_sha256")):
+        raise ValueError(
+            "tuning selection was produced from a different initial-placement gate")
+    return {
+        "initial_selection": str(initial_path),
+        "initial_selection_record_sha256": initial["record_sha256"],
+        "initial_placement_engine": initial["selected_engine"],
+        "tuning_selection": str(tuning_path),
+        "tuning_selection_manifest_sha256": tuning["manifest_sha256"],
+        "shared_candidate_id": tuning["shared_candidate_id"],
+    }
+
+
 def _run_matrix(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
                 jobs: Sequence[tuple[str, int, int]], *, phase: str,
                 resume: bool, dry_run: bool) -> Mapping[str, Any]:
@@ -589,7 +812,7 @@ def _run_matrix(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
     if not dry_run:
         _assert_reproduction_gate(plan)
 
-    existing: set[tuple[Any, ...]] = set()
+    existing: dict[tuple[Any, ...], tuple[RunManifest, Path]] = {}
     ignored_stale_existing: list[str] = []
     current_repository = (
         repository_snapshot(plan.repo_root)
@@ -604,16 +827,28 @@ def _run_matrix(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
                             manifest, current_repository)):
                     ignored_stale_existing.append(str(path))
                     continue
-                existing.add(_resume_key(manifest))
+                if manifest.run_kind != phase or manifest.ablation_variant:
+                    raise ValueError(
+                        f"current manifest is in the wrong formal run tree: {path}")
+                key = _resume_key(manifest)
+                if key in existing:
+                    raise ValueError(
+                        "multiple current manifests match one resume identity: "
+                        f"{existing[key][1]} and {path}")
+                existing[key] = (manifest, path.resolve())
 
     attempted: list[Mapping[str, Any]] = []
     skipped: list[Mapping[str, Any]] = []
     commands: list[Mapping[str, Any]] = []
+    registry: dict[tuple[Any, ...], tuple[RunManifest, Path]] = {}
+    expected_keys: list[tuple[Any, ...]] = []
     for dataset in datasets:
         for canonical in plan.load_suite(dataset):
             for method, seed, repetition in jobs:
                 spec = _attempt_spec(
                     plan, dataset, canonical, method, seed, repetition, phase)
+                spec_key = _spec_key(spec)
+                expected_keys.append(spec_key)
                 command_row = {
                     "dataset": dataset.name,
                     "circuit": spec.circuit,
@@ -623,14 +858,26 @@ def _run_matrix(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
                     "command": list(spec.command),
                     "config": str(spec.config_path),
                 }
-                if resume and _spec_key(spec) in existing:
-                    skipped.append(command_row)
+                if resume and spec_key in existing:
+                    manifest, manifest_path = existing[spec_key]
+                    registry[spec_key] = (manifest, manifest_path)
+                    skipped.append({
+                        **command_row,
+                        "status": manifest.status,
+                        "manifest": str(manifest_path),
+                        "manifest_sha256": sha256_file(manifest_path),
+                    })
                     continue
                 if dry_run:
                     commands.append(command_row)
                     continue
                 gate = UnifiedEvaluationGate(plan, canonical, method)
                 manifest = run_attempt(spec, verifier=gate.verifier, scorer=gate.scorer)
+                manifest_path = _manifest_path(manifest)
+                if _resume_key(manifest) != spec_key:
+                    raise ValueError(
+                        f"completed attempt identity differs from plan: {manifest_path}")
+                registry[spec_key] = (manifest, manifest_path)
                 attempted.append({
                     "dataset": manifest.dataset,
                     "circuit": manifest.circuit,
@@ -638,15 +885,22 @@ def _run_matrix(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
                     "seed": manifest.seed,
                     "repetition": manifest.repetition,
                     "status": manifest.status,
-                    "manifest": str(Path(manifest.artifact_dir) / "manifest.json"),
+                    "manifest": str(manifest_path),
+                    "manifest_sha256": sha256_file(manifest_path),
                 })
     statuses = Counter(row["status"] for row in attempted)
+    cohort = ([] if dry_run else
+              _sorted_complete_cohort(registry, expected_keys))
+    cohort_statuses = Counter(row["status"] for row in cohort)
     return {
         "experiment_schema": 2,
         "phase": phase,
         "dry_run": dry_run,
+        "planned_jobs": len(expected_keys),
         "attempted": attempted,
         "status_counts": dict(sorted(statuses.items())),
+        "cohort_status_counts": dict(sorted(cohort_statuses.items())),
+        "cohort_manifests": cohort,
         "skipped_existing": skipped,
         "ignored_stale_existing": ignored_stale_existing,
         "commands": commands,
@@ -845,10 +1099,12 @@ def command_canonicalize(plan: ExperimentPlan,
 def command_run_coverage(plan: ExperimentPlan, dataset_names: Sequence[str] | None,
                          *, dry_run: bool, resume: bool = False
                          ) -> Mapping[str, Any]:
+    selection = None if dry_run else _assert_formal_selection_gates(plan)
     datasets = plan.select_datasets(dataset_names, kind="main")
     jobs = [(method, 0, 0) for method in METHODS]
     report = _run_matrix(
         plan, datasets, jobs, phase="coverage", resume=resume, dry_run=dry_run)
+    report = {**report, "formal_selection": selection}
     if not dry_run:
         _atomic_json(_report_path(plan, "run-coverage"), report)
     return report
@@ -859,11 +1115,13 @@ def command_run_main(plan: ExperimentPlan, dataset_names: Sequence[str] | None,
                      resume: bool = False) -> Mapping[str, Any]:
     if list(sorted(set(seeds))) != [0, 1, 2, 3, 4]:
         raise ValueError("formal run-main requires paired seeds exactly 0,1,2,3,4")
+    selection = None if dry_run else _assert_formal_selection_gates(plan)
     datasets = plan.select_datasets(dataset_names, kind="main")
     jobs = [("M1", 0, 0), ("M2", 0, 0)]
     jobs.extend((method, seed, 0) for seed in seeds for method in ("M3", "M4"))
     report = _run_matrix(
         plan, datasets, jobs, phase="main", resume=resume, dry_run=dry_run)
+    report = {**report, "formal_selection": selection}
     if not dry_run:
         _atomic_json(_report_path(plan, "run-main"), report)
     return report
@@ -883,7 +1141,13 @@ def _run_timing_warmups(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
         )
         for method in METHODS:
             spec = _attempt_spec(
-                plan, dataset, canonical, method, 0, 0, "smoke")
+                plan, dataset, canonical, method, 0, 0, "timing")
+            spec = replace(
+                spec,
+                output_root=(plan.output_root / "runs" / "timing-warmup" /
+                             dataset.name),
+                run_kind="smoke",
+            )
             row = {
                 "dataset": dataset.name,
                 "circuit": Path(canonical.canonical_path).stem,
@@ -900,24 +1164,242 @@ def _run_timing_warmups(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
     return {"excluded_from_statistics": True, "attempts": rows}
 
 
+def _timing_schedule_path(plan: ExperimentPlan) -> Path:
+    return plan.output_root / "timing" / "randomized_schedule.json"
+
+
+def _timing_circuit_catalog(
+        plan: ExperimentPlan, datasets: Sequence[DatasetSpec]
+        ) -> dict[str, tuple[DatasetSpec, CanonicalCircuitManifest]]:
+    catalog: dict[str, tuple[DatasetSpec, CanonicalCircuitManifest]] = {}
+    for dataset in datasets:
+        for canonical in plan.load_suite(dataset):
+            circuit, _ = _canonical_identity(canonical)
+            key = f"{dataset.name}/{circuit}"
+            if key in catalog:
+                raise ValueError(f"duplicate timing circuit identity: {key}")
+            catalog[key] = (dataset, canonical)
+    if not catalog:
+        raise ValueError("timing schedule requires at least one circuit")
+    return catalog
+
+
+def _load_or_create_timing_schedule(
+        plan: ExperimentPlan, circuit_keys: Sequence[str], *, persist: bool
+        ) -> tuple[Mapping[str, Any], Path, bool]:
+    """Load the one immutable schedule, or exclusively create it once."""
+    path = _timing_schedule_path(plan)
+    expected = build_balanced_schedule(
+        circuit_keys, repetitions=5, seed=plan.bootstrap_seed,
+        methods=METHODS)
+    if path.is_file():
+        observed = json.loads(path.read_text(encoding="utf-8"))
+        validate_balanced_schedule(
+            observed, circuit_keys, repetitions=5, seed=plan.bootstrap_seed,
+            methods=METHODS)
+        return observed, path, False
+    if path.exists():
+        raise ValueError(f"timing schedule path is not a file: {path}")
+    if not persist:
+        return expected, path, False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(expected, indent=2, sort_keys=True) + "\n"
+    try:
+        with path.open("x", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError:
+        observed = json.loads(path.read_text(encoding="utf-8"))
+        validate_balanced_schedule(
+            observed, circuit_keys, repetitions=5, seed=plan.bootstrap_seed,
+            methods=METHODS)
+        return observed, path, False
+    return expected, path, True
+
+
+def _run_timing_schedule(
+        plan: ExperimentPlan,
+        datasets: Sequence[DatasetSpec],
+        catalog: Mapping[str, tuple[DatasetSpec, CanonicalCircuitManifest]],
+        schedule: Mapping[str, Any], *, resume: bool, dry_run: bool
+        ) -> Mapping[str, Any]:
+    """Consume the frozen schedule in order, skipping only sealed attempts."""
+    plan.validate_resolved_pair(0)
+    if not dry_run:
+        _assert_reproduction_gate(plan)
+
+    schedule_sha256 = str(schedule["sha256"])
+    expected_orders = {
+        (str(row["circuit"]), str(row["method"]), int(row["repetition"])):
+            int(row["order"])
+        for row in schedule["jobs"]
+    }
+    existing: dict[tuple[Any, ...], tuple[RunManifest, Path]] = {}
+    ignored_stale_existing: list[str] = []
+    ignored_schedule_mismatch_existing: list[str] = []
+    current_repository = (
+        repository_snapshot(plan.repo_root)
+        if resume and not dry_run else None)
+    if resume:
+        for dataset in datasets:
+            root = plan.output_root / "runs" / "timing" / dataset.name
+            for path in _manifest_paths(root):
+                manifest = load_run_manifest(path)
+                if (current_repository is not None and
+                        not _resume_manifest_is_current(
+                            manifest, current_repository)):
+                    ignored_stale_existing.append(str(path))
+                    continue
+                if manifest.run_kind != "timing" or manifest.ablation_variant:
+                    raise ValueError(
+                        f"current manifest is in the wrong timing run tree: {path}")
+                circuit_key = f"{manifest.dataset}/{manifest.circuit}"
+                expected_order = expected_orders.get((
+                    circuit_key, manifest.method, manifest.repetition))
+                recorded_sha = manifest.package_versions.get(
+                    "timing_schedule_sha256")
+                recorded_order = manifest.package_versions.get(
+                    "timing_schedule_order")
+                if (recorded_sha != schedule_sha256
+                        or expected_order is None
+                        or recorded_order != str(expected_order)):
+                    ignored_schedule_mismatch_existing.append(str(path))
+                    continue
+                key = _resume_key(manifest)
+                if key in existing:
+                    raise ValueError(
+                        "multiple current timing manifests match one resume "
+                        f"identity: {existing[key][1]} and {path}")
+                existing[key] = (manifest, path.resolve())
+
+    attempted: list[Mapping[str, Any]] = []
+    skipped: list[Mapping[str, Any]] = []
+    commands: list[Mapping[str, Any]] = []
+    registry: dict[tuple[Any, ...], tuple[RunManifest, Path]] = {}
+    expected_keys: list[tuple[Any, ...]] = []
+    timing_orders: dict[tuple[Any, ...], int] = {}
+    for row in schedule["jobs"]:
+        order = int(row["order"])
+        circuit_key = str(row["circuit"])
+        method = str(row["method"])
+        repetition = int(row["repetition"])
+        if circuit_key not in catalog:
+            raise ValueError(
+                f"timing schedule references an unknown circuit: {circuit_key}")
+        dataset, canonical = catalog[circuit_key]
+        spec = _attempt_spec(
+            plan, dataset, canonical, method, 0, repetition, "timing")
+        spec = replace(spec, package_versions={
+            **spec.package_versions,
+            "timing_schedule_protocol": str(schedule["protocol_id"]),
+            "timing_schedule_sha256": schedule_sha256,
+            "timing_schedule_order": str(order),
+        })
+        spec_key = _spec_key(spec)
+        expected_keys.append(spec_key)
+        if spec_key in timing_orders:
+            raise ValueError(f"timing schedule repeats one attempt identity: {row}")
+        timing_orders[spec_key] = order
+        command_row = {
+            "schedule_order": order,
+            "schedule_sha256": schedule_sha256,
+            "dataset": dataset.name,
+            "circuit": spec.circuit,
+            "method": method,
+            "seed": 0,
+            "repetition": repetition,
+            "command": list(spec.command),
+            "config": str(spec.config_path),
+        }
+        if resume and spec_key in existing:
+            manifest, manifest_path = existing[spec_key]
+            registry[spec_key] = (manifest, manifest_path)
+            skipped.append({
+                **command_row,
+                "status": manifest.status,
+                "manifest": str(manifest_path),
+                "manifest_sha256": sha256_file(manifest_path),
+            })
+            continue
+        if dry_run:
+            commands.append(command_row)
+            continue
+        gate = UnifiedEvaluationGate(plan, canonical, method)
+        manifest = run_attempt(
+            spec, verifier=gate.verifier, scorer=gate.scorer)
+        manifest_path = _manifest_path(manifest)
+        if _resume_key(manifest) != spec_key:
+            raise ValueError(
+                f"completed timing identity differs from schedule: {manifest_path}")
+        registry[spec_key] = (manifest, manifest_path)
+        attempted.append({
+            "schedule_order": order,
+            "schedule_sha256": schedule_sha256,
+            "dataset": manifest.dataset,
+            "circuit": manifest.circuit,
+            "method": manifest.method,
+            "seed": manifest.seed,
+            "repetition": manifest.repetition,
+            "status": manifest.status,
+            "manifest": str(manifest_path),
+            "manifest_sha256": sha256_file(manifest_path),
+        })
+    statuses = Counter(row["status"] for row in attempted)
+    cohort = ([] if dry_run else _sorted_complete_cohort(
+        registry, expected_keys, timing_orders=timing_orders,
+        schedule_sha256=schedule_sha256))
+    cohort_statuses = Counter(row["status"] for row in cohort)
+    return {
+        "experiment_schema": 2,
+        "phase": "timing",
+        "dry_run": dry_run,
+        "schedule_sha256": schedule_sha256,
+        "scheduled_jobs": len(schedule["jobs"]),
+        "planned_jobs": len(expected_keys),
+        "attempted": attempted,
+        "status_counts": dict(sorted(statuses.items())),
+        "cohort_status_counts": dict(sorted(cohort_statuses.items())),
+        "cohort_manifests": cohort,
+        "skipped_existing": skipped,
+        "ignored_stale_existing": ignored_stale_existing,
+        "ignored_schedule_mismatch_existing":
+            ignored_schedule_mismatch_existing,
+        "commands": commands,
+    }
+
+
 def command_run_timing(plan: ExperimentPlan,
                        dataset_names: Sequence[str] | None,
                        *, dry_run: bool, resume: bool = False
                        ) -> Mapping[str, Any]:
+    selection = None if dry_run else _assert_formal_selection_gates(plan)
     datasets = plan.select_datasets(dataset_names, kind="main")
+    catalog = _timing_circuit_catalog(plan, datasets)
+    schedule, schedule_path, schedule_created = \
+        _load_or_create_timing_schedule(
+            plan, sorted(catalog), persist=not dry_run)
     warmups = _run_timing_warmups(plan, datasets, dry_run=dry_run)
-    jobs = [(method, 0, repetition)
-            for method in METHODS for repetition in range(5)]
-    random.Random(plan.bootstrap_seed).shuffle(jobs)
-    timed = _run_matrix(
-        plan, datasets, jobs, phase="timing", resume=resume, dry_run=dry_run)
+    timed = _run_timing_schedule(
+        plan, datasets, catalog, schedule, resume=resume, dry_run=dry_run)
     report = {
         "experiment_schema": 2,
         "phase": "timing",
+        "dry_run": dry_run,
         "schedule_seed": plan.bootstrap_seed,
+        "schedule_path": str(schedule_path),
+        "schedule_sha256": schedule["sha256"],
+        "schedule_created": schedule_created,
+        "schedule_jobs": len(schedule["jobs"]),
+        "schedule_circuits": len(catalog),
         "serial_execution": True,
+        "formal_selection": selection,
         "warmups": warmups,
         "timed": timed,
+        # Duplicate the final timed cohort at the report root so the sealing
+        # command has one uniform, explicit registry contract for main/timing.
+        "planned_jobs": timed["planned_jobs"],
+        "cohort_manifests": timed["cohort_manifests"],
     }
     if not dry_run:
         _atomic_json(_report_path(plan, "run-timing"), report)

@@ -7,7 +7,14 @@
    "experiment_schema": 2,
    "method_id": "ours_nl",
    "objective": "physical_log_fidelity",
-   "lookahead_horizon": 0,
+   "lookahead_horizon": {
+    "mode": "decay",
+    "policy": "physical_terminal_decay_v1",
+    "decay": "geometric",
+    "rho": 0.6,
+    "epsilon": 0.05,
+    "max_horizon": 0
+   },
    "arch_spec": "hardware_spec/full_architecture.json",
    "dependency": true,
    "routing_strategy": "coloring",

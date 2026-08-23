@@ -20,7 +20,13 @@ from experiments_v2.ablation import (  # noqa: E402
 from experiments_v2.ablation_statistics import aggregate_ablation  # noqa: E402
 from experiments_v2.contracts import (  # noqa: E402
     CanonicalCircuitManifest, RunManifest, stable_sha256)
+from experiments_v2.protocol import (  # noqa: E402
+    ghost_policy_for_method,
+    physicalization_policy_for_method,
+    trace_protocol_for_method,
+)
 from zac.ds.architecture import Architecture  # noqa: E402
+from zzx.algorithm_v2 import FORMAL_LK_LOOKAHEAD_V1  # noqa: E402
 from zzx.zcost import compatible_2d, greedy_phase_batches  # noqa: E402
 from zzx.zplacer import ResidentPlacer  # noqa: E402
 
@@ -52,15 +58,23 @@ def _manifest(name: str, gates_2q: int, digest_number: int
     )
 
 
+def _protocol_fields(method: str) -> dict[str, str]:
+    return {
+        "trace_protocol": trace_protocol_for_method(method),
+        "ghost_policy": ghost_policy_for_method(method),
+        "physicalization_policy": physicalization_policy_for_method(method),
+    }
+
+
 class TestAblationConfig(unittest.TestCase):
     def test_registered_variants_cover_each_requested_mechanism(self):
         self.assertEqual(set(ABLATION_VARIANTS), {
-            "h0", "h2_phase_coloring", "always_stay", "always_return",
+            "h0", "decay_phase_coloring", "always_stay", "always_return",
             "adjacent_only", "lumped_greedy",
         })
         self.assertEqual(ABLATION_VARIANTS["h0"].base_method, "M3")
         self.assertEqual(
-            ABLATION_VARIANTS["h2_phase_coloring"].routing_batcher,
+            ABLATION_VARIANTS["decay_phase_coloring"].routing_batcher,
             "coloring")
         self.assertEqual(
             ABLATION_VARIANTS["lumped_greedy"].fitness_phase_mode,
@@ -74,6 +88,10 @@ class TestAblationConfig(unittest.TestCase):
             wrapper, expected_variant="always_stay", expected_method="M4")
         self.assertEqual(json.dumps(base, sort_keys=True), before)
         self.assertEqual(extracted, base)
+        self.assertEqual(
+            extracted["zac_setting"][0]["lookahead_horizon"],
+            FORMAL_LK_LOOKAHEAD_V1,
+        )
         self.assertEqual(variant.decision_policy, "always_stay")
         self.assertNotIn("ablation_variant", base["zac_setting"][0])
 
@@ -86,7 +104,8 @@ class TestAblationConfig(unittest.TestCase):
     def test_manifest_variant_is_required_and_track_isolated(self):
         identity = dict(
             run_id="r", dataset="zac18", circuit="c", method="M4",
-            run_kind="ablation", experiment_id="frozen")
+            run_kind="ablation", experiment_id="frozen",
+            **_protocol_fields("M4"))
         with self.assertRaisesRegex(ValueError, "missing ablation_variant"):
             RunManifest(**identity).validate()
         RunManifest(
@@ -187,7 +206,7 @@ def _success_run(circuit: str, variant: str, seed: int, *,
                  run_id: str | None = None, ood: bool = False) -> RunManifest:
     method = ABLATION_VARIANTS[variant].base_method
     log_fidelity = -1.0 - (0.1 if circuit == "c1" else 0.0) \
-        - (0.2 if variant == "h2_phase_coloring" else 0.0) - seed * 0.01
+        - (0.2 if variant == "decay_phase_coloring" else 0.0) - seed * 0.01
     components = {
         "log_one_qubit_gate": log_fidelity if not ood else -0.1,
         "log_two_qubit_gate": 0.0,
@@ -220,13 +239,14 @@ def _success_run(circuit: str, variant: str, seed: int, *,
         expected_gate_ledger_sha256="d" * 64,
         observed_gate_ledger_sha256="d" * 64,
         move_batches=4 + seed, move_time_us=50.0 + seed,
-        ghost_hits=0, verifier_ok=True,
+        ghost_repairs=0, ghost_splits=0, ghost_hits=0,
+        **_protocol_fields(method), verifier_ok=True,
         artifact_dir=f"/artifacts/{circuit}/{variant}/{seed}",
     )
 
 
 class TestAblationStatistics(unittest.TestCase):
-    VARIANTS = ("h0", "h2_phase_coloring")
+    VARIANTS = ("h0", "decay_phase_coloring")
 
     def _write_matrix(self, base: Path, *, ood_key=None):
         paths = []
@@ -261,7 +281,7 @@ class TestAblationStatistics(unittest.TestCase):
         self.assertEqual(c0["seed_median"]["compiler_time_seconds"], 12.0)
         self.assertEqual(report["fully_paired_success"]["valid"], 2)
         comparison = report["comparisons"]["metrics"]["fidelity"][
-            "h0_vs_h2_phase_coloring"]
+            "h0_vs_decay_phase_coloring"]
         self.assertEqual(comparison["n"], 2)
         self.assertAlmostEqual(comparison["ratio"], math.exp(0.2))
         self.assertEqual(comparison["implementation"],
@@ -282,17 +302,18 @@ class TestAblationStatistics(unittest.TestCase):
             paths.append(duplicate_path)
             # Replace h2/c1 seed3 by a terminal failure.
             paths = [path for path in paths
-                     if path.name != "c1-h2_phase_coloring-3.json"]
+                     if path.name != "c1-decay_phase_coloring-3.json"]
             failure = RunManifest(
                 run_id="failed", dataset="zac18", circuit="c1", method="M4",
                 seed=3, repetition=0, run_kind="ablation",
-                ablation_variant="h2_phase_coloring",
+                ablation_variant="decay_phase_coloring",
                 experiment_id="frozen-ablation", status="timeout",
                 git_commit="a" * 40, git_dirty=False,
                 machine={"hostname": "test-machine", "logical_cpus": 8},
                 input_sha256=stable_sha256("c1"),
-                config_sha256=stable_sha256(["h2_phase_coloring", 3]),
-                architecture_sha256="b" * 64, model_sha256="c" * 64)
+                config_sha256=stable_sha256(["decay_phase_coloring", 3]),
+                architecture_sha256="b" * 64, model_sha256="c" * 64,
+                **_protocol_fields("M4"))
             failure_path = base / "failure.json"
             failure.write(failure_path)
             paths.append(failure_path)
@@ -304,7 +325,7 @@ class TestAblationStatistics(unittest.TestCase):
         self.assertFalse(h0_c0["success_valid"])
         self.assertTrue(any("missing" in reason for reason in h0_c0["invalid_reasons"]))
         self.assertTrue(any("duplicate" in reason for reason in h0_c0["invalid_reasons"]))
-        h2_c1 = report["variants"]["h2_phase_coloring"]["circuits"][1]
+        h2_c1 = report["variants"]["decay_phase_coloring"]["circuits"][1]
         self.assertFalse(h2_c1["success_valid"])
         self.assertIn("seed_3:status=timeout", h2_c1["invalid_reasons"])
         self.assertEqual(report["fully_paired_success"]["valid"], 0)

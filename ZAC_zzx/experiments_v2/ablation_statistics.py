@@ -378,7 +378,7 @@ def aggregate_ablation(
                for variant in variants)
     ]
     reference_variant = (
-        "h2_phase_coloring" if "h2_phase_coloring" in variants else None)
+        "decay_phase_coloring" if "decay_phase_coloring" in variants else None)
     comparisons: dict[str, dict[str, Any]] = {
         metric: {} for metric in (
             "fidelity", "move_batches", "move_time_us",

@@ -1,0 +1,71 @@
+{
+  "animation": false,
+  "qasm_list": [
+    "benchmark/hpca/"
+  ],
+  "simulation": false,
+  "tuning": {
+            "algorithm_revision": "native-ga-v1",
+    "candidate_id": "6cedde94ff4603ff",
+    "protocol_id": "resident-ga-native-v1",
+    "selection_status": "provisional_default_pending_validation",
+    "track": "shared"
+  },
+  "zac_setting": [
+    {
+      "algorithm_revision": "native-ga-v1",
+      "alpha_lookahead": 0.1,
+      "arch_spec": "hardware_spec/full_architecture.json",
+      "backend": "native",
+      "box_ratio": 3,
+      "dependency": true,
+      "dir": "results/native_ga_v1/shared/ours_nl/",
+      "dynamic_placement": true,
+      "early_stop_patience": 0,
+      "elite_count": 1,
+      "engine": "ga",
+      "experiment_schema": 2,
+      "final_return_home": false,
+      "fitness_cache": true,
+            "fitness_mode": "phase",
+            "formal_native": true,
+      "init_engine": "sa",
+      "init_gens": 150,
+      "init_pop": 40,
+      "iterations": 8,
+      "lookahead_horizon": {
+        "mode": "decay",
+        "policy": "physical_terminal_decay_v1",
+        "decay": "geometric",
+        "rho": 0.6,
+        "epsilon": 0.05,
+        "max_horizon": 0
+      },
+            "method_id": "ours_nl",
+            "native_abi_version": 3,
+            "native_fail_closed": true,
+            "native_wheel_sha256": "0616479e5bcf116d553dfafba3ca1cbef5ec3a4016d684f61407267710a282cc",
+      "neighbor_sample_size": 24,
+      "neighbors_per_solution": 2,
+      "objective": "physical_log_fidelity",
+      "operator_profile": "tuned",
+      "pin_radius": 2,
+      "placer": "resident",
+      "population_size": 6,
+      "resyn": false,
+      "reuse": true,
+            "routing_strategy": "coloring",
+            "rng_version": "python-random-mt19937-v1",
+      "scheduling": "asap",
+      "seed": 0,
+      "theta_capacity": 0.9,
+      "trivial_placement": false,
+      "tuning_protocol_id": "resident-ga-native-v1",
+      "use_verifier": false,
+      "use_window": true,
+      "w_pin": 0.0,
+      "w_resident": 0.3,
+      "window_size": 1000
+    }
+  ]
+}

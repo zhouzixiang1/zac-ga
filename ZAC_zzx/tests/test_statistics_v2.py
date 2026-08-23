@@ -42,6 +42,7 @@ class ManifestFactory:
             experiment_id: str | None = None) -> Path:
         self.counter += 1
         success = status == RunStatus.SUCCESS.value
+        timed_success = success and run_kind == "timing"
         run = RunManifest(
             run_id=f"run-{self.counter:05d}", dataset=self.dataset,
             circuit=circuit, method=method, seed=seed, repetition=repetition,
@@ -52,6 +53,24 @@ class ManifestFactory:
             config_sha256=self._digest(f"config-{run_kind}-{method}-seed{seed}"),
             architecture_sha256="a" * 64, model_sha256="b" * 64,
             compiler_time_ns=int(compiler_seconds * 1e9) if success else None,
+            transition_decision_ns=(
+                int(compiler_seconds * 1e9) if timed_success else None),
+            initial_placement_ns=(10 if timed_success else None),
+            routing_ns=(20 if timed_success else None),
+            full_compile_ns=(
+                int(compiler_seconds * 1e9) if timed_success else None),
+            layer_ledger_sha256=(
+                self._digest(f"layer-{circuit}") if timed_success else ""),
+            transition_count=3 if timed_success else None,
+            canonical_input_layer_ledger_sha256=(
+                self._digest(f"layer-{circuit}") if timed_success else ""),
+            canonical_input_transition_count=3 if timed_success else None,
+            observed_transition_layer_ledger_sha256=(
+                self._digest(f"layer-{circuit}") if timed_success else ""),
+            observed_transition_count=3 if timed_success else None,
+            observed_transition_layer_ledger_source=(
+                ("normalized_qmap_placement_trace" if method == "M2"
+                 else "compiler.gate_scheduling") if timed_success else ""),
             log_fidelity=log_fidelity if success else None,
             fidelity=math.exp(log_fidelity) if success else None,
             fidelity_components={

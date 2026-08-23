@@ -1,0 +1,51 @@
+{
+  "protocol": "qmap-3.2-timing-instrumentation-v1",
+  "purpose": "Timing-only split of initial placement and per-layer A* placement; no search or trace semantics changed.",
+  "base": {
+    "repository": "https://github.com/cda-tum/mqt-qmap.git",
+    "tag": "v3.2.0",
+    "commit": "745d56b260c06708e1211772f0ed174b7a6c3437",
+    "official_python_package": "mqt.qmap==3.2.0",
+    "mqt_core": "3.1.0"
+  },
+  "instrumentation": {
+    "patch": "timing_instrumentation.patch",
+    "patch_sha256": "459298a31560a2af0367bee522047da48ae33296071f951b4b55b3add86f02c0",
+    "added_fields": [
+      "initialPlacementTime",
+      "layerPlacementTime"
+    ],
+    "primary_transition_time_us": "reuseAnalysisTime + layerPlacementTime",
+    "excluded_from_primary": [
+      "initialPlacementTime",
+      "schedulingTime",
+      "routingTime",
+      "codeGenerationTime"
+    ]
+  },
+  "build": {
+    "python": "3.13.3",
+    "pybind11": "3.0.0",
+    "wheel": "mqt_qmap-3.2.1.dev0+g745d56b26.d20260823-cp313-cp313-macosx_26_0_arm64.whl",
+    "wheel_path": "../../../../artifacts/native-ga-v1/build/qmap-timing-wheel-pybind300/mqt_qmap-3.2.1.dev0+g745d56b26.d20260823-cp313-cp313-macosx_26_0_arm64.whl",
+    "wheel_sha256": "bc7ff59115e66ad4993bab58a3abe1413173e1c3ca2ccffa2435859be0c53937",
+    "environment_lock": "../../../../artifacts/native-ga-v1/build/qmap-timing-environment.lock.txt",
+    "environment_lock_sha256": "95a5e35ab90a50c9212cd19762c3cc8a3142b58137f0911e7ae1cf44077d2cb9",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O"
+  },
+  "parity": {
+    "report": "../../../../artifacts/native-ga-v1/parity/qmap_timing_parity.json",
+    "report_sha256": "ab119d99a14fa5e56314aa8fbe37c40abbad872bd88068e5a2a3cd877c889bb2",
+    "all_native_trace_hashes_equal": true,
+    "all_timing_fields_present": true,
+    "circuits": [
+      "ground_state_estimation_10",
+      "ex1_226",
+      "hwb5_53",
+      "clip_206",
+      "qft_n18_transpiled",
+      "ising_n42"
+    ]
+  },
+  "status": "frozen"
+}
