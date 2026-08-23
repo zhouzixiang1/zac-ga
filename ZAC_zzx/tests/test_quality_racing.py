@@ -28,6 +28,7 @@ from experiments_v2.quality_racing import (
 from experiments_v2.plan import _validate_pair_payloads
 from experiments_v2.plan import load_experiment_plan
 from experiments_v2.quality_racing_runner import (
+    _valid_original_baselines,
     prepare_workspace, run_baselines, run_profiles,
     validate_quality_selection_for_plan,
 )
@@ -62,6 +63,19 @@ def trial(candidate: str, method: str, circuit: str, seed: int, *,
 
 
 class QualityRacingTests(unittest.TestCase):
+    def test_strongest_baseline_ignores_but_preserves_invalid_original(self):
+        invalid = SimpleNamespace(
+            status="verifier_fail", verifier_ok=False,
+            log_fidelity=None,
+            exponential_sensitivity_log_fidelity=None)
+        valid = SimpleNamespace(
+            status="success", verifier_ok=True,
+            log_fidelity=-1.0,
+            exponential_sensitivity_log_fidelity=-0.9)
+        self.assertEqual(
+            (valid,), _valid_original_baselines((invalid, valid)))
+        self.assertEqual((), _valid_original_baselines((invalid, invalid)))
+
     def test_protocol_and_fixed_split_are_disjoint(self):
         self.assertEqual(FORMAL_NATIVE_TUNING_PROTOCOL_ID, PROTOCOL_ID)
         manifest = split_manifest()

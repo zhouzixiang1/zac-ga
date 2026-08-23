@@ -303,6 +303,15 @@ def _receipt_manifest(payload: Mapping[str, Any]) -> RunManifest:
     return load_run_manifest(Path(str(payload["attempt_manifest"])))
 
 
+def _valid_original_baselines(
+        baselines: Sequence[RunManifest]) -> tuple[RunManifest, ...]:
+    return tuple(
+        row for row in baselines
+        if (row.status == "success" and row.verifier_ok is True
+            and row.log_fidelity is not None
+            and row.exponential_sensitivity_log_fidelity is not None))
+
+
 def run_baselines(plan: ExperimentPlan, root: Path, *, resume: bool = True,
                   dry_run: bool = False) -> Mapping[str, Any]:
     _load_workspace(plan, root)
@@ -320,6 +329,14 @@ def run_baselines(plan: ExperimentPlan, root: Path, *, resume: bool = True,
 
 def _baseline_manifests(plan: ExperimentPlan, root: Path, circuit: str
                         ) -> tuple[RunManifest, RunManifest]:
+    """Load both original baselines while requiring one valid comparator.
+
+    An original compiler may itself emit an invalid physical trace (the ZAC
+    many-to-one AOD-column merge is a real example).  Such a result remains a
+    verifier failure and is never repaired or assigned a paper value.  Racing
+    uses the strongest *valid* original method for that circuit and rejects the
+    circuit only when neither baseline is valid.
+    """
     registry = _canonical_registry(plan)
     dataset, canonical = registry[circuit]
     dataset = dataset.name
@@ -336,12 +353,11 @@ def _baseline_manifests(plan: ExperimentPlan, root: Path, circuit: str
             "method": method, "candidate_id": "paper-original", "seed": 0,
         })
         manifest = _receipt_manifest(payload)
-        if (manifest.status != "success" or manifest.verifier_ok is not True or
-                manifest.log_fidelity is None or
-                manifest.exponential_sensitivity_log_fidelity is None):
-            raise RuntimeError(
-                f"invalid tuning baseline {method}/{dataset}/{circuit}")
         values.append(manifest)
+    valid = _valid_original_baselines(values)
+    if not valid:
+        raise RuntimeError(
+            f"no valid original tuning baseline for {dataset}/{circuit}")
     return values[0], values[1]
 
 
@@ -350,9 +366,12 @@ def _as_racing_trial(plan: ExperimentPlan, root: Path,
     identity = payload["identity"]
     manifest = _receipt_manifest(payload)
     baselines = _baseline_manifests(plan, root, str(identity["circuit_key"]))
-    baseline_linear = max(float(row.log_fidelity) for row in baselines)
+    valid_baselines = _valid_original_baselines(baselines)
+    baseline_linear = max(float(row.log_fidelity)
+                          for row in valid_baselines)
     baseline_exponential = max(
-        float(row.exponential_sensitivity_log_fidelity) for row in baselines)
+        float(row.exponential_sensitivity_log_fidelity)
+        for row in valid_baselines)
     return RacingTrial(
         candidate_id=str(identity["candidate_id"]),
         method=str(identity["method"]),
@@ -373,7 +392,8 @@ def _as_racing_trial(plan: ExperimentPlan, root: Path,
         fidelity_ood=bool(manifest.fidelity_ood),
         exponential_sensitivity_log_fidelity=(
             manifest.exponential_sensitivity_log_fidelity),
-        baseline_fidelity_ood=any(row.fidelity_ood for row in baselines),
+        baseline_fidelity_ood=any(
+            row.fidelity_ood for row in valid_baselines),
         baseline_exponential_sensitivity_log_fidelity=baseline_exponential,
     )
 
