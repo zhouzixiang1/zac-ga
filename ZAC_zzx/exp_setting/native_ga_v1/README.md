@@ -23,10 +23,12 @@ configs, selected initializer and native identity:
 
 ```text
 python -m experiments_v2.tuning_cli prepare ...
-python -m experiments_v2.tuning_cli run-phase ... --phase screen --resume
+# Run four processes with worker-index 0,1,2,3 respectively.
+python -m experiments_v2.tuning_cli run-phase ... --phase screen --resume --worker-count 4 --worker-index 0
 python -m experiments_v2.tuning_cli promote ... --phase screen
-python -m experiments_v2.tuning_cli run-phase ... --phase successive_halving --resume
+python -m experiments_v2.tuning_cli run-phase ... --phase successive_halving --resume --worker-count 4 --worker-index 0
 python -m experiments_v2.tuning_cli promote ... --phase successive_halving
+# Validation is deliberately serial and has no worker arguments.
 python -m experiments_v2.tuning_cli run-phase ... --phase validation --resume
 python -m experiments_v2.tuning_cli finalize ...
 ```
@@ -35,3 +37,11 @@ Resume reads only the deterministic sealed receipt for each scheduled trial. It
 does not scan old compiler directories. Failed trials are retried only with the
 explicit `--retry-failed` option, while every compiler launch remains preserved
 in a unique UUID-bearing attempt directory.
+
+Screen and successive-halving promotion is forbidden until all four static
+`ordinal % 4` shards have sealed the complete ledger.  A stale claim is never
+stolen automatically; after confirming its worker PID has exited, archive it
+explicitly with `tuning_cli recover-claim --root ... --phase ... --trial-id ...`.
+Transition times observed under parallel load are diagnostic/nonclaim and do
+not break promotion ties; only the serial validation and formal Runtime tracks
+may use implementation time for selection or paper conclusions.

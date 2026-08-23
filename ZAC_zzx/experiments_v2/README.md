@@ -37,10 +37,14 @@ python -m experiments_v2.initial_placement_cli apply --plan experiments_v2/exper
 
 # 2. 提交并推送 init_engine 选择，然后在该 clean commit 上完成 1026 次调参。
 python -m experiments_v2.tuning_cli prepare --plan experiments_v2/experiment_plan_v2.json --root ../../artifacts/native-ga-v1/tuning --dataset qmap154
-python -m experiments_v2.tuning_cli run-phase --plan experiments_v2/experiment_plan_v2.json --root ../../artifacts/native-ga-v1/tuning --dataset qmap154 --phase screen --resume
+# 在四个终端分别令 worker-index=0/1/2/3；四者使用同一冻结 schedule。
+python -m experiments_v2.tuning_cli run-phase --plan experiments_v2/experiment_plan_v2.json --root ../../artifacts/native-ga-v1/tuning --dataset qmap154 --phase screen --resume --worker-count 4 --worker-index 0
+# 只有四个分片全部结束且 status 显示 324/324 后才允许 promote。
 python -m experiments_v2.tuning_cli promote --root ../../artifacts/native-ga-v1/tuning --phase screen
-python -m experiments_v2.tuning_cli run-phase --plan experiments_v2/experiment_plan_v2.json --root ../../artifacts/native-ga-v1/tuning --dataset qmap154 --phase successive_halving --resume
+python -m experiments_v2.tuning_cli run-phase --plan experiments_v2/experiment_plan_v2.json --root ../../artifacts/native-ga-v1/tuning --dataset qmap154 --phase successive_halving --resume --worker-count 4 --worker-index 0
+# 同样分别运行 worker-index=1/2/3，并确认 432/432 后再 promote。
 python -m experiments_v2.tuning_cli promote --root ../../artifacts/native-ga-v1/tuning --phase successive_halving
+# validation 固定串行，不得传入并行 worker 参数。
 python -m experiments_v2.tuning_cli run-phase --plan experiments_v2/experiment_plan_v2.json --root ../../artifacts/native-ga-v1/tuning --dataset qmap154 --phase validation --resume
 python -m experiments_v2.tuning_cli finalize --plan experiments_v2/experiment_plan_v2.json --root ../../artifacts/native-ga-v1/tuning --config-output exp_setting/native_ga_v1
 
@@ -68,6 +72,12 @@ manifest 中的指数退相干敏感性 logF 比较；否则全部使用线性 l
 任一 ledger 不完整、promotion 重放不一致或共享配置未形成 clean commit，
 `run-main`、`run-timing` 和最终汇总都会 fail closed。最终汇总只接受显式、
 哈希封存的 `main`/`timing` manifest index，不扫描旧结果目录。
+
+Screen 和 successive-halving 的四个静态分片按 `ordinal % 4` 划分，claim
+阻止重复执行；崩溃遗留 claim 必须在确认原 worker 已退出后用
+`tuning_cli recover-claim --root ... --phase ... --trial-id ...` 显式归档，绝不
+自动抢占。并发阶段记录的 `transition_decision_ns` 只作 nonclaim 诊断，不参与
+晋级排序，也不能用于论文运行时间结论；正式 Runtime 和最终 validation 均串行。
 
 正式 attempt 只允许在 clean commit 上启动。每次运行使用唯一临时目录，完成后原子提升；终态固定为 `success/timeout/oom/compiler_error/verifier_fail/scorer_error`。600 秒超时会杀死整个进程组，旧同名产物不会被读取。
 

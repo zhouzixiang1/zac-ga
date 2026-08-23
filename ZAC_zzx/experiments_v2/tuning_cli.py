@@ -26,6 +26,7 @@ from .tuning_runner import (
     finalize_tuning,
     prepare_tuning_workspace,
     promote_tuning_phase,
+    recover_tuning_claim,
     run_tuning_phase,
     tuning_status,
 )
@@ -58,6 +59,15 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--retry-failed", action="store_true")
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--limit", type=int)
+    run.add_argument("--worker-count", type=int, default=1)
+    run.add_argument("--worker-index", type=int, default=0)
+
+    recover = subparsers.add_parser("recover-claim")
+    recover.add_argument("--root", required=True)
+    recover.add_argument(
+        "--phase", required=True,
+        choices=("screen", "successive_halving", "validation"))
+    recover.add_argument("--trial-id", required=True)
 
     promote = subparsers.add_parser("promote")
     promote.add_argument("--root", required=True)
@@ -96,7 +106,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = run_tuning_phase(
             plan, args.dataset, root, args.phase, resume=args.resume,
             retry_failed=args.retry_failed, dry_run=args.dry_run,
-            limit=args.limit)
+            limit=args.limit, worker_count=args.worker_count,
+            worker_index=args.worker_index)
+    elif args.command == "recover-claim":
+        report = recover_tuning_claim(root, args.phase, args.trial_id)
     elif args.command == "promote":
         report = promote_tuning_phase(
             root, args.phase, schedule_seed=args.schedule_seed)

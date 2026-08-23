@@ -4,6 +4,8 @@ import copy
 import json
 import hashlib
 import math
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -28,13 +30,29 @@ from experiments_v2.tuning import (  # noqa: E402
     validate_trial_schedule,
 )
 from experiments_v2.tuning_runner import (  # noqa: E402
+    _acquire_claim,
+    _archive_immutable_file,
+    _claim_path,
+    _phase_seal_path,
+    _phase_seal_payload,
+    _phase_lock,
+    _receipt_path,
     _replayed_promotion_report,
+    _release_claim,
+    _seal_completed_phase,
+    _select_worker_trials,
     _self_hash,
+    _validate_receipt_snapshot,
     _validate_schedule_chain,
     _validate_tuning_workspace,
+    _write_immutable_json,
     build_candidate_config_pair,
     finalize_tuning,
+    promote_tuning_phase,
+    recover_tuning_claim,
+    run_tuning_phase,
     seal_trial_result,
+    tuning_status,
     validate_tuning_selection_for_plan,
     validate_trial_receipt,
 )
@@ -193,18 +211,25 @@ class TuningScheduleTests(unittest.TestCase):
     @mock.patch("experiments_v2.tuning_runner.promoted_candidates")
     @mock.patch("experiments_v2.tuning_runner.stage_leaderboard")
     @mock.patch("experiments_v2.tuning_runner.load_phase_trials")
+    @mock.patch("experiments_v2.tuning_runner.load_schedule")
+    @mock.patch("experiments_v2.tuning_runner._load_published_phase_snapshot")
     def test_promotion_report_is_recomputed_not_only_self_hashed(
-            self, load_trials, leaderboard, promoted):
+            self, published_snapshot, load_schedule, load_trials,
+            leaderboard, promoted):
         schedule = {
             "schedule_sha256": "1" * 64,
             "candidate_ids": ["c0"], "circuits": ["toy"], "seeds": [0]}
         load_trials.return_value = (schedule, [])
+        load_schedule.return_value = (schedule, [])
+        published_snapshot.return_value = {"record_sha256": "2" * 64}
         leaderboard.return_value = [{"candidate_id": "c0", "valid": True}]
         promoted.return_value = ["c0"]
         expected = {
             "experiment_schema": 2,
             "protocol_id": TUNING_PROTOCOL_ID,
             "quality_policy": TUNING_QUALITY_POLICY_ID,
+            "transition_timing_scope": "concurrent_observational_nonclaim",
+            "promotion_tiebreak": "quality_move_metrics_candidate_id",
             "phase": "screen",
             "schedule_sha256": "1" * 64,
             "promoted_candidate_ids": ["c0"],
@@ -265,6 +290,296 @@ class TuningConfigTests(unittest.TestCase):
             self.assertEqual(setting["algorithm_revision"], "native-ga-v1")
             self.assertEqual(setting["tuning_protocol_id"],
                              FORMAL_NATIVE_TUNING_PROTOCOL_ID)
+
+
+class TuningParallelExecutionTests(unittest.TestCase):
+    def _screen(self):
+        candidates = generate_candidates()
+        return build_trial_schedule(
+            "screen",
+            candidate_ids=[row["candidate_id"] for row in candidates],
+            circuits=[f"c{i}" for i in range(9)], seeds=[0])
+
+    def test_four_static_shards_cover_schedule_once_and_limit_after_shard(self):
+        rows = validate_trial_schedule(self._screen())
+        shards = [
+            _select_worker_trials(
+                rows, "screen", worker_count=4, worker_index=index)
+            for index in range(4)
+        ]
+        ids = [{trial.trial_id for trial in shard} for shard in shards]
+        self.assertEqual([len(shard) for shard in shards], [81] * 4)
+        self.assertEqual(set.union(*ids), {trial.trial_id for trial in rows})
+        self.assertFalse(any(ids[left] & ids[right]
+                             for left in range(4)
+                             for right in range(left + 1, 4)))
+        limited = _select_worker_trials(
+            rows, "screen", worker_count=4, worker_index=2, limit=3)
+        self.assertEqual(limited, shards[2][:3])
+        with self.assertRaisesRegex(ValueError, "validation.*serially"):
+            _select_worker_trials(
+                rows, "validation", worker_count=4, worker_index=0)
+
+    def test_claim_competition_and_explicit_dead_owner_recovery(self):
+        schedule = self._screen()
+        trial = validate_trial_schedule(schedule)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            schedules = root / "schedules"
+            schedules.mkdir()
+            (schedules / "screen.json").write_text(
+                json.dumps(schedule), encoding="utf-8")
+            claim = _acquire_claim(
+                root, schedule, trial, worker_count=4,
+                worker_index=trial.ordinal % 4)
+            with self.assertRaisesRegex(RuntimeError, "already claimed"):
+                _acquire_claim(
+                    root, schedule, trial, worker_count=4,
+                    worker_index=trial.ordinal % 4)
+            with self.assertRaisesRegex(RuntimeError, "live tuning claim"):
+                recover_tuning_claim(root, "screen", trial.trial_id)
+            _release_claim(root, schedule, trial, claim)
+            self.assertFalse(_claim_path(root, trial).exists())
+
+            with mock.patch(
+                    "experiments_v2.tuning_runner.os.getpid",
+                    return_value=99_999_999):
+                stale = _acquire_claim(
+                    root, schedule, trial, worker_count=4,
+                    worker_index=trial.ordinal % 4)
+            # Simulate recovery being killed after the durable history link but
+            # before it removed the active claim alias.  Recovery must resume
+            # idempotently instead of leaving the trial permanently blocked.
+            history = (root / "claim_history" / "screen" / trial.trial_id /
+                       f"{stale['record_sha256']}.json")
+            history.parent.mkdir(parents=True)
+            os.link(_claim_path(root, trial), history)
+            recovered = recover_tuning_claim(root, "screen", trial.trial_id)
+            self.assertEqual(
+                recovered["claim_record_sha256"], stale["record_sha256"])
+            self.assertFalse(_claim_path(root, trial).exists())
+            self.assertTrue(Path(recovered["recovered_claim"]).is_file())
+
+    def test_immutable_publication_and_history_are_idempotent_no_replace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            immutable = root / "immutable.json"
+            _write_immutable_json(immutable, {"value": 1})
+            _write_immutable_json(immutable, {"value": 1})
+            with self.assertRaisesRegex(FileExistsError, "refusing to replace"):
+                _write_immutable_json(immutable, {"value": 2})
+            self.assertEqual(json.loads(immutable.read_text()), {"value": 1})
+
+            source = root / "receipt.json"
+            history = root / "history" / "receipt.json"
+            source.write_text('{"sealed":true}\n', encoding="utf-8")
+            history.parent.mkdir()
+            os.link(source, history)
+            digest = _archive_immutable_file(source, history)
+            self.assertFalse(source.exists())
+            self.assertEqual(digest, sha256_file(history))
+
+    def test_exclusive_phase_lock_waits_for_worker_handshake(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock_path = root / "phase_locks" / "screen.lock"
+            code = (
+                "import fcntl,sys; "
+                "h=open(sys.argv[1],'a+b'); "
+                "fcntl.flock(h.fileno(),fcntl.LOCK_EX); print('exclusive',flush=True)"
+            )
+            with _phase_lock(root, "screen", exclusive=False):
+                process = subprocess.Popen(
+                    [sys.executable, "-c", code, str(lock_path)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    process.communicate(timeout=0.2)
+            stdout, stderr = process.communicate(timeout=3.0)
+            self.assertEqual(process.returncode, 0, stderr)
+            self.assertEqual(stdout.strip(), "exclusive")
+
+    @mock.patch("experiments_v2.tuning_runner.load_phase_trials")
+    def test_phase_seal_freezes_and_revalidates_receipt_snapshot(
+            self, load_trials):
+        schedule = self._screen()
+        trial = validate_trial_schedule(schedule)[0]
+        load_trials.return_value = (schedule, [])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = _receipt_path(root, trial)
+            receipt.parent.mkdir(parents=True)
+            receipt.write_text('{"receipt":1}\n', encoding="utf-8")
+            _, _, snapshot = _seal_completed_phase(
+                root, schedule, [trial], phase="screen",
+                purpose="promotion")
+            _validate_receipt_snapshot(
+                root, schedule, [trial], snapshot, purpose="promotion")
+            receipt.write_text('{"receipt":2}\n', encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "snapshot changed"):
+                _validate_receipt_snapshot(
+                    root, schedule, [trial], snapshot, purpose="promotion")
+
+    @mock.patch("experiments_v2.tuning_runner._validate_schedule_chain")
+    @mock.patch("experiments_v2.tuning_runner._validate_tuning_workspace")
+    def test_sealed_phase_rejects_resume_retry_before_any_attempt(
+            self, validate_workspace, validate_chain):
+        schedule = self._screen()
+        trial = validate_trial_schedule(schedule)[0]
+        validate_workspace.return_value = {}
+        validate_chain.return_value = (schedule, [trial])
+        dataset = SimpleNamespace(name="qmap154")
+        plan = SimpleNamespace(datasets={"qmap154": dataset})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_immutable_json(
+                _phase_seal_path(root, "screen"),
+                _phase_seal_payload(schedule, "screen", "promotion"))
+            with self.assertRaisesRegex(RuntimeError, "sealed.*no retry"):
+                run_tuning_phase(
+                    plan, "qmap154", root, "screen", resume=True,
+                    retry_failed=True, worker_count=4, worker_index=0)
+
+    def test_status_does_not_call_claimed_complete(self):
+        schedule = self._screen()
+        trials = validate_trial_schedule(schedule)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            schedules = root / "schedules"
+            schedules.mkdir()
+            (schedules / "screen.json").write_text(
+                json.dumps(schedule), encoding="utf-8")
+            for trial in trials:
+                receipt = _receipt_path(root, trial)
+                receipt.parent.mkdir(parents=True, exist_ok=True)
+                receipt.write_text("{}\n", encoding="utf-8")
+            claimed = trials[0]
+            _acquire_claim(
+                root, schedule, claimed, worker_count=4,
+                worker_index=claimed.ordinal % 4)
+            status = tuning_status(root)["phases"]["screen"]
+            self.assertEqual(status["receipts"], status["expected"])
+            self.assertEqual(status["claims"], 1)
+            self.assertFalse(status["validated"])
+            self.assertFalse(status["complete"])
+
+    @mock.patch("experiments_v2.tuning_runner.promoted_candidates")
+    @mock.patch("experiments_v2.tuning_runner.stage_leaderboard")
+    @mock.patch("experiments_v2.tuning_runner.load_phase_trials")
+    @mock.patch("experiments_v2.tuning_runner._validate_schedule_chain")
+    @mock.patch("experiments_v2.tuning_runner._validate_tuning_workspace")
+    @mock.patch("experiments_v2.tuning_runner.load_experiment_plan")
+    def test_unpromotable_phase_never_publishes_seal(
+            self, load_plan, validate_workspace, validate_chain, load_trials,
+            leaderboard, promoted):
+        schedule = self._screen()
+        scheduled = validate_trial_schedule(schedule)
+        load_plan.return_value = SimpleNamespace()
+        validate_workspace.return_value = {}
+        validate_chain.return_value = (schedule, scheduled)
+        load_trials.return_value = (schedule, [])
+        leaderboard.return_value = []
+        promoted.side_effect = RuntimeError("insufficient valid candidates")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "workspace_manifest.json").write_text(
+                json.dumps({"plan_path": "/plan", "dataset": "qmap154"}),
+                encoding="utf-8")
+            (root / "candidates.json").write_text(json.dumps({
+                "default_candidate_id": "default"}), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "insufficient"):
+                promote_tuning_phase(root, "screen")
+            self.assertFalse(_phase_seal_path(root, "screen").exists())
+
+    @mock.patch("experiments_v2.tuning_runner._ranked_validation_selection")
+    @mock.patch("experiments_v2.tuning_runner.load_phase_trials")
+    @mock.patch("experiments_v2.tuning_runner._candidate_map")
+    @mock.patch("experiments_v2.tuning_runner._validate_schedule_chain")
+    @mock.patch("experiments_v2.tuning_runner._validate_tuning_workspace")
+    def test_unselectable_validation_never_publishes_seal(
+            self, validate_workspace, validate_chain, candidate_map,
+            load_trials, ranked):
+        schedule = {"schedule_sha256": "9" * 64,
+                    "circuits": ["toy"], "seeds": [0, 1, 2, 3, 4]}
+        validate_workspace.return_value = {}
+        validate_chain.return_value = (schedule, [])
+        candidate_map.return_value = {"default": {}}
+        load_trials.return_value = (schedule, [])
+        ranked.return_value = ({"shared_selected": None}, [])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.mkdir(exist_ok=True)
+            (root / "workspace_manifest.json").write_text(
+                json.dumps({"dataset": "qmap154"}), encoding="utf-8")
+            (root / "candidates.json").write_text(json.dumps({
+                "default_candidate_id": "default"}), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "no valid shared"):
+                finalize_tuning(SimpleNamespace(), root, root / "configs")
+            self.assertFalse(_phase_seal_path(root, "validation").exists())
+
+    @mock.patch("experiments_v2.tuning_runner._attempt_spec")
+    @mock.patch("experiments_v2.tuning_runner.validate_trial_receipt")
+    @mock.patch("experiments_v2.tuning_runner.materialize_candidate_configs")
+    @mock.patch("experiments_v2.tuning_runner._candidate_map")
+    @mock.patch("experiments_v2.tuning_runner._validate_schedule_chain")
+    @mock.patch("experiments_v2.tuning_runner._validate_tuning_workspace")
+    def test_resume_skips_sealed_shard_without_new_attempt_or_claim(
+            self, validate_workspace, validate_chain, candidate_map,
+            materialize, validate_receipt, attempt_spec):
+        schedule = self._screen()
+        trial = validate_trial_schedule(schedule)[0]
+        validate_workspace.return_value = {}
+        validate_chain.return_value = (schedule, [trial])
+        candidate_map.return_value = {trial.candidate_id: {}}
+        validate_receipt.return_value = {"status": "success"}
+        canonicals = [
+            SimpleNamespace(canonical_path=f"/{name}.qasm")
+            for name in schedule["circuits"]]
+        dataset = SimpleNamespace(name="qmap154")
+        plan = SimpleNamespace(
+            datasets={"qmap154": dataset},
+            load_suite=lambda _dataset: canonicals)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = root / "ledger" / "screen" / f"{trial.trial_id}.json"
+            receipt.parent.mkdir(parents=True)
+            receipt.write_text("{}\n", encoding="utf-8")
+            config = root / "config.json"
+            config.write_text("{}\n", encoding="utf-8")
+            materialize.return_value = {trial.method: config}
+            result = run_tuning_phase(
+                plan, "qmap154", root, "screen", resume=True,
+                worker_count=1, worker_index=0)
+            self.assertEqual(len(result["skipped"]), 1)
+            self.assertEqual(result["attempted"], [])
+            self.assertFalse(_claim_path(root, trial).exists())
+            attempt_spec.assert_not_called()
+
+    def test_stage_promotion_order_ignores_concurrent_transition_time(self):
+        candidate_ids = ["default", "alpha", "beta"]
+
+        def trials(times):
+            return [
+                TuningTrial(
+                    candidate_id=cid, circuit="toy", method=method, seed=0,
+                    status="success", verifier_ok=True, ghost_hits=0,
+                    fallback=False, log_fidelity=-1.0,
+                    transition_decision_ns=times[cid], move_time_us=10.0,
+                    move_batches=1, fidelity_ood=False,
+                    exponential_sensitivity_log_fidelity=-1.0)
+                for cid in candidate_ids for method in ("M3", "M4")
+            ]
+
+        first = stage_leaderboard(
+            trials({"default": 100, "alpha": 1000, "beta": 1}),
+            candidate_ids=candidate_ids, default_id="default",
+            expected_circuits=["toy"], expected_seeds=[0])
+        second = stage_leaderboard(
+            trials({"default": 100, "alpha": 1, "beta": 1000}),
+            candidate_ids=candidate_ids, default_id="default",
+            expected_circuits=["toy"], expected_seeds=[0])
+        self.assertEqual(
+            [row["candidate_id"] for row in first],
+            [row["candidate_id"] for row in second])
 
 
 class TuningReceiptTests(unittest.TestCase):
@@ -418,6 +733,10 @@ class TuningReceiptTests(unittest.TestCase):
             })
             ood_manifest["fidelity_components"]["log_coherence_linear"] = None
             manifest_path.write_text(json.dumps(ood_manifest), encoding="utf-8")
+            with self.assertRaisesRegex(FileExistsError, "refusing to replace"):
+                seal_trial_result(
+                    root, schedule, trial, config, manifest_path)
+            receipt.unlink()
             ood_receipt = seal_trial_result(
                 root, schedule, trial, config, manifest_path)
             self.assertEqual(ood_receipt["status"], "success")
@@ -581,11 +900,13 @@ class TuningFinalSelectionGateTests(unittest.TestCase):
     @mock.patch("experiments_v2.tuning_runner._candidate_map")
     @mock.patch("experiments_v2.tuning_runner._ranked_validation_selection")
     @mock.patch("experiments_v2.tuning_runner.load_phase_trials")
+    @mock.patch("experiments_v2.tuning_runner._validate_receipt_snapshot")
+    @mock.patch("experiments_v2.tuning_runner._seal_completed_phase")
     @mock.patch("experiments_v2.tuning_runner._validate_schedule_chain")
     @mock.patch("experiments_v2.tuning_runner._validate_tuning_workspace")
     def test_finalize_separates_outer_v2_from_unchanged_native_v1(
-            self, validate_workspace, validate_chain, load_trials, ranked,
-            candidate_map):
+            self, validate_workspace, validate_chain, seal_phase,
+            validate_snapshot, load_trials, ranked, candidate_map):
         candidate = {**DEFAULT_CANDIDATE}
         candidate["candidate_id"] = candidate_id(candidate)
         selection = {
@@ -601,7 +922,9 @@ class TuningFinalSelectionGateTests(unittest.TestCase):
         }
         schedule = {"schedule_sha256": "9" * 64,
                     "circuits": ["toy"], "seeds": [0, 1, 2, 3, 4]}
+        validate_chain.return_value = (schedule, [])
         load_trials.return_value = (schedule, [])
+        seal_phase.return_value = ({}, [], {"record_sha256": "8" * 64})
         ranked.return_value = (selection, [])
         candidate_map.return_value = {candidate["candidate_id"]: candidate}
 
@@ -654,10 +977,13 @@ class TuningFinalSelectionGateTests(unittest.TestCase):
     @mock.patch("experiments_v2.tuning_runner._candidate_map")
     @mock.patch("experiments_v2.tuning_runner._validate_schedule_chain")
     @mock.patch("experiments_v2.tuning_runner.load_phase_trials")
+    @mock.patch("experiments_v2.tuning_runner.load_schedule")
+    @mock.patch("experiments_v2.tuning_runner._load_published_phase_snapshot")
     @mock.patch("experiments_v2.tuning_runner._ranked_validation_selection")
     def test_final_selection_binds_replayed_ledger_and_current_shared_configs(
-            self, ranked, load_trials, validate_chain, candidate_map,
-            repository_snapshot, native_identity):
+            self, ranked, published_snapshot, load_schedule, load_trials,
+            validate_chain, candidate_map, repository_snapshot,
+            native_identity):
         repository_snapshot.return_value = {
             "root": "/repo", "commit": "a" * 40,
             "branch": "codex/test", "dirty": False,
@@ -675,6 +1001,8 @@ class TuningFinalSelectionGateTests(unittest.TestCase):
             "seeds": [0, 1, 2, 3, 4],
         }
         load_trials.return_value = (schedule, [])
+        load_schedule.return_value = (schedule, [])
+        published_snapshot.return_value = {"record_sha256": "8" * 64}
         validate_chain.return_value = (schedule, [])
         candidate_map.return_value = {"shared-candidate": {}}
 

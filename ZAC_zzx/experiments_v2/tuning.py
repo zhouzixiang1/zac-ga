@@ -739,14 +739,15 @@ def stage_leaderboard(
 
     def sort_key(row: Mapping[str, Any]):
         if not row["valid"]:
-            return (1, 0.0, math.inf, math.inf, math.inf,
+            return (1, 0.0, math.inf, math.inf,
                     row["candidate_id"])
         method_rows = row["methods"]
+        # Screen and halving may run in parallel.  Their wall-clock transition
+        # measurements remain useful diagnostics but cannot decide promotion.
+        # Move metrics are deterministic properties of the emitted schedule.
         return (
             0,
             -float(row["shared_score"]),
-            _median(method_rows[method]["median_transition_decision_ns"]
-                    for method in TUNING_METHODS),
             _median(method_rows[method]["median_move_time_us"]
                     for method in TUNING_METHODS),
             _median(method_rows[method]["median_move_batches"]

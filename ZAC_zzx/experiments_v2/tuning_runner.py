@@ -11,14 +11,18 @@ from __future__ import annotations
 
 import copy
 import csv
+import fcntl
 import gzip
 import hashlib
 import json
 import math
 import os
-import shutil
+import socket
 import statistics
+import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -57,6 +61,7 @@ ALGORITHM_REVISION = "native-ga-v1"
 NATIVE_BACKEND = "native"
 NATIVE_FAIL_CLOSED = True
 TERMINAL_STATUSES = {item.value for item in RunStatus}
+CLAIM_SCHEMA = "tuning-trial-claim-v1"
 
 
 def _stable_json(value: Any) -> str:
@@ -66,13 +71,39 @@ def _stable_json(value: Any) -> str:
 
 def _atomic_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
+    temporary = path.with_name(
+        f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     with temporary.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_create_json(path: Path, payload: Any) -> None:
+    """Atomically publish a fully written JSON file without replacement."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(
+        f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            # A hard link is an atomic create-if-absent publication.  Unlike
+            # os.replace it can never overwrite another worker's receipt.
+            os.link(temporary, path)
+        except FileExistsError as error:
+            raise FileExistsError(
+                f"refusing to replace immutable tuning record: {path}") from error
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _read_json(path: Path) -> Any:
@@ -82,12 +113,40 @@ def _read_json(path: Path) -> Any:
 
 def _write_immutable_json(path: Path, payload: Any) -> None:
     """Create once or prove that the existing protocol artifact is identical."""
-    if path.exists():
-        if _read_json(path) != payload:
+    try:
+        _atomic_create_json(path, payload)
+    except FileExistsError:
+        try:
+            existing = _read_json(path)
+        except (OSError, json.JSONDecodeError, TypeError) as error:
+            raise FileExistsError(
+                f"refusing unreadable immutable tuning artifact: {path}") from error
+        if existing != payload:
             raise FileExistsError(
                 f"refusing to replace immutable tuning artifact: {path}")
-        return
-    _atomic_json(path, payload)
+
+
+def _archive_immutable_file(source: Path, destination: Path) -> str:
+    """Hard-link one complete record into history before removing its alias."""
+    if not source.is_file():
+        raise FileNotFoundError(f"immutable history source is missing: {source}")
+    digest = sha256_file(source)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, destination)
+    except FileExistsError:
+        if (not destination.is_file()
+                or sha256_file(destination) != digest):
+            raise FileExistsError(
+                f"immutable history record differs: {destination}")
+    if sha256_file(source) != digest:
+        raise RuntimeError(
+            f"immutable history source changed before removal: {source}")
+    source.unlink()
+    if not destination.is_file() or sha256_file(destination) != digest:
+        raise RuntimeError(
+            f"immutable history publication failed: {destination}")
+    return digest
 
 
 def _self_hash(payload: Mapping[str, Any], field: str) -> str:
@@ -222,6 +281,328 @@ def _receipt_path(root: Path, trial: ScheduledTrial) -> Path:
     return root / "ledger" / trial.phase / f"{trial.trial_id}.json"
 
 
+def _claim_path(root: Path, trial: ScheduledTrial) -> Path:
+    return root / "claims" / trial.phase / f"{trial.trial_id}.json"
+
+
+def _phase_seal_path(root: Path, phase: str) -> Path:
+    return root / "phase_seals" / f"{phase}.json"
+
+
+def _phase_snapshot_path(root: Path, phase: str) -> Path:
+    return root / "phase_seals" / f"{phase}.receipts.json"
+
+
+@contextmanager
+def _phase_lock(root: Path, phase: str, *, exclusive: bool):
+    """Coordinate the short claim/seal handshake across worker processes."""
+    path = root / "phase_locks" / f"{phase}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        fcntl.flock(
+            handle.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _phase_seal_payload(schedule: Mapping[str, Any], phase: str,
+                        purpose: str) -> dict[str, Any]:
+    payload = {
+        "experiment_schema": 2,
+        "protocol_id": TUNING_PROTOCOL_ID,
+        "phase": phase,
+        "purpose": purpose,
+        "schedule_sha256": schedule["schedule_sha256"],
+    }
+    payload["record_sha256"] = _self_hash(payload, "record_sha256")
+    return payload
+
+
+def _validate_phase_seal(path: Path, schedule: Mapping[str, Any],
+                         phase: str, purpose: str) -> Mapping[str, Any]:
+    payload = _read_json(path)
+    expected = _phase_seal_payload(schedule, phase, purpose)
+    if payload != expected:
+        raise ValueError(f"tuning phase seal identity mismatch: {path}")
+    return payload
+
+
+def _assert_phase_open(root: Path, schedule: Mapping[str, Any], phase: str,
+                       *, purpose: str) -> None:
+    path = _phase_seal_path(root, phase)
+    if path.exists():
+        _validate_phase_seal(path, schedule, phase, purpose)
+        raise RuntimeError(
+            f"tuning phase {phase} is sealed for {purpose}; no retry is allowed")
+    downstream = {
+        "screen": (
+            root / "leaderboard_screen.json",
+            _schedule_path(root, "successive_halving"),
+        ),
+        "successive_halving": (
+            root / "leaderboard_successive_halving.json",
+            _schedule_path(root, "validation"),
+        ),
+        "validation": (
+            root / "selected_config_manifest.json",
+        ),
+    }
+    published = [path for path in downstream.get(phase, ()) if path.exists()]
+    if published:
+        raise RuntimeError(
+            f"tuning phase {phase} already has downstream evidence; "
+            f"no retry is allowed: {published[0]}")
+
+
+def _receipt_snapshot_payload(
+        root: Path, schedule: Mapping[str, Any],
+        trials: Sequence[ScheduledTrial], *, purpose: str
+        ) -> dict[str, Any]:
+    receipts = []
+    for trial in trials:
+        path = _receipt_path(root, trial).resolve()
+        if not path.is_file():
+            raise RuntimeError(
+                f"sealed phase is missing receipt: {trial.trial_id}")
+        claim = _claim_path(root, trial)
+        if claim.exists():
+            _validate_claim(claim, schedule, trial)
+            raise RuntimeError(
+                f"sealed phase still has an active claim: {trial.trial_id}")
+        receipts.append({
+            "trial_id": trial.trial_id,
+            "path": str(path),
+            "sha256": sha256_file(path),
+        })
+    payload = {
+        "experiment_schema": 2,
+        "protocol_id": TUNING_PROTOCOL_ID,
+        "phase": trials[0].phase if trials else str(schedule.get("phase", "")),
+        "purpose": purpose,
+        "schedule_sha256": schedule["schedule_sha256"],
+        "receipts": receipts,
+    }
+    payload["record_sha256"] = _self_hash(payload, "record_sha256")
+    return payload
+
+
+def _validate_receipt_snapshot(
+        root: Path, schedule: Mapping[str, Any],
+        trials: Sequence[ScheduledTrial], snapshot: Mapping[str, Any], *,
+        purpose: str) -> None:
+    current = _receipt_snapshot_payload(
+        root, schedule, trials, purpose=purpose)
+    if current != snapshot:
+        raise RuntimeError("sealed tuning receipt snapshot changed before publish")
+
+
+def _seal_completed_phase(
+        root: Path, schedule: Mapping[str, Any],
+        scheduled_trials: Sequence[ScheduledTrial], *, phase: str,
+        purpose: str) -> tuple[Mapping[str, Any], list[TuningTrial],
+                              Mapping[str, Any]]:
+    """Freeze a complete phase and return its stable validated trial ledger."""
+    # Preflight before sealing so an accidental early promote/finalize never
+    # prevents missing trials from being completed.
+    _, _ = load_phase_trials(root, phase)
+    seal_path = _phase_seal_path(root, phase)
+    seal = _phase_seal_payload(schedule, phase, purpose)
+    _write_immutable_json(seal_path, seal)
+    _validate_phase_seal(seal_path, schedule, phase, purpose)
+
+    # A worker may have acquired its claim in the narrow preflight/seal gap.
+    # It retains the claim until completion; fail closed now and let an
+    # idempotent later invocation continue after that owner releases/recovery.
+    _, trials = load_phase_trials(root, phase)
+    snapshot = _receipt_snapshot_payload(
+        root, schedule, scheduled_trials, purpose=purpose)
+    snapshot_path = _phase_snapshot_path(root, phase)
+    _write_immutable_json(snapshot_path, snapshot)
+    observed = _read_json(snapshot_path)
+    if observed != snapshot:
+        raise ValueError(f"tuning phase snapshot identity mismatch: {snapshot_path}")
+    _validate_receipt_snapshot(
+        root, schedule, scheduled_trials, observed, purpose=purpose)
+    return seal, trials, observed
+
+
+def _load_published_phase_snapshot(
+        root: Path, schedule: Mapping[str, Any],
+        scheduled_trials: Sequence[ScheduledTrial], *, phase: str,
+        purpose: str) -> Mapping[str, Any]:
+    _validate_phase_seal(
+        _phase_seal_path(root, phase), schedule, phase, purpose)
+    path = _phase_snapshot_path(root, phase)
+    snapshot = _read_json(path)
+    if snapshot.get("record_sha256") != _self_hash(
+            snapshot, "record_sha256"):
+        raise ValueError(f"tuning phase snapshot hash mismatch: {path}")
+    _validate_receipt_snapshot(
+        root, schedule, scheduled_trials, snapshot, purpose=purpose)
+    return snapshot
+
+
+def _claim_payload(schedule: Mapping[str, Any], trial: ScheduledTrial, *,
+                   worker_count: int, worker_index: int) -> dict[str, Any]:
+    payload = {
+        "experiment_schema": 2,
+        "claim_schema": CLAIM_SCHEMA,
+        "protocol_id": TUNING_PROTOCOL_ID,
+        "schedule_sha256": schedule["schedule_sha256"],
+        "trial": asdict(trial),
+        "worker": {"count": worker_count, "index": worker_index},
+        "hostname": socket.gethostname(),
+        "pid": os.getpid(),
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    payload["record_sha256"] = _self_hash(payload, "record_sha256")
+    return payload
+
+
+def _validate_claim(
+        path: Path, schedule: Mapping[str, Any], trial: ScheduledTrial
+        ) -> Mapping[str, Any]:
+    payload = _read_json(path)
+    required = {
+        "experiment_schema", "claim_schema", "protocol_id",
+        "schedule_sha256", "trial", "worker", "hostname", "pid",
+        "created_at_utc", "record_sha256",
+    }
+    if set(payload) != required:
+        raise ValueError(f"invalid tuning claim fields: {path}")
+    if payload["record_sha256"] != _self_hash(payload, "record_sha256"):
+        raise ValueError(f"tuning claim hash mismatch: {path}")
+    if (payload["experiment_schema"] != 2 or
+            payload["claim_schema"] != CLAIM_SCHEMA or
+            payload["protocol_id"] != TUNING_PROTOCOL_ID or
+            payload["schedule_sha256"] != schedule["schedule_sha256"] or
+            payload["trial"] != asdict(trial)):
+        raise ValueError(f"tuning claim identity mismatch: {path}")
+    worker = payload["worker"]
+    if not isinstance(worker, Mapping) or set(worker) != {"count", "index"}:
+        raise ValueError(f"invalid tuning claim worker identity: {path}")
+    count, index = worker["count"], worker["index"]
+    if (not isinstance(count, int) or isinstance(count, bool) or count <= 0 or
+            not isinstance(index, int) or isinstance(index, bool) or
+            not 0 <= index < count or trial.ordinal % count != index):
+        raise ValueError(f"invalid tuning claim shard identity: {path}")
+    if (not isinstance(payload["pid"], int) or
+            isinstance(payload["pid"], bool) or payload["pid"] <= 0 or
+            not isinstance(payload["hostname"], str) or
+            not payload["hostname"]):
+        raise ValueError(f"invalid tuning claim process identity: {path}")
+    try:
+        created = datetime.fromisoformat(str(payload["created_at_utc"]))
+    except ValueError as error:
+        raise ValueError(f"invalid tuning claim timestamp: {path}") from error
+    if created.tzinfo is None:
+        raise ValueError(f"tuning claim timestamp is not timezone-aware: {path}")
+    return payload
+
+
+def _acquire_claim(
+        root: Path, schedule: Mapping[str, Any], trial: ScheduledTrial, *,
+        worker_count: int, worker_index: int) -> Mapping[str, Any]:
+    """Atomically reserve one trial; an existing claim is always fatal.
+
+    The record is written and fsynced under a unique temporary name before a
+    no-replace hard link publishes it.  A killed worker therefore leaves either
+    a complete, recoverable claim or no claim at all, never a truncated owner
+    record.
+    """
+    path = _claim_path(root, trial)
+    payload = _claim_payload(
+        schedule, trial, worker_count=worker_count, worker_index=worker_index)
+    try:
+        _atomic_create_json(path, payload)
+    except FileExistsError as error:
+        owner = _validate_claim(path, schedule, trial)
+        raise RuntimeError(
+            "tuning trial is already claimed by "
+            f"pid={owner['pid']} worker={owner['worker']}: {trial.trial_id}") from error
+    return payload
+
+
+def _release_claim(
+        root: Path, schedule: Mapping[str, Any], trial: ScheduledTrial,
+        expected: Mapping[str, Any]) -> None:
+    path = _claim_path(root, trial)
+    observed = _validate_claim(path, schedule, trial)
+    if observed != expected or observed["pid"] != os.getpid():
+        raise RuntimeError(f"refusing to release a foreign tuning claim: {path}")
+    path.unlink()
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def recover_tuning_claim(root: Path, phase: str,
+                         trial_id: str) -> Mapping[str, Any]:
+    """Archive one validated local stale claim; never steals a live claim."""
+    root = root.resolve()
+    schedule, trials = load_schedule(root, phase)
+    matches = [trial for trial in trials if trial.trial_id == trial_id]
+    if len(matches) != 1:
+        raise ValueError(f"trial id is absent from the frozen {phase} schedule")
+    trial = matches[0]
+    path = _claim_path(root, trial)
+    if not path.is_file():
+        raise FileNotFoundError(f"tuning claim is missing: {path}")
+    payload = _validate_claim(path, schedule, trial)
+    if payload["hostname"] != socket.gethostname():
+        raise RuntimeError("cannot prove that a claim owner on another host stopped")
+    if _pid_is_alive(int(payload["pid"])):
+        raise RuntimeError(
+            f"refusing to recover live tuning claim owned by pid={payload['pid']}")
+    receipt_path = _receipt_path(root, trial)
+    restored_receipt = None
+    # A promoter may seal the phase while a retry that crossed the seal/claim
+    # handshake is still running.  If that owner dies after archiving and
+    # unlinking the failed receipt, restore the newest validated history alias
+    # before releasing its claim; otherwise the permanent seal would make the
+    # complete phase unrecoverable.
+    if _phase_seal_path(root, phase).is_file() and not receipt_path.is_file():
+        history_dir = root / "ledger_history" / phase / trial.trial_id
+        histories = sorted(
+            (item for item in history_dir.glob("*.json") if item.is_file()),
+            key=lambda item: (item.stat().st_mtime_ns, item.name), reverse=True)
+        if not histories:
+            raise RuntimeError(
+                "sealed tuning retry lost its receipt and has no history to restore")
+        os.link(histories[0], receipt_path)
+        receipt_payload = _read_json(receipt_path)
+        config_path = Path(str(receipt_payload.get("config_path", "")))
+        try:
+            validate_trial_receipt(
+                receipt_path, schedule, trial, config_path)
+        except BaseException:
+            receipt_path.unlink(missing_ok=True)
+            raise
+        restored_receipt = str(receipt_path)
+    history = (root / "claim_history" / phase / trial.trial_id /
+               f"{payload['record_sha256']}.json")
+    archived_sha256 = _archive_immutable_file(path, history)
+    return {
+        "experiment_schema": 2,
+        "protocol_id": TUNING_PROTOCOL_ID,
+        "phase": phase,
+        "trial_id": trial_id,
+        "recovered_claim": str(history),
+        "claim_record_sha256": payload["record_sha256"],
+        "claim_file_sha256": archived_sha256,
+        "restored_receipt": restored_receipt,
+    }
+
+
 def _native_identity(plan: ExperimentPlan) -> Mapping[str, Any]:
     """Return the M3/M4 native identity that every tuning phase must retain."""
     settings = {
@@ -263,7 +644,12 @@ def _replayed_promotion_report(root: Path, phase: str) -> Mapping[str, Any]:
     """Recompute one promotion report from its complete receipt ledger."""
     if phase not in {"screen", "successive_halving"}:
         raise ValueError(f"phase has no promotion report: {phase}")
-    schedule, trials = load_phase_trials(root, phase)
+    schedule, scheduled_trials = load_schedule(root, phase)
+    _load_published_phase_snapshot(
+        root, schedule, scheduled_trials, phase=phase, purpose="promotion")
+    replayed_schedule, trials = load_phase_trials(root, phase)
+    if replayed_schedule != schedule:
+        raise ValueError(f"{phase} schedule changed during promotion replay")
     candidates_payload = _read_json(root / "candidates.json")
     default_id = str(candidates_payload["default_candidate_id"])
     leaderboard = stage_leaderboard(
@@ -276,6 +662,8 @@ def _replayed_promotion_report(root: Path, phase: str) -> Mapping[str, Any]:
         "experiment_schema": 2,
         "protocol_id": TUNING_PROTOCOL_ID,
         "quality_policy": TUNING_QUALITY_POLICY_ID,
+        "transition_timing_scope": "concurrent_observational_nonclaim",
+        "promotion_tiebreak": "quality_move_metrics_candidate_id",
         "phase": phase,
         "schedule_sha256": schedule["schedule_sha256"],
         "promoted_candidate_ids": promoted,
@@ -670,7 +1058,7 @@ def seal_trial_result(
         **projection,
     }
     result["record_sha256"] = _self_hash(result, "record_sha256")
-    _atomic_json(_receipt_path(root, trial), result)
+    _atomic_create_json(_receipt_path(root, trial), result)
     return result
 
 
@@ -831,21 +1219,49 @@ def _receipt_as_trial(payload: Mapping[str, Any]) -> TuningTrial:
     )
 
 
+def _select_worker_trials(
+        trials: Sequence[ScheduledTrial], phase: str, *, worker_count: int,
+        worker_index: int, limit: int | None = None) -> list[ScheduledTrial]:
+    if (not isinstance(worker_count, int) or isinstance(worker_count, bool)
+            or worker_count <= 0):
+        raise ValueError("worker_count must be a positive integer")
+    if (not isinstance(worker_index, int) or isinstance(worker_index, bool)
+            or not 0 <= worker_index < worker_count):
+        raise ValueError("worker_index must satisfy 0 <= index < count")
+    if phase == "validation" and (worker_count != 1 or worker_index != 0):
+        raise ValueError("validation tuning must run serially")
+    selected = [
+        trial for trial in trials
+        if trial.ordinal % worker_count == worker_index
+    ]
+    if limit is not None:
+        selected = selected[:max(0, int(limit))]
+    return selected
+
+
 def run_tuning_phase(
         plan: ExperimentPlan, dataset_name: str, root: Path, phase: str, *,
         resume: bool, retry_failed: bool = False, dry_run: bool = False,
-        limit: int | None = None) -> Mapping[str, Any]:
-    """Execute one phase serially; old files can never imply a success."""
+        limit: int | None = None, worker_count: int = 1,
+        worker_index: int = 0) -> Mapping[str, Any]:
+    """Execute one deterministic schedule shard; receipts remain global."""
     root = root.resolve()
     workspace = _validate_tuning_workspace(plan, dataset_name, root)
     schedule, trials = _validate_schedule_chain(root, phase, workspace)
+    phase_purpose = "finalization" if phase == "validation" else "promotion"
+    _assert_phase_open(
+        root, schedule, phase, purpose=phase_purpose)
     candidates = _candidate_map(root)
     dataset = plan.datasets[dataset_name]
     canonical_by_name = {
         Path(item.canonical_path).stem: item for item in plan.load_suite(dataset)}
     if set(schedule["circuits"]) - set(canonical_by_name):
         raise ValueError("tuning schedule references a circuit outside the suite")
-    selected = trials if limit is None else trials[:max(0, int(limit))]
+    worker_trials = _select_worker_trials(
+        trials, phase, worker_count=worker_count, worker_index=worker_index)
+    selected = _select_worker_trials(
+        trials, phase, worker_count=worker_count, worker_index=worker_index,
+        limit=limit)
     if not resume:
         existing = [_receipt_path(root, trial) for trial in selected
                     if _receipt_path(root, trial).exists()]
@@ -866,18 +1282,16 @@ def run_tuning_phase(
         config_path = configs[trial.method]
         receipt_path = _receipt_path(root, trial)
         if receipt_path.is_file():
+            if _claim_path(root, trial).exists():
+                raise RuntimeError(
+                    "sealed tuning receipt still has a claim; recover it "
+                    f"explicitly: {trial.trial_id}")
             old = validate_trial_receipt(
                 receipt_path, schedule, trial, config_path)
             if not retry_failed or old["status"] == "success":
                 skipped.append({"trial_id": trial.trial_id,
                                 "status": old["status"]})
                 continue
-            history = (root / "ledger_history" / phase / trial.trial_id /
-                       f"{old['record_sha256']}.json")
-            history.parent.mkdir(parents=True, exist_ok=True)
-            if not history.exists():
-                shutil.copy2(receipt_path, history)
-            receipt_path.unlink()
 
         canonical = canonical_by_name[trial.circuit]
         # RunManifest currently has no tuning run_kind; the outer immutable
@@ -905,23 +1319,65 @@ def run_tuning_phase(
                 "output_root": str(spec.output_root),
             })
             continue
-        gate = UnifiedEvaluationGate(plan, canonical, trial.method)
-        manifest = run_attempt(spec, verifier=gate.verifier, scorer=gate.scorer)
-        manifest_path = Path(manifest.artifact_dir) / "manifest.json"
-        receipt = seal_trial_result(
-            root, schedule, trial, config_path, manifest_path)
-        attempted.append({
-            "trial_id": trial.trial_id,
-            "status": receipt["status"],
-            "receipt": str(receipt_path),
-            "attempt_manifest": receipt["attempt_manifest"],
-        })
+        with _phase_lock(root, phase, exclusive=False):
+            _assert_phase_open(
+                root, schedule, phase, purpose=phase_purpose)
+            claim = _acquire_claim(
+                root, schedule, trial, worker_count=worker_count,
+                worker_index=worker_index)
+            try:
+                _assert_phase_open(
+                    root, schedule, phase, purpose=phase_purpose)
+            except BaseException:
+                _release_claim(root, schedule, trial, claim)
+                raise
+        try:
+            # Close the receipt/claim TOCTOU window.  A sealed receipt wins,
+            # but the owner must release the claim it just acquired.
+            if receipt_path.is_file():
+                old = validate_trial_receipt(
+                    receipt_path, schedule, trial, config_path)
+                if not retry_failed or old["status"] == "success":
+                    skipped.append({"trial_id": trial.trial_id,
+                                    "status": old["status"]})
+                    _release_claim(root, schedule, trial, claim)
+                    continue
+            if receipt_path.is_file():
+                history = (root / "ledger_history" / phase / trial.trial_id /
+                           f"{old['record_sha256']}.json")
+                archived_sha256 = _archive_immutable_file(
+                    receipt_path, history)
+                if archived_sha256 != sha256_file(history):
+                    raise RuntimeError(
+                        f"retry receipt history hash mismatch: {history}")
+
+            gate = UnifiedEvaluationGate(plan, canonical, trial.method)
+            manifest = run_attempt(
+                spec, verifier=gate.verifier, scorer=gate.scorer)
+            manifest_path = Path(manifest.artifact_dir) / "manifest.json"
+            receipt = seal_trial_result(
+                root, schedule, trial, config_path, manifest_path)
+            attempted.append({
+                "trial_id": trial.trial_id,
+                "status": receipt["status"],
+                "receipt": str(receipt_path),
+                "attempt_manifest": receipt["attempt_manifest"],
+            })
+        except BaseException:
+            # The claim is the durable evidence that this trial needs explicit
+            # operator recovery before another worker may retry it.
+            raise
+        else:
+            _release_claim(root, schedule, trial, claim)
     return {
         "experiment_schema": 2,
         "protocol_id": TUNING_PROTOCOL_ID,
         "phase": phase,
         "schedule_sha256": schedule["schedule_sha256"],
         "planned": len(trials),
+        "worker_count": worker_count,
+        "worker_index": worker_index,
+        "worker_planned": len(worker_trials),
         "selected": len(selected),
         "attempted": attempted,
         "skipped": skipped,
@@ -940,6 +1396,12 @@ def load_phase_trials(root: Path, phase: str) -> tuple[Mapping[str, Any], list[T
         path = _receipt_path(root, row)
         if not path.is_file():
             raise RuntimeError(f"tuning phase is incomplete; missing receipt: {path}")
+        claim = _claim_path(root, row)
+        if claim.exists():
+            _validate_claim(claim, schedule, row)
+            raise RuntimeError(
+                "tuning phase has an unrecovered trial claim: "
+                f"{row.trial_id}")
         payload = _read_json(path)
         config_path = Path(str(payload.get("config_path", "")))
         if not config_path.is_file():
@@ -1041,18 +1503,38 @@ def promote_tuning_phase(root: Path, phase: str, *, schedule_seed: int = 0
     plan = load_experiment_plan(workspace_record["plan_path"])
     workspace = _validate_tuning_workspace(
         plan, str(workspace_record["dataset"]), root)
-    _validate_schedule_chain(root, phase, workspace)
-    schedule, trials = load_phase_trials(root, phase)
+    schedule, scheduled_trials = _validate_schedule_chain(
+        root, phase, workspace)
     candidates_payload = _read_json(root / "candidates.json")
     default_id = str(candidates_payload["default_candidate_id"])
-    leaderboard = stage_leaderboard(
-        trials, candidate_ids=schedule["candidate_ids"], default_id=default_id,
-        expected_circuits=schedule["circuits"], expected_seeds=schedule["seeds"])
-    promoted = promoted_candidates(phase, leaderboard, default_id=default_id)
+    with _phase_lock(root, phase, exclusive=True):
+        preflight_schedule, preflight_trials = load_phase_trials(root, phase)
+        if preflight_schedule != schedule:
+            raise ValueError(f"{phase} schedule changed during promotion preflight")
+        preflight_leaderboard = stage_leaderboard(
+            preflight_trials, candidate_ids=schedule["candidate_ids"],
+            default_id=default_id, expected_circuits=schedule["circuits"],
+            expected_seeds=schedule["seeds"])
+        preflight_promoted = promoted_candidates(
+            phase, preflight_leaderboard, default_id=default_id)
+
+        _, trials, snapshot = _seal_completed_phase(
+            root, schedule, scheduled_trials, phase=phase, purpose="promotion")
+        leaderboard = stage_leaderboard(
+            trials, candidate_ids=schedule["candidate_ids"], default_id=default_id,
+            expected_circuits=schedule["circuits"],
+            expected_seeds=schedule["seeds"])
+        promoted = promoted_candidates(phase, leaderboard, default_id=default_id)
+        if (leaderboard != preflight_leaderboard
+                or promoted != preflight_promoted):
+            raise RuntimeError(
+                f"{phase} promotion result changed across phase sealing")
     report = {
         "experiment_schema": 2,
         "protocol_id": TUNING_PROTOCOL_ID,
         "quality_policy": TUNING_QUALITY_POLICY_ID,
+        "transition_timing_scope": "concurrent_observational_nonclaim",
+        "promotion_tiebreak": "quality_move_metrics_candidate_id",
         "phase": phase,
         "schedule_sha256": schedule["schedule_sha256"],
         "promoted_candidate_ids": promoted,
@@ -1060,6 +1542,8 @@ def promote_tuning_phase(root: Path, phase: str, *, schedule_seed: int = 0
     }
     report["report_sha256"] = _self_hash(report, "report_sha256")
     report_path = root / f"leaderboard_{phase}.json"
+    _validate_receipt_snapshot(
+        root, schedule, scheduled_trials, snapshot, purpose="promotion")
     _write_immutable_json(report_path, report)
     _write_leaderboard_csv(root / f"leaderboard_{phase}.csv", leaderboard)
 
@@ -1072,6 +1556,8 @@ def promote_tuning_phase(root: Path, phase: str, *, schedule_seed: int = 0
         seeds=contract["seeds"], schedule_seed=schedule_seed,
         parent_sha256=report["report_sha256"],
     )
+    _validate_receipt_snapshot(
+        root, schedule, scheduled_trials, snapshot, purpose="promotion")
     _write_immutable_json(_schedule_path(root, next_phase), next_schedule)
     return {**report, "next_phase": next_phase,
             "next_schedule_sha256": next_schedule["schedule_sha256"]}
@@ -1116,16 +1602,36 @@ def finalize_tuning(
     root = root.resolve()
     workspace = _validate_tuning_workspace(
         plan, str(_read_json(root / "workspace_manifest.json")["dataset"]), root)
-    _validate_schedule_chain(root, "validation", workspace)
-    schedule, trials = load_phase_trials(root, "validation")
+    schedule, scheduled_trials = _validate_schedule_chain(
+        root, "validation", workspace)
     candidates = _candidate_map(root)
     default_id = str(_read_json(root / "candidates.json")["default_candidate_id"])
-    selection, ordered = _ranked_validation_selection(
-        trials, default_id=default_id,
-        expected_circuits=schedule["circuits"],
-        expected_seeds=schedule["seeds"])
-    if selection["shared_selected"] is None:
-        raise RuntimeError("no valid shared tuning configuration was selected")
+    with _phase_lock(root, "validation", exclusive=True):
+        preflight_schedule, preflight_trials = load_phase_trials(
+            root, "validation")
+        if preflight_schedule != schedule:
+            raise ValueError(
+                "validation schedule changed during finalization preflight")
+        preflight_selection, preflight_ordered = _ranked_validation_selection(
+            preflight_trials, default_id=default_id,
+            expected_circuits=schedule["circuits"],
+            expected_seeds=schedule["seeds"])
+        if preflight_selection["shared_selected"] is None:
+            raise RuntimeError(
+                "no valid shared tuning configuration was selected")
+
+        _, trials, snapshot = _seal_completed_phase(
+            root, schedule, scheduled_trials, phase="validation",
+            purpose="finalization")
+        selection, ordered = _ranked_validation_selection(
+            trials, default_id=default_id,
+            expected_circuits=schedule["circuits"],
+            expected_seeds=schedule["seeds"])
+        if selection != preflight_selection or ordered != preflight_ordered:
+            raise RuntimeError(
+                "validation selection changed across phase sealing")
+    _validate_receipt_snapshot(
+        root, schedule, scheduled_trials, snapshot, purpose="finalization")
     _write_leaderboard_csv(root / "leaderboard.csv", ordered)
     _write_pareto_csv(root / "pareto.csv", ordered)
     _atomic_json(root / "leaderboard.json", {
@@ -1189,6 +1695,8 @@ def finalize_tuning(
     }
     selected_manifest["manifest_sha256"] = _self_hash(
         selected_manifest, "manifest_sha256")
+    _validate_receipt_snapshot(
+        root, schedule, scheduled_trials, snapshot, purpose="finalization")
     _atomic_json(root / "selected_shared.json", {
         "candidate_id": shared_id,
         "config_sha256": {
@@ -1288,7 +1796,13 @@ def validate_tuning_selection_for_plan(
             "tuning selection no longer matches current frozen inputs: "
             f"{current_input_drift}")
 
-    schedule, trials = load_phase_trials(root, "validation")
+    schedule, scheduled_trials = load_schedule(root, "validation")
+    _load_published_phase_snapshot(
+        root, schedule, scheduled_trials, phase="validation",
+        purpose="finalization")
+    replayed_schedule, trials = load_phase_trials(root, "validation")
+    if replayed_schedule != schedule:
+        raise ValueError("validation schedule changed during selection replay")
     _validate_schedule_chain(root, "validation", workspace)
     if manifest.get("validation_schedule_sha256") != schedule["schedule_sha256"]:
         raise ValueError("tuning validation schedule hash mismatch")
@@ -1374,12 +1888,36 @@ def tuning_status(root: Path) -> Mapping[str, Any]:
             continue
         schedule, rows = load_schedule(root, phase)
         present = sum(_receipt_path(root, row).is_file() for row in rows)
+        claim_rows = [row for row in rows if _claim_path(root, row).exists()]
+        claim_errors = []
+        for row in claim_rows:
+            try:
+                _validate_claim(_claim_path(root, row), schedule, row)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                claim_errors.append(
+                    f"{row.trial_id}: {type(error).__name__}: {error}")
+        validation_error = None
+        validated = False
+        if present == len(rows) and not claim_rows:
+            try:
+                load_phase_trials(root, phase)
+            except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+                validation_error = f"{type(error).__name__}: {error}"
+            else:
+                validated = True
+        seal_path = _phase_seal_path(root, phase)
         phases[phase] = {
             "scheduled": True,
             "schedule_sha256": schedule["schedule_sha256"],
             "expected": len(rows),
             "receipts": present,
-            "complete": present == len(rows),
+            "claims": len(claim_rows),
+            "claimed_trial_ids": [row.trial_id for row in claim_rows],
+            "claim_validation_errors": claim_errors,
+            "sealed": seal_path.is_file(),
+            "validated": validated,
+            "validation_error": validation_error,
+            "complete": validated and not claim_rows,
         }
     return {
         "experiment_schema": 2,
@@ -1394,7 +1932,8 @@ def tuning_status(root: Path) -> Mapping[str, Any]:
 __all__ = [
     "ALGORITHM_REVISION", "build_candidate_config_pair", "finalize_tuning",
     "load_phase_trials", "load_schedule", "materialize_candidate_configs",
-    "prepare_tuning_workspace", "promote_tuning_phase", "run_tuning_phase",
+    "prepare_tuning_workspace", "promote_tuning_phase",
+    "recover_tuning_claim", "run_tuning_phase",
     "seal_trial_result", "tuning_status", "validate_trial_receipt",
     "validate_tuning_selection_for_plan",
 ]
