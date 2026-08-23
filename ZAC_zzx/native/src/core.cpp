@@ -415,6 +415,434 @@ struct ReplayBatches {
   std::vector<std::vector<std::size_t>> batches;
 };
 
+struct PhaseEvaluation {
+  bool feasible{true};
+  std::size_t batch_count{};
+  double phase_time{};
+  std::vector<std::vector<std::size_t>> batches;
+};
+
+double single_batch_time(const Leg& leg) {
+  return 2.0 * kTransferUs +
+         std::sqrt(point_distance(leg.source, leg.target) / kAccelUmPerUs2);
+}
+
+constexpr std::size_t kFastPhaseLegs = 64;
+constexpr std::size_t kFastPhasePositions = 512;
+
+std::size_t mask_members(
+    const MovementPhase& phase, std::uint64_t mask,
+    std::array<std::size_t, kFastPhaseLegs>& members) {
+  std::size_t count = 0;
+  for (std::size_t index = 0; index < phase.legs.size(); ++index) {
+    if ((mask & (std::uint64_t{1} << index)) != 0U) members[count++] = index;
+  }
+  // Every source batch is stable-sorted by descending distance before replay.
+  for (std::size_t index = 1; index < count; ++index) {
+    const auto value = members[index];
+    std::size_t insert = index;
+    while (insert > 0 &&
+           phase.legs[members[insert - 1]].distance_um <
+               phase.legs[value].distance_um) {
+      members[insert] = members[insert - 1];
+      --insert;
+    }
+    members[insert] = value;
+  }
+  return count;
+}
+
+double mask_longest(const MovementPhase& phase, std::uint64_t mask) {
+  double value = 0.0;
+  for (std::size_t index = 0; index < phase.legs.size(); ++index) {
+    if ((mask & (std::uint64_t{1} << index)) != 0U) {
+      value = std::max(value, phase.legs[index].distance_um);
+    }
+  }
+  return value;
+}
+
+double expanded_batch_time_mask(const MovementPhase& phase,
+                                std::uint64_t mask) {
+  std::array<std::size_t, kFastPhaseLegs> members{};
+  const auto member_count = mask_members(phase, mask, members);
+  if (member_count == 0) return 0.0;
+  if (member_count == 1) return single_batch_time(phase.legs[members[0]]);
+
+  std::array<double, kFastPhaseLegs> row_keys{};
+  std::size_t row_count = 0;
+  for (std::size_t offset = 0; offset < member_count; ++offset) {
+    const auto key = phase.legs[members[offset]].source.y;
+    bool seen = false;
+    for (std::size_t row = 0; row < row_count; ++row) {
+      if (row_keys[row] == key) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) row_keys[row_count++] = key;
+  }
+  std::sort(row_keys.begin(), row_keys.begin() + row_count);
+  double duration = static_cast<double>(row_count + 1) * kTransferUs;
+  if (row_count > 1) {
+    duration += static_cast<double>(row_count - 1) *
+                std::sqrt(std::sqrt(2.0) / kAccelUmPerUs2);
+  }
+
+  std::array<std::pair<double, double>, kFastPhaseLegs> row_moves{};
+  std::array<double, kFastPhaseLegs> source_x{};
+  std::array<double, kFastPhaseLegs> target_x{};
+  std::array<std::size_t, kFastPhaseLegs> last_row{};
+  std::size_t column_count = 0;
+  for (std::size_t row = 0; row < row_count; ++row) {
+    const auto source_y = row_keys[row];
+    const Leg* first = nullptr;
+    for (std::size_t offset = 0; offset < member_count; ++offset) {
+      const auto& leg = phase.legs[members[offset]];
+      if (leg.source.y != source_y) continue;
+      if (first == nullptr) first = &leg;
+      std::size_t column = column_count;
+      for (std::size_t existing = 0; existing < column_count; ++existing) {
+        if (source_x[existing] == leg.source.x) {
+          column = existing;
+          break;
+        }
+      }
+      if (column == column_count) {
+        source_x[column_count] = leg.source.x;
+        target_x[column_count] = leg.target.x;
+        ++column_count;
+      }
+      last_row[column] = row;
+    }
+    row_moves[row] = {
+        source_y + (row + 1 < row_count ? 1.0 : 0.0), first->target.y};
+  }
+
+  std::array<std::size_t, kFastPhaseLegs> column_order{};
+  for (std::size_t column = 0; column < column_count; ++column) {
+    column_order[column] = column;
+  }
+  std::stable_sort(
+      column_order.begin(), column_order.begin() + column_count,
+      [&](auto left, auto right) { return source_x[left] < source_x[right]; });
+  double longest = 0.0;
+  for (std::size_t row = 0; row < row_count; ++row) {
+    for (std::size_t ordered = 0; ordered < column_count; ++ordered) {
+      const auto column = column_order[ordered];
+      const auto column_begin =
+          source_x[column] +
+          (last_row[column] + 1 < row_count ? 1.0 : 0.0);
+      longest = std::max(
+          longest,
+          std::hypot(target_x[column] - column_begin,
+                     row_moves[row].second - row_moves[row].first));
+    }
+  }
+  return duration + std::sqrt(longest / kAccelUmPerUs2);
+}
+
+bool mask_ghost_hit(
+    const MovementPhase& phase, std::uint64_t mask,
+    const std::int64_t* atoms, const Point* positions,
+    std::size_t position_count) {
+  if (mask == 0U || position_count == 0) return false;
+  std::array<std::pair<double, double>, kFastPhaseLegs> columns{};
+  std::array<std::pair<double, double>, kFastPhaseLegs> rows{};
+  std::size_t column_count = 0;
+  std::size_t row_count = 0;
+  double x_min = std::numeric_limits<double>::infinity();
+  double x_max = -std::numeric_limits<double>::infinity();
+  double y_min = std::numeric_limits<double>::infinity();
+  double y_max = -std::numeric_limits<double>::infinity();
+  const auto append_unique = [](auto& values, std::size_t& size,
+                                const auto& value) {
+    for (std::size_t index = 0; index < size; ++index) {
+      if (values[index] == value) return;
+    }
+    values[size++] = value;
+  };
+  for (std::size_t index = 0; index < phase.legs.size(); ++index) {
+    if ((mask & (std::uint64_t{1} << index)) == 0U) continue;
+    const auto& leg = phase.legs[index];
+    append_unique(columns, column_count,
+                  std::pair<double, double>{leg.source.x, leg.target.x});
+    append_unique(rows, row_count,
+                  std::pair<double, double>{leg.source.y, leg.target.y});
+    x_min = std::min({x_min, leg.source.x, leg.target.x});
+    x_max = std::max({x_max, leg.source.x, leg.target.x});
+    y_min = std::min({y_min, leg.source.y, leg.target.y});
+    y_max = std::max({y_max, leg.source.y, leg.target.y});
+  }
+  for (std::size_t ghost = 0; ghost < position_count; ++ghost) {
+    bool moving = false;
+    if (!phase.owners.empty()) {
+      for (std::size_t index = 0; index < phase.legs.size(); ++index) {
+        if ((mask & (std::uint64_t{1} << index)) != 0U &&
+            phase.owners[index] == atoms[ghost]) {
+          moving = true;
+          break;
+        }
+      }
+    }
+    if (moving) continue;
+    const auto& point = positions[ghost];
+    if (point.x < x_min - kEps || point.x > x_max + kEps ||
+        point.y < y_min - kEps || point.y > y_max + kEps) {
+      continue;
+    }
+    for (std::size_t column = 0; column < column_count; ++column) {
+      const auto x = cover(columns[column].first, columns[column].second,
+                           point.x);
+      if (!x.valid) continue;
+      for (std::size_t row = 0; row < row_count; ++row) {
+        const auto y = cover(rows[row].first, rows[row].second, point.y);
+        if (!y.valid) continue;
+        if (x.always || y.always || std::abs(x.time - y.time) < kSTolerance) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+PhaseEvaluation evaluate_fast_phase(const MovementPhase& phase,
+                                    bool enforce_single_leg_ghost,
+                                    bool record_batches) {
+  PhaseEvaluation result;
+  const auto size = phase.legs.size();
+  if (size == 0) return result;
+  if (phase.batching != "phase" && phase.batching != "greedy") {
+    throw std::invalid_argument("unknown batching policy: " + phase.batching);
+  }
+
+  std::array<std::uint64_t, kFastPhaseLegs> adjacency{};
+  std::array<std::int64_t, kFastPhasePositions> raw_atoms{};
+  std::array<Point, kFastPhasePositions> raw_points{};
+  const auto raw_count = phase.ghosts.size();
+  for (std::size_t ghost = 0; ghost < raw_count; ++ghost) {
+    raw_atoms[ghost] = phase.ghosts[ghost].atom;
+    raw_points[ghost] = phase.ghosts[ghost].position;
+  }
+  for (std::size_t first = 0; first < size; ++first) {
+    const auto& a = phase.legs[first];
+    const std::array<double, 4> av{
+        a.source.x, a.target.x, a.source.y, a.target.y};
+    for (std::size_t second = first + 1; second < size; ++second) {
+      const auto& b = phase.legs[second];
+      const std::array<double, 4> bv{
+          b.source.x, b.target.x, b.source.y, b.target.y};
+      const auto pair_mask = (std::uint64_t{1} << first) |
+                             (std::uint64_t{1} << second);
+      const bool conflict =
+          !compatible_2d(av, bv) ||
+          (raw_count != 0 &&
+           mask_ghost_hit(
+               phase, pair_mask, raw_atoms.data(), raw_points.data(),
+               raw_count));
+      if (conflict) {
+        adjacency[first] |= std::uint64_t{1} << second;
+        adjacency[second] |= std::uint64_t{1} << first;
+      }
+    }
+  }
+
+  std::array<std::uint64_t, kFastPhaseLegs> batches{};
+  std::size_t batch_count = 0;
+  if (phase.batching == "greedy") {
+    std::array<std::size_t, kFastPhaseLegs> priority{};
+    for (std::size_t index = 0; index < size; ++index) priority[index] = index;
+    std::stable_sort(priority.begin(), priority.begin() + size,
+                     [&](auto left, auto right) {
+                       return phase.legs[left].distance_um >
+                              phase.legs[right].distance_um;
+                     });
+    const auto all = (size == 64 ? ~std::uint64_t{0}
+                                 : (std::uint64_t{1} << size) - 1U);
+    auto remaining = all;
+    while (remaining != 0U) {
+      std::uint64_t selected = 0;
+      for (std::size_t offset = 0; offset < size; ++offset) {
+        const auto index = priority[offset];
+        const auto bit = std::uint64_t{1} << index;
+        if ((remaining & bit) == 0U ||
+            (adjacency[index] & selected) != 0U) {
+          continue;
+        }
+        selected |= bit;
+      }
+      batches[batch_count++] = selected;
+      remaining &= ~selected;
+    }
+  } else {
+    std::array<int, kFastPhaseLegs> colors{};
+    colors.fill(-1);
+    std::array<std::uint64_t, kFastPhaseLegs> neighbor_colors{};
+    for (std::size_t step = 0; step < size; ++step) {
+      std::size_t best = size;
+      std::tuple<int, int, double> best_key{};
+      bool have_best = false;
+      for (std::size_t vertex = 0; vertex < size; ++vertex) {
+        if (colors[vertex] >= 0) continue;
+        const auto key = std::make_tuple(
+            __builtin_popcountll(neighbor_colors[vertex]),
+            __builtin_popcountll(adjacency[vertex]),
+            phase.legs[vertex].distance_um);
+        if (!have_best || key > best_key) {
+          best = vertex;
+          best_key = key;
+          have_best = true;
+        }
+      }
+      int color = 0;
+      while ((neighbor_colors[best] &
+              (std::uint64_t{1} << static_cast<unsigned>(color))) != 0U) {
+        ++color;
+      }
+      colors[best] = color;
+      auto neighbors = adjacency[best];
+      while (neighbors != 0U) {
+        const auto neighbor = static_cast<std::size_t>(
+            __builtin_ctzll(neighbors));
+        neighbor_colors[neighbor] |=
+            std::uint64_t{1} << static_cast<unsigned>(color);
+        neighbors &= neighbors - 1U;
+      }
+    }
+    std::array<int, kFastPhaseLegs> color_order{};
+    std::size_t color_count = 0;
+    for (std::size_t vertex = 0; vertex < size; ++vertex) {
+      const auto color = colors[vertex];
+      std::size_t slot = color_count;
+      for (std::size_t index = 0; index < color_count; ++index) {
+        if (color_order[index] == color) {
+          slot = index;
+          break;
+        }
+      }
+      if (slot == color_count) {
+        color_order[color_count] = color;
+        batches[color_count++] = 0U;
+      }
+      batches[slot] |= std::uint64_t{1} << vertex;
+    }
+    batch_count = color_count;
+    for (std::size_t index = 1; index < batch_count; ++index) {
+      const auto value = batches[index];
+      const auto longest = mask_longest(phase, value);
+      std::size_t insert = index;
+      while (insert > 0 &&
+             mask_longest(phase, batches[insert - 1]) < longest) {
+        batches[insert] = batches[insert - 1];
+        --insert;
+      }
+      batches[insert] = value;
+    }
+  }
+
+  if (!enforce_single_leg_ghost) {
+    result.batch_count = batch_count;
+    for (std::size_t batch = 0; batch < batch_count; ++batch) {
+      result.phase_time += expanded_batch_time_mask(phase, batches[batch]);
+      if (record_batches) {
+        std::array<std::size_t, kFastPhaseLegs> members{};
+        const auto count = mask_members(phase, batches[batch], members);
+        result.batches.emplace_back(members.begin(), members.begin() + count);
+      }
+    }
+    return result;
+  }
+
+  std::array<std::int64_t, kFastPhasePositions> atoms{};
+  std::array<Point, kFastPhasePositions> positions{};
+  std::size_t position_count = 0;
+  const auto set_position = [&](std::int64_t atom, Point point,
+                                auto& self) -> void {
+    (void)self;
+    for (std::size_t index = 0; index < position_count; ++index) {
+      if (atoms[index] == atom) {
+        positions[index] = point;
+        return;
+      }
+    }
+    atoms[position_count] = atom;
+    positions[position_count] = point;
+    ++position_count;
+  };
+  for (const auto& ghost : phase.ghosts) {
+    set_position(ghost.atom, ghost.position, set_position);
+  }
+  if (!phase.owners.empty()) {
+    for (std::size_t index = 0; index < size; ++index) {
+      set_position(phase.owners[index], phase.legs[index].source, set_position);
+    }
+  }
+
+  std::array<std::uint64_t, kFastPhaseLegs> pending = batches;
+  std::size_t pending_count = batch_count;
+  while (pending_count != 0) {
+    bool progressed = false;
+    for (std::size_t pending_index = 0; pending_index < pending_count;
+         ++pending_index) {
+      const auto mask = pending[pending_index];
+      if (mask_ghost_hit(
+              phase, mask, atoms.data(), positions.data(), position_count)) {
+        continue;
+      }
+      ++result.batch_count;
+      result.phase_time += expanded_batch_time_mask(phase, mask);
+      if (record_batches) {
+        std::array<std::size_t, kFastPhaseLegs> members{};
+        const auto count = mask_members(phase, mask, members);
+        result.batches.emplace_back(members.begin(), members.begin() + count);
+      }
+      if (!phase.owners.empty()) {
+        for (std::size_t index = 0; index < size; ++index) {
+          if ((mask & (std::uint64_t{1} << index)) != 0U) {
+            set_position(
+                phase.owners[index], phase.legs[index].target, set_position);
+          }
+        }
+      }
+      for (std::size_t shift = pending_index + 1; shift < pending_count;
+           ++shift) {
+        pending[shift - 1] = pending[shift];
+      }
+      --pending_count;
+      progressed = true;
+      break;
+    }
+    if (progressed) continue;
+
+    std::size_t split = pending_count;
+    for (std::size_t index = 0; index < pending_count; ++index) {
+      if (__builtin_popcountll(pending[index]) > 1) {
+        split = index;
+        break;
+      }
+    }
+    if (split == pending_count) {
+      result.feasible = false;
+      result.batch_count = 0;
+      result.phase_time = 0.0;
+      result.batches.clear();
+      return result;
+    }
+    std::array<std::size_t, kFastPhaseLegs> members{};
+    const auto member_count = mask_members(phase, pending[split], members);
+    const auto added = member_count - 1;
+    for (std::size_t index = pending_count; index-- > split + 1;) {
+      pending[index + added] = pending[index];
+    }
+    for (std::size_t index = 0; index < member_count; ++index) {
+      pending[split + index] = std::uint64_t{1} << members[index];
+    }
+    pending_count += added;
+  }
+  return result;
+}
+
 ReplayBatches replay_phase_batches(const MovementPhase& phase,
                                    std::size_t exact_threshold) {
   auto pending = color_phase(phase, exact_threshold);
@@ -482,11 +910,35 @@ ReplayBatches replay_phase_batches(const MovementPhase& phase,
   }
   return result;
 }
+
+PhaseEvaluation evaluate_phase(const MovementPhase& phase,
+                               std::size_t exact_threshold,
+                               bool enforce_single_leg_ghost,
+                               bool record_batches) {
+  if (exact_threshold == 0 && phase.legs.size() <= kFastPhaseLegs &&
+      phase.ghosts.size() + phase.owners.size() <= kFastPhasePositions) {
+    return evaluate_fast_phase(
+        phase, enforce_single_leg_ghost, record_batches);
+  }
+  auto replay = (enforce_single_leg_ghost
+                     ? replay_phase_batches(phase, exact_threshold)
+                     : ReplayBatches{true, color_phase(phase, exact_threshold)});
+  PhaseEvaluation result;
+  result.feasible = replay.feasible;
+  if (!result.feasible) return result;
+  result.batch_count = replay.batches.size();
+  for (const auto& batch : replay.batches) {
+    result.phase_time += expanded_batch_time(phase.legs, batch);
+  }
+  if (record_batches) result.batches = std::move(replay.batches);
+  return result;
+}
 }  // namespace
 
-FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
-                                 const CandidatePlan& candidate,
-                                 const BoundaryConfig& config) {
+namespace {
+FitnessResult evaluate_candidate_impl(
+    const ArchitectureSnapshot& architecture, const CandidatePlan& candidate,
+    const BoundaryConfig& config, bool record_batches) {
   if (candidate.idle_exposures < 0) {
     throw std::invalid_argument("idle_exposures must be non-negative");
   }
@@ -519,23 +971,15 @@ FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
     if (phase.legs.size() > architecture.n_atoms()) {
       return infeasible(candidate, "phase has more movers than atoms");
     }
-    auto replay = (config.enforce_single_leg_ghost
-                       ? replay_phase_batches(
-                             phase, config.exact_coloring_threshold)
-                       : ReplayBatches{
-                             true, color_phase(
-                                       phase,
-                                       config.exact_coloring_threshold)});
-    if (!replay.feasible) {
+    auto evaluated = evaluate_phase(
+        phase, config.exact_coloring_threshold,
+        config.enforce_single_leg_ghost, record_batches);
+    if (!evaluated.feasible) {
       return infeasible(
           candidate, "phase " + std::to_string(phase_index) +
                          " has no ghost-safe straight-leg batch order");
     }
-    auto batches = std::move(replay.batches);
-    double phase_time = 0.0;
-    for (const auto& batch : batches) {
-      phase_time += expanded_batch_time(phase.legs, batch);
-    }
+    const auto phase_time = evaluated.phase_time;
     const auto phase_movers = phase.legs.size();
     const auto mover_idle = std::max(0.0, phase_time - 2.0 * kTransferUs);
     if (phase_time >= kT2Us || mover_idle >= kT2Us) {
@@ -545,13 +989,15 @@ FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
       result.transfer_nll = result.negative_log_fidelity;
       result.idle_excitation_nll = result.negative_log_fidelity;
       result.coherence_nll = result.negative_log_fidelity;
-      result.move_batches += batches.size();
+      result.move_batches += evaluated.batch_count;
       result.move_time_us += phase_time;
       for (const auto& leg : phase.legs) {
         result.total_distance_um += leg.distance_um;
       }
       result.transfers = 2 * (movers + phase_movers);
-      result.phase_batches.push_back(std::move(batches));
+      if (record_batches) {
+        result.phase_batches.push_back(std::move(evaluated.batches));
+      }
       return result;
     }
     result.coherence_nll -=
@@ -559,13 +1005,15 @@ FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
         std::log1p(-phase_time / kT2Us);
     result.coherence_nll -= static_cast<double>(phase_movers) *
                             std::log1p(-mover_idle / kT2Us);
-    result.move_batches += batches.size();
+    result.move_batches += evaluated.batch_count;
     result.move_time_us += phase_time;
     for (const auto& leg : phase.legs) {
       result.total_distance_um += leg.distance_um;
     }
     movers += phase_movers;
-    result.phase_batches.push_back(std::move(batches));
+    if (record_batches) {
+      result.phase_batches.push_back(std::move(evaluated.batches));
+    }
   }
   result.transfers = 2 * movers;
   result.transfer_nll = -static_cast<double>(result.transfers) *
@@ -576,6 +1024,19 @@ FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
                                  result.idle_excitation_nll +
                                  result.coherence_nll;
   return result;
+}
+}  // namespace
+
+FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
+                                 const CandidatePlan& candidate,
+                                 const BoundaryConfig& config) {
+  return evaluate_candidate_impl(architecture, candidate, config, true);
+}
+
+FitnessResult evaluate_candidate_summary(
+    const ArchitectureSnapshot& architecture, const CandidatePlan& candidate,
+    const BoundaryConfig& config) {
+  return evaluate_candidate_impl(architecture, candidate, config, false);
 }
 
 bool objective_less(const FitnessResult& first,

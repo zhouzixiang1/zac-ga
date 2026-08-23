@@ -397,6 +397,10 @@ class RichSolver {
       : architecture_(architecture), problem_(problem), config_(config),
         rng_(rng_state) {
     validate();
+    participant_mask_.assign(problem_.n_atoms, false);
+    for (const auto atom : problem_.participants) {
+      participant_mask_[static_cast<std::size_t>(atom)] = true;
+    }
     storage_site_ids_.insert(architecture_.storage_site_ids().begin(),
                              architecture_.storage_site_ids().end());
     return_domains_ = problem_.return_domains;
@@ -539,9 +543,39 @@ class RichSolver {
     }
     const auto selection_started = Clock::now();
     const auto final_value = evaluate(winner, false);
+    auto final_geometry = build_geometry(
+        final_value.decoded, final_value.assignments, final_value.reseats);
+    const auto recorded_winner = score_geometry(
+        winner, std::move(final_geometry), final_value.assignments.size(),
+        config_.enforce_single_leg_ghost, true);
+    const auto same_value = [](double first, double second) {
+      return first == second ||
+             (std::isinf(first) && std::isinf(second) &&
+              std::signbit(first) == std::signbit(second));
+    };
+    if (recorded_winner.feasible != final_value.fitness.feasible ||
+        !same_value(recorded_winner.negative_log_fidelity,
+                    final_value.fitness.negative_log_fidelity) ||
+        recorded_winner.move_batches != final_value.fitness.move_batches ||
+        !same_value(recorded_winner.move_time_us,
+                    final_value.fitness.move_time_us) ||
+        !same_value(recorded_winner.total_distance_um,
+                    final_value.fitness.total_distance_um)) {
+      throw std::runtime_error(
+          "recorded winner differs from summary fitness: nll=" +
+          std::to_string(recorded_winner.negative_log_fidelity) + "/" +
+          std::to_string(final_value.fitness.negative_log_fidelity) +
+          ", batches=" + std::to_string(recorded_winner.move_batches) +
+          "/" + std::to_string(final_value.fitness.move_batches) +
+          ", time=" + std::to_string(recorded_winner.move_time_us) + "/" +
+          std::to_string(final_value.fitness.move_time_us) +
+          ", distance=" +
+          std::to_string(recorded_winner.total_distance_um) + "/" +
+          std::to_string(final_value.fitness.total_distance_um));
+    }
     selection_ns_ += elapsed_ns(selection_started);
     RichSolveResult result;
-    result.winner = final_value.fitness;
+    result.winner = recorded_winner;
     result.gate_option_indices = final_value.decoded.option_indices;
     for (const auto& assignment : final_value.assignments) {
       result.return_assignments.emplace_back(
@@ -875,6 +909,12 @@ class RichSolver {
       const std::vector<ReturnAssignment>& reseats) const {
     PlanGeometry geometry;
     geometry.positions_t1 = problem_.current_points;
+    geometry.back_legs.reserve(assignments.size() + reseats.size());
+    geometry.back_owners.reserve(assignments.size() + reseats.size());
+    geometry.out_legs.reserve(problem_.participants.size());
+    geometry.out_owners.reserve(problem_.participants.size());
+    geometry.ghosts_t0.reserve(problem_.n_atoms);
+    geometry.ghosts_t1.reserve(problem_.n_atoms);
     const auto append_back = [&](const ReturnAssignment& assignment) {
       const auto q = problem_.eligible[assignment.eligible_index];
       const auto& source = problem_.current_points[q];
@@ -888,27 +928,57 @@ class RichSolver {
     for (const auto& assignment : assignments) append_back(assignment);
     for (const auto& reseat : reseats) append_back(reseat);
 
-    std::map<std::pair<double, double>, std::vector<std::int64_t>> occupancy;
-    for (std::size_t atom = 0; atom < geometry.positions_t1.size(); ++atom) {
-      const auto& point = geometry.positions_t1[atom];
-      occupancy[{point.x, point.y}].push_back(static_cast<std::int64_t>(atom));
-    }
-    for (const auto& [point, atoms] : occupancy) {
-      (void)point;
-      if (atoms.size() <= 1) continue;
-      geometry.violations += atoms.size() - 1;
-      geometry.blockers.insert(atoms.begin(), atoms.end());
+    constexpr std::size_t kStackAtoms = 256;
+    if (geometry.positions_t1.size() <= kStackAtoms) {
+      std::array<std::size_t, kStackAtoms> order{};
+      for (std::size_t atom = 0; atom < geometry.positions_t1.size(); ++atom) {
+        order[atom] = atom;
+      }
+      std::sort(order.begin(), order.begin() + geometry.positions_t1.size(),
+                [&](auto first, auto second) {
+                  const auto& left = geometry.positions_t1[first];
+                  const auto& right = geometry.positions_t1[second];
+                  return std::tie(left.x, left.y, first) <
+                         std::tie(right.x, right.y, second);
+                });
+      for (std::size_t begin = 0; begin < geometry.positions_t1.size();) {
+        std::size_t end = begin + 1;
+        while (end < geometry.positions_t1.size() &&
+               same_point(geometry.positions_t1[order[begin]],
+                          geometry.positions_t1[order[end]])) {
+          ++end;
+        }
+        if (end - begin > 1) {
+          geometry.violations += end - begin - 1;
+          for (std::size_t index = begin; index < end; ++index) {
+            geometry.blockers.insert(
+                static_cast<std::int64_t>(order[index]));
+          }
+        }
+        begin = end;
+      }
+    } else {
+      std::map<std::pair<double, double>, std::vector<std::int64_t>> occupancy;
+      for (std::size_t atom = 0; atom < geometry.positions_t1.size(); ++atom) {
+        const auto& point = geometry.positions_t1[atom];
+        occupancy[{point.x, point.y}].push_back(
+            static_cast<std::int64_t>(atom));
+      }
+      for (const auto& [point, atoms] : occupancy) {
+        (void)point;
+        if (atoms.size() <= 1) continue;
+        geometry.violations += atoms.size() - 1;
+        geometry.blockers.insert(atoms.begin(), atoms.end());
+      }
     }
 
-    const std::set<std::int64_t> participants(problem_.participants.begin(),
-                                               problem_.participants.end());
     const auto gate_count = problem_.gate_domains.size();
     for (std::size_t gate = 0; gate < gate_count; ++gate) {
       const auto& option =
           problem_.gate_domains[gate][decoded.option_indices[gate]];
       for (const auto& target : {option.target1, option.target2}) {
         for (std::size_t atom = 0; atom < geometry.positions_t1.size(); ++atom) {
-          if (participants.count(static_cast<std::int64_t>(atom)) != 0U) continue;
+          if (participant_mask_[atom]) continue;
           if (same_point(target, geometry.positions_t1[atom])) {
             ++geometry.violations;
             geometry.blockers.insert(static_cast<std::int64_t>(atom));
@@ -932,56 +1002,64 @@ class RichSolver {
       geometry.ghosts_t0.push_back({atom_id, problem_.current_points[atom]});
       geometry.ghosts_t1.push_back({atom_id, geometry.positions_t1[atom]});
     }
-    const auto stationary_ghosts = [](const std::vector<Ghost>& ghosts,
-                                      const std::set<std::int64_t>& movers) {
-      std::vector<Ghost> result;
-      result.reserve(ghosts.size());
-      for (const auto& ghost : ghosts) {
-        if (movers.count(ghost.atom) == 0U) result.push_back(ghost);
+    std::vector<bool> back_movers(problem_.n_atoms, false);
+    std::vector<bool> out_movers(problem_.n_atoms, false);
+    for (const auto owner : geometry.back_owners) {
+      back_movers[static_cast<std::size_t>(owner)] = true;
+    }
+    for (const auto owner : geometry.out_owners) {
+      out_movers[static_cast<std::size_t>(owner)] = true;
+    }
+    const auto replay_single_legs = [&](const auto& legs,
+                                        const auto& ghosts,
+                                        const auto& movers) {
+      for (std::size_t index = 0; index < legs.size(); ++index) {
+        const auto& leg = legs[index];
+        for (const auto& ghost : ghosts) {
+          const auto atom = static_cast<std::size_t>(ghost.atom);
+          if (atom < movers.size() && movers[atom]) continue;
+          const auto x = cover(leg.source.x, leg.target.x, ghost.position.x);
+          const auto y = cover(leg.source.y, leg.target.y, ghost.position.y);
+          if (!coverage_matches(x, y)) continue;
+          ++geometry.violations;
+          ++geometry.ghost_violations;
+          geometry.blockers.insert(ghost.atom);
+        }
       }
-      return result;
     };
-    const std::set<std::int64_t> back_movers(
-        geometry.back_owners.begin(), geometry.back_owners.end());
-    const std::set<std::int64_t> out_movers(
-        geometry.out_owners.begin(), geometry.out_owners.end());
-    const auto back_static = stationary_ghosts(
-        geometry.ghosts_t0, back_movers);
-    const auto out_static = stationary_ghosts(
-        geometry.ghosts_t1, out_movers);
-    for (std::size_t index = 0; index < geometry.back_legs.size(); ++index) {
-      const auto hits = ghost_hit_atoms(
-          {geometry.back_legs[index]}, back_static);
-      geometry.violations += hits.size();
-      geometry.ghost_violations += hits.size();
-      geometry.blockers.insert(hits.begin(), hits.end());
-    }
-    for (std::size_t index = 0; index < geometry.out_legs.size(); ++index) {
-      const auto hits = ghost_hit_atoms(
-          {geometry.out_legs[index]}, out_static);
-      geometry.violations += hits.size();
-      geometry.ghost_violations += hits.size();
-      geometry.blockers.insert(hits.begin(), hits.end());
-    }
+    replay_single_legs(
+        geometry.back_legs, geometry.ghosts_t0, back_movers);
+    replay_single_legs(
+        geometry.out_legs, geometry.ghosts_t1, out_movers);
     return geometry;
   }
 
   FitnessResult score_geometry(
       const std::vector<std::int64_t>& chromosome,
-      const PlanGeometry& geometry, std::size_t return_count,
-      bool enforce_single_leg_ghost) const {
+      PlanGeometry geometry, std::size_t return_count,
+      bool enforce_single_leg_ghost, bool record_batches = false) const {
     CandidatePlan candidate;
     candidate.chromosome = chromosome;
     candidate.idle_exposures = static_cast<std::int64_t>(
         problem_.eligible.size() - return_count);
-    candidate.phases = {
-        {geometry.back_legs, geometry.ghosts_t0, geometry.back_owners, "phase"},
-        {geometry.out_legs, geometry.ghosts_t1, geometry.out_owners, "phase"},
-    };
+    candidate.phases.reserve(2);
+    MovementPhase back;
+    back.legs = std::move(geometry.back_legs);
+    back.ghosts = std::move(geometry.ghosts_t0);
+    back.owners = std::move(geometry.back_owners);
+    candidate.phases.push_back(std::move(back));
+    MovementPhase out;
+    out.legs = std::move(geometry.out_legs);
+    out.ghosts = std::move(geometry.ghosts_t1);
+    out.owners = std::move(geometry.out_owners);
+    candidate.phases.push_back(std::move(out));
     BoundaryConfig boundary_config;
     boundary_config.exact_coloring_threshold = config_.exact_coloring_threshold;
     boundary_config.enforce_single_leg_ghost = enforce_single_leg_ghost;
-    return evaluate_candidate(architecture_, candidate, boundary_config);
+    return (record_batches
+                ? evaluate_candidate(architecture_, candidate, boundary_config)
+                : evaluate_candidate_summary(
+                      architecture_, candidate, boundary_config));
   }
 
   ReseatRepair derive_reseats(
@@ -1041,13 +1119,14 @@ class RichSolver {
             (void)index;
             trial_reseats.push_back(assignment);
           }
-          const auto trial_geometry =
+          auto trial_geometry =
               build_geometry(decoded, assignments, trial_reseats);
-          if (trial_geometry.violations >= best_violations) continue;
+          const auto trial_violations = trial_geometry.violations;
+          if (trial_violations >= best_violations) continue;
           const auto relaxed = score_geometry(
-              chromosome, trial_geometry, return_count, false);
+              chromosome, std::move(trial_geometry), return_count, false);
           if (!found ||
-              std::tie(trial_geometry.violations,
+              std::tie(trial_violations,
                        relaxed.negative_log_fidelity, relaxed.move_batches,
                        relaxed.move_time_us, relaxed.total_distance_um,
                        blocker, site_id) <
@@ -1057,7 +1136,7 @@ class RichSolver {
                            problem_.eligible[best_index],
                            best_assignment.site_id)) {
             found = true;
-            best_violations = trial_geometry.violations;
+            best_violations = trial_violations;
             best_relaxed = relaxed;
             best_index = eligible_index;
             best_assignment = trial[eligible_index];
@@ -1109,7 +1188,7 @@ class RichSolver {
               : "unresolved current gate occupancy");
     } else {
       result.fitness = score_geometry(
-          chromosome, geometry, returners.size(),
+          chromosome, std::move(reseat_repair.geometry), returners.size(),
           config_.enforce_single_leg_ghost);
     }
     if (!result.fitness.feasible &&
@@ -1590,6 +1669,7 @@ class RichSolver {
   const RichSearchConfig& config_;
   std::vector<std::vector<RichReturnOption>> return_domains_;
   std::set<std::int64_t> storage_site_ids_;
+  std::vector<bool> participant_mask_;
   PythonRandom rng_;
   RichSearchStats stats_;
   std::map<std::vector<std::int64_t>, std::vector<std::int64_t>> normalize_cache_;

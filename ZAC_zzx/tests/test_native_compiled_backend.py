@@ -197,6 +197,41 @@ class TestCompiledBackend(unittest.TestCase):
             self.native.solve_boundary(problem).winner.chromosome,
         )
 
+    def test_allocation_free_phase_path_matches_generic_oracle(self):
+        """The <=64-leg formal fast path must preserve exact replay order."""
+        rng = random.Random(88231)
+        candidates = []
+        for chromosome in range(400):
+            points = tuple(Point(float(rng.randrange(0, 8)),
+                                 float(rng.randrange(0, 8)))
+                           for _ in range(8))
+            owners = tuple(rng.sample(range(8), rng.randrange(0, 9)))
+            legs = []
+            for owner in owners:
+                target = Point(float(rng.randrange(0, 8)),
+                               float(rng.randrange(0, 8)))
+                if target == points[owner]:
+                    target = Point(target.x + 1.0, target.y)
+                legs.append(Leg.between(points[owner], target))
+            ghosts = tuple(Ghost(atom, point)
+                           for atom, point in enumerate(points))
+            candidates.append(CandidatePlan(
+                (chromosome,),
+                (MovementPhase(tuple(legs), ghosts, owners),),
+                rng.randrange(0, 5),
+            ))
+        problem = BoundaryProblem(
+            self.architecture, tuple(candidates), boundary_id="phase-fast-path")
+        fast = self.native.evaluate_many(
+            problem, config=BoundaryConfig(exact_coloring_threshold=0))
+        # A nonzero threshold smaller than every nontrivial phase forces the
+        # established generic replay without activating exact coloring.
+        generic = self.native.evaluate_many(
+            problem, config=BoundaryConfig(exact_coloring_threshold=1))
+        self.assertEqual(len(fast), len(generic))
+        for optimized, oracle in zip(fast, generic):
+            self.assertFitnessEqual(oracle, optimized)
+
     def test_exact_coloring_path_matches(self):
         phase = MovementPhase((
             Leg.between((0.0, 0.0), (3.0, 3.0)),

@@ -21,8 +21,14 @@ FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
                                  const CandidatePlan& candidate,
                                  const BoundaryConfig& config);
 
+// Search kernels compare millions of candidates but only the final winner
+// needs its explicit batch membership.  This variant computes the identical
+// physical objective while omitting the nested phase-batch payload.
+FitnessResult evaluate_candidate_summary(
+    const ArchitectureSnapshot& architecture, const CandidatePlan& candidate,
+    const BoundaryConfig& config);
+
 bool objective_less(const FitnessResult& first,
                     const FitnessResult& second) noexcept;
 
 }  // namespace zac_native
-
