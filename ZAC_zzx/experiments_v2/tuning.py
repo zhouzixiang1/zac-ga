@@ -22,7 +22,11 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-TUNING_PROTOCOL_ID = "resident-ga-native-v1"
+TUNING_PROTOCOL_ID = "resident-ga-native-v2"
+TUNING_QUALITY_POLICY_ID = (
+    "per-circuit-method-linear-else-exponential-sensitivity-v1")
+LINEAR_QUALITY_MODEL = "linear_log_fidelity"
+EXPONENTIAL_QUALITY_MODEL = "exponential_sensitivity_log_fidelity"
 
 TUNING_METHODS = ("M3", "M4")
 TUNING_PHASES = ("screen", "successive_halving", "validation")
@@ -256,6 +260,8 @@ class TuningTrial:
     transition_decision_ns: int | None
     move_time_us: float | None
     move_batches: int | None
+    fidelity_ood: bool = False
+    exponential_sensitivity_log_fidelity: float | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "TuningTrial":
@@ -437,6 +443,70 @@ def _median(values: Iterable[float]) -> float:
     return float(statistics.median(materialized))
 
 
+def _finite_number(value: Any) -> bool:
+    return (not isinstance(value, bool) and isinstance(value, (int, float))
+            and math.isfinite(float(value)))
+
+
+def _valid_trial_evidence(row: TuningTrial) -> bool:
+    """Return whether one row carries every metric needed by tuning v2.
+
+    Every successful row binds the exponential sensitivity score, even when it
+    is inside the paper's linear-coherence domain.  This is necessary because
+    another candidate in the same circuit/method cohort may be OOD, in which
+    case the complete cohort must be compared with one common model.
+    """
+    linear_evidence_ok = (
+        row.log_fidelity is None if row.fidelity_ood else
+        _finite_number(row.log_fidelity))
+    return bool(
+        row.status == "success" and row.verifier_ok and
+        row.ghost_hits == 0 and not row.fallback and
+        linear_evidence_ok and
+        _finite_number(row.exponential_sensitivity_log_fidelity) and
+        _finite_number(row.transition_decision_ns) and
+        float(row.transition_decision_ns) >= 0 and
+        _finite_number(row.move_time_us) and float(row.move_time_us) >= 0 and
+        isinstance(row.move_batches, int) and
+        not isinstance(row.move_batches, bool) and row.move_batches >= 0)
+
+
+def _cohort_quality_models(
+        trials: Iterable[TuningTrial], *, methods: Sequence[str],
+        circuits: Sequence[str]) -> dict[tuple[str, str], str]:
+    """Freeze one coherence model for every circuit/method candidate cohort."""
+    rows = list(trials)
+    models = {}
+    for method in methods:
+        for circuit in circuits:
+            use_exponential = any(
+                row.method == method and row.circuit == circuit and
+                row.fidelity_ood for row in rows)
+            models[(method, circuit)] = (
+                EXPONENTIAL_QUALITY_MODEL if use_exponential
+                else LINEAR_QUALITY_MODEL)
+    return models
+
+
+def _quality_value(row: TuningTrial, model: str) -> float:
+    value = (row.exponential_sensitivity_log_fidelity
+             if model == EXPONENTIAL_QUALITY_MODEL else row.log_fidelity)
+    if not _finite_number(value):
+        raise ValueError(
+            f"tuning row lacks finite {model}: "
+            f"{row.candidate_id}/{row.method}/{row.circuit}/seed-{row.seed}")
+    return float(value)
+
+
+def _quality_model_counts(
+        models: Mapping[tuple[str, str], str], *, method: str,
+        circuits: Sequence[str]) -> dict[str, int]:
+    return {
+        model: sum(models[(method, circuit)] == model for circuit in circuits)
+        for model in (LINEAR_QUALITY_MODEL, EXPONENTIAL_QUALITY_MODEL)
+    }
+
+
 def rank_candidates(
         trials: Sequence[TuningTrial], *, default_id: str,
         expected_circuits: Sequence[str], expected_seeds: Sequence[int],
@@ -454,34 +524,28 @@ def rank_candidates(
     if default_id not in grouped:
         raise ValueError("default candidate is absent from the tuning ledger")
 
+    quality_models = _cohort_quality_models(
+        trials, methods=methods, circuits=expected_circuits)
+
     default_rows = grouped[default_id]
     if set(default_rows) != expected:
         raise ValueError("default candidate does not cover the validation cohort")
-    if not all(
-            row.status == "success" and row.verifier_ok and
-            row.ghost_hits == 0 and not row.fallback and
-            row.log_fidelity is not None and
-            row.transition_decision_ns is not None and
-            row.move_time_us is not None and row.move_batches is not None
-            for row in default_rows.values()):
+    if not all(_valid_trial_evidence(row)
+               for row in default_rows.values()):
         raise ValueError("default candidate is not a complete valid validation run")
     default_by_method_circuit = {
         (method, circuit): _median(
-            default_rows[(method, circuit, seed)].log_fidelity
-            for seed in expected_seeds
-            if default_rows[(method, circuit, seed)].log_fidelity is not None)
+            _quality_value(
+                default_rows[(method, circuit, seed)],
+                quality_models[(method, circuit)])
+            for seed in expected_seeds)
         for method in methods for circuit in expected_circuits
     }
 
     summaries = []
     for cid, rows in sorted(grouped.items()):
-        valid = set(rows) == expected and all(
-            row.status == "success" and row.verifier_ok and
-            row.ghost_hits == 0 and not row.fallback and
-            row.log_fidelity is not None and
-            row.transition_decision_ns is not None and
-            row.move_time_us is not None and row.move_batches is not None
-            for row in rows.values())
+        valid = (set(rows) == expected and
+                 all(_valid_trial_evidence(row) for row in rows.values()))
         per_method: dict[str, dict[str, float]] = {}
         if valid:
             for method in methods:
@@ -491,7 +555,9 @@ def rank_candidates(
                 move_batches = []
                 for circuit in expected_circuits:
                     median_logf = _median(
-                        float(rows[(method, circuit, seed)].log_fidelity)
+                        _quality_value(
+                            rows[(method, circuit, seed)],
+                            quality_models[(method, circuit)])
                         for seed in expected_seeds)
                     deltas.append(
                         median_logf - default_by_method_circuit[(method, circuit)])
@@ -511,6 +577,9 @@ def rank_candidates(
                     "median_transition_decision_ns": _median(runtimes),
                     "median_move_time_us": _median(move_times),
                     "median_move_batches": _median(move_batches),
+                    "quality_model_counts": _quality_model_counts(
+                        quality_models, method=method,
+                        circuits=expected_circuits),
                 }
         non_regressing = valid and all(
             per_method[method]["median_delta_log_fidelity"] >= 0.0
@@ -560,6 +629,7 @@ def rank_candidates(
 
     return {
         "protocol_id": TUNING_PROTOCOL_ID,
+        "quality_policy": TUNING_QUALITY_POLICY_ID,
         "default_candidate_id": default_id,
         "shared_selected": None if shared is None else shared["candidate_id"],
         "independent_selected": independent,
@@ -602,32 +672,29 @@ def stage_leaderboard(
             f"stage tuning ledger is incomplete: missing {len(missing)} rows; "
             f"examples={preview}")
 
-    def valid_trial(row: TuningTrial) -> bool:
-        return bool(
-            row.status == "success" and row.verifier_ok and
-            row.ghost_hits == 0 and not row.fallback and
-            row.log_fidelity is not None and
-            row.transition_decision_ns is not None and
-            row.move_time_us is not None and row.move_batches is not None)
+    quality_models = _cohort_quality_models(
+        observed.values(), methods=TUNING_METHODS,
+        circuits=expected_circuits)
 
     default_medians: dict[tuple[str, str], float] = {}
     for method in TUNING_METHODS:
         for circuit in expected_circuits:
             rows = [observed[(default_id, method, circuit, seed)]
                     for seed in expected_seeds]
-            if not all(valid_trial(row) for row in rows):
+            if not all(_valid_trial_evidence(row) for row in rows):
                 raise ValueError(
                     "default candidate failed in a promotion cohort: "
                     f"{method}/{circuit}")
             default_medians[(method, circuit)] = _median(
-                float(row.log_fidelity) for row in rows)
+                _quality_value(row, quality_models[(method, circuit)])
+                for row in rows)
 
     leaderboard = []
     for cid in candidates:
         rows = [observed[(cid, method, circuit, seed)]
                 for method in TUNING_METHODS for circuit in expected_circuits
                 for seed in expected_seeds]
-        valid = all(valid_trial(row) for row in rows)
+        valid = all(_valid_trial_evidence(row) for row in rows)
         methods: dict[str, Any] = {}
         if valid:
             for method in TUNING_METHODS:
@@ -640,7 +707,9 @@ def stage_leaderboard(
                         observed[(cid, method, circuit, seed)]
                         for seed in expected_seeds]
                     deltas.append(
-                        _median(float(row.log_fidelity) for row in circuit_rows)
+                        _median(_quality_value(
+                            row, quality_models[(method, circuit)])
+                            for row in circuit_rows)
                         - default_medians[(method, circuit)])
                     runtimes.append(_median(
                         float(row.transition_decision_ns)
@@ -654,10 +723,14 @@ def stage_leaderboard(
                     "median_transition_decision_ns": _median(runtimes),
                     "median_move_time_us": _median(move_times),
                     "median_move_batches": _median(move_batches),
+                    "quality_model_counts": _quality_model_counts(
+                        quality_models, method=method,
+                        circuits=expected_circuits),
                 }
         leaderboard.append({
             "candidate_id": cid,
             "valid": valid,
+            "quality_policy": TUNING_QUALITY_POLICY_ID,
             "shared_score": (min(
                 methods[method]["median_delta_log_fidelity"]
                 for method in TUNING_METHODS) if valid else None),
@@ -744,7 +817,8 @@ def write_protocol_files(suite_manifest: Path, output_directory: Path,
 
 __all__ = [
     "DEFAULT_CANDIDATE", "PHASE_CONTRACTS", "ScheduledTrial",
-    "TUNING_METHODS", "TUNING_PHASES", "TUNING_PROTOCOL_ID", "TUNING_SPACE",
+    "TUNING_METHODS", "TUNING_PHASES", "TUNING_PROTOCOL_ID",
+    "TUNING_QUALITY_POLICY_ID", "TUNING_SPACE",
     "TuningTrial",
     "build_tuning_split", "candidate_id", "circuit_family", "gate_stratum",
     "build_trial_schedule", "generate_candidates", "promoted_candidates",

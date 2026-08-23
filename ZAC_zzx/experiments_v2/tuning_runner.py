@@ -14,6 +14,7 @@ import csv
 import gzip
 import hashlib
 import json
+import math
 import os
 import shutil
 import statistics
@@ -21,7 +22,8 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from zzx.algorithm_v2 import (decay_lookahead_spec, validate_schema2_pair,
+from zzx.algorithm_v2 import (FORMAL_NATIVE_TUNING_PROTOCOL_ID,
+                              decay_lookahead_spec, validate_schema2_pair,
                               validate_schema2_setting)
 
 from .cli import UnifiedEvaluationGate, _attempt_spec
@@ -36,6 +38,7 @@ from .tuning import (
     PHASE_CONTRACTS,
     TUNING_METHODS,
     TUNING_PROTOCOL_ID,
+    TUNING_QUALITY_POLICY_ID,
     TUNING_SPACE,
     ScheduledTrial,
     TuningTrial,
@@ -142,7 +145,11 @@ def build_candidate_config_pair(
             "algorithm_revision": ALGORITHM_REVISION,
             "backend": NATIVE_BACKEND,
             "native_fail_closed": NATIVE_FAIL_CLOSED,
-            "tuning_protocol_id": TUNING_PROTOCOL_ID,
+            # The outer v2 tuning ledger is intentionally independent of the
+            # compiler/native ABI identity.  The search algorithm, wheel and
+            # RNG did not change, so trial configs retain the registered v1
+            # native protocol while schedules/receipts use tuning v2.
+            "tuning_protocol_id": FORMAL_NATIVE_TUNING_PROTOCOL_ID,
             "seed": int(seed),
             "method_id": "ours_nl" if method == "M3" else "ours_lk",
             "lookahead_horizon": decay_lookahead_spec(
@@ -268,6 +275,7 @@ def _replayed_promotion_report(root: Path, phase: str) -> Mapping[str, Any]:
     expected = {
         "experiment_schema": 2,
         "protocol_id": TUNING_PROTOCOL_ID,
+        "quality_policy": TUNING_QUALITY_POLICY_ID,
         "phase": phase,
         "schedule_sha256": schedule["schedule_sha256"],
         "promoted_candidate_ids": promoted,
@@ -331,6 +339,8 @@ def _validate_tuning_workspace(
     if (manifest.get("protocol_id") != TUNING_PROTOCOL_ID
             or manifest.get("dataset") != dataset_name):
         raise ValueError("tuning workspace protocol/dataset mismatch")
+    if manifest.get("quality_policy") != TUNING_QUALITY_POLICY_ID:
+        raise ValueError("tuning workspace quality policy mismatch")
     repository = repository_snapshot(plan.repo_root)
     if (repository.get("dirty") or repository.get("commit") == "unknown"
             or repository.get("commit") !=
@@ -424,6 +434,7 @@ def prepare_tuning_workspace(
     manifest = {
         "experiment_schema": 2,
         "protocol_id": TUNING_PROTOCOL_ID,
+        "quality_policy": TUNING_QUALITY_POLICY_ID,
         "algorithm_revision": ALGORITHM_REVISION,
         "dataset": dataset_name,
         "repository": repository,
@@ -517,6 +528,16 @@ def _tuning_receipt_projection(
     backend, fallback = _native_evidence(stats)
     transition_ns = _transition_ns(manifest, stats)
     compiler_status = str(manifest.get("status", "compiler_error"))
+    fidelity_ood = manifest.get("fidelity_ood") is True
+    log_fidelity = manifest.get("log_fidelity")
+    exponential_log_fidelity = manifest.get(
+        "exponential_sensitivity_log_fidelity")
+
+    def finite_number(value: Any) -> bool:
+        return (not isinstance(value, bool) and
+                isinstance(value, (int, float)) and
+                math.isfinite(float(value)))
+
     errors = []
     if compiler_status == "success":
         if manifest.get("verifier_ok") is not True:
@@ -535,7 +556,15 @@ def _tuning_receipt_projection(
             if manifest.get(key) != native_identity[key]:
                 errors.append(
                     f"native identity {key} differs from workspace")
-        for key in ("log_fidelity", "move_time_us", "move_batches"):
+        if fidelity_ood:
+            if log_fidelity is not None:
+                errors.append("OOD result invents a linear log_fidelity")
+        elif not finite_number(log_fidelity):
+            errors.append("in-domain log_fidelity is absent or non-finite")
+        if not finite_number(exponential_log_fidelity):
+            errors.append(
+                "exponential_sensitivity_log_fidelity is absent or non-finite")
+        for key in ("move_time_us", "move_batches"):
             if manifest.get(key) is None:
                 errors.append(f"{key} is absent")
     tuning_status = (
@@ -548,7 +577,9 @@ def _tuning_receipt_projection(
         "ghost_hits": manifest.get("ghost_hits"),
         "fallback": fallback,
         "backend": backend,
-        "log_fidelity": manifest.get("log_fidelity"),
+        "log_fidelity": log_fidelity,
+        "fidelity_ood": fidelity_ood,
+        "exponential_sensitivity_log_fidelity": exponential_log_fidelity,
         "transition_decision_ns": transition_ns,
         "move_time_us": manifest.get("move_time_us"),
         "move_batches": manifest.get("move_batches"),
@@ -598,7 +629,8 @@ def seal_trial_result(
         "native_wheel_sha256": workspace["native_identity"][
             "native_wheel_sha256"],
         "rng_version": workspace["native_identity"]["rng_version"],
-        "tuning_protocol_id": TUNING_PROTOCOL_ID,
+        "tuning_protocol_id": workspace["native_identity"][
+            "tuning_protocol_id"],
     }
     identity_drift = {
         key: (manifest.get(key), expected)
@@ -656,6 +688,7 @@ def validate_trial_receipt(
         "attempt_manifest_sha256", "compiler_stats_sha256",
         "status", "compiler_status",
         "verifier_ok", "ghost_hits", "fallback", "backend", "log_fidelity",
+        "fidelity_ood", "exponential_sensitivity_log_fidelity",
         "transition_decision_ns", "move_time_us", "move_batches", "errors",
         "record_sha256",
     }
@@ -735,7 +768,8 @@ def validate_trial_receipt(
         "native_wheel_sha256": workspace["native_identity"][
             "native_wheel_sha256"],
         "rng_version": workspace["native_identity"]["rng_version"],
-        "tuning_protocol_id": TUNING_PROTOCOL_ID,
+        "tuning_protocol_id": workspace["native_identity"][
+            "tuning_protocol_id"],
     }
     drift = {key: (manifest.get(key), expected) for key, expected in identity.items()
              if manifest.get(key) != expected}
@@ -789,6 +823,11 @@ def _receipt_as_trial(payload: Mapping[str, Any]) -> TuningTrial:
                       else float(payload["move_time_us"])),
         move_batches=(None if payload["move_batches"] is None
                       else int(payload["move_batches"])),
+        fidelity_ood=bool(payload["fidelity_ood"]),
+        exponential_sensitivity_log_fidelity=(
+            None
+            if payload["exponential_sensitivity_log_fidelity"] is None
+            else float(payload["exponential_sensitivity_log_fidelity"])),
     )
 
 
@@ -1013,6 +1052,7 @@ def promote_tuning_phase(root: Path, phase: str, *, schedule_seed: int = 0
     report = {
         "experiment_schema": 2,
         "protocol_id": TUNING_PROTOCOL_ID,
+        "quality_policy": TUNING_QUALITY_POLICY_ID,
         "phase": phase,
         "schedule_sha256": schedule["schedule_sha256"],
         "promoted_candidate_ids": promoted,
@@ -1127,6 +1167,7 @@ def finalize_tuning(
     selected_manifest = {
         "experiment_schema": 2,
         "protocol_id": TUNING_PROTOCOL_ID,
+        "quality_policy": TUNING_QUALITY_POLICY_ID,
         "algorithm_revision": ALGORITHM_REVISION,
         "selection_status": "frozen_validation_selection",
         "workspace_manifest_sha256": workspace["manifest_sha256"],
@@ -1187,6 +1228,7 @@ def validate_tuning_selection_for_plan(
     expected_header = {
         "experiment_schema": 2,
         "protocol_id": TUNING_PROTOCOL_ID,
+        "quality_policy": TUNING_QUALITY_POLICY_ID,
         "algorithm_revision": ALGORITHM_REVISION,
         "selection_status": "frozen_validation_selection",
     }
@@ -1342,6 +1384,7 @@ def tuning_status(root: Path) -> Mapping[str, Any]:
     return {
         "experiment_schema": 2,
         "protocol_id": TUNING_PROTOCOL_ID,
+        "quality_policy": TUNING_QUALITY_POLICY_ID,
         "root": str(root.resolve()),
         "phases": phases,
         "finalized": (root / "selected_config_manifest.json").is_file(),

@@ -23,6 +23,8 @@ from experiments_v2.tuning import (  # noqa: E402
     generate_candidates,
     promoted_candidates,
     stage_leaderboard,
+    TUNING_PROTOCOL_ID,
+    TUNING_QUALITY_POLICY_ID,
     validate_trial_schedule,
 )
 from experiments_v2.tuning_runner import (  # noqa: E402
@@ -31,6 +33,7 @@ from experiments_v2.tuning_runner import (  # noqa: E402
     _validate_schedule_chain,
     _validate_tuning_workspace,
     build_candidate_config_pair,
+    finalize_tuning,
     seal_trial_result,
     validate_tuning_selection_for_plan,
     validate_trial_receipt,
@@ -43,6 +46,7 @@ from experiments_v2.protocol import (  # noqa: E402
     trace_protocol_for_method,
 )
 from zzx.algorithm_v2 import (  # noqa: E402
+    FORMAL_NATIVE_TUNING_PROTOCOL_ID,
     SCHEMA2_PAIR_EXEMPT_KEYS,
     validate_schema2_pair,
 )
@@ -91,7 +95,8 @@ class TuningScheduleTests(unittest.TestCase):
                 for circuit in circuits:
                     trials.append(TuningTrial(
                         cid, circuit, method, 0, "success", True, 0, False,
-                        -10.0 + rank / 1000.0, 1000 - rank, 10.0, 2))
+                        -10.0 + rank / 1000.0, 1000 - rank, 10.0, 2,
+                        False, -10.0 + rank / 1000.0))
         leaderboard = stage_leaderboard(
             trials, candidate_ids=self.ids, default_id=self.default,
             expected_circuits=circuits, expected_seeds=[0])
@@ -107,6 +112,36 @@ class TuningScheduleTests(unittest.TestCase):
         self.assertEqual(len(promoted_validation), 3)
         self.assertEqual(promoted_validation[0], self.default)
         self.assertEqual(len(set(promoted_validation)), 3)
+
+    def test_stage_leaderboard_uses_exponential_for_complete_ood_cohort(self):
+        candidate = "candidate"
+        trials = []
+        for cid in (self.default, candidate):
+            for method in ("M3", "M4"):
+                ood = cid == candidate and method == "M3"
+                linear = None if ood else (
+                    -1.0 if cid == self.default else -0.9)
+                exponential = (
+                    -2.1 if cid == candidate and method == "M3" else -2.0)
+                trials.append(TuningTrial(
+                    candidate_id=cid, circuit="toy", method=method, seed=0,
+                    status="success", verifier_ok=True, ghost_hits=0,
+                    fallback=False, log_fidelity=linear,
+                    transition_decision_ns=100, move_time_us=10.0,
+                    move_batches=1, fidelity_ood=ood,
+                    exponential_sensitivity_log_fidelity=exponential))
+
+        rows = stage_leaderboard(
+            trials, candidate_ids=[self.default, candidate],
+            default_id=self.default, expected_circuits=["toy"],
+            expected_seeds=[0])
+
+        by_id = {row["candidate_id"]: row for row in rows}
+        self.assertAlmostEqual(
+            by_id[candidate]["methods"]["M3"][
+                "median_delta_log_fidelity"], -0.1)
+        self.assertEqual(by_id[candidate]["quality_policy"],
+                         TUNING_QUALITY_POLICY_ID)
 
     @mock.patch("experiments_v2.tuning_runner._read_json")
     @mock.patch("experiments_v2.tuning_runner._replayed_promotion_report")
@@ -168,7 +203,8 @@ class TuningScheduleTests(unittest.TestCase):
         promoted.return_value = ["c0"]
         expected = {
             "experiment_schema": 2,
-            "protocol_id": "resident-ga-native-v1",
+            "protocol_id": TUNING_PROTOCOL_ID,
+            "quality_policy": TUNING_QUALITY_POLICY_ID,
             "phase": "screen",
             "schedule_sha256": "1" * 64,
             "promoted_candidate_ids": ["c0"],
@@ -202,6 +238,9 @@ class TuningConfigTests(unittest.TestCase):
         candidate = {**DEFAULT_CANDIDATE,
                      "candidate_id": candidate_id(DEFAULT_CANDIDATE)}
         pair = build_candidate_config_pair(m3, m4, candidate, seed=3)
+        for method in ("M3", "M4"):
+            self.assertEqual(pair[method]["tuning"]["protocol_id"],
+                             TUNING_PROTOCOL_ID)
         left = pair["M3"]["zac_setting"][0]
         right = pair["M4"]["zac_setting"][0]
         validate_schema2_pair(left, right)
@@ -225,7 +264,7 @@ class TuningConfigTests(unittest.TestCase):
                 setting["rng_version"], "python-random-mt19937-v1")
             self.assertEqual(setting["algorithm_revision"], "native-ga-v1")
             self.assertEqual(setting["tuning_protocol_id"],
-                             "resident-ga-native-v1")
+                             FORMAL_NATIVE_TUNING_PROTOCOL_ID)
 
 
 class TuningReceiptTests(unittest.TestCase):
@@ -251,11 +290,12 @@ class TuningReceiptTests(unittest.TestCase):
                 "operator_profile": "tuned",
                 "init_engine": "sa",
                 "formal_native": True,
-                "tuning_protocol_id": "resident-ga-native-v1",
+                "tuning_protocol_id": FORMAL_NATIVE_TUNING_PROTOCOL_ID,
             }
             workspace = {
                 "experiment_schema": 2,
-                "protocol_id": "resident-ga-native-v1",
+                "protocol_id": TUNING_PROTOCOL_ID,
+                "quality_policy": TUNING_QUALITY_POLICY_ID,
                 "dataset": "qmap154",
                 "repository": {"commit": "f" * 40, "dirty": False},
                 "canonical_inputs": {
@@ -276,7 +316,7 @@ class TuningReceiptTests(unittest.TestCase):
             (root / "workspace_manifest.json").write_text(
                 json.dumps(workspace), encoding="utf-8")
             experiment_id = hashlib.sha256(json.dumps({
-                "protocol_id": "resident-ga-native-v1",
+                "protocol_id": TUNING_PROTOCOL_ID,
                 "schedule_sha256": schedule["schedule_sha256"],
                 "trial_id": trial.trial_id,
             }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -292,12 +332,14 @@ class TuningReceiptTests(unittest.TestCase):
                 compiler_and_flags={
                     "cxx_standard": 17, "openmp": False,
                     "fast_math": False},
-                tuning_protocol_id="resident-ga-native-v1",
+                tuning_protocol_id=FORMAL_NATIVE_TUNING_PROTOCOL_ID,
                 rng_version="python-random-mt19937-v1",
                 config_sha256=sha256_file(config), input_sha256="b" * 64,
                 architecture_sha256="d" * 64, model_sha256="e" * 64,
                 compiler_time_ns=2000, transition_decision_ns=1234,
                 log_fidelity=-1.25, fidelity=math.exp(-1.25),
+                exponential_sensitivity_log_fidelity=-1.25,
+                exponential_sensitivity_fidelity=math.exp(-1.25),
                 fidelity_components={
                     "log_one_qubit_gate": 0.0,
                     "log_two_qubit_gate": -1.25,
@@ -365,6 +407,27 @@ class TuningReceiptTests(unittest.TestCase):
                         receipt, schedule, trial, config)
                 manifest_path.write_bytes(original_manifest)
                 receipt.write_bytes(original_receipt)
+
+            ood_manifest = json.loads(original_manifest)
+            ood_manifest.update({
+                "fidelity_ood": True,
+                "log_fidelity": None,
+                "fidelity": None,
+                "exponential_sensitivity_log_fidelity": -2.0,
+                "exponential_sensitivity_fidelity": math.exp(-2.0),
+            })
+            ood_manifest["fidelity_components"]["log_coherence_linear"] = None
+            manifest_path.write_text(json.dumps(ood_manifest), encoding="utf-8")
+            ood_receipt = seal_trial_result(
+                root, schedule, trial, config, manifest_path)
+            self.assertEqual(ood_receipt["status"], "success")
+            self.assertTrue(ood_receipt["fidelity_ood"])
+            self.assertIsNone(ood_receipt["log_fidelity"])
+            self.assertEqual(
+                ood_receipt["exponential_sensitivity_log_fidelity"], -2.0)
+            validate_trial_receipt(receipt, schedule, trial, config)
+            manifest_path.write_bytes(original_manifest)
+            receipt.write_bytes(original_receipt)
 
             config.write_text('{"backend":"reference"}\n', encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "config drift"):
@@ -460,7 +523,8 @@ class TuningWorkspaceGateTests(unittest.TestCase):
             }
             workspace = {
                 "experiment_schema": 2,
-                "protocol_id": "resident-ga-native-v1",
+                "protocol_id": TUNING_PROTOCOL_ID,
+                "quality_policy": TUNING_QUALITY_POLICY_ID,
                 "dataset": "qmap154",
                 "repository": repository_snapshot.return_value,
                 "plan_path": str(plan_path.resolve()),
@@ -496,6 +560,17 @@ class TuningWorkspaceGateTests(unittest.TestCase):
             self.assertTrue(validate_initial.call_args.kwargs[
                 "enforce_pre_tuning_core"])
 
+            old_workspace = json.loads(json.dumps(workspace))
+            old_workspace["protocol_id"] = "resident-ga-native-v1"
+            old_workspace["manifest_sha256"] = _self_hash(
+                old_workspace, "manifest_sha256")
+            (root / "workspace_manifest.json").write_text(
+                json.dumps(old_workspace), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "protocol/dataset mismatch"):
+                _validate_tuning_workspace(plan, "qmap154", root)
+            (root / "workspace_manifest.json").write_text(
+                json.dumps(workspace), encoding="utf-8")
+
             candidates_path.write_text('{"tampered":true}\n',
                                        encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "workspace evidence drift"):
@@ -503,6 +578,77 @@ class TuningWorkspaceGateTests(unittest.TestCase):
 
 
 class TuningFinalSelectionGateTests(unittest.TestCase):
+    @mock.patch("experiments_v2.tuning_runner._candidate_map")
+    @mock.patch("experiments_v2.tuning_runner._ranked_validation_selection")
+    @mock.patch("experiments_v2.tuning_runner.load_phase_trials")
+    @mock.patch("experiments_v2.tuning_runner._validate_schedule_chain")
+    @mock.patch("experiments_v2.tuning_runner._validate_tuning_workspace")
+    def test_finalize_separates_outer_v2_from_unchanged_native_v1(
+            self, validate_workspace, validate_chain, load_trials, ranked,
+            candidate_map):
+        candidate = {**DEFAULT_CANDIDATE}
+        candidate["candidate_id"] = candidate_id(candidate)
+        selection = {
+            "protocol_id": TUNING_PROTOCOL_ID,
+            "quality_policy": TUNING_QUALITY_POLICY_ID,
+            "default_candidate_id": candidate["candidate_id"],
+            "shared_selected": candidate["candidate_id"],
+            "independent_selected": {
+                "M3": candidate["candidate_id"],
+                "M4": candidate["candidate_id"],
+            },
+            "summaries": [],
+        }
+        schedule = {"schedule_sha256": "9" * 64,
+                    "circuits": ["toy"], "seeds": [0, 1, 2, 3, 4]}
+        load_trials.return_value = (schedule, [])
+        ranked.return_value = (selection, [])
+        candidate_map.return_value = {candidate["candidate_id"]: candidate}
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "tuning"
+            output = base / "configs"
+            root.mkdir()
+            (root / "workspace_manifest.json").write_text(
+                json.dumps({"dataset": "qmap154"}), encoding="utf-8")
+            (root / "candidates.json").write_text(json.dumps({
+                "default_candidate_id": candidate["candidate_id"]}),
+                encoding="utf-8")
+            config_root = ROOT / "exp_setting" / "native_ga_v1"
+            methods = {
+                method: SimpleNamespace(payload=json.loads(
+                    (config_root / name).read_text(encoding="utf-8")))
+                for method, name in (
+                    ("M3", "ours_nl_shared.json"),
+                    ("M4", "ours_lk_shared.json"))
+            }
+            plan = SimpleNamespace(methods=methods)
+            workspace = {
+                "manifest_sha256": "1" * 64,
+                "repository": {"commit": "a" * 40, "dirty": False},
+                "plan_path": "/plan.json", "plan_sha256": "2" * 64,
+                "dataset": "qmap154", "dataset_suite_sha256": "3" * 64,
+                "experiment_id": "4" * 64,
+                "native_identity": {
+                    "tuning_protocol_id": FORMAL_NATIVE_TUNING_PROTOCOL_ID},
+                "initial_selection_record_sha256": "5" * 64,
+            }
+            validate_workspace.return_value = workspace
+
+            manifest = finalize_tuning(plan, root, output)
+
+            self.assertEqual(manifest["protocol_id"], TUNING_PROTOCOL_ID)
+            self.assertEqual(manifest["quality_policy"],
+                             TUNING_QUALITY_POLICY_ID)
+            generated = json.loads(
+                (output / "ours_nl_shared.json").read_text(encoding="utf-8"))
+            self.assertEqual(generated["tuning"]["protocol_id"],
+                             TUNING_PROTOCOL_ID)
+            self.assertEqual(
+                generated["zac_setting"][0]["tuning_protocol_id"],
+                FORMAL_NATIVE_TUNING_PROTOCOL_ID)
+
     @mock.patch("experiments_v2.tuning_runner._native_identity")
     @mock.patch("experiments_v2.tuning_runner.repository_snapshot")
     @mock.patch("experiments_v2.tuning_runner._candidate_map")
@@ -601,7 +747,8 @@ class TuningFinalSelectionGateTests(unittest.TestCase):
                 json.dumps(expected_leaderboard), encoding="utf-8")
             manifest = {
                 "experiment_schema": 2,
-                "protocol_id": "resident-ga-native-v1",
+                "protocol_id": TUNING_PROTOCOL_ID,
+                "quality_policy": TUNING_QUALITY_POLICY_ID,
                 "algorithm_revision": "native-ga-v1",
                 "selection_status": "frozen_validation_selection",
                 "workspace_manifest_sha256": workspace["manifest_sha256"],
