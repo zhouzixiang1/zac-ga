@@ -557,6 +557,10 @@ atom (16, 0) atom2
         ]
         with self.assertRaisesRegex(TraceValidationError, "ghost collision"):
             validate_trace_physics(events, n_qubits=2)
+        baseline_result = validate_trace_physics(
+            events, n_qubits=2, enforce_ghost_safety=False)
+        self.assertTrue(baseline_result["ok"])
+        self.assertEqual(baseline_result["ghost_hits"], 1)
 
     def test_strict_replay_accepts_ghost_safe_move(self):
         events = [

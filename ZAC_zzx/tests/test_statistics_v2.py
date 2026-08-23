@@ -12,6 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from experiments_v2.contracts import RunManifest, RunStatus  # noqa: E402
+from experiments_v2.protocol import (  # noqa: E402
+    ghost_policy_for_method,
+    physicalization_policy_for_method,
+    trace_protocol_for_method,
+)
 from experiments_v2.statistics import (  # noqa: E402
     aggregate_experiment, paired_wilcoxon)
 
@@ -63,7 +68,12 @@ class ManifestFactory:
             observed_gate_ledger_sha256="c" * 64 if success else "",
             move_batches=move_batches if success else None,
             move_time_us=move_time_us if success else None,
+            ghost_repairs=0 if success else None,
+            ghost_splits=0 if success else None,
             ghost_hits=0 if success else None,
+            trace_protocol=trace_protocol_for_method(method),
+            ghost_policy=ghost_policy_for_method(method),
+            physicalization_policy=physicalization_policy_for_method(method),
             verifier_ok=True if success else None,
         )
         path = self.root / f"{run.run_id}.json"
@@ -144,6 +154,15 @@ class TestStrictStatistics(unittest.TestCase):
             self.assertIn("log_idle_excitation", report["attempt_index"][0])
             self.assertIn("end_to_end_time_seconds", report["attempt_index"][0])
             self.assertIn("ghost_repairs", report["attempt_index"][0])
+            self.assertIn("trace_protocol", report["attempt_index"][0])
+            self.assertEqual(
+                report["method_protocols"]["M2"]["ghost_policy"],
+                ghost_policy_for_method("M2"),
+            )
+            self.assertEqual(
+                report["method_protocols"]["M4"]["physicalization_policy"],
+                physicalization_policy_for_method("M4"),
+            )
 
     def test_coverage_denominator_is_frozen_suite_not_observed_union(self):
         with tempfile.TemporaryDirectory() as directory:

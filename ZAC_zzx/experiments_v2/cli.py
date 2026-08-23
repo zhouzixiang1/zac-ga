@@ -46,6 +46,9 @@ from .plan import METHODS, DatasetSpec, ExperimentPlan, load_experiment_plan
 from .provenance import (ENVIRONMENT_LOCKS, build_reproduction_provenance,
                          validate_frozen_environments,
                          validate_reproduction_provenance)
+from .protocol import (enforces_ghost_safety, ghost_policy_for_method,
+                       physicalization_policy_for_method,
+                       trace_protocol_for_method)
 from .reproduction import reproduce_baselines
 from .runner import AttemptSpec, run_attempt
 from .statistics import aggregate_experiment
@@ -151,6 +154,10 @@ class UnifiedEvaluationGate:
     @property
     def trace_name(self) -> str:
         return "trace.na" if self.method == "M2" else "trace.zair.json"
+
+    @property
+    def enforce_ghost_safety(self) -> bool:
+        return enforces_ghost_safety(self.method)
 
     @staticmethod
     def _artifact_file(artifact: Path, name: str) -> Path:
@@ -308,6 +315,12 @@ class UnifiedEvaluationGate:
         for name, value in result.component_log_fidelity.items():
             components[f"log_{name}"] = (
                 None if value is None else float(value))
+        ghost_count = int((self._physical_validation or {}).get("ghost_hits", -1))
+        warnings = list(result.warnings)
+        if not self.enforce_ghost_safety and ghost_count > 0:
+            warnings.append(
+                f"paper-native {self.method} trace contains {ghost_count} "
+                "stationary-ghost hits; recorded without baseline repair")
         metrics: dict[str, Any] = {
             "log_fidelity": result.log_fidelity,
             "fidelity": result.fidelity,
@@ -327,8 +340,11 @@ class UnifiedEvaluationGate:
             "expected_gate_ledger_sha256": _ledger_sha256(
                 _canonical_gate_ledger(self.canonical)),
             "observed_gate_ledger_sha256": _ledger_sha256(self._observed_ledger),
-            "ghost_hits": int((self._physical_validation or {}).get("ghost_hits", -1)),
-            "warnings": list(result.warnings),
+            "ghost_hits": ghost_count,
+            "trace_protocol": trace_protocol_for_method(self.method),
+            "ghost_policy": ghost_policy_for_method(self.method),
+            "physicalization_policy": physicalization_policy_for_method(self.method),
+            "warnings": warnings,
         }
         metrics.update(self._compiler_counters(artifact))
         return metrics
@@ -344,6 +360,7 @@ class UnifiedEvaluationGate:
         self._physical_validation = validate_trace_physics(
             self._normalizer(self._artifact_file(artifact, self.trace_name)),
             n_qubits=self.canonical.qubits,
+            enforce_ghost_safety=self.enforce_ghost_safety,
         )
         if self.method != "M2":
             from verify_batches import verify
@@ -351,10 +368,13 @@ class UnifiedEvaluationGate:
                 self._artifact_file(artifact, self.trace_name),
                 Path(self.canonical.canonical_path),
             )
-            errors = {name: values for name, values in raw_validation["errors"].items()
-                      if values}
+            errors = {
+                name: values
+                for name, values in raw_validation["errors"].items()
+                if values and not (self.method == "M1" and name == "ghost")
+            }
             if errors:
-                raise ValueError(f"strict ZAIR replay failed: {errors}")
+                raise ValueError(f"method-policy ZAIR replay failed: {errors}")
             self._physical_validation = {
                 **self._physical_validation,
                 "ghost_hits": int(raw_validation["stats"]["ghost_hits"]),
@@ -364,6 +384,10 @@ class UnifiedEvaluationGate:
         if self.write_artifacts:
             _atomic_json(artifact / "fidelity.json", {
                 "experiment_schema": 2,
+                "trace_protocol": trace_protocol_for_method(self.method),
+                "ghost_policy": ghost_policy_for_method(self.method),
+                "physicalization_policy": physicalization_policy_for_method(
+                    self.method),
                 "model": self.plan.model.to_dict(),
                 "canonical": self.canonical.to_dict(),
                 "result": result.to_dict(),

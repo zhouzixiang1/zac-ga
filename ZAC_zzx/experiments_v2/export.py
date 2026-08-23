@@ -87,7 +87,8 @@ TABLE_COLUMNS: Mapping[str, tuple[str, ...]] = {
         "exponential_sensitivity_log_fidelity",
         "exponential_sensitivity_fidelity", "duration_us", "idle_exposures",
         "stay_count", "return_count", "reseat_count", "ghost_repairs",
-        "ghost_splits", "ghost_hits", "verifier_ok", "artifact_dir", "error",
+        "ghost_splits", "ghost_hits", "trace_protocol", "ghost_policy",
+        "physicalization_policy", "verifier_ok", "artifact_dir", "error",
     ),
     "plot_data": (
         "section", "metric", "series", "x", "value", "lower", "upper",

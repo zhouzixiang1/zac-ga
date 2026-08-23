@@ -16,6 +16,11 @@ sys.path.insert(0, str(ROOT))
 from experiments_v2.cli import build_parser  # noqa: E402
 from experiments_v2.export import _build_tables, export_experiment_report  # noqa: E402
 from experiments_v2.figures import render_report_figures  # noqa: E402
+from experiments_v2.protocol import (  # noqa: E402
+    ghost_policy_for_method,
+    physicalization_policy_for_method,
+    trace_protocol_for_method,
+)
 from experiments_v2.workbook_renderer import render_workbook  # noqa: E402
 
 
@@ -78,6 +83,16 @@ def sample_report(*, claim_passed: bool = False) -> dict:
     return {
         "experiment_schema": 2, "experiment_id": "frozen-v2",
         "dataset": "zac_demo", "run_kinds": ["coverage", "main", "timing"],
+        "method_protocols": {
+            method: {
+                "trace_protocol": trace_protocol_for_method(method),
+                "ghost_policy": ghost_policy_for_method(method),
+                "physicalization_policy":
+                    physicalization_policy_for_method(method),
+                "scoring": "unified_zac_physical_model",
+            }
+            for method in methods
+        },
         "frozen_suite": {
             "source": "caller-supplied frozen suite", "explicit": True,
             "sha256": "a" * 64, "circuits": ["toy"], "N": 1,
@@ -164,6 +179,9 @@ def sample_report(*, claim_passed: bool = False) -> dict:
             "fidelity_ood": False, "log_fidelity": -0.1,
             "fidelity": 0.904837418, "move_batches": 2,
             "move_time_us": 40.0, "compiler_time_seconds": 1.0,
+            "trace_protocol": trace_protocol_for_method("M4"),
+            "ghost_policy": ghost_policy_for_method("M4"),
+            "physicalization_policy": physicalization_policy_for_method("M4"),
             "artifact_dir": "/tmp/toy", "error": None,
         }],
     }
@@ -213,7 +231,11 @@ class TestExperimentExport(unittest.TestCase):
             self.assertTrue(any(row["section"] == "ecdf" for row in plot_rows))
             self.assertTrue(any(row["section"] == "pareto" for row in plot_rows))
             with open(output / "attempts.csv", newline="", encoding="utf-8") as handle:
-                self.assertEqual(len(list(csv.DictReader(handle))), 1)
+                reader = csv.DictReader(handle)
+                self.assertIn("trace_protocol", reader.fieldnames)
+                self.assertIn("ghost_policy", reader.fieldnames)
+                self.assertIn("physicalization_policy", reader.fieldnames)
+                self.assertEqual(len(list(reader)), 1)
             exported = json.loads((output / "export_manifest.json").read_text())
             self.assertTrue(all(len(row["sha256"]) == 64 for row in exported["files"]))
 

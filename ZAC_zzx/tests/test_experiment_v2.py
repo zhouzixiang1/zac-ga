@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import math
 import os
@@ -24,6 +25,11 @@ from experiments_v2.contracts import (  # noqa: E402
 )
 from experiments_v2.runner import AttemptSpec, run_attempt  # noqa: E402
 from experiments_v2.method_driver import _validated_m2_config  # noqa: E402
+from experiments_v2.protocol import (  # noqa: E402
+    ghost_policy_for_method,
+    physicalization_policy_for_method,
+    trace_protocol_for_method,
+)
 from experiments_v2.statistics import (  # noqa: E402
     holm_adjust, stratified_bootstrap_log_ratio, wilson_interval)
 
@@ -153,10 +159,62 @@ class TestAtomicRunner(unittest.TestCase):
         for name in ("input", "config", "architecture", "model"):
             (base / f"{name}.json").write_text('{}\n', encoding="utf-8")
 
-    def _spec(self, base: Path, command, timeout=2.0):
+    @staticmethod
+    def _compiler_stats(method: str, **extra):
+        payload = {
+            "trace_protocol": trace_protocol_for_method(method),
+            "ghost_policy": ghost_policy_for_method(method),
+            "physicalization": physicalization_policy_for_method(method),
+            "ghost_repairs": 0,
+            "ghost_splits": 0,
+        }
+        if method == "M1":
+            payload.update({
+                "compiler_module": "zac.zac",
+                "compiler_source_file": str((REPO / "ZAC/zac/zac.py").resolve()),
+                "routing_strategy": "maximalis_sort",
+            })
+        elif method == "M2":
+            payload.update({
+                "compiler_class": "RoutingAwareCompiler",
+                "fallback": False,
+                "mqt_qmap_version": "3.2.0",
+                "mqt_core_version": "3.1.0",
+            })
+        payload.update(extra)
+        return payload
+
+    @staticmethod
+    def _zero_metrics():
+        return {
+            "log_fidelity": 0.0,
+            "fidelity": 1.0,
+            "fidelity_components": {
+                "log_one_qubit_gate": 0.0,
+                "log_two_qubit_gate": 0.0,
+                "log_idle_excitation": 0.0,
+                "log_atom_transfer": 0.0,
+                "log_coherence_linear": 0.0,
+            },
+            "move_batches": 0,
+            "move_time_us": 0.0,
+            "duration_us": 0.0,
+            "qubits": 1,
+            "expected_gates_1q": 0,
+            "expected_gates_2q": 0,
+            "observed_gates_1q": 0,
+            "observed_gates_2q": 0,
+            "expected_gate_ledger_sha256": "a" * 64,
+            "observed_gate_ledger_sha256": "a" * 64,
+            "ghost_repairs": 0,
+            "ghost_splits": 0,
+            "ghost_hits": 0,
+        }
+
+    def _spec(self, base: Path, command, timeout=2.0, method="M3"):
         self._files(base)
         return AttemptSpec(
-            dataset="toy", circuit="c0", method="M3", seed=0, repetition=0,
+            dataset="toy", circuit="c0", method=method, seed=0, repetition=0,
             command=command, output_root=base / "runs", repo_root=REPO,
             input_path=base / "input.json", config_path=base / "config.json",
             architecture_path=base / "architecture.json", model_path=base / "model.json",
@@ -171,27 +229,17 @@ class TestAtomicRunner(unittest.TestCase):
             stale = base / "runs" / "old" / "success.txt"
             stale.parent.mkdir(parents=True)
             stale.write_text("must not be read", encoding="utf-8")
+            stats = json.dumps(self._compiler_stats("M3"))
             command = [sys.executable, "-c",
-                       "import json,os,pathlib; p=pathlib.Path(os.environ['ZAC_RUN_DIR']); (p/'new.txt').write_text('ok'); (p/'compiler_timing.json').write_text(json.dumps({'compiler_time_ns':1}))"]
+                       "import json,os,pathlib; "
+                       "p=pathlib.Path(os.environ['ZAC_RUN_DIR']); "
+                       "(p/'new.txt').write_text('ok'); "
+                       "(p/'compiler_timing.json').write_text("
+                       "json.dumps({'compiler_time_ns':1})); "
+                       f"(p/'compiler_stats.json').write_text({stats!r})"]
             manifest = run_attempt(
                 self._spec(base, command), verifier=lambda _: {"ok": True},
-                scorer=lambda _: {
-                    "log_fidelity": 0.0, "fidelity": 1.0,
-                    "fidelity_components": {
-                        "log_one_qubit_gate": 0.0,
-                        "log_two_qubit_gate": 0.0,
-                        "log_idle_excitation": 0.0,
-                        "log_atom_transfer": 0.0,
-                        "log_coherence_linear": 0.0,
-                    },
-                    "move_batches": 0, "move_time_us": 0.0,
-                    "duration_us": 0.0, "qubits": 1,
-                    "expected_gates_1q": 0, "expected_gates_2q": 0,
-                    "observed_gates_1q": 0, "observed_gates_2q": 0,
-                    "expected_gate_ledger_sha256": "a" * 64,
-                    "observed_gate_ledger_sha256": "a" * 64,
-                    "ghost_hits": 0,
-                })
+                scorer=lambda _: self._zero_metrics())
             self.assertEqual(manifest.status, "success")
             artifact = Path(manifest.artifact_dir)
             self.assertTrue((artifact / "new.txt").is_file())
@@ -207,7 +255,10 @@ class TestAtomicRunner(unittest.TestCase):
                 "trace.zair.json": '{"instructions":[]}\n',
                 "trace.na": "atom (0, 0) atom0\n",
                 "trace.na.raw": "atom (0, 0) atom0\n",
-                "compiler_stats.json": '{"python_version":"test"}\n',
+                "compiler_stats.json": json.dumps({
+                    **self._compiler_stats("M3"),
+                    "python_version": "test",
+                }) + "\n",
             }
             script = (
                 "import json,os,pathlib;"
@@ -220,23 +271,7 @@ class TestAtomicRunner(unittest.TestCase):
             manifest = run_attempt(
                 self._spec(base, [sys.executable, "-c", script]),
                 verifier=lambda _: {"ok": True},
-                scorer=lambda _: {
-                    "log_fidelity": 0.0, "fidelity": 1.0,
-                    "fidelity_components": {
-                        "log_one_qubit_gate": 0.0,
-                        "log_two_qubit_gate": 0.0,
-                        "log_idle_excitation": 0.0,
-                        "log_atom_transfer": 0.0,
-                        "log_coherence_linear": 0.0,
-                    },
-                    "move_batches": 0, "move_time_us": 0.0,
-                    "duration_us": 0.0, "qubits": 1,
-                    "expected_gates_1q": 0, "expected_gates_2q": 0,
-                    "observed_gates_1q": 0, "observed_gates_2q": 0,
-                    "expected_gate_ledger_sha256": "a" * 64,
-                    "observed_gate_ledger_sha256": "a" * 64,
-                    "ghost_hits": 0,
-                })
+                scorer=lambda _: self._zero_metrics())
             artifact = Path(manifest.artifact_dir)
             self.assertEqual(manifest.status, "success")
             for name, expected in payloads.items():
@@ -245,6 +280,179 @@ class TestAtomicRunner(unittest.TestCase):
                 self.assertTrue(archived.is_file())
                 with gzip.open(archived, "rt", encoding="utf-8") as handle:
                     self.assertEqual(handle.read(), expected)
+
+    def test_success_fails_closed_when_compiler_protocol_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            command = [
+                sys.executable,
+                "-c",
+                "import json,os,pathlib; "
+                "p=pathlib.Path(os.environ['ZAC_RUN_DIR']); "
+                "(p/'compiler_timing.json').write_text("
+                "json.dumps({'compiler_time_ns':1}))",
+            ]
+            manifest = run_attempt(
+                self._spec(base, command),
+                verifier=lambda _: {"ok": True},
+                scorer=lambda _: self._zero_metrics(),
+            )
+            self.assertEqual(manifest.status, "scorer_error")
+            self.assertIn("missing compiler_stats.json", manifest.error)
+
+    def test_success_fails_closed_when_compiler_protocol_is_malformed(self):
+        for payload in ("{", "[]"):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                command = [
+                    sys.executable,
+                    "-c",
+                    "import json,os,pathlib; "
+                    "p=pathlib.Path(os.environ['ZAC_RUN_DIR']); "
+                    f"(p/'compiler_stats.json').write_text({payload!r}); "
+                    "(p/'compiler_timing.json').write_text("
+                    "json.dumps({'compiler_time_ns':1}))",
+                ]
+                manifest = run_attempt(
+                    self._spec(base, command),
+                    verifier=lambda _: {"ok": True},
+                    scorer=lambda _: self._zero_metrics(),
+                )
+                self.assertEqual(manifest.status, "scorer_error")
+                self.assertIn("compiler protocol error", manifest.error)
+
+    def test_m2_native_trace_hash_and_baseline_ghost_policy_are_sealed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            native = "atom (0, 0) atom0\n"
+            stats = json.dumps(self._compiler_stats(
+                "M2",
+                native_sha256=hashlib.sha256(native.encode()).hexdigest(),
+            ))
+            script = (
+                "import json,os,pathlib;"
+                "p=pathlib.Path(os.environ['ZAC_RUN_DIR']);"
+                f"(p/'trace.na').write_text({native!r});"
+                f"(p/'compiler_stats.json').write_text({stats!r});"
+                "(p/'compiler_timing.json').write_text("
+                "json.dumps({'compiler_time_ns':1}))"
+            )
+            metrics = self._zero_metrics()
+            metrics["ghost_hits"] = 1
+            manifest = run_attempt(
+                self._spec(
+                    base, [sys.executable, "-c", script], method="M2"),
+                verifier=lambda _: {"ok": True},
+                scorer=lambda _: metrics,
+            )
+            self.assertEqual(manifest.status, "success")
+            self.assertEqual(manifest.ghost_hits, 1)
+            self.assertEqual(
+                manifest.ghost_policy, ghost_policy_for_method("M2"))
+
+    def test_m1_original_compiler_identity_and_baseline_ghost_policy_are_sealed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            stats = json.dumps(self._compiler_stats("M1"))
+            script = (
+                "import json,os,pathlib;"
+                "p=pathlib.Path(os.environ['ZAC_RUN_DIR']);"
+                f"(p/'compiler_stats.json').write_text({stats!r});"
+                "(p/'compiler_timing.json').write_text("
+                "json.dumps({'compiler_time_ns':1}))"
+            )
+            metrics = self._zero_metrics()
+            metrics["ghost_hits"] = 2
+            manifest = run_attempt(
+                self._spec(
+                    base, [sys.executable, "-c", script], method="M1"),
+                verifier=lambda _: {"ok": True},
+                scorer=lambda _: metrics,
+            )
+            self.assertEqual(manifest.status, "success")
+            self.assertEqual(manifest.ghost_hits, 2)
+            self.assertEqual(
+                manifest.trace_protocol, trace_protocol_for_method("M1"))
+
+    def test_baseline_compiler_identity_drift_fails_closed(self):
+        cases = {
+            "M1": self._compiler_stats(
+                "M1", compiler_source_file=str(REPO / "ZAC_zzx/zac/zac.py")),
+            "M2": self._compiler_stats(
+                "M2", compiler_class="SubstituteCompiler"),
+        }
+        for method, stats_payload in cases.items():
+            with self.subTest(method=method), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                native = "atom (0, 0) atom0\n"
+                if method == "M2":
+                    stats_payload["native_sha256"] = hashlib.sha256(
+                        native.encode()).hexdigest()
+                stats = json.dumps(stats_payload)
+                trace_write = (
+                    f"(p/'trace.na').write_text({native!r});"
+                    if method == "M2" else ""
+                )
+                script = (
+                    "import json,os,pathlib;"
+                    "p=pathlib.Path(os.environ['ZAC_RUN_DIR']);"
+                    f"{trace_write}"
+                    f"(p/'compiler_stats.json').write_text({stats!r});"
+                    "(p/'compiler_timing.json').write_text("
+                    "json.dumps({'compiler_time_ns':1}))"
+                )
+                manifest = run_attempt(
+                    self._spec(
+                        base, [sys.executable, "-c", script], method=method),
+                    verifier=lambda _: {"ok": True},
+                    scorer=lambda _: self._zero_metrics(),
+                )
+                self.assertEqual(manifest.status, "scorer_error")
+                self.assertIn("identity mismatch", manifest.error)
+
+    def test_m2_native_trace_hash_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            native = "atom (0, 0) atom0\n"
+            stats = json.dumps(self._compiler_stats(
+                "M2", native_sha256="0" * 64))
+            script = (
+                "import json,os,pathlib;"
+                "p=pathlib.Path(os.environ['ZAC_RUN_DIR']);"
+                f"(p/'trace.na').write_text({native!r});"
+                f"(p/'compiler_stats.json').write_text({stats!r});"
+                "(p/'compiler_timing.json').write_text("
+                "json.dumps({'compiler_time_ns':1}))"
+            )
+            manifest = run_attempt(
+                self._spec(
+                    base, [sys.executable, "-c", script], method="M2"),
+                verifier=lambda _: {"ok": True},
+                scorer=lambda _: self._zero_metrics(),
+            )
+            self.assertEqual(manifest.status, "scorer_error")
+            self.assertIn("official compiler output hash", manifest.error)
+
+    def test_strict_ours_policy_still_rejects_ghost_hits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            stats = json.dumps(self._compiler_stats("M3"))
+            script = (
+                "import json,os,pathlib;"
+                "p=pathlib.Path(os.environ['ZAC_RUN_DIR']);"
+                f"(p/'compiler_stats.json').write_text({stats!r});"
+                "(p/'compiler_timing.json').write_text("
+                "json.dumps({'compiler_time_ns':1}))"
+            )
+            metrics = self._zero_metrics()
+            metrics["ghost_hits"] = 1
+            manifest = run_attempt(
+                self._spec(base, [sys.executable, "-c", script]),
+                verifier=lambda _: {"ok": True},
+                scorer=lambda _: metrics,
+            )
+            self.assertEqual(manifest.status, "scorer_error")
+            self.assertIn("ghost_hits=0", manifest.error)
 
     def test_timeout_kills_process_group_and_never_promotes_stale_output(self):
         with tempfile.TemporaryDirectory() as directory:

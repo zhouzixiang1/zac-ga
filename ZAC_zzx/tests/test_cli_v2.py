@@ -29,9 +29,15 @@ from experiments_v2.cli import (  # noqa: E402
 from experiments_v2.contracts import (  # noqa: E402
     CanonicalCircuitManifest, RunManifest, load_run_manifest, sha256_file)
 from experiments_v2.plan import effective_zac_setting, load_experiment_plan  # noqa: E402
+from experiments_v2.protocol import (  # noqa: E402
+    ghost_policy_for_method,
+    physicalization_policy_for_method,
+    trace_protocol_for_method,
+)
 from experiments_v2.runner import AttemptSpec, run_attempt  # noqa: E402
 from streaming.large_contract import (  # noqa: E402
     LARGE_CIRCUITS, QASMBENCH_COMMIT)
+from zzx.algorithm_v2 import ADAPTIVE_HORIZON_V1  # noqa: E402
 
 
 ARCHITECTURE = {
@@ -56,11 +62,13 @@ ARCHITECTURE = {
 
 
 def algorithm_config(method: str, horizon: int) -> dict:
+    horizon_spec = (dict(ADAPTIVE_HORIZON_V1)
+                    if method == "ours_lk" else horizon)
     return {
         "experiment_schema": 2,
         "method_id": method,
         "objective": "physical_log_fidelity",
-        "lookahead_horizon": horizon,
+        "lookahead_horizon": horizon_spec,
         "population_size": 6,
         "iterations": 8,
         "neighbors_per_solution": 2,
@@ -71,6 +79,16 @@ def algorithm_config(method: str, horizon: int) -> dict:
         "routing_strategy": "coloring",
         "resyn": False,
         "fitness_cache": True,
+    }
+
+
+def compiler_stats(method: str) -> dict:
+    return {
+        "trace_protocol": trace_protocol_for_method(method),
+        "ghost_policy": ghost_policy_for_method(method),
+        "physicalization": physicalization_policy_for_method(method),
+        "ghost_repairs": 0,
+        "ghost_splits": 0,
     }
 
 
@@ -356,6 +374,9 @@ class TestCliPlan(unittest.TestCase):
                 config_sha256=sha256_file(spec.config_path),
                 architecture_sha256=sha256_file(spec.architecture_path),
                 model_sha256=sha256_file(spec.model_path),
+                trace_protocol=trace_protocol_for_method("M1"),
+                ghost_policy=ghost_policy_for_method("M1"),
+                physicalization_policy=physicalization_policy_for_method("M1"),
                 artifact_dir=str(artifact),
             )
             manifest.write(artifact / "manifest.json")
@@ -468,6 +489,52 @@ class TestUnifiedEvaluationGate(unittest.TestCase):
             self.assertEqual(counters["ghost_repairs"], 5)
             self.assertEqual(counters["ghost_splits"], 2)
 
+    def test_m2_native_ghost_is_recorded_without_repair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = PlanFixture(Path(directory))
+            canonical_path = Path(
+                fixture.datasets["zac"]["canonical_directory"]
+            ) / "toy.qasm"
+            canonical_path.write_text(
+                'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\n',
+                encoding="utf-8",
+            )
+            suite_path = canonical_path.parent / "suite.manifest.json"
+            suite_payload = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite_payload[0].update({
+                "canonical_sha256": sha256_file(canonical_path),
+                "qubits": 2,
+            })
+            suite_path.write_text(json.dumps(suite_payload), encoding="utf-8")
+            plan = load_experiment_plan(fixture.plan_path)
+            canonical = plan.load_suite(plan.datasets["zac"])[0]
+            artifact = Path(directory) / "attempt"
+            artifact.mkdir()
+            native = (
+                "atom (0, 0) atom0\n"
+                "atom (2, 0) atom1\n"
+                "@+ load atom0\n"
+                "@+ move (4, 0) atom0\n"
+                "@+ store atom0\n"
+            )
+            (artifact / "trace.na").write_text(native, encoding="utf-8")
+
+            gate = UnifiedEvaluationGate(
+                plan, canonical, "M2", write_artifacts=False)
+            self.assertTrue(gate.verifier(artifact)["ok"])
+            metrics = gate.scorer(artifact)
+            self.assertEqual(metrics["ghost_hits"], 1)
+            self.assertEqual(
+                metrics["physicalization_policy"],
+                physicalization_policy_for_method("M2"),
+            )
+            self.assertTrue(any(
+                "recorded without baseline repair" in warning
+                for warning in metrics["warnings"]
+            ))
+            self.assertEqual(
+                (artifact / "trace.na").read_text(encoding="utf-8"), native)
+
     def test_normalize_score_and_gate_ledger_are_mandatory(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = PlanFixture(Path(directory))
@@ -572,6 +639,8 @@ class TestUnifiedEvaluationGate(unittest.TestCase):
                 "import json,os,pathlib;"
                 "p=pathlib.Path(os.environ['ZAC_RUN_DIR']);"
                 f"(p/'trace.zair.json').write_text({trace!r});"
+                f"(p/'compiler_stats.json').write_text("
+                f"{json.dumps(compiler_stats('M3'))!r});"
                 "(p/'compiler_timing.json').write_text("
                 "json.dumps({'compiler_time_ns':123}))"
             )
@@ -638,6 +707,8 @@ class TestUnifiedEvaluationGate(unittest.TestCase):
                 "import json,os,pathlib;"
                 "p=pathlib.Path(os.environ['ZAC_RUN_DIR']);"
                 f"(p/'trace.zair.json').write_text({trace!r});"
+                f"(p/'compiler_stats.json').write_text("
+                f"{json.dumps(compiler_stats('M3'))!r});"
                 "(p/'compiler_timing.json').write_text("
                 "json.dumps({'compiler_time_ns':123}))"
             )

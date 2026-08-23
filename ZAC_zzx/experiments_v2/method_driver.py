@@ -8,6 +8,7 @@ compiler exits.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.metadata
 import json
 import os
@@ -17,6 +18,9 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .ablation import validate_ablation_config
+from .protocol import (ghost_policy_for_method,
+                       physicalization_policy_for_method,
+                       trace_protocol_for_method)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,9 +72,6 @@ def _write_json(path: Path, payload: object) -> None:
 def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
                 method: str, *, run_kind: str = "", ablation_variant: str = "") -> None:
     import qiskit
-    from zac.ds.architecture import Architecture
-    from zac.zac import ZAC
-    from zzx.zac_zzx import ZAC_zzx
 
     if method not in ("M1", "M3", "M4"):
         raise ValueError(f"ZAC driver cannot run method {method}")
@@ -79,14 +80,30 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
             f"M1/M3/M4 require qiskit==1.2.4, found {qiskit.__version__}")
     output = _run_dir()
     spec = _load(architecture_path)
+
+    if method == "M1":
+        # M1 is the unmodified paper implementation, not the ``zac`` package
+        # embedded beside our extensions.  Each attempt has a fresh process,
+        # so putting the frozen original source tree first is deterministic and
+        # cannot leak into an M3/M4 attempt.
+        original_root = (REPO / "ZAC").resolve()
+        sys.path.insert(0, str(original_root))
+        from zac.ds.architecture import Architecture
+        from zac.zac import ZAC
+
+        implementation = Path(sys.modules[ZAC.__module__].__file__).resolve()
+        if original_root not in implementation.parents:
+            raise RuntimeError(
+                f"M1 did not load the original ZAC implementation: {implementation}")
+        compiler = ZAC()
+    else:
+        from zac.ds.architecture import Architecture
+        from zzx.zac_zzx import ZAC_zzx
+
+        compiler = ZAC_zzx()
+
     architecture = Architecture(spec)
     architecture.preprocessing()
-    # Formal M1 keeps ZAC's placement and greedy maximal-independent-set
-    # routing decisions, then passes each proposed batch through the same
-    # strict expanded-phase legality repair used by M3/M4.  Raw ZAC does not
-    # model stationary-atom ghost intersections; scoring an invalid raw trace
-    # would make the baseline undefined on most of HPCA18.
-    compiler = ZAC_zzx() if method in ("M1", "M3", "M4") else ZAC()
     user_config = _load(config_path)
     ablation_controls: Dict[str, Any] | None = None
     if run_kind == "ablation":
@@ -122,7 +139,11 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
         "resyn": False,
     }
     if method == "M1":
-        setting.update(placer="zac", routing_strategy="greedy")
+        # These are the ZAC paper settings.  ``resyn`` stays false only because
+        # all four methods consume the already-transpiled immutable canonical
+        # QASM; running the same Qiskit pass a second time would change the
+        # comparison input rather than reproduce the compiler algorithm.
+        setting.update(routing_strategy="maximalis_sort")
         if user_config != {"experiment_schema": 2, "method_id": "M1"}:
             raise ValueError(
                 "M1 config must contain only experiment_schema=2 and method_id=M1")
@@ -177,10 +198,13 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
         "run_kind": run_kind or "unregistered",
         "ablation_variant": ablation_variant or None,
         "ablation_controls": ablation_controls,
-        "physicalization": (
-            "common_expanded_phase_ghost_safe_repair"
-            if method in ("M1", "M3", "M4") else None
-        ),
+        "routing_strategy": compiler.routing_strategy,
+        "compiler_module": type(compiler).__module__,
+        "compiler_source_file": str(
+            Path(sys.modules[type(compiler).__module__].__file__).resolve()),
+        "trace_protocol": trace_protocol_for_method(method),
+        "ghost_policy": ghost_policy_for_method(method),
+        "physicalization": physicalization_policy_for_method(method),
     })
 
 
@@ -198,15 +222,13 @@ def _validated_m2_config(config_path: Path) -> Dict[str, Any]:
 
 def compile_qmap(input_path: Path, config_path: Path,
                  architecture_path: Path) -> None:
-    """Run only QMAP 3.2 routing-aware A* with strict routing."""
+    """Run only the paper-native QMAP 3.2 routing-aware A* compiler."""
     import mqt.core
     import mqt.qmap
     from mqt.core import load
     from mqt.qmap.na.zoned import RoutingAwareCompiler, ZonedNeutralAtomArchitecture
     from qiskit import QuantumCircuit
     from spec_convert import convert
-    from evaluation import normalize_na, validate_trace_physics
-    from .na_physicalizer import physicalize_na
 
     config = _validated_m2_config(config_path)
     qmap_version = importlib.metadata.version("mqt.qmap")
@@ -238,18 +260,12 @@ def compile_qmap(input_path: Path, config_path: Path,
     compiler_time_ns = time.perf_counter_ns() - start
     if not isinstance(native, str) or not native.strip():
         raise RuntimeError("QMAP returned an empty native program")
-    # Preserve every @+ u instruction.  Removing it invalidates gate and idle
-    # ledgers.  Keep the unmodified compiler output as evidence, while the
-    # formal trace receives only deterministic legality splits/waypoints that
-    # preserve QMAP's endpoints and per-atom authored trajectory.
-    (output / "trace.na.raw").write_text(native, encoding="utf-8")
-    repaired_native, repair_stats = physicalize_na(native, zac_spec)
-    repaired_path = output / "trace.na"
-    repaired_path.write_text(repaired_native, encoding="utf-8")
-    physical_validation = validate_trace_physics(
-        normalize_na(repaired_path, architecture=architecture_path),
-        n_qubits=len(qiskit_circuit.qubits),
-    )
+    # Keep every instruction exactly as emitted by the official compiler.  In
+    # particular, do not split batches or add ghost-avoidance waypoints: those
+    # operations are absent from the ICCAD method and measurably change its
+    # Move counts and time.  The independent evaluator records any stationary
+    # ghost hits without rejecting this baseline.
+    (output / "trace.na").write_bytes(native.encode("utf-8"))
     stats = compiler.stats()
     _write_json(output / "compiler_timing.json", {
         "compiler_time_ns": compiler_time_ns,
@@ -262,13 +278,14 @@ def compile_qmap(input_path: Path, config_path: Path,
         "qiskit_version": importlib.metadata.version("qiskit"),
         "python_version": sys.version.split()[0],
         "compiler_class": type(compiler).__name__,
+        "native_sha256": hashlib.sha256(native.encode("utf-8")).hexdigest(),
         "fallback": False,
         "stats": stats,
-        "physicalization": "common_ghost_safe_split_preserving_qmap_endpoints",
-        "physicalization_stats": repair_stats,
-        "physical_validation": physical_validation,
-        "ghost_splits": repair_stats["ghost_splits"],
-        "ghost_repairs": repair_stats["waypoint_atoms"],
+        "trace_protocol": trace_protocol_for_method("M2"),
+        "ghost_policy": ghost_policy_for_method("M2"),
+        "physicalization": physicalization_policy_for_method("M2"),
+        "ghost_splits": 0,
+        "ghost_repairs": 0,
     })
 
 

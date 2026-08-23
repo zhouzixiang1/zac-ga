@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from .contracts import RunManifest, RunStatus, load_run_manifest
+from .protocol import (ghost_policy_for_method,
+                       physicalization_policy_for_method,
+                       trace_protocol_for_method)
 
 
 METHODS = ("M1", "M2", "M3", "M4")
@@ -793,6 +796,16 @@ def aggregate_experiment(
     return {
         "experiment_schema": 2, "experiment_id": selected_experiment,
         "dataset": dataset, "run_kinds": kinds,
+        "method_protocols": {
+            method: {
+                "trace_protocol": trace_protocol_for_method(method),
+                "ghost_policy": ghost_policy_for_method(method),
+                "physicalization_policy":
+                    physicalization_policy_for_method(method),
+                "scoring": "unified_zac_physical_model",
+            }
+            for method in METHODS
+        },
         "frozen_suite": {
             "source": suite_source, "explicit": suite_explicit,
             "sha256": actual_suite_hash, "circuits": circuits, "N": len(circuits),
@@ -851,6 +864,9 @@ def aggregate_experiment(
                 "ghost_repairs": item.ghost_repairs,
                 "ghost_splits": item.ghost_splits,
                 "ghost_hits": item.ghost_hits,
+                "trace_protocol": item.trace_protocol,
+                "ghost_policy": item.ghost_policy,
+                "physicalization_policy": item.physicalization_policy,
                 "verifier_ok": item.verifier_ok,
                 "artifact_dir": item.artifact_dir,
                 "error": item.error,

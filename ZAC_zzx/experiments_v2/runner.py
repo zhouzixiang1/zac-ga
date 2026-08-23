@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 from .contracts import RunManifest, RunStatus, sha256_file, stable_sha256
+from .protocol import (ghost_policy_for_method,
+                       physicalization_policy_for_method,
+                       trace_protocol_for_method)
 
 
 Verifier = Callable[[Path], Mapping[str, Any] | bool]
@@ -226,6 +229,9 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
         qubits=spec.qubits, expected_gates_1q=spec.expected_gates_1q,
         expected_gates_2q=spec.expected_gates_2q,
         expected_gate_ledger_sha256=spec.expected_gate_ledger_sha256,
+        trace_protocol=trace_protocol_for_method(spec.method),
+        ghost_policy=ghost_policy_for_method(spec.method),
+        physicalization_policy=physicalization_policy_for_method(spec.method),
     )
     if spec.require_clean_git and (manifest.git_dirty or manifest.git_commit == "unknown"):
         shutil.rmtree(temporary)
@@ -323,12 +329,88 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
     if stats_path.is_file():
         try:
             stats = json.loads(stats_path.read_text(encoding="utf-8"))
+            if not isinstance(stats, Mapping):
+                raise TypeError("compiler_stats.json must contain a JSON object")
             for key in ("qiskit_version", "mqt_qmap_version",
                         "mqt_core_version", "python_version"):
                 if key in stats:
                     manifest.package_versions[key] = str(stats[key])
-        except (OSError, TypeError, json.JSONDecodeError) as error:
-            manifest.warnings.append(f"invalid compiler_stats.json: {error}")
+            if manifest.status == RunStatus.SUCCESS.value:
+                expected_protocol = {
+                    "trace_protocol": manifest.trace_protocol,
+                    "ghost_policy": manifest.ghost_policy,
+                    "physicalization": manifest.physicalization_policy,
+                }
+                drift = {
+                    key: (stats.get(key), expected)
+                    for key, expected in expected_protocol.items()
+                    if stats.get(key) != expected
+                }
+                if drift:
+                    raise ValueError(
+                        f"compiler protocol declaration mismatch: {drift}")
+                if manifest.method in {"M1", "M2"}:
+                    repairs = {
+                        key: stats.get(key, 0)
+                        for key in ("ghost_repairs", "ghost_splits")
+                    }
+                    if any(value != 0 for value in repairs.values()):
+                        raise ValueError(
+                            "paper baseline compiler reported external ghost repair: "
+                            f"{repairs}")
+                if manifest.method == "M1":
+                    expected_source = (
+                        Path(spec.repo_root).resolve() / "ZAC" / "zac" / "zac.py"
+                    ).resolve()
+                    reported_source = Path(str(
+                        stats.get("compiler_source_file", ""))).resolve()
+                    identity = {
+                        "compiler_module": (stats.get("compiler_module"), "zac.zac"),
+                        "routing_strategy": (
+                            stats.get("routing_strategy"), "maximalis_sort"),
+                        "compiler_source_file": (
+                            str(reported_source), str(expected_source)),
+                    }
+                    identity_drift = {
+                        key: value for key, value in identity.items()
+                        if value[0] != value[1]
+                    }
+                    if identity_drift:
+                        raise ValueError(
+                            f"M1 original ZAC identity mismatch: {identity_drift}")
+                if manifest.method == "M2":
+                    identity = {
+                        "compiler_class": (
+                            stats.get("compiler_class"), "RoutingAwareCompiler"),
+                        "fallback": (stats.get("fallback"), False),
+                        "mqt_qmap_version": (
+                            stats.get("mqt_qmap_version"), "3.2.0"),
+                        "mqt_core_version": (
+                            stats.get("mqt_core_version"), "3.1.0"),
+                    }
+                    identity_drift = {
+                        key: value for key, value in identity.items()
+                        if value[0] != value[1]
+                    }
+                    if identity_drift:
+                        raise ValueError(
+                            f"M2 routing-aware compiler identity mismatch: "
+                            f"{identity_drift}")
+                    native_path = temporary / "trace.na"
+                    if (not native_path.is_file() or
+                            stats.get("native_sha256") != sha256_file(native_path)):
+                        raise ValueError(
+                            "M2 native trace differs from the official compiler output hash")
+        except (OSError, TypeError, ValueError, KeyError,
+                json.JSONDecodeError) as error:
+            if manifest.status == RunStatus.SUCCESS.value:
+                manifest.status = RunStatus.SCORER_ERROR.value
+                manifest.error = f"compiler protocol error: {error}"
+            else:
+                manifest.warnings.append(f"invalid compiler_stats.json: {error}")
+    elif manifest.status == RunStatus.SUCCESS.value:
+        manifest.status = RunStatus.SCORER_ERROR.value
+        manifest.error = "compiler protocol error: missing compiler_stats.json"
 
     if manifest.status == RunStatus.SUCCESS.value:
         try:

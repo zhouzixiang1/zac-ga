@@ -18,12 +18,17 @@ def _same_position(left: tuple[float, float], right: tuple[float, float]) -> boo
 
 
 def validate_trace_physics(events: Iterable[CanonicalTraceEvent], *,
-                           n_qubits: int | None = None) -> dict[str, Any]:
+                           n_qubits: int | None = None,
+                           enforce_ghost_safety: bool = True) -> dict[str, Any]:
     """Replay occupancy, AOD ordering, continuity, and ghost safety.
 
     This validator trusts neither the compiler nor the scorer.  It consumes a
     freshly normalized event stream, follows every atom position, and treats a
-    non-held atom as a static ghost during each AOD movement phase.
+    non-held atom as a static ghost during each AOD movement phase.  Ghost hits
+    are always counted.  ``enforce_ghost_safety=False`` is reserved for the
+    unmodified M1/M2 paper baselines, whose published algorithms did not impose
+    our stronger stationary-ghost constraint; every other physical invariant
+    remains fail-closed.
     """
     positions: dict[int, tuple[float, float]] = {}
     held: set[int] = set()
@@ -120,7 +125,7 @@ def validate_trace_physics(events: Iterable[CanonicalTraceEvent], *,
                       if q not in moving_atoms]
             hits = ghost_hits(legs, ghosts)
             ghost_count += len(hits)
-            if hits:
+            if hits and enforce_ghost_safety:
                 raise TraceValidationError(
                     f"ghost collision in batch {event.batch_id}: {hits[:3]}")
             for q, end in zip(event.atoms, event.end_positions):

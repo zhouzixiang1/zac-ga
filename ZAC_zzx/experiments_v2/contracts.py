@@ -16,6 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
+from .protocol import (BASELINE_METHODS, OURS_METHODS,
+                       ghost_policy_for_method,
+                       physicalization_policy_for_method,
+                       trace_protocol_for_method)
+
 
 SCHEMA_VERSION = 2
 
@@ -215,6 +220,9 @@ class RunManifest:
     ghost_repairs: Optional[int] = None
     ghost_splits: Optional[int] = None
     ghost_hits: Optional[int] = None
+    trace_protocol: str = ""
+    ghost_policy: str = ""
+    physicalization_policy: str = ""
     verifier_ok: Optional[bool] = None
     warnings: List[str] = field(default_factory=list)
     error: Optional[str] = None
@@ -245,23 +253,46 @@ class RunManifest:
                 raise ValueError("ablation run is missing ablation_variant")
         elif self.ablation_variant:
             raise ValueError("ablation_variant is forbidden outside ablation runs")
+        if self.method in BASELINE_METHODS | OURS_METHODS and (
+                self.run_kind in {"coverage", "main", "timing", "ablation", "large"}
+                or self.trace_protocol or self.ghost_policy
+                or self.physicalization_policy):
+            expected_trace = trace_protocol_for_method(self.method)
+            expected_ghost = ghost_policy_for_method(self.method)
+            expected_physicalization = physicalization_policy_for_method(self.method)
+            if self.trace_protocol != expected_trace:
+                raise ValueError(
+                    f"{self.method} requires trace_protocol={expected_trace}")
+            if self.ghost_policy != expected_ghost:
+                raise ValueError(
+                    f"{self.method} requires ghost_policy={expected_ghost}")
+            if self.physicalization_policy != expected_physicalization:
+                raise ValueError(
+                    f"{self.method} requires physicalization_policy="
+                    f"{expected_physicalization}")
         if require_success_metrics and self.status == RunStatus.SUCCESS.value:
             required = (self.move_batches, self.move_time_us,
                         self.compiler_time_ns, self.duration_us, self.qubits,
                         self.expected_gates_1q, self.expected_gates_2q,
-                        self.observed_gates_1q, self.observed_gates_2q)
+                        self.observed_gates_1q, self.observed_gates_2q,
+                        self.ghost_repairs, self.ghost_splits, self.ghost_hits)
             if any(item is None for item in required):
                 raise ValueError("successful run is missing a primary metric")
             if self.verifier_ok is not True:
-                raise ValueError("successful run must pass strict verification")
+                raise ValueError("successful run must pass method-policy verification")
             if ((self.expected_gates_1q, self.expected_gates_2q) !=
                     (self.observed_gates_1q, self.observed_gates_2q)):
                 raise ValueError("successful run has a gate-count mismatch")
             if (not self.expected_gate_ledger_sha256 or
                     self.expected_gate_ledger_sha256 != self.observed_gate_ledger_sha256):
                 raise ValueError("successful run has a logical gate-ledger mismatch")
-            if self.ghost_hits != 0:
-                raise ValueError("successful run must have ghost_hits=0")
+            if self.method in OURS_METHODS and self.ghost_hits != 0:
+                raise ValueError("successful M3/M4 run must have ghost_hits=0")
+            if self.method in BASELINE_METHODS and any(
+                    value not in (None, 0)
+                    for value in (self.ghost_repairs, self.ghost_splits)):
+                raise ValueError(
+                    "successful M1/M2 run may not contain paper-external ghost repair")
             required_components = {
                 "log_one_qubit_gate", "log_two_qubit_gate",
                 "log_idle_excitation", "log_atom_transfer",
@@ -312,6 +343,8 @@ class RunManifest:
                 "expected_gates_2q": self.expected_gates_2q,
                 "observed_gates_1q": self.observed_gates_1q,
                 "observed_gates_2q": self.observed_gates_2q,
+                "ghost_repairs": self.ghost_repairs,
+                "ghost_splits": self.ghost_splits,
                 "ghost_hits": self.ghost_hits,
             }
             for label, value in integer_counts.items():
