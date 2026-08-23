@@ -52,7 +52,7 @@ SCHEMA2_PAIR_EXEMPT_KEYS = {"method_id", "dir"}
 # preference.  Keeping the registered values here makes an ABI/RNG change an
 # explicit experiment-revision event instead of a silent wheel substitution.
 FORMAL_NATIVE_ALGORITHM_REVISION = "native-ga-v1"
-FORMAL_NATIVE_TUNING_PROTOCOL_ID = "resident-ga-native-v1"
+FORMAL_NATIVE_TUNING_PROTOCOL_ID = "resident-ga-quality-racing-v1"
 FORMAL_NATIVE_ABI_VERSION = 3
 FORMAL_NATIVE_RNG_VERSION = "python-random-mt19937-v1"
 SCHEMA2_NATIVE_REQUIRED_KEYS = {
@@ -60,17 +60,28 @@ SCHEMA2_NATIVE_REQUIRED_KEYS = {
     "backend",
     "early_stop_patience",
     "elite_count",
+    "crossover_rate",
+    "direct_enumeration_limit",
     "formal_native",
+    "local_polish_sweeps",
+    "max_unique_evaluations",
     "native_abi_version",
     "native_fail_closed",
     "native_wheel_sha256",
     "operator_profile",
+    "return_assignment_k",
+    "return_candidate_limit",
     "rng_version",
     "tuning_protocol_id",
 }
 SCHEMA2_NATIVE_MARKER_KEYS = (
     SCHEMA2_NATIVE_REQUIRED_KEYS
-    - {"backend", "early_stop_patience", "elite_count", "operator_profile"}
+    - {
+        "backend", "crossover_rate", "direct_enumeration_limit",
+        "early_stop_patience", "elite_count", "local_polish_sweeps",
+        "max_unique_evaluations", "operator_profile",
+        "return_assignment_k", "return_candidate_limit",
+    }
 )
 
 
@@ -142,6 +153,19 @@ def _validate_native_contract(setting: dict) -> None:
         if max_unique < setting["population_size"]:
             raise ValueError(
                 "max_unique_evaluations 不能小于 population_size")
+    for key in ("direct_enumeration_limit", "return_candidate_limit",
+                "return_assignment_k"):
+        value = setting[key]
+        if not _is_integer(value) or value <= 0:
+            raise ValueError(f"{key} 必须是正整数")
+    local_polish = setting["local_polish_sweeps"]
+    if not _is_integer(local_polish) or local_polish < 0:
+        raise ValueError("local_polish_sweeps 必须是非负整数")
+    crossover = setting["crossover_rate"]
+    if (not isinstance(crossover, (int, float))
+            or isinstance(crossover, bool)
+            or not 0.0 <= float(crossover) <= 1.0):
+        raise ValueError("crossover_rate 必须位于 [0,1]")
 
 
 def resolved_max_unique_evaluations(setting: dict) -> int:
@@ -177,8 +201,8 @@ def validate_decay_lookahead_spec(spec, *, expected_max_horizon: int) -> dict:
             f"正式 max_horizon 必须为 {expected_max_horizon}")
     rho = spec["rho"]
     if (not isinstance(rho, (int, float)) or isinstance(rho, bool)
-            or float(rho) not in {0.4, 0.6, 0.8}):
-        raise ValueError("正式 rho 必须来自注册集合 {0.4,0.6,0.8}")
+            or float(rho) not in {0.5, 0.6, 0.7}):
+        raise ValueError("正式 rho 必须来自注册集合 {0.5,0.6,0.7}")
     epsilon = spec["epsilon"]
     if (not isinstance(epsilon, (int, float)) or isinstance(epsilon, bool)
             or float(epsilon) != 0.05):

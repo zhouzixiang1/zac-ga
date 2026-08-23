@@ -771,19 +771,21 @@ def _assert_reproduction_gate(plan: ExperimentPlan) -> None:
 def _assert_formal_selection_gates(plan: ExperimentPlan) -> Mapping[str, Any]:
     """Require the audited initializer and tuning selections before a run.
 
-    Imports are deliberately local: ``tuning_runner`` uses this module's
-    attempt construction helpers, so importing it at module initialization
+    Imports are deliberately local: the selection runners use this module's
+    attempt construction helpers, so importing them at module initialization
     would create a cycle.
     """
     from .initial_placement_runner import validate_initial_selection_for_plan
-    from .tuning_runner import validate_tuning_selection_for_plan
+    from .quality_racing_runner import validate_quality_selection_for_plan
 
     initial_path = (
         plan.output_root / "initial-placement" / "selected_engine.json")
-    tuning_path = plan.output_root / "tuning" / "selected_config_manifest.json"
+    tuning_path = (
+        plan.output_root / "tuning-quality-v1" /
+        "selected_config_manifest.json")
     initial = validate_initial_selection_for_plan(
         plan, initial_path, enforce_pre_tuning_core=False)
-    tuning = validate_tuning_selection_for_plan(plan, tuning_path)
+    tuning = validate_quality_selection_for_plan(plan, tuning_path)
     if (tuning.get("initial_selection_record_sha256") !=
             initial.get("record_sha256")):
         raise ValueError(

@@ -48,7 +48,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from evaluation import FidelityModel
-from zzx.algorithm_v2 import validate_schema2_pair, validate_schema2_setting
+from zzx.algorithm_v2 import (
+    FORMAL_NATIVE_TUNING_PROTOCOL_ID,
+    validate_schema2_pair,
+    validate_schema2_setting,
+)
 
 from .contracts import (CanonicalCircuitManifest, SCHEMA_VERSION,
                         repository_snapshot, sha256_file, stable_sha256)
@@ -129,16 +133,52 @@ def _validate_method_config(method: str, payload: Mapping[str, Any]) -> None:
 
 def _validate_pair_payloads(m3: Mapping[str, Any], m4: Mapping[str, Any]) -> None:
     left, right = effective_zac_setting(m3), effective_zac_setting(m4)
-    validate_schema2_pair(left, right)
+    outer_tuning = []
+    for method, payload in (("M3", m3), ("M4", m4)):
+        tuning = payload.get("tuning", {})
+        if not isinstance(tuning, Mapping):
+            raise ValueError(f"{method} tuning metadata must be an object")
+        outer_tuning.append(tuning)
+    tracks = {str(value.get("track", "shared")) for value in outer_tuning}
+    if len(tracks) != 1:
+        raise ValueError("M3/M4 cannot mix shared and independent tuning tracks")
+    track = tracks.pop()
+    if track == "shared":
+        validate_schema2_pair(left, right)
+    elif track == "independent":
+        # The quality-racing main table intentionally uses each method's own
+        # selected configuration.  Causal lookahead evidence is produced by a
+        # separate shared-forward pair, so the formal main plan validates each
+        # method independently instead of pretending the knobs are identical.
+        validate_schema2_setting(left)
+        validate_schema2_setting(right)
+        if left.get("method_id") != "ours_nl" or \
+                right.get("method_id") != "ours_lk":
+            raise ValueError("independent main track requires ours_nl/ours_lk")
+        for method, tuning in (("M3", outer_tuning[0]),
+                               ("M4", outer_tuning[1])):
+            if tuning.get("protocol_id") != FORMAL_NATIVE_TUNING_PROTOCOL_ID:
+                raise ValueError(
+                    f"{method} independent track has wrong tuning protocol")
+            if not isinstance(tuning.get("candidate_id"), str) or not \
+                    tuning["candidate_id"]:
+                raise ValueError(
+                    f"{method} independent track lacks selected candidate id")
+    else:
+        raise ValueError(f"unknown M3/M4 tuning track: {track!r}")
 
     # Wrapper metadata cannot become a hidden method difference.  Only the
-    # effective setting may differ, under validate_schema2_pair's strict rule.
+    # effective setting may differ.  Shared configs retain the strict wrapper
+    # equality check; independent configs carry distinct candidate identities.
     if "zac_setting" not in m3 and "zac_setting" not in m4:
         return
     if ("zac_setting" in m3) != ("zac_setting" in m4):
         raise ValueError("M3/M4 must use the same flat or wrapped config shape")
     outer_left = {key: value for key, value in m3.items() if key != "zac_setting"}
     outer_right = {key: value for key, value in m4.items() if key != "zac_setting"}
+    if track == "independent":
+        outer_left.pop("tuning", None)
+        outer_right.pop("tuning", None)
     if outer_left != outer_right:
         raise ValueError(
             "M3/M4 wrapper metadata differs outside zac_setting: "

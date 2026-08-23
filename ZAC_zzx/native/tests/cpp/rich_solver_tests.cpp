@@ -176,6 +176,29 @@ int main() {
   assert(decay.stats.forecast_terms_skipped_cutoff > 0);
   ++tests;
 
+  ArchitectureSnapshot enum_architecture(
+      2, {{0.0, 0.0}, {1.0, 0.0}});
+  RichH0Problem enum_problem;
+  enum_problem.n_atoms = 2;
+  enum_problem.current_points = {{0.0, 0.0}, {1.0, 0.0}};
+  enum_problem.participants = {0, 1};
+  std::vector<RichGateOption> enum_domain;
+  for (std::size_t option = 0; option < 256; ++option) {
+    enum_domain.push_back({static_cast<std::int64_t>(1000 + option),
+                           0, 1, {0.0, 0.0}, {1.0, 0.0}});
+  }
+  enum_problem.gate_domains = {std::move(enum_domain)};
+  enum_problem.matched_gate_genes = {0};
+  auto enum_config = exact_config();
+  enum_config.direct_enumeration_limit = 512;
+  enum_config.max_unique_evaluations = 256;
+  const auto enumerated = solve_rich_h0(
+      enum_architecture, enum_problem, enum_config, rng_fixture());
+  assert(enumerated.search_mode == "enumerate");
+  assert(enumerated.stats.unique_evaluations == 256);
+  assert(enumerated.winner.chromosome == std::vector<std::int64_t>({0}));
+  ++tests;
+
   constexpr std::size_t kAtoms = 9;
   std::vector<Point> coordinates;
   for (std::size_t atom = 0; atom < kAtoms; ++atom) {
@@ -201,7 +224,7 @@ int main() {
   }
   ga.eligible = {4, 5, 6, 7, 8};
   ga.eviction_order_indices = {0, 1, 2, 3, 4};
-  ga.forced_return_mask = {true, true, true, true, true};
+  ga.forced_return_mask = {false, false, false, false, false};
   for (std::size_t index = 0; index < ga.eligible.size(); ++index) {
     ga.return_domains.push_back({{
         static_cast<std::int64_t>(9 + index), coordinates[9 + index], 1.0}});
@@ -210,22 +233,26 @@ int main() {
   auto tuned_config = exact_config();
   tuned_config.operator_profile = RichOperatorProfile::kTuned;
   tuned_config.population_size = 6;
-  tuned_config.iterations = 8;
-  tuned_config.neighbor_sample_size = 64;
+  tuned_config.iterations = 1;
+  tuned_config.neighbor_sample_size = 16;
   tuned_config.neighbors_per_solution = 2;
   tuned_config.early_stop_patience = 2;
-  tuned_config.max_unique_evaluations = 12;
+  tuned_config.max_unique_evaluations = 256;
+  tuned_config.crossover_rate = 0.5;
+  tuned_config.local_polish_sweeps = 2;
   std::vector<std::int64_t> cached(7, 1);
   const auto tuned = solve_rich_h0(
       ga_architecture, ga, tuned_config, rng_fixture(), cached);
   assert(tuned.stats.cached_winner_elites == 1);
-  assert(tuned.stats.stochastic_unique_evaluations <= 12);
+  assert(tuned.stats.unique_evaluations <= 256);
   assert(tuned.stats.generations > 0 && !tuned.stats.early_stop_reason.empty());
   assert(tuned.stats.gate_mutations > 0);
   assert(tuned.stats.residency_mutations > 0);
   assert(tuned.stats.high_cost_gate_reselections > 0);
   assert(tuned.stats.conflict_cluster_swaps > 0);
   assert(tuned.stats.marginal_return_flips > 0);
+  assert(tuned.stats.crossovers > 0);
+  assert(tuned.stats.local_polish_evaluations > 0);
   ++tests;
 
   const auto repeated = solve_rich_h0(
@@ -234,6 +261,26 @@ int main() {
   assert(tuned.return_assignments == repeated.return_assignments);
   assert(tuned.rng_state.words == repeated.rng_state.words &&
          tuned.rng_state.index == repeated.rng_state.index);
+  ++tests;
+
+  auto uncached_config = tuned_config;
+  uncached_config.fitness_cache = false;
+  const auto uncached = solve_rich_h0(
+      ga_architecture, ga, uncached_config, rng_fixture(), cached);
+  assert(tuned.winner.chromosome == uncached.winner.chromosome);
+  assert(tuned.winner.feasible == uncached.winner.feasible);
+  assert(tuned.winner.negative_log_fidelity ==
+         uncached.winner.negative_log_fidelity);
+  assert(tuned.winner.move_batches == uncached.winner.move_batches);
+  assert(tuned.winner.move_time_us == uncached.winner.move_time_us);
+  assert(tuned.winner.total_distance_um ==
+         uncached.winner.total_distance_um);
+  assert(tuned.winner.phase_batches == uncached.winner.phase_batches);
+  assert(tuned.gate_option_indices == uncached.gate_option_indices);
+  assert(tuned.return_assignments == uncached.return_assignments);
+  assert(tuned.reseat_assignments == uncached.reseat_assignments);
+  assert(tuned.rng_state.words == uncached.rng_state.words &&
+         tuned.rng_state.index == uncached.rng_state.index);
   ++tests;
 
   std::cout << "rich_solver_tests: " << tests << " sections ok\n";

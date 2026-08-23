@@ -427,7 +427,8 @@ class RichSolver {
       stats_.early_stop_reason = "lru";
     } else {
       const auto direct_space = direct_search_space();
-      if (direct_space <= 64) {
+      if (direct_space <= config_.direct_enumeration_limit &&
+          direct_space <= config_.max_unique_evaluations) {
         auto chromosomes = enumerate_chromosomes();
         auto scored = score_unique(chromosomes, false);
         if (scored.empty()) throw std::runtime_error("direct search has no candidate");
@@ -453,14 +454,26 @@ class RichSolver {
             neighbors.reserve(config_.neighbor_sample_size);
             for (std::size_t sample = 0; sample < config_.neighbor_sample_size;
                  ++sample) {
-              neighbors.push_back(neighbor(parent.fitness.chromosome));
+              if (config_.operator_profile == RichOperatorProfile::kTuned &&
+                  scored.size() > 1 &&
+                  rng_.random() < config_.crossover_rate) {
+                auto mate_index = rng_.randbelow(scored.size() - 1);
+                const auto parent_index = static_cast<std::size_t>(
+                    &parent - scored.data());
+                if (mate_index >= parent_index) ++mate_index;
+                neighbors.push_back(partitioned_crossover(
+                    parent.fitness.chromosome,
+                    scored[mate_index].fitness.chromosome));
+              } else {
+                neighbors.push_back(neighbor(parent.fitness.chromosome));
+              }
             }
             auto pool = score_unique(neighbors, true);
             const auto take = std::min(config_.neighbors_per_solution, pool.size());
             for (std::size_t index = 0; index < take; ++index) {
               offspring.push_back(pool[index].fitness.chromosome);
             }
-            if (stats_.stochastic_unique_evaluations >= stats_.stochastic_budget) {
+            if (stats_.unique_evaluations >= stats_.stochastic_budget) {
               budget_stop = true;
               break;
             }
@@ -475,6 +488,13 @@ class RichSolver {
             next_raw.push_back(scored[index].fitness.chromosome);
           }
           next_raw.insert(next_raw.end(), offspring.begin(), offspring.end());
+          // Keep already-evaluated, distinct parents available when offspring
+          // collapse to duplicate chromosomes.  This preserves diversity
+          // without spending additional fitness evaluations.
+          next_raw.reserve(next_raw.size() + scored.size());
+          for (const auto& parent : scored) {
+            next_raw.push_back(parent.fitness.chromosome);
+          }
           auto next = score_unique(next_raw, false);
           if (!next.empty()) scored = std::move(next);
           if (scored.size() > config_.population_size) {
@@ -499,7 +519,11 @@ class RichSolver {
           }
         }
         winner = scored.front().fitness.chromosome;
-        search_mode = (stats_.stochastic_unique_evaluations >=
+        if (config_.operator_profile == RichOperatorProfile::kTuned &&
+            config_.local_polish_sweeps != 0) {
+          winner = local_polish(winner);
+        }
+        search_mode = (stats_.unique_evaluations >=
                                stats_.stochastic_budget
                            ? "ga-budget"
                            : (stats_.early_stopped ? "ga-early-stop" : "ga"));
@@ -1145,10 +1169,10 @@ class RichSolver {
     return result;
   }
 
-  bool stochastic_can_score(const std::vector<std::int64_t>& raw) {
+  bool budget_can_score(const std::vector<std::int64_t>& raw) {
     const auto chromosome = normalize(raw);
     return evaluated_keys_.count(chromosome) != 0U ||
-           stats_.stochastic_unique_evaluations < stats_.stochastic_budget;
+           stats_.unique_evaluations < stats_.stochastic_budget;
   }
 
   std::vector<Evaluated> score_unique(
@@ -1162,7 +1186,7 @@ class RichSolver {
     }
     std::vector<Evaluated> result;
     for (const auto& chromosome : unique) {
-      if (stochastic && !stochastic_can_score(chromosome)) continue;
+      if (!budget_can_score(chromosome)) continue;
       result.push_back(evaluate(chromosome, stochastic));
     }
     std::sort(result.begin(), result.end(), [](const auto& first,
@@ -1173,14 +1197,15 @@ class RichSolver {
   }
 
   std::size_t direct_search_space() const {
+    const auto limit = config_.direct_enumeration_limit;
     std::size_t value = 1;
     for (const auto& domain : problem_.gate_domains) {
-      if (value > 64 / domain.size()) return 65;
+      if (value > limit / domain.size()) return limit + 1;
       value *= domain.size();
     }
     if (problem_.decision_policy == RichDecisionPolicy::kOptimize) {
       for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
-        if (value > 32) return 65;
+        if (value > limit / 2) return limit + 1;
         value *= 2;
       }
     }
@@ -1221,6 +1246,7 @@ class RichSolver {
       auto trial = greedy;
       trial[gate_count + index] ^= 1;
       trial = normalize(trial);
+      if (!budget_can_score(trial)) break;
       const auto value = evaluate(trial, false);
       if (evaluated_less(value, best)) {
         greedy = std::move(trial);
@@ -1249,6 +1275,7 @@ class RichSolver {
           auto trial = greedy;
           trial[gate] = static_cast<std::int64_t>(value);
           trial = normalize(trial);
+          if (!budget_can_score(trial)) break;
           const auto score = evaluate(trial, false);
           if (evaluated_less(score, best_score)) {
             best_gene = trial[gate];
@@ -1262,6 +1289,7 @@ class RichSolver {
         auto trial = greedy;
         trial[gate_count + index] ^= 1;
         trial = normalize(trial);
+        if (!budget_can_score(trial)) break;
         const auto score = evaluate(trial, false);
         if (evaluated_less(score, best)) {
           greedy = std::move(trial);
@@ -1288,7 +1316,9 @@ class RichSolver {
       raw.insert(raw.begin(), *cached_winner);
       ++stats_.cached_winner_elites;
     }
-    while (raw.size() < config_.population_size * 3) {
+    const auto target_samples = std::max<std::size_t>(
+        config_.population_size * 3, config_.population_size + 8);
+    while (raw.size() < target_samples) {
       std::vector<std::int64_t> chromosome;
       chromosome.reserve(gate_count + eligible_count);
       for (const auto& domain : problem_.gate_domains) {
@@ -1307,12 +1337,32 @@ class RichSolver {
       population.push_back(std::move(value));
       if (population.size() == config_.population_size) break;
     }
-    while (population.size() < config_.population_size) {
-      population.push_back(population.empty()
-                               ? std::vector<std::int64_t>(gate_count, 0)
-                               : population.back());
-    }
     return population;
+  }
+
+  std::vector<std::int64_t> partitioned_crossover(
+      const std::vector<std::int64_t>& first,
+      const std::vector<std::int64_t>& second) {
+    auto child = normalize(first);
+    const auto mate = normalize(second);
+    const auto gate_count = problem_.gate_domains.size();
+    const auto eligible_count = problem_.eligible.size();
+    const auto copy_partition_tail = [&](std::size_t begin,
+                                         std::size_t length) {
+      if (length == 0) return;
+      const auto cut = rng_.randbelow(length + 1);
+      const auto reverse = rng_.randbelow(2) != 0;
+      for (std::size_t offset = 0; offset < length; ++offset) {
+        const auto from_mate = reverse ? offset < cut : offset >= cut;
+        if (from_mate) child[begin + offset] = mate[begin + offset];
+      }
+    };
+    // Gate placement and residency decisions recombine independently so a
+    // useful placement block is not tied to an unrelated STAY/RETURN block.
+    copy_partition_tail(0, gate_count);
+    copy_partition_tail(gate_count, eligible_count);
+    ++stats_.crossovers;
+    return normalize(child);
   }
 
   std::vector<std::int64_t> neighbor(
@@ -1389,32 +1439,103 @@ class RichSolver {
   std::vector<std::int64_t> conflict_cluster_swap(
       const std::vector<std::int64_t>& chromosome) {
     const auto gate_count = problem_.gate_domains.size();
-    if (gate_count < 2) return separated_mutation(chromosome);
-    std::size_t first = gate_count;
-    std::size_t second = gate_count;
-    for (std::size_t left = 0; left < gate_count && first == gate_count; ++left) {
-      const auto left_option = positive_mod(
-          chromosome[left], problem_.gate_domains[left].size());
-      const auto left_site = problem_.gate_domains[left][left_option].site_id;
-      for (std::size_t right = left + 1; right < gate_count; ++right) {
-        const auto right_option = positive_mod(
-            chromosome[right], problem_.gate_domains[right].size());
-        if (problem_.gate_domains[right][right_option].site_id == left_site) {
-          first = left;
-          second = right;
-          break;
-        }
+    if (gate_count == 0 || problem_.eligible.empty()) {
+      return separated_mutation(chromosome);
+    }
+    std::size_t expensive_gate = 0;
+    double expensive_cost = -1.0;
+    for (std::size_t gate = 0; gate < gate_count; ++gate) {
+      const auto option_index = positive_mod(
+          chromosome[gate], problem_.gate_domains[gate].size());
+      const auto& option = problem_.gate_domains[gate][option_index];
+      const auto cost = point_distance(problem_.current_points[option.q1],
+                                       option.target1) +
+                        point_distance(problem_.current_points[option.q2],
+                                       option.target2);
+      if (std::tie(cost, gate) > std::tie(expensive_cost, expensive_gate)) {
+        expensive_cost = cost;
+        expensive_gate = gate;
       }
     }
-    if (first == gate_count) {
-      first = rng_.randbelow(gate_count);
-      second = rng_.randbelow(gate_count - 1);
-      if (second >= first) ++second;
-    }
     auto result = chromosome;
-    std::swap(result[first], result[second]);
+    const auto current_option = positive_mod(
+        chromosome[expensive_gate],
+        problem_.gate_domains[expensive_gate].size());
+    const auto& domain = problem_.gate_domains[expensive_gate];
+    if (domain.size() > 1) {
+      std::size_t replacement = current_option;
+      double replacement_cost = std::numeric_limits<double>::infinity();
+      for (std::size_t option_index = 0; option_index < domain.size();
+           ++option_index) {
+        if (option_index == current_option) continue;
+        const auto& option = domain[option_index];
+        const auto cost = point_distance(problem_.current_points[option.q1],
+                                         option.target1) +
+                          point_distance(problem_.current_points[option.q2],
+                                         option.target2);
+        if (std::tie(cost, option_index) <
+            std::tie(replacement_cost, replacement)) {
+          replacement = option_index;
+          replacement_cost = cost;
+        }
+      }
+      result[expensive_gate] = static_cast<std::int64_t>(replacement);
+    }
+    const auto& active_option = domain[positive_mod(
+        result[expensive_gate], domain.size())];
+    std::size_t related = 0;
+    double related_distance = std::numeric_limits<double>::infinity();
+    for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
+      const auto atom = static_cast<std::size_t>(problem_.eligible[index]);
+      const auto distance = std::min(
+          point_distance(problem_.current_points[atom], active_option.target1),
+          point_distance(problem_.current_points[atom], active_option.target2));
+      if (std::tie(distance, index) <
+          std::tie(related_distance, related)) {
+        related_distance = distance;
+        related = index;
+      }
+    }
+    result[gate_count + related] ^= 1;
     ++stats_.conflict_cluster_swaps;
     return normalize(result);
+  }
+
+  std::vector<std::int64_t> local_polish(
+      const std::vector<std::int64_t>& raw_winner) {
+    auto winner = normalize(raw_winner);
+    auto best = evaluate(winner, false);
+    const auto gate_count = problem_.gate_domains.size();
+    for (std::size_t sweep = 0; sweep < config_.local_polish_sweeps; ++sweep) {
+      std::vector<std::vector<std::int64_t>> neighbors;
+      for (std::size_t gate = 0; gate < gate_count; ++gate) {
+        const auto current = positive_mod(
+            winner[gate], problem_.gate_domains[gate].size());
+        for (std::size_t option = 0;
+             option < problem_.gate_domains[gate].size(); ++option) {
+          if (option == current) continue;
+          auto trial = winner;
+          trial[gate] = static_cast<std::int64_t>(option);
+          neighbors.push_back(std::move(trial));
+        }
+      }
+      if (problem_.decision_policy == RichDecisionPolicy::kOptimize) {
+        for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
+          auto trial = winner;
+          trial[gate_count + index] ^= 1;
+          neighbors.push_back(std::move(trial));
+        }
+      }
+      const auto before = stats_.unique_evaluations;
+      auto scored = score_unique(neighbors, true);
+      stats_.local_polish_evaluations +=
+          stats_.unique_evaluations - before;
+      if (scored.empty() || !evaluated_less(scored.front(), best)) break;
+      best = scored.front();
+      winner = best.fitness.chromosome;
+      if (stats_.unique_evaluations >= stats_.stochastic_budget) break;
+    }
+    return winner;
   }
 
   std::vector<std::int64_t> marginal_return_flip(

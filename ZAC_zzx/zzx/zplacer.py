@@ -3092,11 +3092,14 @@ class ResidentPlacer(VertexMatchingPlacer):
         direct_search_space = 1
         for domain in gate_domains:
             direct_search_space *= domain
-            if direct_search_space > 64:
+            if direct_search_space > self.direct_enumeration_limit:
                 break
-        if direct_search_space <= 64 and self.ablation_policy == "optimize":
+        if (direct_search_space <= self.direct_enumeration_limit
+                and self.ablation_policy == "optimize"):
             direct_search_space *= 2 ** len(eligible)
-        will_enumerate = direct_search_space <= 64
+        will_enumerate = (
+            direct_search_space <= self.direct_enumeration_limit
+            and direct_search_space <= self.max_unique_evaluations)
 
         # The LRU key is constructed before either backend starts searching so
         # the same previous-boundary elite is supplied to Python and C++.
@@ -3722,7 +3725,8 @@ class ResidentPlacer(VertexMatchingPlacer):
             search_mode = "lru"
         else:
             search_space = direct_search_space
-            if search_space <= 64:
+            if (search_space <= self.direct_enumeration_limit
+                    and search_space <= self.max_unique_evaluations):
                 domains = [range(domain) for domain in gate_domains]
                 decision_domain = (range(2) if self.ablation_policy == "optimize"
                                    else range(1))

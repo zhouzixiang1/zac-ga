@@ -29,6 +29,7 @@ from zzx.native_backend import (
 from zzx.reference_backend import (
     ReferenceResidentBackend,
     evaluate_decay_forecast,
+    solve_rich_exact_reference,
 )
 
 
@@ -123,6 +124,49 @@ def equal_distance_return_problem(*, terms=(), horizon=0):
     )
 
 
+def tuned_search_problem():
+    coordinates = tuple((float(atom), 0.0) for atom in range(9)) + tuple(
+        (float(site + 4), 4.0) for site in range(5))
+    arch = ArchitectureSnapshot.from_coordinates(
+        9, coordinates, tuple(range(9, 14)))
+    gate_domains = []
+    for gate in range(2):
+        q1, q2 = gate * 2, gate * 2 + 1
+        gate_domains.append(tuple(RichGateOption(
+            100 + gate * 20 + option, q1, q2,
+            Point(*coordinates[q1]), Point(*coordinates[q2]))
+                                  for option in range(10)))
+    problem = RichH0Problem(
+        architecture=arch,
+        current_points=tuple(Point(*value) for value in coordinates[:9]),
+        participants=(0, 1, 2, 3),
+        gate_domains=tuple(gate_domains),
+        static_ghosts=(),
+        eligible=(4, 5, 6, 7, 8),
+        min_returns=0,
+        eviction_order_indices=(0, 1, 2, 3, 4),
+        forced_return_mask=(False,) * 5,
+        return_domains=tuple((RichReturnOption(
+            9 + index, Point(*coordinates[9 + index]), 1.0),)
+                             for index in range(5)),
+        matched_gate_genes=(0, 0),
+        boundary_id="tuned-search",
+    )
+    config = RichSearchConfig(
+        operator_profile="tuned",
+        population_size=6,
+        iterations=1,
+        neighbor_sample_size=16,
+        neighbors_per_solution=2,
+        elite_count=2,
+        early_stop_patience=2,
+        max_unique_evaluations=256,
+        crossover_rate=.5,
+        local_polish_sweeps=2,
+    )
+    return arch, problem, config
+
+
 @unittest.skipUnless(native_available(), "ABI3 native extension is not installed")
 class TestNativeRichSolver(unittest.TestCase):
     def setUp(self):
@@ -186,6 +230,132 @@ class TestNativeRichSolver(unittest.TestCase):
             + result.winner.coherence_nll,
             delta=1e-15,
         )
+
+    def test_python_exact_rich_truth_matches_native(self):
+        cases = []
+        cases.append((self.arch, toy_problem(),
+                      RichSearchConfig(operator_profile="exact")))
+        ghost_arch, ghost_problem = ghost_sensitive_return_problem()
+        cases.append((ghost_arch, ghost_problem, RichSearchConfig(
+            operator_profile="exact", return_assignment_k=4)))
+        future_arch, future_problem = equal_distance_return_problem(
+            terms=(RichForecastTerm(
+                1, "return_site", "routing", 1.0,
+                index=0, selector=3),),
+            horizon=1)
+        cases.append((future_arch, future_problem, RichSearchConfig(
+            operator_profile="exact", max_horizon=1,
+            alpha_lookahead=1.0, return_assignment_k=4)))
+        for index, (arch, problem, config) in enumerate(cases):
+            with self.subTest(index=index):
+                state = random.Random(1700 + index).getstate()
+                reference = solve_rich_exact_reference(problem, config, state)
+                native = NativeResidentBackend(arch).solve_rich_boundary(
+                    problem, config, state)
+                self.assertEqual(reference.winner, native.winner)
+                self.assertEqual(reference.gate_option_indices,
+                                 native.gate_option_indices)
+                self.assertEqual(reference.return_assignments,
+                                 native.return_assignments)
+                self.assertEqual(reference.reseat_assignments,
+                                 native.reseat_assignments)
+                self.assertEqual(reference.return_assignment_rank,
+                                 native.return_assignment_rank)
+                self.assertAlmostEqual(
+                    reference.search_negative_log_fidelity,
+                    native.search_negative_log_fidelity, delta=1e-12)
+
+    def test_random_small_rich_boundaries_match_python_truth(self):
+        arch = ArchitectureSnapshot.from_coordinates(
+            4,
+            ((0, 0), (10, 10), (20, 20), (30, 30),
+             (20, 25), (21, 25), (30, 25), (31, 25)),
+            (4, 5, 6, 7),
+        )
+        rng = random.Random(20260823)
+        for case in range(12):
+            return_domains = (
+                (RichReturnOption(4, Point(20, 25), rng.random() + .1),
+                 RichReturnOption(5, Point(21, 25), rng.random() + .1)),
+                (RichReturnOption(6, Point(30, 25), rng.random() + .1),
+                 RichReturnOption(7, Point(31, 25), rng.random() + .1)),
+            )
+            terms = (
+                RichForecastTerm(1, "return", "reentry", rng.random(),
+                                 index=case % 2),
+                RichForecastTerm(2, "stay", "residency", rng.random(),
+                                 index=(case + 1) % 2),
+            )
+            problem = RichH0Problem(
+                architecture=arch,
+                current_points=(Point(0, 0), Point(10, 10),
+                                Point(20, 20), Point(30, 30)),
+                participants=(0, 1),
+                gate_domains=((
+                    RichGateOption(10, 0, 1, Point(0, 0), Point(10, 10)),
+                    RichGateOption(11, 0, 1, Point(0, 0), Point(10, 10)),
+                ),),
+                static_ghosts=(),
+                eligible=(2, 3),
+                min_returns=case % 2,
+                eviction_order_indices=(case % 2, (case + 1) % 2),
+                forced_return_mask=(case % 3 == 0, case % 4 == 0),
+                return_domains=return_domains,
+                matched_gate_genes=(0,),
+                boundary_id=f"random-small-{case}",
+                selected_horizon=2,
+                forecast_terms=terms,
+            )
+            config = RichSearchConfig(
+                operator_profile="exact", max_horizon=2,
+                alpha_lookahead=.2, decay_rho=.7,
+                return_candidate_limit=6, return_assignment_k=4)
+            state = random.Random(case).getstate()
+            reference = solve_rich_exact_reference(problem, config, state)
+            native = NativeResidentBackend(arch).solve_rich_boundary(
+                problem, config, state)
+            with self.subTest(case=case):
+                self.assertEqual(reference.winner, native.winner)
+                self.assertEqual(reference.gate_option_indices,
+                                 native.gate_option_indices)
+                self.assertEqual(reference.return_assignments,
+                                 native.return_assignments)
+                self.assertEqual(reference.reseat_assignments,
+                                 native.reseat_assignments)
+                self.assertAlmostEqual(
+                    reference.search_negative_log_fidelity,
+                    native.search_negative_log_fidelity, delta=1e-12)
+
+    def test_direct_enumeration_limit_is_512_not_64(self):
+        arch = ArchitectureSnapshot.from_coordinates(
+            2, ((0, 0), (1, 0)))
+        domain = tuple(RichGateOption(
+            1000 + option, 0, 1, Point(0, 0), Point(1, 0))
+                       for option in range(256))
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(Point(0, 0), Point(1, 0)),
+            participants=(0, 1),
+            gate_domains=(domain,),
+            static_ghosts=(),
+            eligible=(),
+            min_returns=0,
+            eviction_order_indices=(),
+            forced_return_mask=(),
+            return_domains=(),
+            matched_gate_genes=(0,),
+            boundary_id="enumerate-256",
+        )
+        config = RichSearchConfig(
+            operator_profile="exact", direct_enumeration_limit=512,
+            max_unique_evaluations=256)
+        state = random.Random(0).getstate()
+        reference = solve_rich_exact_reference(problem, config, state)
+        native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, state)
+        self.assertEqual("enumerate", native.search_mode)
+        self.assertEqual(256, native.unique_evaluations)
+        self.assertEqual(reference.winner, native.winner)
 
     def test_k_best_return_chooses_second_site_when_nearest_has_ghost(self):
         arch, problem = ghost_sensitive_return_problem()
@@ -369,6 +539,35 @@ class TestNativeRichSolver(unittest.TestCase):
         else:
             with self.assertRaises(NativeBackendUnavailable):
                 build_info(require_registered_wheel=True)
+
+    def test_tuned_search_seed_and_cache_toggle_are_exact(self):
+        arch, problem, config = tuned_search_problem()
+        state = random.Random(20260823).getstate()
+        backend = NativeResidentBackend(arch)
+        first = backend.solve_rich_boundary(problem, config, state)
+        repeated = backend.solve_rich_boundary(problem, config, state)
+        uncached = backend.solve_rich_boundary(
+            problem,
+            RichSearchConfig(**{
+                key: getattr(config, key)
+                for key in config.__dataclass_fields__
+                if key != "fitness_cache"
+            }, fitness_cache=False),
+            state,
+        )
+        for other in (repeated, uncached):
+            self.assertEqual(first.winner, other.winner)
+            self.assertEqual(first.gate_option_indices,
+                             other.gate_option_indices)
+            self.assertEqual(first.return_assignments,
+                             other.return_assignments)
+            self.assertEqual(first.reseat_assignments,
+                             other.reseat_assignments)
+            self.assertEqual(first.rng_state, other.rng_state)
+        self.assertGreater(first.operator_stats["crossovers"], 0)
+        self.assertGreater(first.operator_stats["local_polish_evaluations"], 0)
+        self.assertLessEqual(first.unique_evaluations,
+                             config.max_unique_evaluations)
 
 
 if __name__ == "__main__":

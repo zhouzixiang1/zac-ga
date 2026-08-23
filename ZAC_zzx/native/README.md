@@ -30,6 +30,15 @@ and only then compares candidates.  The selected assignment rank, evaluated
 assignment count, rejected ghost assignments, geometric routing forecast, and
 pre-score RESEAT count are returned in the boundary audit.
 
+Search uses one total unique-fitness budget shared by greedy seeding,
+crossover/mutation and local polishing.  A normalized direct space of at most
+`direct_enumeration_limit` (512 by default) is exhaustively enumerated when it
+also fits that budget.  Larger spaces use separate gate/residency crossover,
+joint high-cost-gate plus related-RETURN mutation, duplicate-free populations,
+deterministic elites and up to `local_polish_sweeps` single-gene improvement
+passes.  Cache on/off changes evaluation reuse only; winner, mapping, movement
+batches and RNG state remain identical for a fixed seed.
+
 The extension is fail-closed: `zzx.native_backend.NativeResidentBackend` raises
 when the wheel is missing, ABI/RNG differs, or a required registered wheel hash
 does not match the actually loaded binary.  `register_native_wheel()` verifies

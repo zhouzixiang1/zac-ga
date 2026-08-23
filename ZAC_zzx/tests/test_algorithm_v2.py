@@ -218,7 +218,7 @@ class TestSchema2Contract(unittest.TestCase):
     def test_pair_rejects_hidden_decay_difference(self):
         nl = load_setting("ours_nl_v2.json")
         lk = load_setting("ours_lk_v2.json")
-        lk["lookahead_horizon"]["rho"] = 0.8
+        lk["lookahead_horizon"]["rho"] = 0.7
         with self.assertRaisesRegex(ValueError, "decay spec"):
             validate_schema2_pair(nl, lk)
 
