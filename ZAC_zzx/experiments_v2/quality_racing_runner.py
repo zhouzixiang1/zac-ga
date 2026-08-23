@@ -308,8 +308,30 @@ def _valid_original_baselines(
     return tuple(
         row for row in baselines
         if (row.status == "success" and row.verifier_ok is True
-            and row.log_fidelity is not None
-            and row.exponential_sensitivity_log_fidelity is not None))
+            and row.exponential_sensitivity_log_fidelity is not None
+            and (row.fidelity_ood or row.log_fidelity is not None)))
+
+
+def _strongest_original_scores(
+        baselines: Sequence[RunManifest]) -> tuple[float | None, float]:
+    """Return the strongest usable linear and exponential baseline scores.
+
+    A linear-coherence OOD trace deliberately has no linear ``log_fidelity``.
+    It is nevertheless a valid comparator under the registered exponential
+    sensitivity model, so its missing linear value must not abort the race.
+    """
+    valid = _valid_original_baselines(baselines)
+    if not valid:
+        raise ValueError("no valid original baseline scores")
+    linear_values = [
+        float(row.log_fidelity) for row in valid
+        if row.log_fidelity is not None
+    ]
+    return (
+        max(linear_values) if linear_values else None,
+        max(float(row.exponential_sensitivity_log_fidelity)
+            for row in valid),
+    )
 
 
 def run_baselines(plan: ExperimentPlan, root: Path, *, resume: bool = True,
@@ -367,11 +389,8 @@ def _as_racing_trial(plan: ExperimentPlan, root: Path,
     manifest = _receipt_manifest(payload)
     baselines = _baseline_manifests(plan, root, str(identity["circuit_key"]))
     valid_baselines = _valid_original_baselines(baselines)
-    baseline_linear = max(float(row.log_fidelity)
-                          for row in valid_baselines)
-    baseline_exponential = max(
-        float(row.exponential_sensitivity_log_fidelity)
-        for row in valid_baselines)
+    baseline_linear, baseline_exponential = _strongest_original_scores(
+        valid_baselines)
     return RacingTrial(
         candidate_id=str(identity["candidate_id"]),
         method=str(identity["method"]),

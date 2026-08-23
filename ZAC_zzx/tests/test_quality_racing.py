@@ -28,6 +28,7 @@ from experiments_v2.quality_racing import (
 from experiments_v2.plan import _validate_pair_payloads
 from experiments_v2.plan import load_experiment_plan
 from experiments_v2.quality_racing_runner import (
+    _strongest_original_scores,
     _valid_original_baselines,
     prepare_workspace, run_baselines, run_profiles,
     validate_quality_selection_for_plan,
@@ -66,14 +67,26 @@ class QualityRacingTests(unittest.TestCase):
     def test_strongest_baseline_ignores_but_preserves_invalid_original(self):
         invalid = SimpleNamespace(
             status="verifier_fail", verifier_ok=False,
+            fidelity_ood=False,
             log_fidelity=None,
             exponential_sensitivity_log_fidelity=None)
         valid = SimpleNamespace(
             status="success", verifier_ok=True,
+            fidelity_ood=False,
             log_fidelity=-1.0,
             exponential_sensitivity_log_fidelity=-0.9)
+        valid_ood = SimpleNamespace(
+            status="success", verifier_ok=True,
+            fidelity_ood=True,
+            log_fidelity=None,
+            exponential_sensitivity_log_fidelity=-3.0)
         self.assertEqual(
             (valid,), _valid_original_baselines((invalid, valid)))
+        self.assertEqual(
+            (valid_ood,), _valid_original_baselines((invalid, valid_ood)))
+        self.assertEqual(
+            (None, -3.0),
+            _strongest_original_scores((invalid, valid_ood)))
         self.assertEqual((), _valid_original_baselines((invalid, invalid)))
 
     def test_protocol_and_fixed_split_are_disjoint(self):

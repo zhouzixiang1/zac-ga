@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import OrderedDict
+from dataclasses import replace
 from pathlib import Path
 from zipfile import ZipFile
 from importlib import import_module
@@ -199,6 +201,13 @@ class NativeResidentBackend:
             raise NativeBackendError("failed to construct native architecture") from exc
         self.flat_buffers = bool(flat_buffers)
         self.last_evaluate_timing: dict[str, int] = {}
+        # Cross-boundary reuse is safe only for the tuned solver's exhaustive
+        # direct path: it is deterministic, consumes no RNG values, and its
+        # winner depends solely on this complete physical problem/config key.
+        # Keeping the cache here also skips repeated Python buffer construction
+        # and the Python/C++ crossing on long, locally repetitive circuits.
+        self._rich_exact_cache: OrderedDict[tuple, RichH0Result] = OrderedDict()
+        self._rich_exact_cache_limit = 4096
 
     def _check_problem(self, problem: BoundaryProblem) -> None:
         if problem.architecture != self._architecture_dto:
@@ -377,6 +386,65 @@ class NativeResidentBackend:
             raise NativeBackendError(
                 "strict M3 boundary cannot contain future terms")
         marshal_started = perf_counter_ns()
+        exact_cache_key = None
+        direct_space = 1
+        for domain in problem.gate_domains:
+            direct_space *= len(domain)
+            if direct_space > config.direct_enumeration_limit:
+                break
+        if (direct_space <= config.direct_enumeration_limit
+                and problem.decision_policy == "optimize"):
+            direct_space *= 2 ** len(problem.eligible)
+        can_reuse_exact = (
+            config.fitness_cache
+            and config.operator_profile == "tuned"
+            and direct_space <= config.direct_enumeration_limit
+            and direct_space <= config.resolved_unique_budget
+        )
+        if can_reuse_exact:
+            exact_cache_key = (
+                config,
+                problem.current_points,
+                problem.current_site_ids,
+                problem.participants,
+                problem.gate_domains,
+                problem.static_ghosts,
+                problem.eligible,
+                problem.min_returns,
+                problem.eviction_order_indices,
+                problem.forced_return_mask,
+                problem.return_domains,
+                problem.matched_gate_genes,
+                problem.decision_policy,
+                problem.occupied_storage_site_ids,
+                problem.forecast_terms,
+                problem.selected_horizon,
+            )
+            cached_exact = self._rich_exact_cache.get(exact_cache_key)
+            if cached_exact is not None:
+                self._rich_exact_cache.move_to_end(exact_cache_key)
+                elapsed = perf_counter_ns() - marshal_started
+                operator_stats = dict(cached_exact.operator_stats)
+                operator_stats["exact_result_cache_hits"] = 1
+                timing = {
+                    "normalize_ns": 0,
+                    "decode_ns": 0,
+                    "return_match_ns": 0,
+                    "fitness_ns": 0,
+                    "forecast_ns": 0,
+                    "selection_ns": 0,
+                    "search_ns": elapsed,
+                    "search_kernel_ns": elapsed,
+                    "marshal_ns": 0,
+                    "native_parse_ns": 0,
+                    "native_serialize_ns": 0,
+                }
+                return replace(
+                    cached_exact,
+                    rng_state=tuple(rng_state),
+                    operator_stats=operator_stats,
+                    timing=timing,
+                )
         try:
             buffers = problem.flat_buffers()
             config_value = config.to_wire()
@@ -409,7 +477,7 @@ class NativeResidentBackend:
                 + int(native_timing.get("native_parse_ns", 0))
                 + int(native_timing.get("native_serialize_ns", 0))
             )
-            return RichH0Result(
+            result = RichH0Result(
                 winner=winner,
                 gate_option_indices=tuple(
                     int(item) for item in value["gate_option_indices"]),
@@ -438,7 +506,7 @@ class NativeResidentBackend:
                 operator_stats={
                     str(key): int(item)
                     for key, item in dict(stats["operator_stats"]).items()
-                },
+                } | {"exact_result_cache_hits": 0},
                 forecast_terms_applied=int(stats["forecast_terms_applied"]),
                 forecast_terms_skipped_cutoff=int(
                     stats["forecast_terms_skipped_cutoff"]),
@@ -460,6 +528,14 @@ class NativeResidentBackend:
                 pre_score_reseats=int(value["pre_score_reseats"]),
                 timing=timing,
             )
+            if exact_cache_key is not None and result.search_mode in {
+                    "direct", "enumerate"}:
+                self._rich_exact_cache[exact_cache_key] = result
+                self._rich_exact_cache.move_to_end(exact_cache_key)
+                while len(self._rich_exact_cache) > \
+                        self._rich_exact_cache_limit:
+                    self._rich_exact_cache.popitem(last=False)
+            return result
         except NativeBackendError:
             raise
         except Exception as exc:

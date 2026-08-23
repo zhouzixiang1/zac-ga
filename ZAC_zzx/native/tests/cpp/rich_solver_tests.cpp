@@ -223,6 +223,26 @@ int main() {
   assert(enumerated.winner.chromosome == std::vector<std::int64_t>({0}));
   ++tests;
 
+  RichH0Problem pruned_problem;
+  pruned_problem.n_atoms = 2;
+  pruned_problem.current_points = {{0.0, 0.0}, {1.0, 0.0}};
+  pruned_problem.participants = {0, 1};
+  pruned_problem.gate_domains = {{
+      {20, 0, 1, {0.0, 0.0}, {1.0, 0.0}},
+      {21, 0, 1, {100.0, 100.0}, {101.0, 100.0}},
+      {22, 0, 1, {200.0, 200.0}, {201.0, 200.0}},
+  }};
+  pruned_problem.matched_gate_genes = {0};
+  auto pruned_config = exact_config();
+  pruned_config.direct_enumeration_limit = 512;
+  const auto pruned = solve_rich_h0(
+      enum_architecture, pruned_problem, pruned_config, rng_fixture());
+  assert(pruned.search_mode == "enumerate");
+  assert(pruned.winner.chromosome == std::vector<std::int64_t>({0}));
+  assert(pruned.stats.unique_evaluations == 3);
+  assert(pruned.stats.direct_lower_bound_prunes == 2);
+  ++tests;
+
   constexpr std::size_t kAtoms = 9;
   std::vector<Point> coordinates;
   for (std::size_t atom = 0; atom < kAtoms; ++atom) {

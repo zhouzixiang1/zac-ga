@@ -15,6 +15,8 @@
 #include <set>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -22,6 +24,25 @@ namespace zac_native {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+constexpr double kFExc = 0.9975;
+constexpr double kFTransfer = 0.999;
+constexpr double kTransferUs = 15.0;
+constexpr double kRydbergUs = 0.36;
+constexpr double kAccelUmPerUs2 = 0.00275;
+constexpr double kT2Us = 1.5e6;
+
+template <typename T>
+struct VectorHash {
+  std::size_t operator()(const std::vector<T>& values) const noexcept {
+    std::size_t seed = 0xcbf29ce484222325ULL;
+    for (const auto& value : values) {
+      const auto item = std::hash<T>{}(value);
+      seed ^= item + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+    }
+    return seed;
+  }
+};
 
 std::int64_t elapsed_ns(Clock::time_point started) {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -431,7 +452,7 @@ class RichSolver {
     if (cached_winner.has_value() &&
         config_.operator_profile == RichOperatorProfile::kExact) {
       winner = normalize(*cached_winner);
-      evaluate(winner, false);
+      evaluate_normalized(winner, false);
       search_mode = "lru";
       stats_.early_stop_reason = "lru";
     } else {
@@ -439,9 +460,11 @@ class RichSolver {
       if (direct_space <= config_.direct_enumeration_limit &&
           direct_space <= config_.max_unique_evaluations) {
         auto chromosomes = enumerate_chromosomes();
-        auto scored = score_unique(chromosomes, false);
-        if (scored.empty()) throw std::runtime_error("direct search has no candidate");
-        winner = scored.front().fitness.chromosome;
+        auto scored = score_direct_exact(chromosomes);
+        if (!scored.has_value()) {
+          throw std::runtime_error("direct search has no candidate");
+        }
+        winner = scored->fitness.chromosome;
         search_mode = direct_space <= 1 ? "direct" : "enumerate";
         stats_.early_stop_reason = search_mode;
       } else {
@@ -542,7 +565,7 @@ class RichSolver {
       }
     }
     const auto selection_started = Clock::now();
-    const auto final_value = evaluate(winner, false);
+    const auto final_value = evaluate_normalized(winner, false);
     auto final_geometry = build_geometry(
         final_value.decoded, final_value.assignments, final_value.reseats);
     const auto recorded_winner = score_geometry(
@@ -1200,9 +1223,9 @@ class RichSolver {
     return result;
   }
 
-  Evaluated evaluate(const std::vector<std::int64_t>& raw, bool stochastic) {
+  Evaluated evaluate_normalized(
+      const std::vector<std::int64_t>& chromosome, bool stochastic) {
     ++stats_.evaluations;
-    const auto chromosome = normalize(raw);
     const auto cached = fitness_cache_.find(chromosome);
     if (config_.fitness_cache && cached != fitness_cache_.end()) {
       ++stats_.fitness_hits;
@@ -1267,8 +1290,124 @@ class RichSolver {
     return result;
   }
 
-  bool budget_can_score(const std::vector<std::int64_t>& raw) {
-    const auto chromosome = normalize(raw);
+  double physical_lower_bound(
+      const DecodeResult& decoded,
+      const std::vector<ReturnAssignment>& assignments,
+      std::size_t return_count) const {
+    std::size_t back_movers = 0;
+    double back_longest = 0.0;
+    for (const auto& assignment : assignments) {
+      const auto atom = static_cast<std::size_t>(
+          problem_.eligible[assignment.eligible_index]);
+      const auto distance = point_distance(
+          problem_.current_points[atom], assignment.point);
+      if (distance <= 1e-9) continue;
+      ++back_movers;
+      back_longest = std::max(back_longest, distance);
+    }
+
+    std::size_t out_movers = 0;
+    double out_longest = 0.0;
+    for (std::size_t gate = 0; gate < problem_.gate_domains.size(); ++gate) {
+      const auto& option =
+          problem_.gate_domains[gate][decoded.option_indices[gate]];
+      for (const auto& [atom, target] :
+           {std::pair<std::int64_t, Point>{option.q1, option.target1},
+            std::pair<std::int64_t, Point>{option.q2, option.target2}}) {
+        const auto distance = point_distance(
+            problem_.current_points[static_cast<std::size_t>(atom)], target);
+        if (distance <= 1e-9) continue;
+        ++out_movers;
+        out_longest = std::max(out_longest, distance);
+      }
+    }
+
+    const auto idle_exposures = problem_.eligible.size() - return_count;
+    double coherence_nll = -static_cast<double>(idle_exposures) *
+                           std::log1p(-kRydbergUs / kT2Us);
+    const auto add_phase = [&](std::size_t movers, double longest) {
+      if (movers == 0) return true;
+      // Every legal phase must execute its longest individual trajectory.
+      // Treating every leg as if it shared one batch is therefore an
+      // admissible (optimistic) lower bound on the implemented phase time.
+      const auto phase_time =
+          2.0 * kTransferUs + std::sqrt(longest / kAccelUmPerUs2);
+      const auto mover_idle = std::max(0.0, phase_time - 2.0 * kTransferUs);
+      if (phase_time >= kT2Us || mover_idle >= kT2Us) return false;
+      coherence_nll -= static_cast<double>(problem_.n_atoms - movers) *
+                       std::log1p(-phase_time / kT2Us);
+      coherence_nll -= static_cast<double>(movers) *
+                       std::log1p(-mover_idle / kT2Us);
+      return true;
+    };
+    if (!add_phase(back_movers, back_longest) ||
+        !add_phase(out_movers, out_longest)) {
+      return std::numeric_limits<double>::infinity();
+    }
+    const auto transfers = 2 * (back_movers + out_movers);
+    const auto transfer_nll =
+        -static_cast<double>(transfers) * std::log(kFTransfer);
+    const auto idle_nll =
+        -static_cast<double>(idle_exposures) * std::log(kFExc);
+    return transfer_nll + idle_nll + coherence_nll;
+  }
+
+  std::optional<Evaluated> score_direct_exact(
+      const std::vector<std::vector<std::int64_t>>& raw_values) {
+    std::optional<Evaluated> best;
+    std::unordered_set<std::vector<std::int64_t>, VectorHash<std::int64_t>> seen;
+    for (const auto& raw : raw_values) {
+      const auto chromosome = normalize(raw);
+      if (!seen.insert(chromosome).second) continue;
+
+      if (best.has_value() && std::isfinite(best->search_nll)) {
+        const auto decoded = decode(chromosome);
+        bool can_improve = !decoded.feasible;
+        if (decoded.feasible) {
+          const auto gate_count = problem_.gate_domains.size();
+          std::vector<std::size_t> returners;
+          for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
+            if (chromosome[gate_count + index] != 0) {
+              returners.push_back(index);
+            }
+          }
+          try {
+            const auto assignments = match_returns(returners);
+            can_improve = assignments.empty();
+            for (const auto& assignment : assignments) {
+              if (physical_lower_bound(decoded, assignment, returners.size()) <=
+                  best->search_nll) {
+                can_improve = true;
+                break;
+              }
+            }
+          } catch (const std::exception&) {
+            // Preserve the established fail-closed diagnostic path: the full
+            // evaluator owns malformed/infeasible RETURN reporting.
+            can_improve = true;
+          }
+        }
+        if (!can_improve) {
+          ++stats_.evaluations;
+          if (evaluated_keys_.insert(chromosome).second) {
+            ++stats_.unique_evaluations;
+            ++stats_.deterministic_unique_evaluations;
+          }
+          ++stats_.direct_lower_bound_prunes;
+          continue;
+        }
+      }
+
+      auto value = evaluate_normalized(chromosome, false);
+      if (!best.has_value() || evaluated_less(value, *best)) {
+        best = std::move(value);
+      }
+    }
+    return best;
+  }
+
+  bool budget_can_score_normalized(
+      const std::vector<std::int64_t>& chromosome) const {
     return evaluated_keys_.count(chromosome) != 0U ||
            stats_.unique_evaluations < stats_.stochastic_budget;
   }
@@ -1277,15 +1416,15 @@ class RichSolver {
       const std::vector<std::vector<std::int64_t>>& raw_values,
       bool stochastic) {
     std::vector<std::vector<std::int64_t>> unique;
-    std::set<std::vector<std::int64_t>> seen;
+    std::unordered_set<std::vector<std::int64_t>, VectorHash<std::int64_t>> seen;
     for (const auto& raw : raw_values) {
       auto chromosome = normalize(raw);
       if (seen.insert(chromosome).second) unique.push_back(std::move(chromosome));
     }
     std::vector<Evaluated> result;
     for (const auto& chromosome : unique) {
-      if (!budget_can_score(chromosome)) continue;
-      result.push_back(evaluate(chromosome, stochastic));
+      if (!budget_can_score_normalized(chromosome)) continue;
+      result.push_back(evaluate_normalized(chromosome, stochastic));
     }
     std::sort(result.begin(), result.end(), [](const auto& first,
                                                const auto& second) {
@@ -1339,13 +1478,13 @@ class RichSolver {
     std::vector<std::int64_t> greedy = problem_.matched_gate_genes;
     greedy.insert(greedy.end(), problem_.eligible.size(), 1);
     greedy = normalize(greedy);
-    auto best = evaluate(greedy, false);
+    auto best = evaluate_normalized(greedy, false);
     for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
       auto trial = greedy;
       trial[gate_count + index] ^= 1;
       trial = normalize(trial);
-      if (!budget_can_score(trial)) break;
-      const auto value = evaluate(trial, false);
+      if (!budget_can_score_normalized(trial)) break;
+      const auto value = evaluate_normalized(trial, false);
       if (evaluated_less(value, best)) {
         greedy = std::move(trial);
         best = value;
@@ -1373,8 +1512,8 @@ class RichSolver {
           auto trial = greedy;
           trial[gate] = static_cast<std::int64_t>(value);
           trial = normalize(trial);
-          if (!budget_can_score(trial)) break;
-          const auto score = evaluate(trial, false);
+          if (!budget_can_score_normalized(trial)) break;
+          const auto score = evaluate_normalized(trial, false);
           if (evaluated_less(score, best_score)) {
             best_gene = trial[gate];
             best_score = score;
@@ -1387,8 +1526,8 @@ class RichSolver {
         auto trial = greedy;
         trial[gate_count + index] ^= 1;
         trial = normalize(trial);
-        if (!budget_can_score(trial)) break;
-        const auto score = evaluate(trial, false);
+        if (!budget_can_score_normalized(trial)) break;
+        const auto score = evaluate_normalized(trial, false);
         if (evaluated_less(score, best)) {
           greedy = std::move(trial);
           best = score;
@@ -1428,7 +1567,7 @@ class RichSolver {
       raw.push_back(std::move(chromosome));
     }
     std::vector<std::vector<std::int64_t>> population;
-    std::set<std::vector<std::int64_t>> seen;
+    std::unordered_set<std::vector<std::int64_t>, VectorHash<std::int64_t>> seen;
     for (const auto& chromosome : raw) {
       auto value = normalize(chromosome);
       if (!seen.insert(value).second) continue;
@@ -1602,7 +1741,7 @@ class RichSolver {
   std::vector<std::int64_t> local_polish(
       const std::vector<std::int64_t>& raw_winner) {
     auto winner = normalize(raw_winner);
-    auto best = evaluate(winner, false);
+    auto best = evaluate_normalized(winner, false);
     const auto gate_count = problem_.gate_domains.size();
     for (std::size_t sweep = 0; sweep < config_.local_polish_sweeps; ++sweep) {
       std::vector<std::vector<std::int64_t>> neighbors;
@@ -1668,16 +1807,21 @@ class RichSolver {
   const RichH0Problem& problem_;
   const RichSearchConfig& config_;
   std::vector<std::vector<RichReturnOption>> return_domains_;
-  std::set<std::int64_t> storage_site_ids_;
+  std::unordered_set<std::int64_t> storage_site_ids_;
   std::vector<bool> participant_mask_;
   PythonRandom rng_;
   RichSearchStats stats_;
-  std::map<std::vector<std::int64_t>, std::vector<std::int64_t>> normalize_cache_;
-  std::map<std::vector<std::int64_t>, DecodeResult> decode_cache_;
-  std::map<std::vector<std::size_t>,
-           std::vector<std::vector<ReturnAssignment>>> return_cache_;
-  std::map<std::vector<std::int64_t>, Evaluated> fitness_cache_;
-  std::set<std::vector<std::int64_t>> evaluated_keys_;
+  std::unordered_map<std::vector<std::int64_t>, std::vector<std::int64_t>,
+                     VectorHash<std::int64_t>> normalize_cache_;
+  std::unordered_map<std::vector<std::int64_t>, DecodeResult,
+                     VectorHash<std::int64_t>> decode_cache_;
+  std::unordered_map<std::vector<std::size_t>,
+                     std::vector<std::vector<ReturnAssignment>>,
+                     VectorHash<std::size_t>> return_cache_;
+  std::unordered_map<std::vector<std::int64_t>, Evaluated,
+                     VectorHash<std::int64_t>> fitness_cache_;
+  std::unordered_set<std::vector<std::int64_t>, VectorHash<std::int64_t>>
+      evaluated_keys_;
   std::int64_t normalize_ns_{};
   std::int64_t decode_ns_{};
   std::int64_t return_match_ns_{};

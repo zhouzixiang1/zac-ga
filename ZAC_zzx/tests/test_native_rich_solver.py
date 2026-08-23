@@ -617,6 +617,38 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertLessEqual(first.unique_evaluations,
                              config.max_unique_evaluations)
 
+    def test_repeated_tuned_direct_boundary_reuses_exact_result_without_rng(self):
+        problem = toy_problem(indexed=True)
+        config = RichSearchConfig(
+            operator_profile="tuned",
+            direct_enumeration_limit=512,
+            max_unique_evaluations=512,
+        )
+        first_state = random.Random(17).getstate()
+        second_state = random.Random(23).getstate()
+        first = self.backend.solve_rich_boundary(
+            problem, config, first_state)
+        repeated = self.backend.solve_rich_boundary(
+            replace(problem, boundary_id="same-physics-new-layer"),
+            config, second_state)
+        uncached = self.backend.solve_rich_boundary(
+            problem,
+            replace(config, fitness_cache=False),
+            second_state,
+        )
+        self.assertEqual(first.winner, repeated.winner)
+        self.assertEqual(first.gate_option_indices,
+                         repeated.gate_option_indices)
+        self.assertEqual(first.return_assignments,
+                         repeated.return_assignments)
+        self.assertEqual(first.reseat_assignments,
+                         repeated.reseat_assignments)
+        self.assertEqual(second_state, repeated.rng_state)
+        self.assertEqual(1, repeated.operator_stats[
+            "exact_result_cache_hits"])
+        self.assertEqual(uncached.winner, repeated.winner)
+        self.assertEqual(uncached.rng_state, repeated.rng_state)
+
 
 if __name__ == "__main__":
     unittest.main()

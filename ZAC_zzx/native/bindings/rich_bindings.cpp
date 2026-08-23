@@ -481,6 +481,8 @@ void bind_rich_solver(py::module_& module) {
         operator_stats["crossovers"] = result.stats.crossovers;
         operator_stats["local_polish_evaluations"] =
             result.stats.local_polish_evaluations;
+        operator_stats["direct_lower_bound_prunes"] =
+            result.stats.direct_lower_bound_prunes;
         stats["operator_stats"] = operator_stats;
         stats["return_assignment_evaluated"] =
             result.stats.return_assignment_evaluated;

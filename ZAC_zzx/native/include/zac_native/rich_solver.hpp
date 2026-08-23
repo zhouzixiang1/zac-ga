@@ -133,6 +133,7 @@ struct RichSearchStats {
   std::size_t cached_winner_elites{};
   std::size_t crossovers{};
   std::size_t local_polish_evaluations{};
+  std::size_t direct_lower_bound_prunes{};
   std::size_t return_assignment_evaluated{};
   std::size_t current_ghost_rejections{};
   std::size_t pre_score_reseats{};
