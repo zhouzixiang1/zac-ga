@@ -59,6 +59,11 @@ python -m experiments_v2.final_results_cli aggregate --plan experiments_v2/exper
 python -m experiments_v2.final_results_cli render --contract ../../artifacts/native-ga-v1/reports/workbook_contract.json --aggregation-provenance ../../artifacts/native-ga-v1/reports/aggregation_provenance.json --output ../../artifacts/native-ga-v1/reports/four_methods_results.xlsx --qa-directory ../../artifacts/native-ga-v1/reports/workbook_qa --node /Users/zhouzixiang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --node-modules /Users/zhouzixiang/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules
 ```
 
+初始布局门使用 `sa-vs-ga-initial-v2`。每个电路/方法只要任一 SA/GA
+seed 超出论文线性退相干模型的适用域，该电路/方法的全部十次运行就统一用
+manifest 中的指数退相干敏感性 logF 比较；否则全部使用线性 logF。这样不会
+把两种不同的 coherence 模型直接相减，原始线性 OOD 仍保持空值。
+
 调参不得只跑 screen 后直接进入主实验。`successive_halving` 和 `validation`
 任一 ledger 不完整、promotion 重放不一致或共享配置未形成 clean commit，
 `run-main`、`run-timing` 和最终汇总都会 fail closed。最终汇总只接受显式、

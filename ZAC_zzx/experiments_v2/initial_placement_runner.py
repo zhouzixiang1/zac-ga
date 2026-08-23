@@ -18,6 +18,7 @@ from .contracts import (CanonicalCircuitManifest, RunManifest, RunStatus,
                         stable_sha256)
 from .initial_placement_benchmark import (
     INITIAL_PLACEMENT_PROTOCOL_ID,
+    INITIAL_PLACEMENT_QUALITY_POLICY,
     InitialPlacementTrial,
     build_initial_placement_schedule,
     select_initial_placement_engine,
@@ -133,6 +134,7 @@ def prepare_initial_placement_workspace(
         split["validation"], schedule_seed=schedule_seed)
     schedule.update({
         "dataset": dataset_name,
+        "quality_policy": INITIAL_PLACEMENT_QUALITY_POLICY,
         "split_manifest_sha256": split["sha256"],
         "split_file_sha256": stable_sha256(split),
         "suite_manifest_path": str(dataset.suite_manifest.resolve()),
@@ -176,6 +178,8 @@ def _load_schedule(
     schedule = _read_json(root / "schedule.json")
     if schedule.get("protocol_id") != INITIAL_PLACEMENT_PROTOCOL_ID:
         raise ValueError("initial-placement protocol mismatch")
+    if schedule.get("quality_policy") != INITIAL_PLACEMENT_QUALITY_POLICY:
+        raise ValueError("initial-placement quality policy mismatch")
     if schedule.get("sha256") != _schedule_hash(schedule):
         raise ValueError("initial-placement schedule hash mismatch")
     jobs = schedule.get("jobs")
@@ -289,6 +293,9 @@ def _seal_receipt(
         "ghost_hits": manifest.ghost_hits,
         "fallback": False,
         "log_fidelity": manifest.log_fidelity,
+        "fidelity_ood": bool(manifest.fidelity_ood),
+        "exponential_sensitivity_log_fidelity":
+            manifest.exponential_sensitivity_log_fidelity,
         "initial_placement_ns": manifest.initial_placement_ns,
         "full_compile_ns": manifest.full_compile_ns,
     }
@@ -325,6 +332,9 @@ def _validate_receipt(
         "ghost_hits": manifest.ghost_hits,
         "fallback": False,
         "log_fidelity": manifest.log_fidelity,
+        "fidelity_ood": bool(manifest.fidelity_ood),
+        "exponential_sensitivity_log_fidelity":
+            manifest.exponential_sensitivity_log_fidelity,
         "initial_placement_ns": manifest.initial_placement_ns,
         "full_compile_ns": manifest.full_compile_ns,
     }
@@ -355,6 +365,9 @@ def _receipt_as_initial_trial(
         log_fidelity=receipt["log_fidelity"],
         initial_placement_ns=receipt["initial_placement_ns"],
         full_compile_ns=receipt["full_compile_ns"],
+        fidelity_ood=bool(receipt["fidelity_ood"]),
+        exponential_sensitivity_log_fidelity=
+            receipt["exponential_sensitivity_log_fidelity"],
     )
 
 

@@ -67,6 +67,8 @@ class InitialPlacementProtocolTests(unittest.TestCase):
                                 int(1_000_000 / ga_speedup)
                                 if is_ga else 1_000_000),
                             full_compile_ns=2_000_000,
+                            exponential_sensitivity_log_fidelity=(
+                                -1.0 + (ga_delta if is_ga else 0.0)),
                         ))
         return rows
 
@@ -120,6 +122,35 @@ class InitialPlacementProtocolTests(unittest.TestCase):
         self.assertFalse(report["switch_to_ga"])
         self.assertEqual(report["selected_engine"], "sa")
 
+    def test_ood_circuit_uses_exponential_score_for_both_engines(self):
+        rows = self._trials(self.circuits, ga_delta=0.02)
+        rows = [copy.copy(row) for row in rows]
+        for index, row in enumerate(rows):
+            if row.method != "M3":
+                continue
+            exponential = -2.0 if row.engine == "sa" else -2.1
+            rows[index] = InitialPlacementTrial(**{
+                **row.__dict__,
+                "log_fidelity": (None if row.engine == "sa" and row.seed == 0
+                                 else row.log_fidelity),
+                "fidelity_ood": row.engine == "sa" and row.seed == 0,
+                "exponential_sensitivity_log_fidelity": exponential,
+            })
+
+        report = select_initial_placement_engine(
+            rows, expected_circuits=self.circuits)
+
+        self.assertEqual(
+            report["quality_policy"],
+            "per-circuit-linear-else-exponential-sensitivity-v1")
+        self.assertEqual(
+            report["methods"]["M3"]["quality_model_counts"], {
+                "linear_log_fidelity": 0,
+                "exponential_sensitivity_log_fidelity": 9,
+            })
+        self.assertFalse(report["methods"]["M3"]["quality_non_regressing"])
+        self.assertEqual(report["selected_engine"], "sa")
+
     def test_materialized_config_changes_only_registered_initial_controls(self):
         setting = {
             "experiment_schema": 2,
@@ -153,7 +184,7 @@ class InitialPlacementProtocolTests(unittest.TestCase):
             {key: setting[key] for key in unchanged})
         self.assertEqual(
             materialized["initial_placement"]["protocol_id"],
-            "sa-vs-ga-initial-v1")
+            "sa-vs-ga-initial-v2")
 
     @mock.patch(
         "experiments_v2.initial_placement_runner."
@@ -344,6 +375,9 @@ class InitialPlacementProtocolTests(unittest.TestCase):
                     "ghost_hits": row.ghost_hits,
                     "fallback": row.fallback,
                     "log_fidelity": row.log_fidelity,
+                    "fidelity_ood": row.fidelity_ood,
+                    "exponential_sensitivity_log_fidelity":
+                        row.exponential_sensitivity_log_fidelity,
                     "initial_placement_ns": row.initial_placement_ns,
                     "full_compile_ns": row.full_compile_ns,
                 }

@@ -16,7 +16,9 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
 
-INITIAL_PLACEMENT_PROTOCOL_ID = "sa-vs-ga-initial-v1"
+INITIAL_PLACEMENT_PROTOCOL_ID = "sa-vs-ga-initial-v2"
+INITIAL_PLACEMENT_QUALITY_POLICY = (
+    "per-circuit-linear-else-exponential-sensitivity-v1")
 INITIAL_ENGINES = ("sa", "ga")
 METHODS = ("M3", "M4")
 
@@ -39,6 +41,8 @@ class InitialPlacementTrial:
     log_fidelity: float | None
     initial_placement_ns: int | None
     full_compile_ns: int | None
+    fidelity_ood: bool = False
+    exponential_sensitivity_log_fidelity: float | None = None
 
     def validate(self) -> None:
         if not self.circuit or self.method not in METHODS:
@@ -49,8 +53,17 @@ class InitialPlacementTrial:
                 or self.seed < 0):
             raise ValueError("initial-placement seed must be non-negative")
         if self.status == "success":
+            linear_evidence_ok = (
+                self.log_fidelity is None if self.fidelity_ood else
+                self.log_fidelity is not None and
+                math.isfinite(float(self.log_fidelity)))
+            exponential_evidence_ok = (
+                self.exponential_sensitivity_log_fidelity is not None and
+                math.isfinite(float(
+                    self.exponential_sensitivity_log_fidelity)))
             if (not self.verifier_ok or self.ghost_hits != 0 or self.fallback
-                    or self.log_fidelity is None
+                    or not linear_evidence_ok
+                    or not exponential_evidence_ok
                     or self.initial_placement_ns is None
                     or self.initial_placement_ns < 0
                     or self.full_compile_ns is None
@@ -135,7 +148,12 @@ def select_initial_placement_engine(
         return bool(
             row.status == "success" and row.verifier_ok and
             row.ghost_hits == 0 and not row.fallback and
-            row.log_fidelity is not None and
+            ((row.fidelity_ood and row.log_fidelity is None) or
+             (not row.fidelity_ood and row.log_fidelity is not None and
+              math.isfinite(float(row.log_fidelity)))) and
+            row.exponential_sensitivity_log_fidelity is not None and
+            math.isfinite(float(
+                row.exponential_sensitivity_log_fidelity)) and
             row.initial_placement_ns is not None and
             row.initial_placement_ns > 0 and
             row.full_compile_ns is not None)
@@ -146,13 +164,37 @@ def select_initial_placement_engine(
         for method in METHODS:
             quality_deltas = []
             time_speedups = []
+            quality_model_counts = {
+                "linear_log_fidelity": 0,
+                "exponential_sensitivity_log_fidelity": 0,
+            }
             for circuit in circuits:
+                circuit_rows = [
+                    observed[(circuit, method, engine, seed)]
+                    for engine in INITIAL_ENGINES for seed in seeds
+                ]
+                # Never compare two different coherence models.  If any
+                # SA/GA seed is outside the paper's linear T2 domain, compare
+                # the complete circuit/method block with the exponential
+                # sensitivity score that every successful manifest records.
+                use_exponential = any(
+                    row.fidelity_ood for row in circuit_rows)
+                quality_model = (
+                    "exponential_sensitivity_log_fidelity"
+                    if use_exponential else "linear_log_fidelity")
+                quality_model_counts[quality_model] += 1
                 engine_values = {}
                 for engine in INITIAL_ENGINES:
                     rows = [observed[(circuit, method, engine, seed)]
                             for seed in seeds]
+                    quality_values = [
+                        (row.exponential_sensitivity_log_fidelity
+                         if use_exponential else row.log_fidelity)
+                        for row in rows
+                    ]
                     engine_values[engine] = {
-                        "logf": _median([float(row.log_fidelity) for row in rows]),
+                        "logf": _median([
+                            float(value) for value in quality_values]),
                         "initial_ns": _median([
                             float(row.initial_placement_ns) for row in rows]),
                     }
@@ -162,12 +204,13 @@ def select_initial_placement_engine(
                     engine_values["sa"]["initial_ns"] /
                     engine_values["ga"]["initial_ns"])
             method_summary[method] = {
-                "median_delta_log_fidelity_ga_minus_sa":
+                "median_delta_quality_log_fidelity_ga_minus_sa":
                     _median(quality_deltas),
                 "geometric_mean_initial_speedup_sa_over_ga":
                     _geometric_mean(time_speedups),
                 "quality_non_regressing": _median(quality_deltas) >= 0.0,
                 "ga_faster": _geometric_mean(time_speedups) > 1.0,
+                "quality_model_counts": quality_model_counts,
             }
     switch = bool(complete and all(
         method_summary[method]["quality_non_regressing"] and
@@ -175,6 +218,7 @@ def select_initial_placement_engine(
     return {
         "experiment_schema": 2,
         "protocol_id": INITIAL_PLACEMENT_PROTOCOL_ID,
+        "quality_policy": INITIAL_PLACEMENT_QUALITY_POLICY,
         "complete": complete,
         "expected_trials": len(expected),
         "methods": method_summary,
@@ -189,7 +233,8 @@ def select_initial_placement_engine(
 
 
 __all__ = [
-    "INITIAL_ENGINES", "INITIAL_PLACEMENT_PROTOCOL_ID", "METHODS",
+    "INITIAL_ENGINES", "INITIAL_PLACEMENT_PROTOCOL_ID",
+    "INITIAL_PLACEMENT_QUALITY_POLICY", "METHODS",
     "InitialPlacementTrial", "build_initial_placement_schedule",
     "select_initial_placement_engine",
 ]
