@@ -109,11 +109,13 @@ class RealCase:
     source_qubits: int
     source_two_qubit_gates: int
     full_layer_count: int
+    gates_per_layer_limit: int
 
 
 def load_real_case(qasm_path: Path = DEFAULT_QASM,
                    architecture_path: Path = DEFAULT_ARCHITECTURE,
-                   *, layer_limit: int = 0) -> RealCase:
+                   *, layer_limit: int = 9,
+                   gates_per_layer_limit: int = 1) -> RealCase:
     """Schedule one real canonical circuit with the production ZAC scheduler."""
     qasm_path = qasm_path.resolve()
     architecture_path = architecture_path.resolve()
@@ -136,8 +138,12 @@ def load_real_case(qasm_path: Path = DEFAULT_QASM,
     full_schedule = tuple(
         tuple(tuple(int(q) for q in gate) for gate in layer)
         for layer in scheduler.gate_scheduling)
-    schedule = (full_schedule[:layer_limit]
-                if layer_limit else full_schedule)
+    selected_layers = (full_schedule[:layer_limit]
+                       if layer_limit else full_schedule)
+    if gates_per_layer_limit <= 0:
+        raise ValueError("gates_per_layer_limit must be positive")
+    schedule = tuple(
+        layer[:gates_per_layer_limit] for layer in selected_layers)
     if len(schedule) < 2:
         raise ValueError("real boundary benchmark needs at least two 2Q layers")
     storage_id = int(architecture.storage_zone[0])
@@ -156,6 +162,7 @@ def load_real_case(qasm_path: Path = DEFAULT_QASM,
         source_qubits=int(scheduler.n_q),
         source_two_qubit_gates=int(scheduler.n_g),
         full_layer_count=len(full_schedule),
+        gates_per_layer_limit=int(gates_per_layer_limit),
     )
 
 
@@ -176,6 +183,8 @@ def _resident_parameters(backend: str, seed: int) -> dict[str, Any]:
         "elite_count": 1,
         "early_stop_patience": 0,
         "operator_profile": "exact",
+        "direct_enumeration_limit": 16384,
+        "max_unique_evaluations": 16384,
         "theta_capacity": 0.9,
         "box_ratio": 3,
         "pin_radius": 2,
@@ -430,7 +439,8 @@ def _native_bottleneck(rows: list[dict[str, int]]) -> dict[str, Any]:
 def benchmark(*, qasm_path: Path = DEFAULT_QASM,
               architecture_path: Path = DEFAULT_ARCHITECTURE,
               repeats: int = 5, seed: int = 7, timing_seed: int = 20260823,
-              layer_limit: int = 0,
+              layer_limit: int = 9,
+              gates_per_layer_limit: int = 1,
               expected_wheel_sha256: str | None = None,
               require_registered_wheel: bool = True) -> dict[str, Any]:
     if repeats <= 0:
@@ -441,7 +451,8 @@ def benchmark(*, qasm_path: Path = DEFAULT_QASM,
         require_registered_wheel=require_registered_wheel,
         expected_wheel_sha256=expected_wheel_sha256)
     case = load_real_case(
-        qasm_path, architecture_path, layer_limit=layer_limit)
+        qasm_path, architecture_path, layer_limit=layer_limit,
+        gates_per_layer_limit=gates_per_layer_limit)
 
     # One unmeasured warm-up per backend populates Python/architecture caches
     # and faults in the extension before randomized paired timings begin.
@@ -504,7 +515,7 @@ def benchmark(*, qasm_path: Path = DEFAULT_QASM,
     }
     return {
         "schema": 1,
-        "benchmark_id": "abi3-exact-real-boundary-ising-n42-v1",
+        "benchmark_id": "abi3-exact-real-boundary-ising-n42-v2",
         "claim_scope": "migration benchmark; not a formal quality result",
         "case": {
             "dataset": "zac18",
@@ -518,6 +529,9 @@ def benchmark(*, qasm_path: Path = DEFAULT_QASM,
             "full_two_qubit_layers": case.full_layer_count,
             "benchmarked_two_qubit_layers": len(case.schedule),
             "gate_widths": [len(layer) for layer in case.schedule],
+            "gates_per_layer_limit": case.gates_per_layer_limit,
+            "slice_scope": (
+                "first real scheduled gates per layer; migration evidence only"),
             "boundary_calls": len(case.schedule) - 1,
             "schedule_sha256": _stable_sha256(case.schedule),
             "initial_mapping_sha256": _stable_sha256(case.initial_mapping),
@@ -529,6 +543,8 @@ def benchmark(*, qasm_path: Path = DEFAULT_QASM,
             "iterations": 8,
             "neighbors_per_solution": 2,
             "neighbor_sample_size": 24,
+            "direct_enumeration_limit": 16384,
+            "max_unique_evaluations": 16384,
             "forecast": decay_lookahead_spec(8),
             "alpha_lookahead": 0.1,
         },
@@ -612,7 +628,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--timing-seed", type=int, default=20260823)
-    parser.add_argument("--layer-limit", type=int, default=0)
+    parser.add_argument("--layer-limit", type=int, default=9)
+    parser.add_argument("--gates-per-layer-limit", type=int, default=1)
     parser.add_argument("--expected-wheel-sha256")
     parser.add_argument("--allow-unregistered-wheel", action="store_true")
     parser.add_argument("--output", type=Path)
@@ -625,6 +642,7 @@ def main(argv: list[str] | None = None) -> None:
         seed=args.seed,
         timing_seed=args.timing_seed,
         layer_limit=args.layer_limit,
+        gates_per_layer_limit=args.gates_per_layer_limit,
         expected_wheel_sha256=args.expected_wheel_sha256,
         require_registered_wheel=not args.allow_unregistered_wheel,
     )

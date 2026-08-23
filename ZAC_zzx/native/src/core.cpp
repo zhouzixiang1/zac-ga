@@ -754,147 +754,240 @@ PhaseEvaluation evaluate_fast_phase(const MovementPhase& phase,
     return result;
   }
 
-  std::array<std::int64_t, kFastPhasePositions> atoms{};
-  std::array<Point, kFastPhasePositions> positions{};
-  std::size_t position_count = 0;
-  const auto set_position = [&](std::int64_t atom, Point point,
-                                auto& self) -> void {
-    (void)self;
-    for (std::size_t index = 0; index < position_count; ++index) {
-      if (atoms[index] == atom) {
-        positions[index] = point;
-        return;
+  std::array<std::int64_t, kFastPhaseLegs> owner_atoms{};
+  std::array<std::size_t, kFastPhaseLegs> owner_legs{};
+  std::size_t owner_count = 0;
+  for (std::size_t leg = 0; leg < phase.owners.size(); ++leg) {
+    for (std::size_t index = 0; index < owner_count; ++index) {
+      if (owner_atoms[index] == phase.owners[leg]) {
+        throw std::invalid_argument("phase owner appears in multiple legs");
       }
     }
-    atoms[position_count] = atom;
-    positions[position_count] = point;
-    ++position_count;
-  };
-  for (const auto& ghost : phase.ghosts) {
-    set_position(ghost.atom, ghost.position, set_position);
+    owner_atoms[owner_count] = phase.owners[leg];
+    owner_legs[owner_count] = leg;
+    ++owner_count;
   }
-  if (!phase.owners.empty()) {
-    for (std::size_t index = 0; index < size; ++index) {
-      set_position(phase.owners[index], phase.legs[index].source, set_position);
-    }
-  }
-
-  std::array<std::uint64_t, kFastPhaseLegs> pending = batches;
-  std::size_t pending_count = batch_count;
-  while (pending_count != 0) {
-    bool progressed = false;
-    for (std::size_t pending_index = 0; pending_index < pending_count;
-         ++pending_index) {
-      const auto mask = pending[pending_index];
-      if (mask_ghost_hit(
-              phase, mask, atoms.data(), positions.data(), position_count)) {
-        continue;
-      }
-      ++result.batch_count;
-      result.phase_time += expanded_batch_time_mask(phase, mask);
-      if (record_batches) {
-        std::array<std::size_t, kFastPhaseLegs> members{};
-        const auto count = mask_members(phase, mask, members);
-        result.batches.emplace_back(members.begin(), members.begin() + count);
-      }
-      if (!phase.owners.empty()) {
-        for (std::size_t index = 0; index < size; ++index) {
-          if ((mask & (std::uint64_t{1} << index)) != 0U) {
-            set_position(
-                phase.owners[index], phase.legs[index].target, set_position);
-          }
-        }
-      }
-      for (std::size_t shift = pending_index + 1; shift < pending_count;
-           ++shift) {
-        pending[shift - 1] = pending[shift];
-      }
-      --pending_count;
-      progressed = true;
-      break;
-    }
-    if (progressed) continue;
-
-    std::size_t split = pending_count;
-    for (std::size_t index = 0; index < pending_count; ++index) {
-      if (__builtin_popcountll(pending[index]) > 1) {
-        split = index;
+  std::array<std::int64_t, kFastPhasePositions> static_atoms{};
+  std::array<Point, kFastPhasePositions> static_points{};
+  std::size_t static_count = 0;
+  for (std::size_t ghost = 0; ghost < raw_count; ++ghost) {
+    bool moving = false;
+    for (std::size_t owner = 0; owner < owner_count; ++owner) {
+      if (owner_atoms[owner] == raw_atoms[ghost]) {
+        moving = true;
         break;
       }
     }
-    if (split == pending_count) {
+    if (moving) continue;
+    static_atoms[static_count] = raw_atoms[ghost];
+    static_points[static_count] = raw_points[ghost];
+    ++static_count;
+  }
+
+  while (true) {
+    std::array<std::size_t, kFastPhaseLegs> owner_batches{};
+    for (std::size_t owner = 0; owner < owner_count; ++owner) {
+      const auto leg_bit = std::uint64_t{1} << owner_legs[owner];
+      for (std::size_t batch = 0; batch < batch_count; ++batch) {
+        if ((batches[batch] & leg_bit) != 0U) {
+          owner_batches[owner] = batch;
+          break;
+        }
+      }
+    }
+    std::array<std::uint64_t, kFastPhaseLegs> outgoing{};
+    std::uint64_t blocked = 0U;
+    for (std::size_t batch = 0; batch < batch_count; ++batch) {
+      const auto mask = batches[batch];
+      if (static_count != 0U &&
+          mask_ghost_hit(phase, mask, static_atoms.data(),
+                         static_points.data(), static_count)) {
+        blocked |= std::uint64_t{1} << batch;
+        continue;
+      }
+      for (std::size_t owner = 0; owner < owner_count; ++owner) {
+        const auto other = owner_batches[owner];
+        if (other == batch) continue;
+        const auto leg = owner_legs[owner];
+        const std::array<std::int64_t, 1> atom{owner_atoms[owner]};
+        const std::array<Point, 1> source{phase.legs[leg].source};
+        const std::array<Point, 1> target{phase.legs[leg].target};
+        if (mask_ghost_hit(
+                phase, mask, atom.data(), source.data(), 1U)) {
+          outgoing[other] |= std::uint64_t{1} << batch;
+        }
+        if (mask_ghost_hit(
+                phase, mask, atom.data(), target.data(), 1U)) {
+          outgoing[batch] |= std::uint64_t{1} << other;
+        }
+      }
+    }
+    std::array<std::size_t, kFastPhaseLegs> indegree{};
+    for (std::size_t batch = 0; batch < batch_count; ++batch) {
+      auto neighbors = outgoing[batch];
+      while (neighbors != 0U) {
+        const auto neighbor = static_cast<std::size_t>(
+            __builtin_ctzll(neighbors));
+        ++indegree[neighbor];
+        neighbors &= neighbors - 1U;
+      }
+    }
+    std::array<std::size_t, kFastPhaseLegs> order{};
+    std::size_t order_count = 0;
+    std::uint64_t remaining =
+        (batch_count == 64 ? ~std::uint64_t{0}
+                           : (std::uint64_t{1} << batch_count) - 1U);
+    while (remaining != 0U) {
+      std::size_t ready = batch_count;
+      for (std::size_t batch = 0; batch < batch_count; ++batch) {
+        const auto bit = std::uint64_t{1} << batch;
+        if ((remaining & bit) != 0U && (blocked & bit) == 0U &&
+            indegree[batch] == 0U) {
+          ready = batch;
+          break;
+        }
+      }
+      if (ready == batch_count) break;
+      order[order_count++] = ready;
+      remaining &= ~(std::uint64_t{1} << ready);
+      auto neighbors = outgoing[ready];
+      while (neighbors != 0U) {
+        const auto neighbor = static_cast<std::size_t>(
+            __builtin_ctzll(neighbors));
+        --indegree[neighbor];
+        neighbors &= neighbors - 1U;
+      }
+    }
+    if (order_count == batch_count) {
+      result.batch_count = batch_count;
+      for (std::size_t offset = 0; offset < order_count; ++offset) {
+        const auto mask = batches[order[offset]];
+        result.phase_time += expanded_batch_time_mask(phase, mask);
+        if (record_batches) {
+          std::array<std::size_t, kFastPhaseLegs> members{};
+          const auto count = mask_members(phase, mask, members);
+          result.batches.emplace_back(
+              members.begin(), members.begin() + count);
+        }
+      }
+      return result;
+    }
+
+    std::size_t split = batch_count;
+    for (std::size_t batch = 0; batch < batch_count; ++batch) {
+      if (__builtin_popcountll(batches[batch]) > 1) {
+        split = batch;
+        break;
+      }
+    }
+    if (split == batch_count) {
       result.feasible = false;
-      result.batch_count = 0;
-      result.phase_time = 0.0;
-      result.batches.clear();
       return result;
     }
     std::array<std::size_t, kFastPhaseLegs> members{};
-    const auto member_count = mask_members(phase, pending[split], members);
+    const auto member_count = mask_members(phase, batches[split], members);
     const auto added = member_count - 1;
-    for (std::size_t index = pending_count; index-- > split + 1;) {
-      pending[index + added] = pending[index];
+    for (std::size_t index = batch_count; index-- > split + 1;) {
+      batches[index + added] = batches[index];
     }
     for (std::size_t index = 0; index < member_count; ++index) {
-      pending[split + index] = std::uint64_t{1} << members[index];
+      batches[split + index] = std::uint64_t{1} << members[index];
     }
-    pending_count += added;
+    batch_count += added;
   }
-  return result;
 }
 
 ReplayBatches replay_phase_batches(const MovementPhase& phase,
                                    std::size_t exact_threshold) {
   auto pending = color_phase(phase, exact_threshold);
-  std::map<std::int64_t, Point> positions;
-  for (const auto& ghost : phase.ghosts) {
-    positions[ghost.atom] = ghost.position;
-  }
-  if (!phase.owners.empty()) {
-    for (std::size_t index = 0; index < phase.legs.size(); ++index) {
-      positions[phase.owners[index]] = phase.legs[index].source;
-    }
-  }
-  const auto safe = [&](const std::vector<std::size_t>& members) {
-    std::set<std::int64_t> owners;
-    std::vector<Leg> legs;
-    legs.reserve(members.size());
-    for (const auto index : members) {
-      legs.push_back(phase.legs[index]);
-      if (!phase.owners.empty()) owners.insert(phase.owners[index]);
-    }
-    std::vector<Ghost> ghosts;
-    ghosts.reserve(positions.size());
-    for (const auto& [atom, point] : positions) {
-      if (owners.count(atom) == 0U) ghosts.push_back({atom, point});
-    }
-    return ghost_hit_atoms(legs, ghosts).empty();
-  };
-
-  ReplayBatches result;
-  while (!pending.empty()) {
-    bool progressed = false;
-    for (std::size_t batch_index = 0; batch_index < pending.size();
-         ++batch_index) {
-      const auto& members = pending[batch_index];
-      if (!safe(members)) continue;
-      result.batches.push_back(members);
-      if (!phase.owners.empty()) {
-        for (const auto index : members) {
-          positions[phase.owners[index]] = phase.legs[index].target;
+  const auto ordered = [&](const auto& batches)
+      -> std::optional<std::vector<std::size_t>> {
+    std::map<std::int64_t, std::size_t> batch_by_owner;
+    if (!phase.owners.empty()) {
+      for (std::size_t batch = 0; batch < batches.size(); ++batch) {
+        for (const auto leg : batches[batch]) {
+          const auto [it, inserted] =
+              batch_by_owner.emplace(phase.owners[leg], batch);
+          (void)it;
+          if (!inserted) {
+            throw std::invalid_argument(
+                "phase owner appears in multiple legs");
+          }
         }
       }
-      pending.erase(pending.begin() + static_cast<std::ptrdiff_t>(batch_index));
-      progressed = true;
-      break;
     }
-    if (progressed) continue;
+    std::vector<Ghost> static_ghosts;
+    static_ghosts.reserve(phase.ghosts.size());
+    for (const auto& ghost : phase.ghosts) {
+      if (batch_by_owner.count(ghost.atom) == 0U) {
+        static_ghosts.push_back(ghost);
+      }
+    }
+    std::vector<std::set<std::size_t>> outgoing(batches.size());
+    std::vector<bool> blocked(batches.size(), false);
+    for (std::size_t batch = 0; batch < batches.size(); ++batch) {
+      std::vector<Leg> legs;
+      legs.reserve(batches[batch].size());
+      for (const auto index : batches[batch]) {
+        legs.push_back(phase.legs[index]);
+      }
+      if (!ghost_hit_atoms(legs, static_ghosts).empty()) {
+        blocked[batch] = true;
+        continue;
+      }
+      for (std::size_t index = 0; index < phase.owners.size(); ++index) {
+        const auto owner = phase.owners[index];
+        const auto other = batch_by_owner.at(owner);
+        if (other == batch) continue;
+        if (!ghost_hit_atoms(
+                 legs, std::vector<Ghost>{{owner, phase.legs[index].source}})
+                 .empty()) {
+          outgoing[other].insert(batch);
+        }
+        if (!ghost_hit_atoms(
+                 legs, std::vector<Ghost>{{owner, phase.legs[index].target}})
+                 .empty()) {
+          outgoing[batch].insert(other);
+        }
+      }
+    }
+    std::vector<std::size_t> indegree(batches.size(), 0U);
+    for (const auto& neighbors : outgoing) {
+      for (const auto neighbor : neighbors) ++indegree[neighbor];
+    }
+    std::set<std::size_t> remaining;
+    for (std::size_t index = 0; index < batches.size(); ++index) {
+      remaining.insert(index);
+    }
+    std::vector<std::size_t> result;
+    result.reserve(batches.size());
+    while (!remaining.empty()) {
+      const auto found = std::find_if(
+          remaining.begin(), remaining.end(), [&](const auto batch) {
+            return !blocked[batch] && indegree[batch] == 0U;
+          });
+      if (found == remaining.end()) return std::nullopt;
+      const auto batch = *found;
+      result.push_back(batch);
+      remaining.erase(found);
+      for (const auto neighbor : outgoing[batch]) --indegree[neighbor];
+    }
+    return result;
+  };
+
+  while (true) {
+    if (const auto order = ordered(pending); order.has_value()) {
+      ReplayBatches result;
+      result.batches.reserve(order->size());
+      for (const auto batch : *order) result.batches.push_back(pending[batch]);
+      return result;
+    }
     const auto found = std::find_if(
         pending.begin(), pending.end(),
         [](const auto& members) { return members.size() > 1; });
     if (found == pending.end()) {
+      ReplayBatches result;
       result.feasible = false;
-      result.batches.clear();
       return result;
     }
     const auto split_index = static_cast<std::size_t>(
@@ -908,7 +1001,6 @@ ReplayBatches replay_phase_batches(const MovementPhase& phase,
         pending.begin() + static_cast<std::ptrdiff_t>(split_index),
         singles.begin(), singles.end());
   }
-  return result;
 }
 
 PhaseEvaluation evaluate_phase(const MovementPhase& phase,

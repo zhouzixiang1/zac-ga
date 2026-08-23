@@ -411,7 +411,7 @@ def _validate_micro_benchmark(path: Path,
 def _validate_real_boundary(path: Path,
                             native_build: Mapping[str, Any]) -> dict[str, Any]:
     value = _load_json(path, "real-boundary benchmark")
-    if value.get("benchmark_id") != "abi3-exact-real-boundary-ising-n42-v1":
+    if value.get("benchmark_id") != "abi3-exact-real-boundary-ising-n42-v2":
         raise NativeBuildFreezeError("unexpected real-boundary benchmark id")
     build = value.get("native_build")
     if not isinstance(build, Mapping):
@@ -456,7 +456,7 @@ def _validate_real_boundary(path: Path,
 def _validate_full_pipeline(path: Path,
                             native_build: Mapping[str, Any]) -> dict[str, Any]:
     value = _load_json(path, "full-pipeline benchmark")
-    if value.get("protocol") != "resident-python-vs-abi3-medium-v1":
+    if value.get("protocol") != "resident-python-vs-abi3-medium-v2":
         raise NativeBuildFreezeError("unexpected full-pipeline protocol")
     if value.get("wheel_sha256") != native_build["wheel"]["sha256"]:
         raise NativeBuildFreezeError("full-pipeline wheel SHA256 mismatch")

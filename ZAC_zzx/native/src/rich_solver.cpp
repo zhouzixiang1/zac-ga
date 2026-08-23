@@ -206,16 +206,27 @@ struct ReseatRepair {
   PlanGeometry geometry;
 };
 
+std::int64_t objective_bucket(double value, double quantum) {
+  if (!std::isfinite(value)) return std::numeric_limits<std::int64_t>::max();
+  return static_cast<std::int64_t>(std::floor(value / quantum + 0.5));
+}
+
 bool evaluated_less(const Evaluated& first, const Evaluated& second) {
   if (first.fitness.feasible != second.fitness.feasible) {
     return first.fitness.feasible;
   }
-  return std::tie(first.search_nll, first.fitness.move_batches,
-                  first.fitness.move_time_us, first.fitness.total_distance_um,
-                  first.fitness.chromosome, first.assignment_key) <
-         std::tie(second.search_nll, second.fitness.move_batches,
-                  second.fitness.move_time_us, second.fitness.total_distance_um,
-                  second.fitness.chromosome, second.assignment_key);
+  return std::make_tuple(
+             objective_bucket(first.search_nll, 1e-12),
+             first.fitness.move_batches,
+             objective_bucket(first.fitness.move_time_us, 1e-6),
+             objective_bucket(first.fitness.total_distance_um, 1e-6),
+             first.fitness.chromosome, first.assignment_key) <
+         std::make_tuple(
+             objective_bucket(second.search_nll, 1e-12),
+             second.fitness.move_batches,
+             objective_bucket(second.fitness.move_time_us, 1e-6),
+             objective_bucket(second.fitness.total_distance_um, 1e-6),
+             second.fitness.chromosome, second.assignment_key);
 }
 
 struct AssignmentSolution {
@@ -1376,7 +1387,7 @@ class RichSolver {
             can_improve = assignments.empty();
             for (const auto& assignment : assignments) {
               if (physical_lower_bound(decoded, assignment, returners.size()) <=
-                  best->search_nll) {
+                  best->search_nll + 1e-12) {
                 can_improve = true;
                 break;
               }

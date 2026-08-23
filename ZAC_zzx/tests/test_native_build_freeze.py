@@ -131,7 +131,7 @@ class NativeBuildFreezeTests(unittest.TestCase):
         }]
         real = self.artifacts / "real.json"
         real.write_text(json.dumps({
-            "benchmark_id": "abi3-exact-real-boundary-ising-n42-v1",
+            "benchmark_id": "abi3-exact-real-boundary-ising-n42-v2",
             "native_build": native_build,
             "parity": {"all_passed": True, "repetitions": repetitions},
             "timing": {
@@ -146,7 +146,7 @@ class NativeBuildFreezeTests(unittest.TestCase):
         }
         pipeline = self.artifacts / "pipeline.json"
         pipeline.write_text(json.dumps({
-            "protocol": "resident-python-vs-abi3-medium-v1",
+            "protocol": "resident-python-vs-abi3-medium-v2",
             "wheel_sha256": wheel_sha,
             "accepted": True,
             "horizons": {

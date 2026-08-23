@@ -166,6 +166,22 @@ class TestCompiledBackend(unittest.TestCase):
         self.assertTrue(second.feasible)
         self.assertEqual(second.move_batches, 2)
 
+    def test_endpoint_precedence_matches_and_avoids_greedy_dead_end(self):
+        first_leg = Leg.between((0.0, 0.0), (2.0, 0.0))
+        second_leg = Leg.between((10.0, 10.0), (1.0, 0.0))
+        phase = MovementPhase(
+            (first_leg, second_leg),
+            (Ghost(1, first_leg.source), Ghost(2, second_leg.source)),
+            (1, 2),
+        )
+        problem = BoundaryProblem(
+            self.architecture, (CandidatePlan((0,), (phase,), 0),))
+        first = self.reference.evaluate_many(problem)[0]
+        second = self.native.evaluate_many(problem)[0]
+        self.assertFitnessEqual(first, second)
+        self.assertTrue(second.feasible)
+        self.assertEqual(second.phase_batches, (((0,), (1,)),))
+
     def test_seeded_random_phases_match(self):
         rng = random.Random(9473)
         candidates = []

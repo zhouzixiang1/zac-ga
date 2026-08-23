@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import product
-from math import dist, inf, log, log1p, sqrt
+from math import dist, floor, inf, isfinite, log, log1p, sqrt
 from time import perf_counter_ns
 from typing import Iterable, Sequence
 
@@ -251,47 +251,81 @@ def replay_phase_batches(
         phase: MovementPhase,
         exact_threshold: int = 0,
 ) -> tuple[tuple[int, ...], ...]:
-    """Color, then replay batches against each atom's *current* position.
+    """Color, then derive an exact endpoint-precedence order for the batches.
 
-    Other movers are not ghosts at both endpoints simultaneously.  They remain
-    stationary at their source until their batch executes and at their target
-    afterwards.  A blocked batch is deferred; if no batch can advance, a
-    multi-leg batch is split deterministically.  A cycle of blocked singleton
-    legs is genuinely infeasible under the registered straight-leg contract.
+    A mover occupies its source before its batch and its target afterwards.  A
+    path that crosses another mover's source therefore requires that mover to
+    run first; crossing its target requires the current batch to run first.
+    Building both constraints before replay avoids the old greedy failure mode
+    where an initially safe long batch could move an atom into the path of the
+    only remaining batch.  Combined/static ghost conflicts may disappear after
+    splitting a colored batch, so a cyclic or blocked multi-leg batch is split
+    deterministically before the phase is declared infeasible.
     """
     if not phase.legs:
         return ()
     batches = [list(value) for value in color_phase(
         phase, exact_threshold)]
-    positions = {ghost.atom: ghost.position for ghost in phase.ghosts}
-    if phase.owners:
-        for owner, leg in zip(phase.owners, phase.legs):
-            positions[owner] = leg.source
 
-    def is_safe(members: Sequence[int]) -> bool:
-        owners = ({phase.owners[index] for index in members}
-                  if phase.owners else set())
-        ghosts = tuple(
-            Ghost(atom, point) for atom, point in sorted(positions.items())
-            if atom not in owners)
-        legs = tuple(phase.legs[index] for index in members)
-        return not ghost_hit_atoms(legs, ghosts)
+    def ordered(candidate_batches: Sequence[Sequence[int]]
+                ) -> tuple[int, ...] | None:
+        batch_by_owner = {}
+        if phase.owners:
+            for batch_index, members in enumerate(candidate_batches):
+                for leg_index in members:
+                    owner = phase.owners[leg_index]
+                    if owner in batch_by_owner:
+                        raise ValueError("phase owner appears in multiple legs")
+                    batch_by_owner[owner] = batch_index
 
-    replayed = []
-    while batches:
-        progressed = False
-        for batch_index, members in enumerate(batches):
-            if not is_safe(members):
+        static = {
+            ghost.atom: ghost.position for ghost in phase.ghosts
+            if ghost.atom not in batch_by_owner
+        }
+        outgoing = [set() for _ in candidate_batches]
+        blocked = [False] * len(candidate_batches)
+        for batch_index, members in enumerate(candidate_batches):
+            legs = tuple(phase.legs[index] for index in members)
+            owners = ({phase.owners[index] for index in members}
+                      if phase.owners else set())
+            static_ghosts = tuple(
+                Ghost(atom, point) for atom, point in sorted(static.items())
+                if atom not in owners)
+            if ghost_hit_atoms(legs, static_ghosts):
+                blocked[batch_index] = True
                 continue
-            replayed.append(tuple(members))
-            if phase.owners:
-                for index in members:
-                    positions[phase.owners[index]] = phase.legs[index].target
-            batches.pop(batch_index)
-            progressed = True
-            break
-        if progressed:
-            continue
+            for leg_index, owner in enumerate(phase.owners):
+                other_batch = batch_by_owner[owner]
+                if other_batch == batch_index:
+                    continue
+                leg = phase.legs[leg_index]
+                if ghost_hit_atoms(legs, (Ghost(owner, leg.source),)):
+                    outgoing[other_batch].add(batch_index)
+                if ghost_hit_atoms(legs, (Ghost(owner, leg.target),)):
+                    outgoing[batch_index].add(other_batch)
+
+        indegree = [0] * len(candidate_batches)
+        for neighbors in outgoing:
+            for neighbor in neighbors:
+                indegree[neighbor] += 1
+        result = []
+        remaining = set(range(len(candidate_batches)))
+        while remaining:
+            ready = next((index for index in sorted(remaining)
+                          if not blocked[index] and indegree[index] == 0),
+                         None)
+            if ready is None:
+                return None
+            result.append(ready)
+            remaining.remove(ready)
+            for neighbor in outgoing[ready]:
+                indegree[neighbor] -= 1
+        return tuple(result)
+
+    while True:
+        order = ordered(batches)
+        if order is not None:
+            return tuple(tuple(batches[index]) for index in order)
         split_index = next(
             (index for index, members in enumerate(batches)
              if len(members) > 1), None)
@@ -299,7 +333,6 @@ def replay_phase_batches(
             raise ValueError("phase has no ghost-safe straight-leg batch order")
         members = batches.pop(split_index)
         batches[split_index:split_index] = [[index] for index in members]
-    return tuple(replayed)
 
 
 def _expanded_batch_time(legs: Sequence[Leg], members: Sequence[int]) -> float:
@@ -445,11 +478,16 @@ class _RichEvaluated:
 
     @property
     def objective(self) -> tuple:
+        def bucket(value: float, quantum: float) -> int:
+            if not isfinite(value):
+                return (1 << 63) - 1
+            return int(floor(value / quantum + 0.5))
+
         return (
-            self.search_nll,
+            bucket(self.search_nll, 1e-12),
             self.fitness.move_batches,
-            self.fitness.move_time_us,
-            self.fitness.total_distance_um,
+            bucket(self.fitness.move_time_us, 1e-6),
+            bucket(self.fitness.total_distance_um, 1e-6),
             self.fitness.chromosome,
             self.assignment_key,
         )
@@ -936,6 +974,28 @@ def solve_rich_exact_reference(
 
 class ReferenceResidentBackend:
     name = "python-reference-v1"
+
+    def solve_rich_boundary(
+            self,
+            problem: RichH0Problem,
+            config: RichSearchConfig,
+            rng_state: tuple,
+            *,
+            cached_winner: Sequence[int] | None = None,
+    ) -> RichH0Result:
+        """Exact Python truth for bounded rich boundaries.
+
+        The reference backend intentionally refuses GA-sized spaces.  Its
+        purpose after native search-operator tuning is semantic differential
+        testing: both backends consume the same DTO and exhaust the same small
+        chromosome space, while production-sized boundaries remain native-only.
+        A cached approximate winner would change that contract and is therefore
+        not accepted on this path.
+        """
+        if cached_winner is not None:
+            raise ValueError(
+                "exact rich reference does not accept an approximate LRU winner")
+        return solve_rich_exact_reference(problem, config, rng_state)
 
     def evaluate_many(self, problem: BoundaryProblem,
                       chromosomes: Iterable[Sequence[int]] | None = None,

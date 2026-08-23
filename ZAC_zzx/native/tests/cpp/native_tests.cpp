@@ -65,6 +65,20 @@ int main() {
   assert(!evaluate_candidate(architecture, candidate, ghost_config).feasible);
   ++tests;
 
+  CandidatePlan precedence;
+  precedence.chromosome = {0};
+  precedence.phases = {{{
+      {2.0, {0.0, 0.0}, {2.0, 0.0}},
+      {std::sqrt(181.0), {10.0, 10.0}, {1.0, 0.0}},
+  }, {{1, {0.0, 0.0}}, {2, {10.0, 10.0}}}, {1, 2}, "phase"}};
+  const auto precedence_score =
+      evaluate_candidate(architecture, precedence, ghost_config);
+  assert(precedence_score.feasible && precedence_score.move_batches == 2);
+  assert(precedence_score.phase_batches.size() == 1);
+  assert((precedence_score.phase_batches[0] ==
+          std::vector<std::vector<std::size_t>>{{0}, {1}}));
+  ++tests;
+
   bool rejected = false;
   try {
     ArchitectureSnapshot invalid(1, {{0.0, 0.0}}, {0, 0});

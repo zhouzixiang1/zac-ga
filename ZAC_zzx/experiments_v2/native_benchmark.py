@@ -26,8 +26,8 @@ from zzx.zplacer import ResidentPlacer
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
-def medium_schedule(*, seed: int = 42, qubits: int = 20,
-                    layers: int = 9, gates_per_layer: int = 6
+def medium_schedule(*, seed: int = 42, qubits: int = 8,
+                    layers: int = 9, gates_per_layer: int = 2
                     ) -> list[list[list[int]]]:
     if qubits < 2 * gates_per_layer or min(qubits, layers,
                                            gates_per_layer) <= 0:
@@ -71,6 +71,8 @@ def _run_once(
         iterations=8,
         neighbors_per_solution=2,
         neighbor_sample_size=24,
+        direct_enumeration_limit=16384,
+        max_unique_evaluations=16384,
         backend=backend,
         formal_native=backend == "native",
         native_wheel_sha256=(wheel_sha256 if backend == "native" else ""),
@@ -170,13 +172,13 @@ def run_medium_benchmark(
             "parity": parity,
         }
     return {
-        "protocol": "resident-python-vs-abi3-medium-v1",
+        "protocol": "resident-python-vs-abi3-medium-v2",
         "measurement": "ResidentPlacer.run only; preprocessed architecture",
         "operator_profile": "exact",
         "wheel_sha256": wheel_sha256,
         "schedule": {
-            "seed": 42, "qubits": 20, "layers": 9,
-            "gates_per_layer": 6, "transitions": 8,
+            "seed": 42, "qubits": 8, "layers": 9,
+            "gates_per_layer": 2, "transitions": 8,
         },
         "repetitions": repetitions,
         "horizons": horizons,

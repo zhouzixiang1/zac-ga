@@ -31,6 +31,7 @@ from zzx.reference_backend import (  # noqa: E402
     ReferenceResidentBackend,
     color_phase,
     ghost_hit_atoms,
+    replay_phase_batches,
 )
 
 
@@ -97,6 +98,19 @@ class TestReferenceGeometry(unittest.TestCase):
         for leg in phase.legs:
             self.assertEqual(ghost_hit_atoms((leg,), phase.ghosts), ())
         self.assertEqual(color_phase(phase), ((0,), (1,)))
+
+    def test_endpoint_precedence_avoids_greedy_dead_end(self):
+        first = Leg.between((0.0, 0.0), (2.0, 0.0))
+        second = Leg.between((10.0, 10.0), (1.0, 0.0))
+        phase = MovementPhase(
+            (first, second),
+            (Ghost(1, first.source), Ghost(2, second.source)),
+            (1, 2),
+        )
+        # Distance ordering would run leg 1 first and place atom 2 at (1, 0),
+        # permanently blocking leg 0.  Endpoint precedence must reverse them.
+        self.assertEqual(color_phase(phase), ((1,), (0,)))
+        self.assertEqual(replay_phase_batches(phase), ((0,), (1,)))
 
     def test_physical_terms_and_lexicographic_winner(self):
         architecture = ArchitectureSnapshot(4)

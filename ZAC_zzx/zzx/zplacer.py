@@ -1950,8 +1950,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         # Both formal methods use the same generic rich solve.  The strict H=0
         # DTO contains no forecast term; M4 carries the bounded term table.
         use_rich_boundary = (
-            self.resident_backend_requested == "native"
-            and self.decay_lookahead
+            self.decay_lookahead
             and self.ablation_fitness_mode == "phase"
         )
         horizon_selection_ns = (
