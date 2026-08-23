@@ -13,11 +13,22 @@ repeated point/leg dictionaries never cross the language boundary.
 
 Both methods carry the same geometric decay specification.  M3 sets
 `max_horizon=0`, which makes future data structurally impossible.  M4 sets a
-bounded maximum (currently eight) and supplies precomputed residency, re-entry
-and terminal heuristic terms.  C++ applies
+bounded maximum (currently eight).  Python deterministically replays the
+visible geometry for STAY, each bounded RETURN site, and each current gate-site
+choice; those replays include single-leg ghost avoidance, conflict coloring,
+transfer, idle excitation, coherence, and terminal RETURN.  Their physical
+marginals are passed as an auditable term table.  C++ applies
 `alpha_lookahead * rho ** (offset - 1)` and stops terms when the bare decay
 factor falls below epsilon.  Current physical NLL is never discounted or mixed
 into the forecast breakdown.
+
+For each chromosome, RETURN is a bounded joint assignment rather than one
+nearest-site Hungarian result.  The solver enumerates the first K injective
+assignments in deterministic cost order, performs any necessary derived RESEAT,
+replays the real `back -> out` phases with single-leg ghosts as hard failures,
+and only then compares candidates.  The selected assignment rank, evaluated
+assignment count, rejected ghost assignments, geometric routing forecast, and
+pre-score RESEAT count are returned in the boundary audit.
 
 The extension is fail-closed: `zzx.native_backend.NativeResidentBackend` raises
 when the wheel is missing, ABI/RNG differs, or a required registered wheel hash

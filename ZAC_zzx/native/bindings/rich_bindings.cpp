@@ -308,7 +308,7 @@ RichH0Problem parse_problem(const ArchitectureSnapshot& architecture,
   }
   for (std::size_t index = 0; index < forecast_count; ++index) {
     if (forecast_depths[index] <= 0 || forecast_kinds[index] > 6 ||
-        forecast_categories[index] > 2) {
+        forecast_categories[index] > 3) {
       throw std::invalid_argument("invalid forecast term code");
     }
     problem.forecast_terms.push_back({
@@ -348,6 +348,15 @@ RichSearchConfig parse_search_config(const py::dict& value) {
       py::cast<std::size_t>(value["early_stop_patience"]);
   config.max_unique_evaluations =
       py::cast<std::size_t>(value["max_unique_evaluations"]);
+  config.direct_enumeration_limit =
+      py::cast<std::size_t>(value["direct_enumeration_limit"]);
+  config.crossover_rate = py::cast<double>(value["crossover_rate"]);
+  config.local_polish_sweeps =
+      py::cast<std::size_t>(value["local_polish_sweeps"]);
+  config.return_candidate_limit =
+      py::cast<std::size_t>(value["return_candidate_limit"]);
+  config.return_assignment_k =
+      py::cast<std::size_t>(value["return_assignment_k"]);
   config.exact_coloring_threshold =
       py::cast<std::size_t>(value["exact_coloring_threshold"]);
   config.enforce_single_leg_ghost =
@@ -436,6 +445,7 @@ void bind_rich_solver(py::module_& module) {
         value["winner"] = fitness_to_dict(result.winner);
         value["gate_option_indices"] = result.gate_option_indices;
         value["return_assignments"] = result.return_assignments;
+        value["reseat_assignments"] = result.reseat_assignments;
         value["rng_state"] = rng_state_to_python(result.rng_state, rng_state_value[2]);
         value["search_mode"] = result.search_mode;
         value["operator_profile"] =
@@ -468,7 +478,15 @@ void bind_rich_solver(py::module_& module) {
             result.stats.marginal_return_flips;
         operator_stats["cached_winner_elites"] =
             result.stats.cached_winner_elites;
+        operator_stats["crossovers"] = result.stats.crossovers;
+        operator_stats["local_polish_evaluations"] =
+            result.stats.local_polish_evaluations;
         stats["operator_stats"] = operator_stats;
+        stats["return_assignment_evaluated"] =
+            result.stats.return_assignment_evaluated;
+        stats["current_ghost_rejections"] =
+            result.stats.current_ghost_rejections;
+        stats["pre_score_reseats"] = result.stats.pre_score_reseats;
         stats["forecast_terms_applied"] =
             result.stats.forecast_terms_applied;
         stats["forecast_terms_skipped_cutoff"] =
@@ -482,7 +500,15 @@ void bind_rich_solver(py::module_& module) {
         forecast_breakdown["residency"] = result.forecast_residency_nll;
         forecast_breakdown["reentry"] = result.forecast_reentry_nll;
         forecast_breakdown["terminal"] = result.forecast_terminal_nll;
+        forecast_breakdown["routing"] = result.forecast_routing_nll;
         value["forecast_breakdown"] = forecast_breakdown;
+        value["return_assignment_rank"] = result.return_assignment_rank;
+        value["return_assignment_evaluated"] =
+            result.return_assignment_evaluated;
+        value["current_ghost_rejections"] =
+            result.current_ghost_rejections;
+        value["future_ghost_cost"] = result.forecast_routing_nll;
+        value["pre_score_reseats"] = result.pre_score_reseats;
         py::dict timing;
         timing["normalize_ns"] = result.normalize_ns;
         timing["decode_ns"] = result.decode_ns;

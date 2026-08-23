@@ -82,24 +82,76 @@ int main() {
 
   ArchitectureSnapshot fallback_architecture(
       2, {{0.0, 0.0}, {1.0, 0.0}, {0.0, 2.0}, {1.0, 2.0}}, {2, 3});
-  RichH0Problem fallback;
-  fallback.n_atoms = 2;
-  fallback.current_points = {{0.0, 0.0}, {1.0, 0.0}};
-  fallback.eligible = {0, 1};
-  fallback.min_returns = 2;
-  fallback.eviction_order_indices = {0, 1};
-  fallback.forced_return_mask = {true, true};
-  fallback.return_domains = {{{2, {0.0, 2.0}, 1.0}},
-                             {{2, {0.0, 2.0}, 1.0}}};
-  fallback.decision_policy = RichDecisionPolicy::kAlwaysReturn;
-  const auto fallback_value = solve_rich_h0(
-      fallback_architecture, fallback, exact_config(), rng_fixture());
-  assert(fallback_value.return_assignments.size() == 2);
+  RichH0Problem bounded_matching;
+  bounded_matching.n_atoms = 2;
+  bounded_matching.current_points = {{0.0, 0.0}, {1.0, 0.0}};
+  bounded_matching.eligible = {0, 1};
+  bounded_matching.min_returns = 2;
+  bounded_matching.eviction_order_indices = {0, 1};
+  bounded_matching.forced_return_mask = {true, true};
+  bounded_matching.return_domains = {
+      {{2, {0.0, 2.0}, 1.0}, {3, {1.0, 2.0}, 2.0}},
+      {{2, {0.0, 2.0}, 1.0}, {3, {1.0, 2.0}, 2.0}}};
+  bounded_matching.decision_policy = RichDecisionPolicy::kAlwaysReturn;
+  const auto bounded_value = solve_rich_h0(
+      fallback_architecture, bounded_matching, exact_config(), rng_fixture());
+  assert(bounded_value.return_assignments.size() == 2);
   const std::set<std::int64_t> fallback_sites{
-      fallback_value.return_assignments[0].second,
-      fallback_value.return_assignments[1].second};
+      bounded_value.return_assignments[0].second,
+      bounded_value.return_assignments[1].second};
   const std::set<std::int64_t> expected_sites{2, 3};
   assert(fallback_sites == expected_sites);
+  ++tests;
+
+  ArchitectureSnapshot ghost_return_architecture(
+      3, {{1.0, 1.0}, {10.0, 10.0}, {0.0, 0.0},
+          {2.0, 2.0}, {2.0, 3.0}}, {3, 4});
+  RichH0Problem ghost_return;
+  ghost_return.n_atoms = 3;
+  ghost_return.current_points = {{1.0, 1.0}, {10.0, 10.0}, {0.0, 0.0}};
+  ghost_return.participants = {0, 1};
+  ghost_return.gate_domains = {
+      {{10, 0, 1, {1.0, 1.0}, {10.0, 10.0}}}};
+  ghost_return.eligible = {2};
+  ghost_return.min_returns = 1;
+  ghost_return.eviction_order_indices = {0};
+  ghost_return.forced_return_mask = {true};
+  ghost_return.return_domains = {
+      {{3, {2.0, 2.0}, 1.0}, {4, {2.0, 3.0}, 2.0}}};
+  ghost_return.matched_gate_genes = {0};
+  auto ghost_return_config = exact_config();
+  ghost_return_config.return_assignment_k = 4;
+  const auto ghost_safe = solve_rich_h0(
+      ghost_return_architecture, ghost_return, ghost_return_config, rng_fixture());
+  const std::vector<std::pair<std::int64_t, std::int64_t>> ghost_safe_expected{
+      {2, 4}};
+  assert(ghost_safe.return_assignments == ghost_safe_expected);
+  assert(ghost_safe.return_assignment_rank == 2);
+  assert(ghost_safe.return_assignment_evaluated == 2);
+  assert(ghost_safe.current_ghost_rejections == 1);
+  ++tests;
+
+  ArchitectureSnapshot reseat_architecture(
+      3, {{0.0, 0.0}, {1.0, 0.0}, {2.0, 2.0},
+          {3.0, 3.0}, {2.0, 4.0}}, {4});
+  RichH0Problem reseat;
+  reseat.n_atoms = 3;
+  reseat.current_points = {{0.0, 0.0}, {1.0, 0.0}, {2.0, 2.0}};
+  reseat.participants = {0, 1};
+  reseat.gate_domains = {{{10, 0, 1, {2.0, 2.0}, {1.0, 0.0}}}};
+  reseat.eligible = {2};
+  reseat.eviction_order_indices = {0};
+  reseat.forced_return_mask = {false};
+  reseat.return_domains = {{{4, {2.0, 4.0}, 1.0}}};
+  reseat.matched_gate_genes = {0};
+  reseat.decision_policy = RichDecisionPolicy::kAlwaysStay;
+  const auto reseated = solve_rich_h0(
+      reseat_architecture, reseat, exact_config(), rng_fixture());
+  assert(reseated.winner.feasible);
+  const std::vector<std::pair<std::int64_t, std::int64_t>> reseat_expected{
+      {2, 3}};
+  assert(reseated.reseat_assignments == reseat_expected);
+  assert(reseated.pre_score_reseats == 1);
   ++tests;
 
   problem = one_resident_problem();

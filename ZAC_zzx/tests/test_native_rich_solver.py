@@ -67,6 +67,62 @@ def toy_problem(*, indexed=False, terms=(), horizon=0):
     )
 
 
+def ghost_sensitive_return_problem(*, terms=(), horizon=0):
+    arch = ArchitectureSnapshot.from_coordinates(
+        3,
+        ((1, 1), (10, 10), (0, 0), (2, 2), (2, 3)),
+        (3, 4),
+    )
+    return arch, RichH0Problem(
+        architecture=arch,
+        current_points=(Point(1, 1), Point(10, 10), Point(0, 0)),
+        participants=(0, 1),
+        gate_domains=((RichGateOption(
+            10, 0, 1, Point(1, 1), Point(10, 10)),),),
+        static_ghosts=(),
+        eligible=(2,),
+        min_returns=1,
+        eviction_order_indices=(0,),
+        forced_return_mask=(True,),
+        return_domains=((
+            RichReturnOption(3, Point(2, 2), 1.0),
+            RichReturnOption(4, Point(2, 3), 2.0),
+        ),),
+        matched_gate_genes=(0,),
+        boundary_id="ghost-sensitive-return",
+        selected_horizon=horizon,
+        forecast_terms=tuple(terms),
+    )
+
+
+def equal_distance_return_problem(*, terms=(), horizon=0):
+    arch = ArchitectureSnapshot.from_coordinates(
+        3,
+        ((10, 10), (11, 10), (0, 0), (2, 0), (0, 2)),
+        (3, 4),
+    )
+    return arch, RichH0Problem(
+        architecture=arch,
+        current_points=(Point(10, 10), Point(11, 10), Point(0, 0)),
+        participants=(0, 1),
+        gate_domains=((RichGateOption(
+            10, 0, 1, Point(10, 10), Point(11, 10)),),),
+        static_ghosts=(),
+        eligible=(2,),
+        min_returns=1,
+        eviction_order_indices=(0,),
+        forced_return_mask=(True,),
+        return_domains=((
+            RichReturnOption(3, Point(2, 0), 1.0),
+            RichReturnOption(4, Point(0, 2), 1.0),
+        ),),
+        matched_gate_genes=(0,),
+        boundary_id="equal-distance-return",
+        selected_horizon=horizon,
+        forecast_terms=tuple(terms),
+    )
+
+
 @unittest.skipUnless(native_available(), "ABI3 native extension is not installed")
 class TestNativeRichSolver(unittest.TestCase):
     def setUp(self):
@@ -130,6 +186,79 @@ class TestNativeRichSolver(unittest.TestCase):
             + result.winner.coherence_nll,
             delta=1e-15,
         )
+
+    def test_k_best_return_chooses_second_site_when_nearest_has_ghost(self):
+        arch, problem = ghost_sensitive_return_problem()
+        result = NativeResidentBackend(arch).solve_rich_h0(
+            problem,
+            RichSearchConfig(
+                operator_profile="exact",
+                return_candidate_limit=6,
+                return_assignment_k=4,
+                enforce_single_leg_ghost=True,
+            ),
+            random.Random(0).getstate(),
+        )
+        self.assertEqual(((2, 4),), result.return_assignments)
+        self.assertEqual(2, result.return_assignment_rank)
+        self.assertEqual(2, result.return_assignment_evaluated)
+        self.assertEqual(1, result.current_ghost_rejections)
+        self.assertEqual((), result.reseat_assignments)
+
+    def test_m4_routing_replay_selects_future_safe_return_site(self):
+        arch, h0_problem = equal_distance_return_problem()
+        h0 = NativeResidentBackend(arch).solve_rich_h0(
+            h0_problem,
+            RichSearchConfig(
+                operator_profile="exact", return_assignment_k=4),
+            random.Random(0).getstate(),
+        )
+        self.assertEqual(((2, 3),), h0.return_assignments)
+        routing_term = RichForecastTerm(
+            1, "return_site", "routing", 1.0,
+            index=0, selector=3)
+        _arch, h1_problem = equal_distance_return_problem(
+            terms=(routing_term,), horizon=1)
+        h1 = NativeResidentBackend(arch).solve_rich_boundary(
+            h1_problem,
+            RichSearchConfig(
+                operator_profile="exact", max_horizon=1,
+                alpha_lookahead=1.0, return_assignment_k=4),
+            random.Random(0).getstate(),
+        )
+        self.assertEqual(((2, 4),), h1.return_assignments)
+        self.assertEqual(2, h1.return_assignment_rank)
+        self.assertEqual(0.0, h1.future_ghost_cost)
+
+    def test_gate_target_blocker_is_reseated_before_candidate_scoring(self):
+        arch = ArchitectureSnapshot.from_coordinates(
+            3,
+            ((0, 0), (1, 0), (2, 2), (3, 3), (2, 4)),
+            (4,),
+        )
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(Point(0, 0), Point(1, 0), Point(2, 2)),
+            participants=(0, 1),
+            gate_domains=((RichGateOption(
+                10, 0, 1, Point(2, 2), Point(1, 0)),),),
+            static_ghosts=(),
+            eligible=(2,),
+            min_returns=0,
+            eviction_order_indices=(0,),
+            forced_return_mask=(False,),
+            return_domains=((RichReturnOption(4, Point(2, 4), 1.0),),),
+            matched_gate_genes=(0,),
+            decision_policy="always_stay",
+            boundary_id="candidate-reseat",
+        )
+        result = NativeResidentBackend(arch).solve_rich_h0(
+            problem, RichSearchConfig(operator_profile="exact"),
+            random.Random(0).getstate())
+        self.assertTrue(result.winner.feasible)
+        self.assertEqual(((2, 3),), result.reseat_assignments)
+        self.assertEqual(1, result.pre_score_reseats)
+        self.assertEqual((0, 0), result.winner.chromosome)
 
     def test_indexed_and_legacy_geometry_are_identical(self):
         config = RichSearchConfig(operator_profile="exact")

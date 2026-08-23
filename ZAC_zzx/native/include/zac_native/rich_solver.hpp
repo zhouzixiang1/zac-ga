@@ -57,6 +57,7 @@ enum class RichForecastCategory : std::uint8_t {
   kResidency = 0,
   kReentry = 1,
   kTerminal = 2,
+  kRouting = 3,
 };
 
 struct RichForecastTerm {
@@ -95,8 +96,13 @@ struct RichSearchConfig {
   std::size_t elite_count{1};
   std::size_t early_stop_patience{};
   std::size_t max_unique_evaluations{};
+  std::size_t direct_enumeration_limit{512};
+  double crossover_rate{0.25};
+  std::size_t local_polish_sweeps{1};
+  std::size_t return_candidate_limit{6};
+  std::size_t return_assignment_k{4};
   std::size_t exact_coloring_threshold{};
-  bool enforce_single_leg_ghost{false};
+  bool enforce_single_leg_ghost{true};
   bool fitness_cache{true};
   std::string forecast_mode{"decay"};
   std::string forecast_policy{"physical_terminal_decay_v1"};
@@ -125,6 +131,11 @@ struct RichSearchStats {
   std::size_t conflict_cluster_swaps{};
   std::size_t marginal_return_flips{};
   std::size_t cached_winner_elites{};
+  std::size_t crossovers{};
+  std::size_t local_polish_evaluations{};
+  std::size_t return_assignment_evaluated{};
+  std::size_t current_ghost_rejections{};
+  std::size_t pre_score_reseats{};
   std::size_t forecast_terms_applied{};
   std::size_t forecast_terms_skipped_cutoff{};
 };
@@ -133,6 +144,7 @@ struct RichSolveResult {
   FitnessResult winner;
   std::vector<std::size_t> gate_option_indices;
   std::vector<std::pair<std::int64_t, std::int64_t>> return_assignments;
+  std::vector<std::pair<std::int64_t, std::int64_t>> reseat_assignments;
   PythonRandomState rng_state;
   std::string search_mode;
   RichOperatorProfile operator_profile{RichOperatorProfile::kExact};
@@ -143,6 +155,11 @@ struct RichSolveResult {
   double forecast_residency_nll{};
   double forecast_reentry_nll{};
   double forecast_terminal_nll{};
+  double forecast_routing_nll{};
+  std::size_t return_assignment_rank{};
+  std::size_t return_assignment_evaluated{};
+  std::size_t current_ghost_rejections{};
+  std::size_t pre_score_reseats{};
   std::int64_t normalize_ns{};
   std::int64_t decode_ns{};
   std::int64_t return_match_ns{};

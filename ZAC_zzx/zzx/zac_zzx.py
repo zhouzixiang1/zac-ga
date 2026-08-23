@@ -52,6 +52,9 @@ class ZAC_zzx(ZAC):
                     "native_abi_version", "native_wheel_sha256",
                     "rng_version", "elite_count", "early_stop_patience",
                     "max_unique_evaluations", "operator_profile",
+                    "direct_enumeration_limit", "crossover_rate",
+                    "local_polish_sweeps", "return_candidate_limit",
+                    "return_assignment_k",
                     # ---- 初始布局引擎（"ga" = GAInitialPlacer 换掉 ZAC 的 SA）----
                     "init_engine", "init_pop", "init_gens")
     # ZAC 原版认识的键（消费断言用； Zac.parse_setting 同步维护）

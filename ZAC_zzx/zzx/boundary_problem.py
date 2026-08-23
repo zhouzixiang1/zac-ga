@@ -517,7 +517,8 @@ class RichForecastTerm:
                 "constant", "stay", "return", "return_site", "gate_option",
                 "stay_pair", "return_pair"}:
             raise ValueError("unknown forecast term kind")
-        if self.category not in {"residency", "reentry", "terminal"}:
+        if self.category not in {
+                "residency", "reentry", "terminal", "routing"}:
             raise ValueError("unknown forecast term category")
         value = _finite(self.nll, "forecast nll")
         if value < 0:
@@ -549,8 +550,13 @@ class RichSearchConfig:
     elite_count: int = 1
     early_stop_patience: int = 0
     max_unique_evaluations: int = 0
+    direct_enumeration_limit: int = 512
+    crossover_rate: float = 0.25
+    local_polish_sweeps: int = 1
+    return_candidate_limit: int = 6
+    return_assignment_k: int = 4
     exact_coloring_threshold: int = 0
-    enforce_single_leg_ghost: bool = False
+    enforce_single_leg_ghost: bool = True
     fitness_cache: bool = True
 
     def __post_init__(self) -> None:
@@ -572,12 +578,16 @@ class RichSearchConfig:
                            _finite(self.decay_epsilon, "decay_epsilon"))
         object.__setattr__(self, "alpha_lookahead",
                            _finite(self.alpha_lookahead, "alpha_lookahead"))
+        object.__setattr__(self, "crossover_rate",
+                           _finite(self.crossover_rate, "crossover_rate"))
         if self.alpha_lookahead < 0:
             raise ValueError("alpha_lookahead must be non-negative")
         if not 0 < self.decay_rho <= 1:
             raise ValueError("decay_rho must be in (0, 1]")
         if not 0 <= self.decay_epsilon <= 1:
             raise ValueError("decay_epsilon must be in [0, 1]")
+        if not 0 <= self.crossover_rate <= 1:
+            raise ValueError("crossover_rate must be in [0, 1]")
         for name in ("population_size", "iterations", "neighbors_per_solution",
                      "neighbor_sample_size", "elite_count"):
             value = getattr(self, name)
@@ -585,11 +595,17 @@ class RichSearchConfig:
                     or value <= 0):
                 raise ValueError(f"{name} must be a positive integer")
         for name in ("early_stop_patience", "max_unique_evaluations",
-                     "exact_coloring_threshold"):
+                     "exact_coloring_threshold", "local_polish_sweeps"):
             value = getattr(self, name)
             if (not isinstance(value, int) or isinstance(value, bool)
                     or value < 0):
                 raise ValueError(f"{name} must be a non-negative integer")
+        for name in ("direct_enumeration_limit", "return_candidate_limit",
+                     "return_assignment_k"):
+            value = getattr(self, name)
+            if (not isinstance(value, int) or isinstance(value, bool)
+                    or value <= 0):
+                raise ValueError(f"{name} must be a positive integer")
         if self.elite_count > self.population_size:
             raise ValueError("elite_count cannot exceed population_size")
         if not isinstance(self.enforce_single_leg_ghost, bool):
@@ -619,6 +635,11 @@ class RichSearchConfig:
             "elite_count": self.elite_count,
             "early_stop_patience": self.early_stop_patience,
             "max_unique_evaluations": self.resolved_unique_budget,
+            "direct_enumeration_limit": self.direct_enumeration_limit,
+            "crossover_rate": self.crossover_rate,
+            "local_polish_sweeps": self.local_polish_sweeps,
+            "return_candidate_limit": self.return_candidate_limit,
+            "return_assignment_k": self.return_assignment_k,
             "exact_coloring_threshold": self.exact_coloring_threshold,
             "enforce_single_leg_ghost": self.enforce_single_leg_ghost,
             "fitness_cache": self.fitness_cache,
@@ -840,6 +861,7 @@ class RichH0Problem:
             "residency": 0,
             "reentry": 1,
             "terminal": 2,
+            "routing": 3,
         }
         return {
             "geometry_mode": array("B", [1 if self.indexed_geometry else 0]),
@@ -897,6 +919,7 @@ class RichH0Result:
     winner: FitnessResult
     gate_option_indices: tuple[int, ...]
     return_assignments: tuple[tuple[int, int], ...]
+    reseat_assignments: tuple[tuple[int, int], ...]
     rng_state: tuple
     search_mode: str
     operator_profile: str
@@ -918,6 +941,11 @@ class RichH0Result:
     search_negative_log_fidelity: float
     forecast_by_depth: tuple[float, ...]
     forecast_breakdown: Mapping[str, float]
+    return_assignment_rank: int
+    return_assignment_evaluated: int
+    current_ghost_rejections: int
+    future_ghost_cost: float
+    pre_score_reseats: int
     timing: Mapping[str, int]
 
     @property

@@ -412,6 +412,9 @@ class NativeResidentBackend:
                 return_assignments=tuple(
                     (int(atom), int(site))
                     for atom, site in value["return_assignments"]),
+                reseat_assignments=tuple(
+                    (int(atom), int(site))
+                    for atom, site in value["reseat_assignments"]),
                 rng_state=tuple(value["rng_state"]),
                 search_mode=str(value["search_mode"]),
                 operator_profile=str(value["operator_profile"]),
@@ -444,6 +447,13 @@ class NativeResidentBackend:
                     str(key): float(item)
                     for key, item in dict(value["forecast_breakdown"]).items()
                 },
+                return_assignment_rank=int(value["return_assignment_rank"]),
+                return_assignment_evaluated=int(
+                    value["return_assignment_evaluated"]),
+                current_ghost_rejections=int(
+                    value["current_ghost_rejections"]),
+                future_ghost_cost=float(value["future_ghost_cost"]),
+                pre_score_reseats=int(value["pre_score_reseats"]),
                 timing=timing,
             )
         except NativeBackendError:

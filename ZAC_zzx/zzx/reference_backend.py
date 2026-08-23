@@ -51,7 +51,12 @@ def evaluate_decay_forecast(
         for atom, site in return_assignments
     }
     by_depth = [0.0] * (config.max_horizon + 1)
-    breakdown = {"residency": 0.0, "reentry": 0.0, "terminal": 0.0}
+    breakdown = {
+        "residency": 0.0,
+        "reentry": 0.0,
+        "terminal": 0.0,
+        "routing": 0.0,
+    }
     applied = skipped = 0
 
     def bit(index: int) -> bool:

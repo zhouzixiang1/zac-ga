@@ -11,6 +11,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <queue>
 #include <set>
 #include <stdexcept>
 #include <tuple>
@@ -154,10 +155,29 @@ struct Evaluated {
   FitnessResult fitness;
   DecodeResult decoded;
   std::vector<ReturnAssignment> assignments;
+  std::vector<ReturnAssignment> reseats;
   double forecast_nll{};
   double search_nll{};
   std::vector<double> forecast_by_depth;
-  std::array<double, 3> forecast_by_category{};
+  std::array<double, 4> forecast_by_category{};
+  std::vector<std::int64_t> assignment_key;
+  std::size_t return_assignment_rank{};
+  std::size_t return_assignment_evaluated{};
+  std::size_t current_ghost_rejections{};
+  std::size_t pre_score_reseats{};
+};
+
+struct PlanGeometry {
+  std::vector<Point> positions_t1;
+  std::vector<Leg> back_legs;
+  std::vector<std::int64_t> back_owners;
+  std::vector<Leg> out_legs;
+  std::vector<std::int64_t> out_owners;
+  std::vector<Ghost> ghosts_t0;
+  std::vector<Ghost> ghosts_t1;
+  std::set<std::int64_t> blockers;
+  std::size_t violations{};
+  std::size_t ghost_violations{};
 };
 
 bool evaluated_less(const Evaluated& first, const Evaluated& second) {
@@ -166,38 +186,24 @@ bool evaluated_less(const Evaluated& first, const Evaluated& second) {
   }
   return std::tie(first.search_nll, first.fitness.move_batches,
                   first.fitness.move_time_us, first.fitness.total_distance_um,
-                  first.fitness.chromosome) <
+                  first.fitness.chromosome, first.assignment_key) <
          std::tie(second.search_nll, second.fitness.move_batches,
                   second.fitness.move_time_us, second.fitness.total_distance_um,
-                  second.fitness.chromosome);
+                  second.fitness.chromosome, second.assignment_key);
 }
 
-std::optional<std::vector<std::size_t>> hungarian_assignment(
-    const std::vector<std::vector<RichReturnOption>>& domains,
-    const std::vector<std::size_t>& returners) {
-  std::map<std::int64_t, std::size_t> site_index;
-  std::vector<std::int64_t> sites;
-  for (const auto eligible_index : returners) {
-    for (const auto& option : domains[eligible_index]) {
-      if (site_index.count(option.site_id) == 0U) {
-        site_index[option.site_id] = sites.size();
-        sites.push_back(option.site_id);
-      }
-    }
-  }
-  const auto rows = returners.size();
-  const auto columns = sites.size();
+struct AssignmentSolution {
+  std::vector<std::int64_t> site_ids;
+  double cost{};
+};
+
+std::optional<std::vector<std::size_t>> hungarian_columns(
+    const std::vector<std::vector<double>>& costs) {
+  const auto rows = costs.size();
+  if (rows == 0) return std::vector<std::size_t>{};
+  const auto columns = costs.front().size();
   if (columns < rows) return std::nullopt;
   constexpr double kInfinity = 1e100;
-  std::vector<std::vector<double>> costs(
-      rows, std::vector<double>(columns, kInfinity));
-  for (std::size_t row = 0; row < rows; ++row) {
-    for (const auto& option : domains[returners[row]]) {
-      auto& cost = costs[row][site_index.at(option.site_id)];
-      cost = std::min(cost, option.cost);
-    }
-  }
-
   std::vector<double> u(rows + 1);
   std::vector<double> v(columns + 1);
   std::vector<std::size_t> p(columns + 1);
@@ -246,12 +252,137 @@ std::optional<std::vector<std::size_t>> hungarian_assignment(
     if (p[column] != 0) assignment[p[column] - 1] = column - 1;
   }
   for (std::size_t row = 0; row < rows; ++row) {
-    if (assignment[row] >= columns || costs[row][assignment[row]] >= kInfinity / 2) {
+    if (assignment[row] >= columns ||
+        costs[row][assignment[row]] >= kInfinity / 2) {
       return std::nullopt;
     }
-    assignment[row] = static_cast<std::size_t>(sites[assignment[row]]);
   }
   return assignment;
+}
+
+std::optional<AssignmentSolution> constrained_assignment(
+    const std::vector<std::vector<RichReturnOption>>& domains,
+    const std::vector<std::size_t>& returners,
+    const std::map<std::size_t, std::int64_t>& fixed,
+    const std::set<std::pair<std::size_t, std::int64_t>>& banned) {
+  std::set<std::int64_t> site_set;
+  for (const auto eligible_index : returners) {
+    for (const auto& option : domains[eligible_index]) {
+      site_set.insert(option.site_id);
+    }
+  }
+  const std::vector<std::int64_t> sites(site_set.begin(), site_set.end());
+  std::map<std::int64_t, std::size_t> site_index;
+  for (std::size_t index = 0; index < sites.size(); ++index) {
+    site_index[sites[index]] = index;
+  }
+  const auto rows = returners.size();
+  const auto columns = sites.size();
+  if (columns < rows) return std::nullopt;
+  constexpr double kInfinity = 1e100;
+  std::vector<std::vector<double>> costs(
+      rows, std::vector<double>(columns, kInfinity));
+  for (std::size_t row = 0; row < rows; ++row) {
+    for (const auto& option : domains[returners[row]]) {
+      auto& cost = costs[row][site_index.at(option.site_id)];
+      cost = std::min(cost, option.cost);
+    }
+    for (std::size_t column = 0; column < columns; ++column) {
+      if (banned.count({row, sites[column]}) != 0U) {
+        costs[row][column] = kInfinity;
+      }
+    }
+  }
+  std::vector<std::int64_t> assignment(rows, -1);
+  std::set<std::size_t> fixed_columns;
+  double total_cost = 0.0;
+  for (const auto& [row, site_id] : fixed) {
+    const auto found = site_index.find(site_id);
+    if (row >= rows || found == site_index.end() ||
+        !fixed_columns.insert(found->second).second ||
+        costs[row][found->second] >= kInfinity / 2) {
+      return std::nullopt;
+    }
+    assignment[row] = site_id;
+    total_cost += costs[row][found->second];
+  }
+  std::vector<std::size_t> free_rows;
+  std::vector<std::size_t> free_columns;
+  for (std::size_t row = 0; row < rows; ++row) {
+    if (assignment[row] < 0) free_rows.push_back(row);
+  }
+  for (std::size_t column = 0; column < columns; ++column) {
+    if (fixed_columns.count(column) == 0U) free_columns.push_back(column);
+  }
+  if (free_columns.size() < free_rows.size()) return std::nullopt;
+  std::vector<std::vector<double>> reduced(
+      free_rows.size(), std::vector<double>(free_columns.size(), kInfinity));
+  for (std::size_t row = 0; row < free_rows.size(); ++row) {
+    for (std::size_t column = 0; column < free_columns.size(); ++column) {
+      reduced[row][column] = costs[free_rows[row]][free_columns[column]];
+    }
+  }
+  const auto reduced_assignment = hungarian_columns(reduced);
+  if (!reduced_assignment.has_value()) return std::nullopt;
+  for (std::size_t row = 0; row < free_rows.size(); ++row) {
+    const auto original_column = free_columns[(*reduced_assignment)[row]];
+    assignment[free_rows[row]] = sites[original_column];
+    total_cost += costs[free_rows[row]][original_column];
+  }
+  return AssignmentSolution{std::move(assignment), total_cost};
+}
+
+std::vector<AssignmentSolution> k_best_assignments(
+    const std::vector<std::vector<RichReturnOption>>& domains,
+    const std::vector<std::size_t>& returners, std::size_t limit) {
+  if (returners.empty()) return {AssignmentSolution{{}, 0.0}};
+  struct Node {
+    std::size_t fixed_prefix{};
+    std::map<std::size_t, std::int64_t> fixed;
+    std::set<std::pair<std::size_t, std::int64_t>> banned;
+    AssignmentSolution solution;
+    std::size_t serial{};
+  };
+  struct Later {
+    bool operator()(const Node& first, const Node& second) const {
+      if (first.solution.cost != second.solution.cost) {
+        return first.solution.cost > second.solution.cost;
+      }
+      if (first.solution.site_ids != second.solution.site_ids) {
+        return first.solution.site_ids > second.solution.site_ids;
+      }
+      return first.serial > second.serial;
+    }
+  };
+  const auto initial = constrained_assignment(domains, returners, {}, {});
+  if (!initial.has_value()) return {};
+  std::priority_queue<Node, std::vector<Node>, Later> queue;
+  std::size_t serial = 0;
+  queue.push({0, {}, {}, *initial, serial++});
+  std::set<std::vector<std::int64_t>> seen;
+  std::vector<AssignmentSolution> result;
+  while (!queue.empty() && result.size() < limit) {
+    auto node = queue.top();
+    queue.pop();
+    if (seen.insert(node.solution.site_ids).second) {
+      result.push_back(node.solution);
+    }
+    for (std::size_t row = node.fixed_prefix; row < returners.size(); ++row) {
+      auto fixed = node.fixed;
+      for (std::size_t prefix = node.fixed_prefix; prefix < row; ++prefix) {
+        fixed[prefix] = node.solution.site_ids[prefix];
+      }
+      auto banned = node.banned;
+      banned.insert({row, node.solution.site_ids[row]});
+      const auto solution = constrained_assignment(
+          domains, returners, fixed, banned);
+      if (solution.has_value()) {
+        queue.push({row, std::move(fixed), std::move(banned), *solution,
+                    serial++});
+      }
+    }
+  }
+  return result;
 }
 
 class RichSolver {
@@ -261,6 +392,25 @@ class RichSolver {
       : architecture_(architecture), problem_(problem), config_(config),
         rng_(rng_state) {
     validate();
+    storage_site_ids_.insert(architecture_.storage_site_ids().begin(),
+                             architecture_.storage_site_ids().end());
+    return_domains_ = problem_.return_domains;
+    for (auto& domain : return_domains_) {
+      std::sort(domain.begin(), domain.end(), [](const auto& first,
+                                                 const auto& second) {
+        return std::tie(first.cost, first.site_id) <
+               std::tie(second.cost, second.site_id);
+      });
+      std::set<std::int64_t> seen;
+      std::vector<RichReturnOption> limited;
+      limited.reserve(std::min(config_.return_candidate_limit, domain.size()));
+      for (const auto& option : domain) {
+        if (!seen.insert(option.site_id).second) continue;
+        limited.push_back(option);
+        if (limited.size() == config_.return_candidate_limit) break;
+      }
+      domain = std::move(limited);
+    }
     stats_.stochastic_budget = config_.max_unique_evaluations;
   }
 
@@ -368,6 +518,10 @@ class RichSolver {
       result.return_assignments.emplace_back(
           problem_.eligible[assignment.eligible_index], assignment.site_id);
     }
+    for (const auto& reseat : final_value.reseats) {
+      result.reseat_assignments.emplace_back(
+          problem_.eligible[reseat.eligible_index], reseat.site_id);
+    }
     result.rng_state = rng_.state();
     result.search_mode = std::move(search_mode);
     result.operator_profile = config_.operator_profile;
@@ -378,6 +532,12 @@ class RichSolver {
     result.forecast_residency_nll = final_value.forecast_by_category[0];
     result.forecast_reentry_nll = final_value.forecast_by_category[1];
     result.forecast_terminal_nll = final_value.forecast_by_category[2];
+    result.forecast_routing_nll = final_value.forecast_by_category[3];
+    result.return_assignment_rank = final_value.return_assignment_rank;
+    result.return_assignment_evaluated =
+        final_value.return_assignment_evaluated;
+    result.current_ghost_rejections = final_value.current_ghost_rejections;
+    result.pre_score_reseats = final_value.pre_score_reseats;
     result.normalize_ns = normalize_ns_;
     result.decode_ns = decode_ns_;
     result.return_match_ns = return_match_ns_;
@@ -410,7 +570,11 @@ class RichSolver {
     if (config_.population_size == 0 || config_.iterations == 0 ||
         config_.neighbors_per_solution == 0 ||
         config_.neighbor_sample_size == 0 || config_.elite_count == 0 ||
-        config_.elite_count > config_.population_size) {
+        config_.elite_count > config_.population_size ||
+        config_.direct_enumeration_limit == 0 ||
+        config_.return_candidate_limit == 0 ||
+        config_.return_assignment_k == 0 || config_.crossover_rate < 0.0 ||
+        config_.crossover_rate > 1.0) {
       throw std::invalid_argument("invalid rich GA configuration");
     }
     if (config_.max_unique_evaluations == 0) {
@@ -569,7 +733,7 @@ class RichSolver {
     return result;
   }
 
-  std::vector<ReturnAssignment> match_returns(
+  std::vector<std::vector<ReturnAssignment>> match_returns(
       const std::vector<std::size_t>& returners) {
     const auto started = Clock::now();
     const auto cached = return_cache_.find(returners);
@@ -578,90 +742,27 @@ class RichSolver {
       return_match_ns_ += elapsed_ns(started);
       return cached->second;
     }
-    std::vector<ReturnAssignment> result;
-    if (returners.empty()) {
-      if (config_.fitness_cache) return_cache_[returners] = result;
-      return_match_ns_ += elapsed_ns(started);
-      return result;
-    }
-    bool independent = true;
-    std::set<std::int64_t> independent_sites;
-    for (const auto index : returners) {
-      auto options = problem_.return_domains[index];
-      std::sort(options.begin(), options.end(), [](const auto& first,
-                                                  const auto& second) {
-        return std::tie(first.cost, first.site_id) <
-               std::tie(second.cost, second.site_id);
-      });
-      if (options.empty() ||
-          (options.size() > 1 && options[0].cost == options[1].cost) ||
-          !independent_sites.insert(options[0].site_id).second) {
-        independent = false;
-        break;
-      }
-      result.push_back({index, options[0].site_id, options[0].point});
-    }
-    if (!independent) {
-      result.clear();
-      const auto assignment = hungarian_assignment(problem_.return_domains, returners);
-      if (assignment.has_value()) {
-        for (std::size_t row = 0; row < returners.size(); ++row) {
-          const auto eligible_index = returners[row];
-          const auto site_id = static_cast<std::int64_t>((*assignment)[row]);
-          const auto& domain = problem_.return_domains[eligible_index];
-          const auto found = std::find_if(
-              domain.begin(), domain.end(), [&](const auto& option) {
-                return option.site_id == site_id;
-              });
-          if (found == domain.end()) {
-            throw std::runtime_error("Hungarian result is absent from domain");
-          }
-          result.push_back({eligible_index, site_id, found->point});
+    std::vector<std::vector<ReturnAssignment>> result;
+    const auto solutions = k_best_assignments(
+        return_domains_, returners, config_.return_assignment_k);
+    result.reserve(solutions.size());
+    for (const auto& solution : solutions) {
+      std::vector<ReturnAssignment> assignment;
+      assignment.reserve(returners.size());
+      for (std::size_t row = 0; row < returners.size(); ++row) {
+        const auto eligible_index = returners[row];
+        const auto site_id = solution.site_ids[row];
+        const auto& domain = return_domains_[eligible_index];
+        const auto found = std::find_if(
+            domain.begin(), domain.end(), [&](const auto& option) {
+              return option.site_id == site_id;
+            });
+        if (found == domain.end()) {
+          throw std::runtime_error("K-best result is absent from RETURN domain");
         }
-      } else {
-        std::set<std::int64_t> taken;
-        const std::set<std::int64_t> occupied(
-            problem_.occupied_storage_site_ids.begin(),
-            problem_.occupied_storage_site_ids.end());
-        for (const auto eligible_index : returners) {
-          auto options = problem_.return_domains[eligible_index];
-          std::sort(options.begin(), options.end(), [](const auto& first,
-                                                      const auto& second) {
-            return std::tie(first.cost, first.site_id) <
-                   std::tie(second.cost, second.site_id);
-          });
-          auto local = std::find_if(options.begin(), options.end(),
-                                    [&](const auto& option) {
-            return taken.count(option.site_id) == 0U;
-          });
-          if (local != options.end()) {
-            result.push_back({eligible_index, local->site_id, local->point});
-            taken.insert(local->site_id);
-            continue;
-          }
-          std::optional<std::pair<double, std::int64_t>> best_key;
-          Point best_point;
-          for (const auto site_id : architecture_.storage_site_ids()) {
-            if (occupied.count(site_id) != 0U || taken.count(site_id) != 0U) continue;
-            const auto& point = architecture_.site_coordinates().at(
-                static_cast<std::size_t>(site_id));
-            const auto candidate = std::make_pair(
-                std::sqrt(point_distance(problem_.current_points[
-                                             problem_.eligible[eligible_index]],
-                                         point)),
-                site_id);
-            if (!best_key.has_value() || candidate < *best_key) {
-              best_key = candidate;
-              best_point = point;
-            }
-          }
-          if (!best_key.has_value()) {
-            throw std::runtime_error("RETURN matching has no free fallback site");
-          }
-          result.push_back({eligible_index, best_key->second, best_point});
-          taken.insert(best_key->second);
-        }
+        assignment.push_back({eligible_index, site_id, found->point});
       }
+      result.push_back(std::move(assignment));
     }
     if (config_.fitness_cache) return_cache_[returners] = result;
     return_match_ns_ += elapsed_ns(started);
@@ -739,6 +840,244 @@ class RichSolver {
     forecast_ns_ += elapsed_ns(started);
   }
 
+  PlanGeometry build_geometry(
+      const DecodeResult& decoded,
+      const std::vector<ReturnAssignment>& assignments,
+      const std::vector<ReturnAssignment>& reseats) const {
+    PlanGeometry geometry;
+    geometry.positions_t1 = problem_.current_points;
+    std::set<std::int64_t> back_movers;
+    const auto append_back = [&](const ReturnAssignment& assignment) {
+      const auto q = problem_.eligible[assignment.eligible_index];
+      const auto& source = problem_.current_points[q];
+      const auto distance = point_distance(source, assignment.point);
+      if (distance > 1e-9) {
+        geometry.back_legs.push_back({distance, source, assignment.point});
+        geometry.back_owners.push_back(q);
+      }
+      geometry.positions_t1[q] = assignment.point;
+      back_movers.insert(q);
+    };
+    for (const auto& assignment : assignments) append_back(assignment);
+    for (const auto& reseat : reseats) append_back(reseat);
+
+    std::map<std::pair<double, double>, std::vector<std::int64_t>> occupancy;
+    for (std::size_t atom = 0; atom < geometry.positions_t1.size(); ++atom) {
+      const auto& point = geometry.positions_t1[atom];
+      occupancy[{point.x, point.y}].push_back(static_cast<std::int64_t>(atom));
+    }
+    for (const auto& [point, atoms] : occupancy) {
+      (void)point;
+      if (atoms.size() <= 1) continue;
+      geometry.violations += atoms.size() - 1;
+      geometry.blockers.insert(atoms.begin(), atoms.end());
+    }
+
+    const std::set<std::int64_t> participants(problem_.participants.begin(),
+                                               problem_.participants.end());
+    const auto gate_count = problem_.gate_domains.size();
+    for (std::size_t gate = 0; gate < gate_count; ++gate) {
+      const auto& option =
+          problem_.gate_domains[gate][decoded.option_indices[gate]];
+      for (const auto& target : {option.target1, option.target2}) {
+        for (std::size_t atom = 0; atom < geometry.positions_t1.size(); ++atom) {
+          if (participants.count(static_cast<std::int64_t>(atom)) != 0U) continue;
+          if (same_point(target, geometry.positions_t1[atom])) {
+            ++geometry.violations;
+            geometry.blockers.insert(static_cast<std::int64_t>(atom));
+          }
+        }
+      }
+      for (const auto& [q, target] :
+           {std::pair<std::int64_t, Point>{option.q1, option.target1},
+            std::pair<std::int64_t, Point>{option.q2, option.target2}}) {
+        const auto& source = geometry.positions_t1[q];
+        const auto distance = point_distance(source, target);
+        if (distance > 1e-9) {
+          geometry.out_legs.push_back({distance, source, target});
+          geometry.out_owners.push_back(q);
+        }
+      }
+    }
+
+    for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+      const auto atom_id = static_cast<std::int64_t>(atom);
+      if (back_movers.count(atom_id) == 0U) {
+        geometry.ghosts_t0.push_back({atom_id, problem_.current_points[atom]});
+      }
+      if (participants.count(atom_id) == 0U) {
+        geometry.ghosts_t1.push_back({atom_id, geometry.positions_t1[atom]});
+      }
+    }
+    for (const auto& leg : geometry.back_legs) {
+      const auto hits = ghost_hit_atoms({leg}, geometry.ghosts_t0);
+      geometry.violations += hits.size();
+      geometry.ghost_violations += hits.size();
+      geometry.blockers.insert(hits.begin(), hits.end());
+    }
+    for (const auto& leg : geometry.out_legs) {
+      const auto hits = ghost_hit_atoms({leg}, geometry.ghosts_t1);
+      geometry.violations += hits.size();
+      geometry.ghost_violations += hits.size();
+      geometry.blockers.insert(hits.begin(), hits.end());
+    }
+    return geometry;
+  }
+
+  FitnessResult score_geometry(
+      const std::vector<std::int64_t>& chromosome,
+      const PlanGeometry& geometry, std::size_t return_count,
+      bool enforce_single_leg_ghost) const {
+    CandidatePlan candidate;
+    candidate.chromosome = chromosome;
+    candidate.idle_exposures = static_cast<std::int64_t>(
+        problem_.eligible.size() - return_count);
+    candidate.phases = {
+        {geometry.back_legs, geometry.ghosts_t0, geometry.back_owners, "phase"},
+        {geometry.out_legs, geometry.ghosts_t1, geometry.out_owners, "phase"},
+    };
+    BoundaryConfig boundary_config;
+    boundary_config.exact_coloring_threshold = config_.exact_coloring_threshold;
+    boundary_config.enforce_single_leg_ghost = enforce_single_leg_ghost;
+    return evaluate_candidate(architecture_, candidate, boundary_config);
+  }
+
+  std::vector<ReturnAssignment> derive_reseats(
+      const std::vector<std::int64_t>& chromosome,
+      const DecodeResult& decoded,
+      const std::vector<ReturnAssignment>& assignments,
+      std::size_t return_count) {
+    const auto gate_count = problem_.gate_domains.size();
+    std::map<std::int64_t, std::size_t> movable;
+    for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
+      if (chromosome[gate_count + index] == 0) {
+        movable[problem_.eligible[index]] = index;
+      }
+    }
+    std::map<std::size_t, ReturnAssignment> selected;
+    auto as_vector = [&]() {
+      std::vector<ReturnAssignment> result;
+      for (const auto& [index, assignment] : selected) {
+        (void)index;
+        result.push_back(assignment);
+      }
+      return result;
+    };
+    auto reseats = as_vector();
+    auto geometry = build_geometry(decoded, assignments, reseats);
+    for (std::size_t step = 0; step < movable.size() && geometry.violations != 0;
+         ++step) {
+      bool found = false;
+      std::size_t best_violations = geometry.violations;
+      FitnessResult best_relaxed;
+      std::size_t best_index{};
+      ReturnAssignment best_assignment;
+      for (const auto blocker : geometry.blockers) {
+        const auto movable_found = movable.find(blocker);
+        if (movable_found == movable.end()) continue;
+        const auto eligible_index = movable_found->second;
+        const auto source = problem_.current_points[blocker];
+        std::vector<std::pair<double, std::int64_t>> sites;
+        for (std::size_t site_id = 0;
+             site_id < architecture_.site_coordinates().size(); ++site_id) {
+          if (storage_site_ids_.count(static_cast<std::int64_t>(site_id)) != 0U) {
+            continue;
+          }
+          const auto& point = architecture_.site_coordinates()[site_id];
+          sites.emplace_back(point_distance(source, point),
+                             static_cast<std::int64_t>(site_id));
+        }
+        std::sort(sites.begin(), sites.end());
+        for (const auto& [distance, site_id] : sites) {
+          if (distance <= 1e-9) continue;
+          auto trial = selected;
+          trial[eligible_index] = {
+              eligible_index, site_id,
+              architecture_.site_coordinates()[static_cast<std::size_t>(site_id)]};
+          std::vector<ReturnAssignment> trial_reseats;
+          for (const auto& [index, assignment] : trial) {
+            (void)index;
+            trial_reseats.push_back(assignment);
+          }
+          const auto trial_geometry =
+              build_geometry(decoded, assignments, trial_reseats);
+          if (trial_geometry.violations >= best_violations) continue;
+          const auto relaxed = score_geometry(
+              chromosome, trial_geometry, return_count, false);
+          if (!found ||
+              std::tie(trial_geometry.violations,
+                       relaxed.negative_log_fidelity, relaxed.move_batches,
+                       relaxed.move_time_us, relaxed.total_distance_um,
+                       blocker, site_id) <
+                  std::tie(best_violations, best_relaxed.negative_log_fidelity,
+                           best_relaxed.move_batches, best_relaxed.move_time_us,
+                           best_relaxed.total_distance_um,
+                           problem_.eligible[best_index],
+                           best_assignment.site_id)) {
+            found = true;
+            best_violations = trial_geometry.violations;
+            best_relaxed = relaxed;
+            best_index = eligible_index;
+            best_assignment = trial[eligible_index];
+          }
+        }
+      }
+      if (!found) break;
+      selected[best_index] = best_assignment;
+      reseats = as_vector();
+      geometry = build_geometry(decoded, assignments, reseats);
+    }
+    return as_vector();
+  }
+
+  Evaluated evaluate_assignment(
+      const std::vector<std::int64_t>& chromosome,
+      const DecodeResult& decoded,
+      const std::vector<std::size_t>& returners,
+      const std::vector<ReturnAssignment>& assignments,
+      std::size_t assignment_rank, std::size_t assignment_count) {
+    Evaluated result;
+    result.search_nll = std::numeric_limits<double>::infinity();
+    result.decoded = decoded;
+    result.assignments = assignments;
+    result.return_assignment_rank = assignment_rank + 1;
+    result.return_assignment_evaluated = assignment_count;
+    for (const auto& assignment : assignments) {
+      result.assignment_key.push_back(assignment.site_id);
+    }
+    result.reseats = derive_reseats(
+        chromosome, decoded, assignments, returners.size());
+    result.pre_score_reseats = result.reseats.size();
+    stats_.pre_score_reseats += result.pre_score_reseats;
+    if (!result.reseats.empty()) {
+      result.assignment_key.push_back(-1);
+      for (const auto& reseat : result.reseats) {
+        result.assignment_key.push_back(
+            problem_.eligible[reseat.eligible_index]);
+        result.assignment_key.push_back(reseat.site_id);
+      }
+    }
+    const auto geometry = build_geometry(decoded, assignments, result.reseats);
+    if (geometry.violations != 0) {
+      result.fitness = infeasible_fitness(
+          chromosome,
+          geometry.ghost_violations != 0
+              ? "unresolved current single-leg ghost hit"
+              : "unresolved current gate occupancy");
+    } else {
+      result.fitness = score_geometry(
+          chromosome, geometry, returners.size(),
+          config_.enforce_single_leg_ghost);
+    }
+    if (!result.fitness.feasible &&
+        result.fitness.error.find("single-leg ghost hit") != std::string::npos) {
+      result.current_ghost_rejections = 1;
+      ++stats_.current_ghost_rejections;
+    }
+    if (result.fitness.feasible) apply_forecast(result, chromosome);
+    return result;
+  }
+
   Evaluated evaluate(const std::vector<std::int64_t>& raw, bool stochastic) {
     ++stats_.evaluations;
     const auto chromosome = normalize(raw);
@@ -771,81 +1110,36 @@ class RichSolver {
     for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
       if (chromosome[gate_count + index] != 0) returners.push_back(index);
     }
+    std::vector<std::vector<ReturnAssignment>> candidates;
     try {
-      result.assignments = match_returns(returners);
+      candidates = match_returns(returners);
     } catch (const std::exception& error) {
       result.fitness = infeasible_fitness(chromosome, error.what());
       if (config_.fitness_cache) fitness_cache_[chromosome] = result;
       fitness_ns_ += elapsed_ns(started);
       return result;
     }
-    auto positions_t1 = problem_.current_points;
-    std::vector<Leg> back_legs;
-    std::vector<std::int64_t> back_owners;
-    for (const auto& assignment : result.assignments) {
-      const auto q = problem_.eligible[assignment.eligible_index];
-      const auto& source = problem_.current_points[q];
-      const auto distance = point_distance(source, assignment.point);
-      if (distance > 1e-9) {
-        back_legs.push_back({distance, source, assignment.point});
-        back_owners.push_back(q);
-      }
-      positions_t1[q] = assignment.point;
+    if (candidates.empty()) {
+      result.fitness = infeasible_fitness(
+          chromosome, "RETURN matching has no bounded injective assignment");
+      if (config_.fitness_cache) fitness_cache_[chromosome] = result;
+      fitness_ns_ += elapsed_ns(started);
+      return result;
     }
-    const std::set<std::int64_t> participants(problem_.participants.begin(),
-                                               problem_.participants.end());
-    for (std::size_t gate = 0; gate < gate_count; ++gate) {
-      const auto& option =
-          problem_.gate_domains[gate][result.decoded.option_indices[gate]];
-      for (const auto& target : {option.target1, option.target2}) {
-        for (std::size_t atom = 0; atom < positions_t1.size(); ++atom) {
-          if (participants.count(static_cast<std::int64_t>(atom)) != 0U) continue;
-          if (same_point(target, positions_t1[atom])) {
-            result.fitness = infeasible_fitness(
-                chromosome, "gate target occupied after RETURN decisions");
-            if (config_.fitness_cache) fitness_cache_[chromosome] = result;
-            fitness_ns_ += elapsed_ns(started);
-            return result;
-          }
-        }
+    stats_.return_assignment_evaluated += candidates.size();
+    bool have_best = false;
+    std::size_t ghost_rejections = 0;
+    for (std::size_t rank = 0; rank < candidates.size(); ++rank) {
+      auto candidate = evaluate_assignment(
+          chromosome, result.decoded, returners, candidates[rank], rank,
+          candidates.size());
+      ghost_rejections += candidate.current_ghost_rejections;
+      if (!have_best || evaluated_less(candidate, result)) {
+        result = std::move(candidate);
+        have_best = true;
       }
     }
-    std::vector<Leg> out_legs;
-    std::vector<std::int64_t> out_owners;
-    for (std::size_t gate = 0; gate < gate_count; ++gate) {
-      const auto& option =
-          problem_.gate_domains[gate][result.decoded.option_indices[gate]];
-      for (const auto& [q, target] :
-           {std::pair<std::int64_t, Point>{option.q1, option.target1},
-            std::pair<std::int64_t, Point>{option.q2, option.target2}}) {
-        const auto& source = positions_t1[q];
-        const auto distance = point_distance(source, target);
-        if (distance > 1e-9) {
-          out_legs.push_back({distance, source, target});
-          out_owners.push_back(q);
-        }
-      }
-    }
-    std::vector<Ghost> ghosts_t0;
-    std::vector<Ghost> ghosts_t1;
-    for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
-      ghosts_t0.push_back({static_cast<std::int64_t>(atom),
-                           problem_.current_points[atom]});
-      ghosts_t1.push_back({static_cast<std::int64_t>(atom), positions_t1[atom]});
-    }
-    CandidatePlan candidate;
-    candidate.chromosome = chromosome;
-    candidate.idle_exposures = static_cast<std::int64_t>(
-        problem_.eligible.size() - returners.size());
-    candidate.phases = {
-        {std::move(back_legs), ghosts_t0, std::move(back_owners), "phase"},
-        {std::move(out_legs), ghosts_t1, std::move(out_owners), "phase"},
-    };
-    BoundaryConfig boundary_config;
-    boundary_config.exact_coloring_threshold = config_.exact_coloring_threshold;
-    boundary_config.enforce_single_leg_ghost = config_.enforce_single_leg_ghost;
-    result.fitness = evaluate_candidate(architecture_, candidate, boundary_config);
-    if (result.fitness.feasible) apply_forecast(result, chromosome);
+    result.current_ghost_rejections = ghost_rejections;
     if (config_.fitness_cache) fitness_cache_[chromosome] = result;
     fitness_ns_ += elapsed_ns(started);
     return result;
@@ -1154,11 +1448,14 @@ class RichSolver {
   const ArchitectureSnapshot& architecture_;
   const RichH0Problem& problem_;
   const RichSearchConfig& config_;
+  std::vector<std::vector<RichReturnOption>> return_domains_;
+  std::set<std::int64_t> storage_site_ids_;
   PythonRandom rng_;
   RichSearchStats stats_;
   std::map<std::vector<std::int64_t>, std::vector<std::int64_t>> normalize_cache_;
   std::map<std::vector<std::int64_t>, DecodeResult> decode_cache_;
-  std::map<std::vector<std::size_t>, std::vector<ReturnAssignment>> return_cache_;
+  std::map<std::vector<std::size_t>,
+           std::vector<std::vector<ReturnAssignment>>> return_cache_;
   std::map<std::vector<std::int64_t>, Evaluated> fitness_cache_;
   std::set<std::vector<std::int64_t>> evaluated_keys_;
   std::int64_t normalize_ns_{};

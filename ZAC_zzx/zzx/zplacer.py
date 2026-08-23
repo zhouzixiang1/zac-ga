@@ -564,6 +564,16 @@ class ResidentPlacer(VertexMatchingPlacer):
             if configured_unique_budget is not None
             else (self.population_size * self.iterations
                   * self.neighbor_sample_size))
+        self.direct_enumeration_limit: int = int(
+            params.get("direct_enumeration_limit", 512))
+        self.crossover_rate: float = float(
+            params.get("crossover_rate", 0.25))
+        self.local_polish_sweeps: int = int(
+            params.get("local_polish_sweeps", 1))
+        self.return_candidate_limit: int = int(
+            params.get("return_candidate_limit", 6))
+        self.return_assignment_k: int = int(
+            params.get("return_assignment_k", 4))
         self.operator_profile: str = params.get("operator_profile", "exact")
         if not 1 <= self.elite_count <= self.population_size:
             raise ValueError("elite_count must be in [1, population_size]")
@@ -571,6 +581,16 @@ class ResidentPlacer(VertexMatchingPlacer):
             raise ValueError("early_stop_patience must be non-negative")
         if self.max_unique_evaluations <= 0:
             raise ValueError("max_unique_evaluations must be positive")
+        if self.direct_enumeration_limit <= 0:
+            raise ValueError("direct_enumeration_limit must be positive")
+        if not 0.0 <= self.crossover_rate <= 1.0:
+            raise ValueError("crossover_rate must be in [0, 1]")
+        if self.local_polish_sweeps < 0:
+            raise ValueError("local_polish_sweeps must be non-negative")
+        if self.return_candidate_limit <= 0:
+            raise ValueError("return_candidate_limit must be positive")
+        if self.return_assignment_k <= 0:
+            raise ValueError("return_assignment_k must be positive")
         if self.operator_profile not in {"exact", "tuned"}:
             raise ValueError("operator_profile must be 'exact' or 'tuned'")
         self.experiment_schema: int = params.get("experiment_schema", 1)
@@ -2527,42 +2547,131 @@ class ResidentPlacer(VertexMatchingPlacer):
                     if q not in future_participants and reg._is_zone(location)}
                 chosen_rows, used_sites = [], set()
                 for q1, q2 in gates:
+                    def score_future_site(site):
+                        pair = local_pair(q1, q2, site)
+                        if pair[0] in blocked or pair[1] in blocked:
+                            return None
+                        local_locations = dict(sim_locations)
+                        legs, owners = [], []
+                        ghosts = [
+                            (atom, *arch.exact_SLM_location_tuple(location))
+                            for atom, location in local_locations.items()
+                            if atom not in future_participants
+                        ]
+                        for q, target in zip((q1, q2), pair):
+                            p0 = arch.exact_SLM_location_tuple(local_locations[q])
+                            p1 = arch.exact_SLM_location_tuple(target)
+                            distance = math.dist(p0, p1)
+                            if distance <= 1e-9:
+                                continue
+                            leg = (distance, *p0, *p1)
+                            legs.append(leg)
+                            owners.append(q)
+                        hit_atoms = sorted({
+                            int(hit[0])
+                            for leg in legs
+                            for hit in leg_hits(leg, ghosts)
+                        })
+                        relocations = {}
+                        relocation_legs, relocation_owners = [], []
+                        for atom in hit_atoms:
+                            source = tuple(local_locations[atom])
+                            source_xy = arch.exact_SLM_location_tuple(source)
+                            center = (tuple(arch.nearest_storage_site(*source))
+                                      if reg._is_zone(source) else source)
+                            occupied = set(local_locations.values())
+                            candidates_storage = list(_box_sites(
+                                arch, center, self.box_ratio, occupied))
+                            if not candidates_storage:
+                                candidates_storage = [
+                                    candidate for candidate in _all_storage_sites(arch)
+                                    if candidate not in occupied]
+
+                            def relocation_key(candidate):
+                                target_xy = arch.exact_SLM_location_tuple(candidate)
+                                return (math.dist(source_xy, target_xy), candidate)
+
+                            chosen = None
+                            for candidate in sorted(
+                                    candidates_storage, key=relocation_key):
+                                target_xy = arch.exact_SLM_location_tuple(candidate)
+                                move_distance = math.dist(source_xy, target_xy)
+                                move_leg = (move_distance, *source_xy, *target_xy)
+                                stationary = [
+                                    (other, *arch.exact_SLM_location_tuple(location))
+                                    for other, location in local_locations.items()
+                                    if other != atom
+                                    and other not in future_participants]
+                                if (move_distance > 1e-9
+                                        and leg_hits(move_leg, stationary)):
+                                    continue
+                                candidate_ghost = [(atom, *target_xy)]
+                                if any(leg_hits(leg, candidate_ghost)
+                                       for leg in legs):
+                                    continue
+                                chosen = tuple(candidate)
+                                if move_distance > 1e-9:
+                                    relocation_legs.append(move_leg)
+                                    relocation_owners.append(atom)
+                                break
+                            if chosen is None:
+                                return None
+                            relocations[atom] = chosen
+                            local_locations[atom] = chosen
+                        updated_ghosts = [
+                            (atom, *arch.exact_SLM_location_tuple(location))
+                            for atom, location in local_locations.items()
+                            if atom not in future_participants
+                        ]
+                        if any(leg_hits(leg, updated_ghosts) for leg in legs):
+                            return None
+                        relocation_phase = movement_phase(
+                            relocation_legs, ghosts=ghosts,
+                            owners=relocation_owners, batching=batching)
+                        phase = movement_phase(
+                            legs, ghosts=updated_ghosts, owners=owners,
+                            batching=batching)
+                        score_key = (relocation_phase, phase, q1, q2)
+                        if (self.fitness_cache
+                                and score_key in rollout_phase_score_cache):
+                            objective = rollout_phase_score_cache[score_key]
+                        else:
+                            objective, _ = physical.score(
+                                [relocation_phase, phase], 0, (q1, q2))
+                            if self.fitness_cache:
+                                rollout_phase_score_cache[score_key] = objective
+                        return objective, pair, relocations, relocation_phase
+
                     options = []
                     for site in local_sites(q1, q2, len(gates)):
                         if site in used_sites:
                             continue
-                        pair = local_pair(q1, q2, site)
-                        if pair[0] in blocked or pair[1] in blocked:
-                            continue
-                        legs = []
-                        for q, target in zip((q1, q2), pair):
-                            p0 = arch.exact_SLM_location_tuple(sim_locations[q])
-                            p1 = arch.exact_SLM_location_tuple(target)
-                            distance = math.dist(p0, p1)
-                            if distance > 1e-9:
-                                legs.append((distance, *p0, *p1))
-                        phase = movement_phase(legs, batching=batching)
-                        score_key = (phase, q1, q2)
-                        if self.fitness_cache and \
-                                score_key in rollout_phase_score_cache:
-                            objective = rollout_phase_score_cache[score_key]
-                        else:
-                            objective, _ = physical.score(
-                                [phase], 0, (q1, q2))
-                            if self.fitness_cache:
-                                rollout_phase_score_cache[score_key] = objective
-                        options.append((objective, site, pair))
+                        scored = score_future_site(site)
+                        if scored is not None:
+                            objective, pair, relocations, relocation_phase = scored
+                            options.append((objective, site, pair, relocations,
+                                            relocation_phase))
                     if not options:
                         # The local window is a speed path, not a semantic
-                        # restriction.  Fall back to the complete zone domain.
+                        # restriction.  Fall back to the complete zone domain,
+                        # retaining the same single-leg ghost hard condition.
                         for site in self._all_zone_sites():
                             if site in used_sites:
                                 continue
-                            pair = local_pair(q1, q2, site)
-                            if pair[0] in blocked or pair[1] in blocked:
-                                continue
-                            options.append(((0.0, 0, 0.0, 0.0, ()), site, pair))
-                    _, site, pair = min(options)
+                            scored = score_future_site(site)
+                            if scored is not None:
+                                objective, pair, relocations, relocation_phase = scored
+                                options.append((objective, site, pair, relocations,
+                                                relocation_phase))
+                    if not options:
+                        raise RuntimeError(
+                            "bounded forecast has no ghost-safe gate placement")
+                    _, site, pair, relocations, relocation_phase = min(options)
+                    if relocation_phase.boundary.legs:
+                        phases.append(relocation_phase)
+                    for atom, new_location in relocations.items():
+                        blocked.discard(tuple(sim_locations[atom]))
+                        sim_locations[atom] = tuple(new_location)
                     used_sites.add(site)
                     chosen_rows.append(((q1, q2), pair))
 
@@ -2579,7 +2688,8 @@ class ResidentPlacer(VertexMatchingPlacer):
                         sim_locations[q] = tuple(target)
                 if legs:
                     ghosts = [(q, *arch.exact_SLM_location_tuple(location))
-                              for q, location in before.items()]
+                              for q, location in before.items()
+                              if q not in future_participants]
                     phases.append(movement_phase(
                         legs, ghosts=ghosts, owners=owners,
                         batching=batching))
@@ -2700,10 +2810,10 @@ class ResidentPlacer(VertexMatchingPlacer):
             exact_coloring_threshold=0,
             horizon_policy=("dynamic" if self.adaptive_lookahead else "fixed"),
             max_horizon=active_horizon,
-            # Preserve the frozen Python search semantics.  Executable ghost
-            # safety is still enforced by _repair_ghosts_with_commitments and
-            # the independent replay after winner selection.
-            enforce_single_leg_ghost=False,
+            # Candidate ranking is based on the executable current transition.
+            # A single-leg ghost cannot be removed by coloring and is therefore
+            # infeasible before the GA compares this candidate.
+            enforce_single_leg_ghost=True,
         )
         rich_config = None
         if self.decay_lookahead:
@@ -2724,8 +2834,13 @@ class ResidentPlacer(VertexMatchingPlacer):
                 elite_count=self.elite_count,
                 early_stop_patience=self.early_stop_patience,
                 max_unique_evaluations=self.max_unique_evaluations,
+                direct_enumeration_limit=self.direct_enumeration_limit,
+                crossover_rate=self.crossover_rate,
+                local_polish_sweeps=self.local_polish_sweeps,
+                return_candidate_limit=self.return_candidate_limit,
+                return_assignment_k=self.return_assignment_k,
                 exact_coloring_threshold=0,
-                enforce_single_leg_ghost=False,
+                enforce_single_leg_ghost=True,
                 fitness_cache=self.fitness_cache,
             )
         step_backend = {
@@ -3016,9 +3131,12 @@ class ResidentPlacer(VertexMatchingPlacer):
         native_rich_result = None
         native_rich_problem = None
         native_return_sites = None
+        native_reseat_sites = None
         native_reference_forecast = None
         rich_search_stats = {}
         rich_forecast_terms = ()
+        return_option_reasons = {}
+        selected_return_audit = []
         if self.decay_lookahead:
             if forced_cycle_candidates or cycle_candidates:
                 raise RuntimeError(
@@ -3044,134 +3162,229 @@ class ResidentPlacer(VertexMatchingPlacer):
                 rich_gate_domains.append(tuple(rich_domain))
 
             occupied_storage = reg.occupied_storage()
-            rich_return_domains = []
-            for q in eligible:
-                zone_location = tuple(reg.zone_seat[q])
-                nearest = tuple(arch.nearest_storage_site(*zone_location))
-                cache_key = (
-                    "nearest", zone_location, nearest,
-                    tuple(reg.homes[q]), int(self.box_ratio), 0.0,
-                )
-                options = return_candidate_cache.get(cache_key)
-                if options is None:
-                    source_xy = arch.exact_SLM_location_tuple(zone_location)
-                    options = tuple(sorted(
-                        (sqrt(math.dist(
-                            source_xy,
-                            arch.exact_SLM_location_tuple(site))), tuple(site))
-                        for site in set(_box_sites(
-                            arch, nearest, self.box_ratio, set()))
-                    ))
-                    return_candidate_cache[cache_key] = options
-                rich_return_domains.append(tuple(
-                    RichReturnOption(
-                        site_id=self.boundary_storage_site_id[tuple(site)],
-                        point=None,
-                        cost=float(cost),
-                        site_location=tuple(site),
-                    )
-                    for cost, site in options
-                    if tuple(site) not in occupied_storage
-                ))
-
             eligible_index = {q: index for index, q in enumerate(eligible)}
             future_atoms = {
                 offset: {q for gate in gates for q in gate}
                 for _absolute, gates, offset, _weight in visible_forecast
             }
-            last_visible_offset = max(future_atoms, default=0)
-            transfer_move_nll = -2.0 * math.log(physical.F_TRANSFER)
-            idle_pulse_nll = -(
-                math.log(physical.F_EXC)
-                + math.log1p(-physical.T_RYDBERG_US / physical.T2_US))
+            predicted_corridor_legs = []
+            if active_horizon:
+                for _absolute, gates, _offset, _weight in visible_forecast:
+                    for q1, q2 in gates:
+                        location1 = tuple(reg.current_pos(q1))
+                        location2 = tuple(reg.current_pos(q2))
+                        if reg._is_zone(location1):
+                            site = tuple(self._norm_left(location1))
+                        elif reg._is_zone(location2):
+                            site = tuple(self._norm_left(location2))
+                        else:
+                            site = tuple(arch.nearest_entanglement_site(
+                                *location1, *location2)[0])
+                        targets = self._pair_seats(q1, q2, site)
+                        for q, target in zip((q1, q2), targets):
+                            source_xy = arch.exact_SLM_location_tuple(
+                                reg.current_pos(q))
+                            target_xy = arch.exact_SLM_location_tuple(target)
+                            distance = math.dist(source_xy, target_xy)
+                            if distance > 1e-9:
+                                predicted_corridor_legs.append(
+                                    (distance, *source_xy, *target_xy))
 
-            def mover_coherence_nll(source_location, target_location):
-                source = arch.exact_SLM_location_tuple(source_location)
-                target = arch.exact_SLM_location_tuple(target_location)
-                distance = math.dist(source, target)
-                if distance <= 1e-12:
+            def return_phase_nll(q, site):
+                source_xy = arch.exact_SLM_location_tuple(reg.zone_seat[q])
+                target_xy = arch.exact_SLM_location_tuple(site)
+                distance = math.dist(source_xy, target_xy)
+                if distance <= 1e-9:
                     return 0.0
-                mover_idle = math.sqrt(distance / physical.ACCEL_UM_PER_US2)
-                if mover_idle >= physical.T2_US:
-                    raise RuntimeError("forecast mover coherence is outside T2")
-                return -math.log1p(-mover_idle / physical.T2_US)
+                ghosts = [
+                    (atom, *arch.exact_SLM_location_tuple(reg.current_pos(atom)))
+                    for atom in range(len(self.mapping[0]))
+                ]
+                phase = movement_phase(
+                    [(distance, *source_xy, *target_xy)],
+                    ghosts=ghosts, owners=[q])
+                return physical.score([phase], 0, (q,))[1].negative_log_fidelity
+
+            provisional_return_domains = []
+            for q in eligible:
+                zone_location = tuple(reg.zone_seat[q])
+                nearest = tuple(arch.nearest_storage_site(*zone_location))
+                family_centers = [
+                    ("nearest", nearest),
+                    ("home", tuple(reg.homes[q])),
+                ]
+                visible = visible_use(q) if active_horizon else None
+                if visible is not None:
+                    _use_layer, partner = visible
+                    partner_location = tuple(reg.current_pos(partner))
+                    partner_anchor = (
+                        tuple(arch.nearest_storage_site(*partner_location))
+                        if reg._is_zone(partner_location)
+                        else partner_location)
+                    family_centers.append(("future_partner", partner_anchor))
+
+                source_xy = arch.exact_SLM_location_tuple(zone_location)
+                family_options = {}
+                site_reasons = {}
+                all_candidates = set()
+                for reason, center in family_centers:
+                    if center[0] not in arch.storage_zone:
+                        continue
+                    family = tuple(
+                        site for site in _box_sites(
+                            arch, center, self.box_ratio, occupied_storage)
+                        if tuple(site) not in occupied_storage)
+                    family_options[reason] = family
+                    for site in family:
+                        site = tuple(site)
+                        all_candidates.add(site)
+                        site_reasons.setdefault(site, set()).add(reason)
+
+                def corridor_hits(site):
+                    if not predicted_corridor_legs:
+                        return 0
+                    x, y = arch.exact_SLM_location_tuple(site)
+                    return len(ghost_hits(
+                        predicted_corridor_legs, [(q, x, y)]))
+
+                def current_key(site):
+                    target_xy = arch.exact_SLM_location_tuple(site)
+                    return (sqrt(math.dist(source_xy, target_xy)), site)
+
+                selected = []
+
+                def select(site, reason):
+                    site = tuple(site)
+                    if site in occupied_storage or site in selected:
+                        return
+                    selected.append(site)
+                    site_reasons.setdefault(site, set()).add(reason)
+
+                for reason, _center in family_centers:
+                    family = family_options.get(reason, ())
+                    if family:
+                        select(min(family, key=current_key), reason)
+                if active_horizon and all_candidates:
+                    select(min(
+                        all_candidates,
+                        key=lambda site: (corridor_hits(site), *current_key(site))),
+                        "corridor_clear")
+                for site in sorted(
+                        all_candidates,
+                        key=lambda candidate: (
+                            corridor_hits(candidate) if active_horizon else 0,
+                            *current_key(candidate))):
+                    select(site, "bounded_fill")
+                    if len(selected) == self.return_candidate_limit:
+                        break
+                if len(selected) < self.return_candidate_limit:
+                    for site in sorted(
+                            (tuple(site) for site in _all_storage_sites(arch)
+                             if tuple(site) not in occupied_storage),
+                            key=current_key):
+                        select(site, "global_fill")
+                        if len(selected) == self.return_candidate_limit:
+                            break
+                if not selected:
+                    raise RuntimeError(
+                        f"RETURN atom {q} has no free bounded storage candidate")
+                domain = []
+                for site in selected[:self.return_candidate_limit]:
+                    reasons = tuple(sorted(site_reasons.get(site, {"bounded_fill"})))
+                    current_nll = return_phase_nll(q, site)
+                    domain.append((site, current_nll, reasons))
+                    return_option_reasons[(q, site)] = reasons
+                provisional_return_domains.append(tuple(domain))
+
+            def replay_by_depth(returners, sites, target_placements):
+                _phases, _exposures, replay_terms = forecast_phases(
+                    frozenset(returners), sites, target_placements)
+                by_depth = {}
+                for replay_term in replay_terms:
+                    _objective, breakdown = physical.score(
+                        replay_term["phases"],
+                        replay_term["idle_exposures"], ())
+                    offset = int(replay_term["offset"])
+                    by_depth[offset] = (
+                        by_depth.get(offset, 0.0)
+                        + breakdown.negative_log_fidelity)
+                return by_depth
 
             terms = []
-            for q in eligible:
-                index = eligible_index[q]
-                use_offsets = [
-                    offset for offset in sorted(future_atoms)
-                    if q in future_atoms[offset]
-                ]
-                first_use = use_offsets[0] if use_offsets else None
-                for offset in sorted(future_atoms):
-                    if first_use is not None and offset >= first_use:
-                        break
-                    terms.append(RichForecastTerm(
-                        depth=offset,
-                        kind="stay",
-                        category="residency",
-                        index=index,
-                        nll=idle_pulse_nll,
-                    ))
-                if first_use is not None:
-                    # RETURN now implies one later storage->zone re-entry.  Its
-                    # transfer part is site-independent; atom-local movement
-                    # coherence is tied to the actual matched RETURN site.
-                    terms.append(RichForecastTerm(
-                        depth=first_use,
-                        kind="return",
-                        category="reentry",
-                        index=index,
-                        nll=transfer_move_nll,
-                    ))
-                    target = tuple(reg.zone_seat[q])
-                    for option in rich_return_domains[index]:
-                        terms.append(RichForecastTerm(
-                            depth=first_use,
-                            kind="return_site",
-                            category="reentry",
-                            index=index,
-                            selector=option.site_id,
-                            nll=mover_coherence_nll(
-                                option.site_location, target),
-                        ))
-                elif last_visible_offset:
-                    # No visible reuse leaves a STAYing atom in the zone at
-                    # window close.  Charge its deterministic terminal exit at
-                    # the last actual visible offset, never at H+1.
-                    source = tuple(reg.zone_seat[q])
-                    target = tuple(arch.nearest_storage_site(*source))
-                    terms.append(RichForecastTerm(
-                        depth=last_visible_offset,
-                        kind="stay",
-                        category="terminal",
-                        index=index,
-                        nll=(transfer_move_nll
-                             + mover_coherence_nll(source, target)),
-                    ))
+            return_future_raw = {}
+            if active_horizon:
+                stay_replay = replay_by_depth((), {}, matched)
+                for q in eligible:
+                    index = eligible_index[q]
+                    choices = [("stay", None, stay_replay)]
+                    for site, _current_nll, _reasons in \
+                            provisional_return_domains[index]:
+                        replay = replay_by_depth((q,), {q: site}, matched)
+                        return_future_raw[(q, site)] = replay
+                        choices.append(("return_site", site, replay))
+                    depths = sorted({depth for _kind, _site, replay in choices
+                                     for depth in replay})
+                    for depth in depths:
+                        minimum = min(replay.get(depth, 0.0)
+                                      for _kind, _site, replay in choices)
+                        for kind, site, replay in choices:
+                            marginal = replay.get(depth, 0.0) - minimum
+                            if marginal <= 1e-15:
+                                continue
+                            terms.append(RichForecastTerm(
+                                depth=depth,
+                                kind=kind,
+                                category="routing",
+                                index=index,
+                                selector=(-1 if site is None else
+                                          self.boundary_storage_site_id[site]),
+                                nll=marginal,
+                            ))
 
-            if last_visible_offset:
-                # Current target participants are resident after this boundary.
-                # Their terminal exit depends on the decoded gate-site gene, so
-                # preserve that physical distinction with gate-option terms.
                 for column, domain in enumerate(candidates):
-                    for selector, (site, _weight, q1, q2) in enumerate(domain):
-                        target1, target2 = self._pair_seats(q1, q2, tuple(site))
-                        terminal_nll = 0.0
-                        for target in (tuple(target1), tuple(target2)):
-                            storage = tuple(arch.nearest_storage_site(*target))
-                            terminal_nll += (
-                                transfer_move_nll
-                                + mover_coherence_nll(target, storage))
-                        terms.append(RichForecastTerm(
-                            depth=last_visible_offset,
-                            kind="gate_option",
-                            category="terminal",
-                            index=column,
-                            selector=selector,
-                            nll=terminal_nll,
+                    option_replays = []
+                    for selector, option in enumerate(domain):
+                        placements = list(matched)
+                        placements[column] = option
+                        option_replays.append((
+                            selector,
+                            replay_by_depth((), {}, placements),
                         ))
+                    depths = sorted({depth for _selector, replay in option_replays
+                                     for depth in replay})
+                    for depth in depths:
+                        minimum = min(replay.get(depth, 0.0)
+                                      for _selector, replay in option_replays)
+                        for selector, replay in option_replays:
+                            marginal = replay.get(depth, 0.0) - minimum
+                            if marginal <= 1e-15:
+                                continue
+                            terms.append(RichForecastTerm(
+                                depth=depth,
+                                kind="gate_option",
+                                category="routing",
+                                index=column,
+                                selector=selector,
+                                nll=marginal,
+                            ))
+
+            rich_return_domains = []
+            for index, q in enumerate(eligible):
+                domain = []
+                for site, current_nll, reasons in \
+                        provisional_return_domains[index]:
+                    future_nll = sum(
+                        forecast.future_weight(depth) * nll
+                        for depth, nll in return_future_raw.get(
+                            (q, site), {}).items())
+                    domain.append(RichReturnOption(
+                        site_id=self.boundary_storage_site_id[site],
+                        point=None,
+                        cost=float(current_nll + future_nll),
+                        site_location=site,
+                    ))
+                    return_option_reasons[(q, site)] = reasons
+                rich_return_domains.append(tuple(domain))
             rich_forecast_terms = tuple(terms)
             native_rich_problem = RichH0Problem(
                 architecture=boundary_architecture,
@@ -3229,6 +3442,30 @@ class ResidentPlacer(VertexMatchingPlacer):
                 int(q): self.boundary_storage_locations[int(site_id)]
                 for q, site_id in native_rich_result.return_assignments
             }
+            native_reseat_sites = {
+                int(q): self.boundary_site_locations[int(site_id)]
+                for q, site_id in native_rich_result.reseat_assignments
+            }
+            if set(native_reseat_sites) & set(native_return_sites):
+                raise RuntimeError(
+                    "native rich atom cannot both RETURN and RESEAT")
+            if not set(native_reseat_sites) <= set(eligible):
+                raise RuntimeError(
+                    "native rich RESEAT atom is outside resident decisions")
+            selected_return_audit = [
+                {
+                    "atom": int(q),
+                    "site_id": int(site_id),
+                    "location": list(self.boundary_storage_locations[
+                        int(site_id)]),
+                    "reasons": list(return_option_reasons.get(
+                        (int(q), self.boundary_storage_locations[int(site_id)]),
+                        ("bounded_fill",))),
+                    "assignment_rank": int(
+                        native_rich_result.return_assignment_rank),
+                }
+                for q, site_id in native_rich_result.return_assignments
+            ]
             if set(native_return_sites) != {
                     q for q, bit in zip(
                         eligible,
@@ -3302,6 +3539,16 @@ class ResidentPlacer(VertexMatchingPlacer):
                 "forecast_nll": float(native_rich_result.forecast_nll),
                 "search_negative_log_fidelity": float(
                     native_rich_result.search_negative_log_fidelity),
+                "return_assignment_rank": int(
+                    native_rich_result.return_assignment_rank),
+                "return_assignment_evaluated": int(
+                    native_rich_result.return_assignment_evaluated),
+                "current_ghost_rejections": int(
+                    native_rich_result.current_ghost_rejections),
+                "future_ghost_cost": float(
+                    native_rich_result.future_ghost_cost),
+                "pre_score_reseats": int(
+                    native_rich_result.pre_score_reseats),
             }
         seed_chromosomes = [
             list(native_rich_result.winner.chromosome)
@@ -3636,10 +3883,14 @@ class ResidentPlacer(VertexMatchingPlacer):
         if set(sites) != returners:
             raise RuntimeError(
                 "native rich RETURN site set disagrees with selected returners")
-        decisions = {
-            q: (("RETURN", sites[q]) if bit else ("STAY", reg.zone_seat[q]))
-            for q, bit in zip(eligible, bits)
-        }
+        decisions = {}
+        for q, bit in zip(eligible, bits):
+            if bit:
+                decisions[q] = ("RETURN", sites[q])
+            elif native_reseat_sites is not None and q in native_reseat_sites:
+                decisions[q] = ("RESEAT", native_reseat_sites[q])
+            else:
+                decisions[q] = ("STAY", reg.zone_seat[q])
         decisions.update({q: ("RETURN", sites[q]) for q in selected_cycles})
         vacated = {q for q, value in decisions.items()
                    if value[0] in ("RETURN", "RESEAT")}
@@ -3665,6 +3916,10 @@ class ResidentPlacer(VertexMatchingPlacer):
             or decisions != pre_ghost_decisions
             or bool(commitment_repairs)
             or commitment_ghost_fallback)
+        if native_rich_result is not None and physical_repair_applied:
+            raise RuntimeError(
+                "native candidate changed during post-selection repair; "
+                "candidate-level ghost/RESEAT contract was violated")
 
         selected_forecast_audit = {}
 
@@ -3873,6 +4128,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             "fitness_phase_mode": self.ablation_fitness_mode,
             "search_mode": search_mode,
             "rich_search": rich_search_stats,
+            "return_assignments": selected_return_audit,
             "lookahead_selection": lookahead_selection,
             "forecast_objective": selected_forecast_audit,
             "safe_current_objective": (
