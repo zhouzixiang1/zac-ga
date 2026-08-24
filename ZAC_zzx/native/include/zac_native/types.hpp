@@ -2,12 +2,14 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace zac_native {
 
-inline constexpr int kNativeAbiVersion = 4;
+inline constexpr int kNativeAbiVersion = 5;
 
 struct Point {
   double x{};
@@ -81,12 +83,16 @@ class ArchitectureSnapshot {
   entangling_site_pairs() const noexcept {
     return entangling_site_pairs_;
   }
+  const std::vector<std::int64_t>& storage_site_ids_by_distance(
+      const Point& source) const;
 
  private:
   std::size_t n_atoms_;
   std::vector<Point> site_coordinates_;
   std::vector<std::int64_t> storage_site_ids_;
   std::vector<std::array<std::int64_t, 2>> entangling_site_pairs_;
+  mutable std::map<std::pair<double, double>, std::vector<std::int64_t>>
+      storage_distance_cache_;
 };
 
 }  // namespace zac_native

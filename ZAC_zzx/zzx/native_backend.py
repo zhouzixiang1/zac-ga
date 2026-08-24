@@ -136,7 +136,24 @@ def register_native_wheel(wheel_path: str | Path) -> dict:
     extension.  Formal runners can subsequently require and compare this marker
     instead of echoing an unverified hash from their JSON config.
     """
-    module = _load_native()
+    # A force-reinstalled extension legitimately leaves the previous marker
+    # stale.  Registration is the operation that replaces that marker, so it
+    # must validate the newly imported ABI/RNG and wheel bytes directly rather
+    # than calling _load_native(), whose normal fail-closed path correctly
+    # rejects the stale marker.
+    try:
+        module = import_module("zac_native_core")
+    except (ImportError, OSError) as exc:
+        raise NativeBackendUnavailable(
+            "zac_native_core is required for wheel registration") from exc
+    abi = int(getattr(module, "NATIVE_ABI_VERSION", -1))
+    if abi != NATIVE_ABI_VERSION:
+        raise NativeBackendUnavailable(
+            f"native ABI mismatch: Python={NATIVE_ABI_VERSION}, extension={abi}")
+    rng_version = str(getattr(module, "RNG_VERSION", ""))
+    if rng_version != RNG_VERSION:
+        raise NativeBackendUnavailable(
+            f"native RNG mismatch: Python={RNG_VERSION}, extension={rng_version}")
     wheel = Path(wheel_path).resolve()
     if not wheel.is_file() or wheel.suffix != ".whl":
         raise NativeBackendError("native wheel registration needs a .whl file")
@@ -177,7 +194,7 @@ def register_native_wheel(wheel_path: str | Path) -> dict:
 class NativeResidentBackend:
     """One persistent architecture object and one native call per boundary."""
 
-    name = "cpp-native-v4"
+    name = "cpp-native-v5"
 
     def __init__(self, architecture, *, flat_buffers: bool = True,
                  require_registered_wheel: bool = False,

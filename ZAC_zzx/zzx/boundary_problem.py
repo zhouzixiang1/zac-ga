@@ -14,7 +14,7 @@ from math import dist, isfinite
 from typing import Iterable, Mapping, Sequence
 
 
-NATIVE_ABI_VERSION = 4
+NATIVE_ABI_VERSION = 5
 RNG_VERSION = "python-random-mt19937-v1"
 
 
@@ -573,6 +573,7 @@ class RichSearchConfig:
     local_polish_sweeps: int = 1
     return_candidate_limit: int = 6
     return_assignment_k: int = 4
+    forecast_gate_candidate_budget: int = 1
     exact_coloring_threshold: int = 0
     enforce_single_leg_ghost: bool = True
     fitness_cache: bool = True
@@ -619,11 +620,14 @@ class RichSearchConfig:
                     or value < 0):
                 raise ValueError(f"{name} must be a non-negative integer")
         for name in ("direct_enumeration_limit", "return_candidate_limit",
-                     "return_assignment_k"):
+                     "return_assignment_k", "forecast_gate_candidate_budget"):
             value = getattr(self, name)
             if (not isinstance(value, int) or isinstance(value, bool)
                     or value <= 0):
                 raise ValueError(f"{name} must be a positive integer")
+        if self.forecast_gate_candidate_budget not in {1, 2, 4}:
+            raise ValueError(
+                "forecast_gate_candidate_budget must be one of {1, 2, 4}")
         if self.elite_count > self.population_size:
             raise ValueError("elite_count cannot exceed population_size")
         if not isinstance(self.enforce_single_leg_ghost, bool):
@@ -658,6 +662,8 @@ class RichSearchConfig:
             "local_polish_sweeps": self.local_polish_sweeps,
             "return_candidate_limit": self.return_candidate_limit,
             "return_assignment_k": self.return_assignment_k,
+            "forecast_gate_candidate_budget":
+                self.forecast_gate_candidate_budget,
             "exact_coloring_threshold": self.exact_coloring_threshold,
             "enforce_single_leg_ghost": self.enforce_single_leg_ghost,
             "fitness_cache": self.fitness_cache,

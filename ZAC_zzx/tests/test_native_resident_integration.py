@@ -30,7 +30,7 @@ TIMING_KEYS = {
     "backend_calls", "backend_candidates", "cache",
 }
 NATIVE_WHEEL_SHA256 = (
-    "9ac5932b595de8e2a0de4558b6181b7a7aff29e80ede39ba27cb03a963521181")
+    "b5c8c7ae2ff13893c15b28b364ffd7c7b96121d2aecd920ff837a98c2421ef29")
 
 
 def architecture():

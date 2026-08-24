@@ -283,7 +283,7 @@ class TuningConfigTests(unittest.TestCase):
             self.assertEqual(setting["backend"], "native")
             self.assertIs(setting["native_fail_closed"], True)
             self.assertIs(setting["formal_native"], True)
-            self.assertEqual(setting["native_abi_version"], 4)
+            self.assertEqual(setting["native_abi_version"], 5)
             self.assertEqual(len(setting["native_wheel_sha256"]), 64)
             self.assertEqual(
                 setting["rng_version"], "python-random-mt19937-v1")
@@ -599,7 +599,7 @@ class TuningReceiptTests(unittest.TestCase):
                 "algorithm_revision": "native-ga-v1",
                 "backend": "native",
                 "native_fail_closed": True,
-                "native_abi_version": 4,
+                "native_abi_version": 5,
                 "native_wheel_sha256": "a" * 64,
                 "rng_version": "python-random-mt19937-v1",
                 "operator_profile": "tuned",
@@ -643,7 +643,7 @@ class TuningReceiptTests(unittest.TestCase):
                 experiment_id=experiment_id, status="success",
                 git_commit="f" * 40, git_dirty=False,
                 algorithm_revision="native-ga-v1", backend="native",
-                native_abi_version=4, native_wheel_sha256="a" * 64,
+                native_abi_version=5, native_wheel_sha256="a" * 64,
                 compiler_and_flags={
                     "cxx_standard": 17, "openmp": False,
                     "fast_math": False},
@@ -988,7 +988,7 @@ class TuningFinalSelectionGateTests(unittest.TestCase):
             "root": "/repo", "commit": "a" * 40,
             "branch": "codex/test", "dirty": False,
         }
-        native_identity.return_value = {"native_abi_version": 4}
+        native_identity.return_value = {"native_abi_version": 5}
         selection = {
             "shared_selected": "shared-candidate",
             "independent_selected": {"M3": "m3-independent", "M4": None},
@@ -1058,7 +1058,7 @@ class TuningFinalSelectionGateTests(unittest.TestCase):
                 "architecture_sha256": sha256_file(architecture_path),
                 "model_sha256": sha256_file(model_path),
                 "experiment_id": "3" * 64,
-                "native_identity": {"native_abi_version": 4},
+                "native_identity": {"native_abi_version": 5},
                 "initial_selection_record_sha256": "4" * 64,
             }
             workspace["manifest_sha256"] = _self_hash(

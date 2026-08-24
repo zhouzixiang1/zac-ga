@@ -2,7 +2,7 @@
 
 > 当前正式四方法实验入口是 [`experiments_v2/README.md`](experiments_v2/README.md)。本文件后半部记录的是早期pilot与旧工作簿，不能作为当前论文结果；尤其旧表曾对baseline使用不同后处理。新协议只接受实际重跑的论文原生M1/M2，以及严格ghost-safe的M3/M4。
 
-> Schema 2 正式前瞻契约：M3/M4 的边界决策、RETURN/RESEAT、ghost 重放、物理成本、衰减前瞻和 GA/枚举统一在 C++17 ABI4 内核中执行，仅 `max_horizon` 分别为0/8；Python只管理编译状态并做独立验证。最终工作簿只含 `ZAC18`、`QMAP154` 两页，Large不在本轮范围。
+> Schema 2 正式前瞻契约：M3/M4 的边界决策、RETURN/RESEAT、ghost 重放、物理成本、衰减前瞻和 GA/枚举统一在 C++17 ABI5 内核中执行，仅 `max_horizon` 分别为0/8；Python只管理编译状态并做独立验证。最终工作簿只含 `ZAC18`、`QMAP154` 两页，Large不在本轮范围。
 
 以 ZAC 为基座的第三个派生实验（与 `ZAC_new/` 同级、自包含；本地 `zac/`
 是 ZAC 源码字节级副本）。核心思想：**激发区原子默认不放回（驻留）**，

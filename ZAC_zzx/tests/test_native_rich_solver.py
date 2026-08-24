@@ -1,4 +1,4 @@
-"""ABI4 one-call residency search differential and fail-closed tests."""
+"""ABI5 one-call residency search differential and fail-closed tests."""
 from __future__ import annotations
 
 import math
@@ -169,7 +169,7 @@ def tuned_search_problem():
     return arch, problem, config
 
 
-@unittest.skipUnless(native_available(), "ABI4 native extension is not installed")
+@unittest.skipUnless(native_available(), "ABI5 native extension is not installed")
 class TestNativeRichSolver(unittest.TestCase):
     def setUp(self):
         self.arch = architecture()
@@ -534,7 +534,7 @@ class TestNativeRichSolver(unittest.TestCase):
             delta=1e-15,
         )
 
-    def test_abi4_raw_future_layers_are_physically_rolled_out_in_cpp(self):
+    def test_abi5_raw_future_layers_are_physically_rolled_out_in_cpp(self):
         arch = ArchitectureSnapshot.from_coordinates(
             4,
             (

@@ -7,7 +7,7 @@ matching, physical scoring, future-layer rollout, exact/GA search and stable
 selection in that single call.
 
 The scorer-only nested and flat-v1 wires remain for migration tests.  Formal
-resident calls use rich-boundary wire v3.  Its indexed mode resolves current,
+resident calls use rich-boundary wire v4.  Its indexed mode resolves current,
 gate-target and RETURN coordinates from a persistent `ArchitectureSnapshot`, so
 repeated point/leg dictionaries never cross the language boundary.
 
@@ -45,7 +45,7 @@ passes.  Cache on/off changes evaluation reuse only; winner, mapping, movement
 batches and RNG state remain identical for a fixed seed.
 
 The old forecast-term bitset path remains only for differential regression
-fixtures.  Formal ABI4 runs use raw future layers and fail if raw layers and
+fixtures.  Formal ABI5 runs use raw future layers and fail if raw layers and
 precomputed terms are mixed.
 
 The extension is fail-closed: `zzx.native_backend.NativeResidentBackend` raises
@@ -66,7 +66,7 @@ ctest --test-dir /tmp/zac-native-ctest --output-on-failure
 ```
 
 The primary build intentionally uses neither OpenMP nor fast-math.  The public
-ABI version is `4`, flat scorer wire is `1`, rich-boundary wire is `3`, and RNG
+ABI version is `5`, flat scorer wire is `1`, rich-boundary wire is `4`, and RNG
 semantics are `python-random-mt19937-v1`.
 
 ## Formal build freeze

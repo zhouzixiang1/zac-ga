@@ -30,7 +30,7 @@ class NativeManifestContractTests(unittest.TestCase):
             "circuit": "toy",
             "method": "M3",
             "backend": "native",
-            "native_abi_version": 4,
+            "native_abi_version": 5,
             "native_wheel_sha256": "a" * 64,
             "compiler_and_flags": {
                 "cxx_standard": 17,

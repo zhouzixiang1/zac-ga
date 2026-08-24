@@ -292,7 +292,7 @@ PYBIND11_MODULE(zac_native_core, module) {
     value["native_abi_version"] = kNativeAbiVersion;
     value["flat_wire_version"] = 1;
     value["rich_h0_wire_version"] = 1;
-    value["rich_boundary_wire_version"] = 3;
+    value["rich_boundary_wire_version"] = 4;
     value["version"] = VERSION_INFO;
     value["compiler_id"] = ZAC_CXX_COMPILER_ID;
     value["compiler_version"] = ZAC_CXX_COMPILER_VERSION;

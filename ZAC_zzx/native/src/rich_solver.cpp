@@ -710,7 +710,11 @@ class RichSolver {
         config_.elite_count > config_.population_size ||
         config_.direct_enumeration_limit == 0 ||
         config_.return_candidate_limit == 0 ||
-        config_.return_assignment_k == 0 || config_.crossover_rate < 0.0 ||
+        config_.return_assignment_k == 0 ||
+        (config_.forecast_gate_candidate_budget != 1 &&
+         config_.forecast_gate_candidate_budget != 2 &&
+         config_.forecast_gate_candidate_budget != 4) ||
+        config_.crossover_rate < 0.0 ||
         config_.crossover_rate > 1.0) {
       throw std::invalid_argument("invalid rich GA configuration");
     }
@@ -1127,21 +1131,17 @@ class RichSolver {
   std::optional<std::pair<std::int64_t, FitnessResult>>
   forecast_move_to_storage(std::int64_t atom,
                            std::vector<Point>& positions) const {
-    std::vector<std::pair<double, std::int64_t>> choices;
     const auto& source = positions[static_cast<std::size_t>(atom)];
-    for (const auto site_id : architecture_.storage_site_ids()) {
+    const auto& choices =
+        architecture_.storage_site_ids_by_distance(source);
+    std::optional<std::pair<std::int64_t, FitnessResult>> best;
+    std::size_t tested = 0;
+    for (const auto site_id : choices) {
       const auto& target = architecture_.site_coordinates()[
           static_cast<std::size_t>(site_id)];
       if (point_occupied(positions, target, atom)) continue;
-      choices.emplace_back(point_distance(source, target), site_id);
-    }
-    std::sort(choices.begin(), choices.end());
-    std::optional<std::pair<std::int64_t, FitnessResult>> best;
-    std::size_t tested = 0;
-    for (const auto& [distance, site_id] : choices) {
+      const auto distance = point_distance(source, target);
       if (distance <= 1e-9) continue;
-      const auto& target = architecture_.site_coordinates()[
-          static_cast<std::size_t>(site_id)];
       std::vector<Leg> legs;
       if (distance > 1e-9) legs.push_back({distance, source, target});
       const auto score = score_forecast_phase(
@@ -1158,9 +1158,13 @@ class RichSolver {
                        best->second.total_distance_um, best->first)) {
         best = std::make_pair(site_id, score);
       }
-      // The list is distance ordered.  Eight executable alternatives are
-      // enough to avoid turning a future parking search into another GA.
-      if (best.has_value() && tested >= 8U) break;
+      // The registered 1/2/4 rollout budget now controls the number of
+      // physically replayed safe parking alternatives as well as the future
+      // gate support.  This keeps M4 bounded without a proxy ghost penalty.
+      if (best.has_value() &&
+          tested >= config_.forecast_gate_candidate_budget) {
+        break;
+      }
     }
     if (best.has_value()) {
       positions[static_cast<std::size_t>(atom)] =
@@ -1676,7 +1680,8 @@ class RichSolver {
       const DecodeResult& decoded,
       const std::vector<std::size_t>& returners,
       const std::vector<ReturnAssignment>& assignments,
-      std::size_t assignment_rank, std::size_t assignment_count) {
+      std::size_t assignment_rank, std::size_t assignment_count,
+      bool include_forecast = true) {
     Evaluated result;
     result.search_nll = std::numeric_limits<double>::infinity();
     result.assignments = assignments;
@@ -1716,7 +1721,9 @@ class RichSolver {
       result.current_ghost_rejections = 1;
       ++stats_.current_ghost_rejections;
     }
-    if (result.fitness.feasible) apply_forecast(result, chromosome);
+    if (result.fitness.feasible && include_forecast) {
+      apply_forecast(result, chromosome);
+    }
     return result;
   }
 
@@ -1774,8 +1781,26 @@ class RichSolver {
     for (std::size_t rank = 0; rank < candidates.size(); ++rank) {
       auto candidate = evaluate_assignment(
           chromosome, result.decoded, returners, candidates[rank], rank,
-          candidates.size());
+          candidates.size(), false);
       ghost_rejections += candidate.current_ghost_rejections;
+      if (!candidate.fitness.feasible) {
+        if (!have_best || evaluated_less(candidate, result)) {
+          result = std::move(candidate);
+          have_best = true;
+        }
+        continue;
+      }
+      // Every forecast contribution is a non-negative physical NLL.  Once an
+      // assignment's current NLL already exceeds the incumbent's complete
+      // current+forecast NLL, no future replay can make it win.  Exact ties are
+      // still replayed so Move batches/time and canonical assignment order
+      // retain their deterministic tie-breaking semantics.
+      if (have_best && std::isfinite(result.search_nll) &&
+          candidate.fitness.negative_log_fidelity >
+              result.search_nll + 1e-12) {
+        continue;
+      }
+      apply_forecast(candidate, chromosome);
       if (!have_best || evaluated_less(candidate, result)) {
         result = std::move(candidate);
         have_best = true;

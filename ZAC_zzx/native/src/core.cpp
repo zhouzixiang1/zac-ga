@@ -343,6 +343,26 @@ ArchitectureSnapshot::ArchitectureSnapshot(
   }
 }
 
+const std::vector<std::int64_t>&
+ArchitectureSnapshot::storage_site_ids_by_distance(
+    const Point& source) const {
+  const auto key = std::make_pair(source.x, source.y);
+  const auto cached = storage_distance_cache_.find(key);
+  if (cached != storage_distance_cache_.end()) return cached->second;
+  auto ordered = storage_site_ids_;
+  std::sort(ordered.begin(), ordered.end(), [&](const auto first,
+                                                const auto second) {
+    const auto first_distance = point_distance(
+        source, site_coordinates_[static_cast<std::size_t>(first)]);
+    const auto second_distance = point_distance(
+        source, site_coordinates_[static_cast<std::size_t>(second)]);
+    return std::tie(first_distance, first) <
+           std::tie(second_distance, second);
+  });
+  return storage_distance_cache_.emplace(key, std::move(ordered))
+      .first->second;
+}
+
 bool compatible_2d(const std::array<double, 4>& a,
                    const std::array<double, 4>& b) noexcept {
   if (a[0] == b[0] && a[1] != b[1]) return false;

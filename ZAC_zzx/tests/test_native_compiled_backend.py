@@ -58,7 +58,7 @@ class TestCompiledBackend(unittest.TestCase):
     def test_build_manifest_is_auditable(self):
         info = build_info()
         self.assertEqual(info["native_abi_version"], NATIVE_ABI_VERSION)
-        self.assertEqual(info["rich_boundary_wire_version"], 3)
+        self.assertEqual(info["rich_boundary_wire_version"], 4)
         self.assertTrue(info["extension_sha256"])
         self.assertEqual(info["flat_wire_version"], 1)
         self.assertEqual(info["cxx_standard"], 17)

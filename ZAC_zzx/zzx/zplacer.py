@@ -554,7 +554,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         super().__init__(mapping, l2)
         self.rng = random.Random(seed)              # RNG 隔离（审计 MAJOR-6：模块级共享会毁 SA 确定性）
         # Independent current-transition stream retained for legacy adaptive
-        # H=0/1/2 regression.  Formal decay uses the ABI4 one-call solver.
+        # H=0/1/2 regression.  Formal decay uses the ABI5 one-call solver.
         self.safety_rng = random.Random(seed)
         self.theta_capacity: float = params.get("theta_capacity", 0.9)
         self.box_ratio: int = params.get("box_ratio", 3)
@@ -764,7 +764,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         )
         self.boundary_site_locations = site_locations
         self.boundary_site_id = site_id
-        # Backwards-compatible name: site ids are global ABI4 ids, so native
+        # Backwards-compatible name: site ids are global ABI5 ids, so native
         # RETURN assignments are decoded through the complete location table.
         self.boundary_storage_locations = site_locations
         self.boundary_storage_site_id = storage_site_id
@@ -3081,6 +3081,8 @@ class ResidentPlacer(VertexMatchingPlacer):
                 local_polish_sweeps=self.local_polish_sweeps,
                 return_candidate_limit=self.return_candidate_limit,
                 return_assignment_k=self.return_assignment_k,
+                forecast_gate_candidate_budget=
+                    self.forecast_gate_candidate_budget,
                 exact_coloring_threshold=0,
                 enforce_single_leg_ghost=True,
                 fitness_cache=self.fitness_cache,
@@ -3397,7 +3399,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                 for _absolute, gates, offset, _weight in visible_forecast
             }
             predicted_corridor_legs = []
-            # ABI4 consumes raw bounded 2Q layers and performs the physical
+            # ABI5 consumes raw bounded 2Q layers and performs the physical
             # rollout inside C++.  The legacy Python marginal-term builder is
             # retained below only as a regression oracle for old fixtures; it
             # is never executed by formal M3/M4.
@@ -3935,7 +3937,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                 raise RuntimeError(
                     "native rich RETURN assignments disagree with winner bits")
             if native_rich_problem.future_layers:
-                # The formal ABI4 forecast is deliberately native-owned.  Its
+                # The formal ABI5 forecast is deliberately native-owned.  Its
                 # independent contract is raw layer isolation plus final trace
                 # verification; reconstructing it in Python would restore the
                 # exact performance bottleneck this interface removes.

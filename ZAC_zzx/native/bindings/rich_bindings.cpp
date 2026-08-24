@@ -385,6 +385,8 @@ RichSearchConfig parse_search_config(const py::dict& value) {
       py::cast<std::size_t>(value["return_candidate_limit"]);
   config.return_assignment_k =
       py::cast<std::size_t>(value["return_assignment_k"]);
+  config.forecast_gate_candidate_budget =
+      py::cast<std::size_t>(value["forecast_gate_candidate_budget"]);
   config.exact_coloring_threshold =
       py::cast<std::size_t>(value["exact_coloring_threshold"]);
   config.enforce_single_leg_ghost =

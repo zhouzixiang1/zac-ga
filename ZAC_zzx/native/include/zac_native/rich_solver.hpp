@@ -90,7 +90,7 @@ struct RichH0Problem {
   std::vector<std::int64_t> matched_gate_genes;
   RichDecisionPolicy decision_policy{RichDecisionPolicy::kOptimize};
   std::vector<RichForecastTerm> forecast_terms;
-  // ABI4 formal path: raw bounded 2Q layers are rolled out and physically
+  // ABI5 formal path: raw bounded 2Q layers are rolled out and physically
   // scored inside C++.  ``forecast_terms`` remains only for legacy regression
   // fixtures and must not be mixed with this representation.
   std::vector<RichFutureLayer> future_layers;
@@ -110,6 +110,7 @@ struct RichSearchConfig {
   std::size_t local_polish_sweeps{1};
   std::size_t return_candidate_limit{6};
   std::size_t return_assignment_k{4};
+  std::size_t forecast_gate_candidate_budget{1};
   std::size_t exact_coloring_threshold{};
   bool enforce_single_leg_ghost{true};
   bool fitness_cache{true};
