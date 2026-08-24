@@ -1,18 +1,21 @@
-"""Serial, fail-closed execution for ``resident-ga-quality-racing-v1``.
+"""Fail-closed execution for ``resident-ga-quality-racing-v1``.
 
-The runner intentionally has no worker/shard mode.  Each scheduled receipt is
-addressed from a deterministic identity, and resume accepts only that exact
-receipt and its hashed attempt manifest.  It never scans an old result tree to
-infer success.
+Each scheduled receipt is addressed from a deterministic identity, and resume
+accepts only that exact receipt and its hashed attempt manifest.  It never
+scans an old result tree to infer success.  Quality trials may run in isolated
+worker processes, while each compiler attempt remains single-threaded and the
+five-circuit racing checkpoints remain strict barriers.
 """
 from __future__ import annotations
 
 import copy
 import hashlib
 import json
+import multiprocessing
 import os
 import statistics
 import uuid
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -46,6 +49,14 @@ STAGES = (
     "baselines", "profiles", "decisions", "lookahead", "validation",
     "shared_forward_check",
 )
+
+_SINGLE_THREAD_ENVIRONMENT = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+}
 
 
 def _stable_json(value: Any) -> str:
@@ -94,6 +105,33 @@ def _validate_sealed(payload: Mapping[str, Any]) -> None:
         raise ValueError("quality-racing receipt protocol mismatch")
     if payload.get("record_sha256") != _record_sha256(payload):
         raise ValueError("quality-racing receipt hash mismatch")
+
+
+def _validated_workers(workers: int) -> int:
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError("workers must be a positive integer")
+    return workers
+
+
+def _record_parallel_execution(root: Path, workers: int) -> Mapping[str, Any] | None:
+    """Record the quality-only parallel amendment without rewriting workspace."""
+    workers = _validated_workers(workers)
+    if workers == 1:
+        return None
+    payload = _seal({
+        "experiment_schema": 2,
+        "protocol_id": PROTOCOL_ID,
+        "execution_scope": "quality-and-tuning-only",
+        "workers": workers,
+        "worker_isolation": "spawned-process",
+        "receipt_identity_isolation": True,
+        "single_thread_environment": dict(_SINGLE_THREAD_ENVIRONMENT),
+        "racing_checkpoint_barrier": 5,
+        "timing_benchmark_parallel": False,
+    })
+    _write_same_or_fail(
+        root / "execution" / f"parallel-workers-{workers}.json", payload)
+    return payload
 
 
 def default_root(plan: ExperimentPlan) -> Path:
@@ -299,6 +337,44 @@ def _run_one(
     return payload
 
 
+def _run_one_process(task: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Run one identity in an isolated process for accurate child accounting."""
+    for key, value in _SINGLE_THREAD_ENVIRONMENT.items():
+        os.environ[key] = value
+    plan = load_experiment_plan(Path(str(task["plan_path"])))
+    root = Path(str(task["root"])).resolve()
+    return _run_one(
+        plan, root, _canonical_registry(plan),
+        stage=str(task["stage"]), method=str(task["method"]),
+        candidate=task.get("candidate"), circuit=str(task["circuit"]),
+        seed=int(task["seed"]), resume=bool(task["resume"]),
+        dry_run=bool(task["dry_run"]),
+    )
+
+
+def _trial_tasks(
+        plan: ExperimentPlan, root: Path, *, stage: str, method: str,
+        candidates: Sequence[Mapping[str, Any] | None],
+        circuits: Sequence[str], seeds: Sequence[int], resume: bool,
+        dry_run: bool) -> list[dict[str, Any]]:
+    return [
+        {
+            "plan_path": str(plan.path),
+            "root": str(root),
+            "stage": stage,
+            "method": method,
+            "candidate": None if candidate is None else dict(candidate),
+            "circuit": circuit,
+            "seed": int(seed),
+            "resume": bool(resume),
+            "dry_run": bool(dry_run),
+        }
+        for circuit in circuits
+        for candidate in candidates
+        for seed in seeds
+    ]
+
+
 def _receipt_manifest(payload: Mapping[str, Any]) -> RunManifest:
     return load_run_manifest(Path(str(payload["attempt_manifest"])))
 
@@ -420,18 +496,25 @@ def _as_racing_trial(plan: ExperimentPlan, root: Path,
 def _run_candidate_trials(
         plan: ExperimentPlan, root: Path, *, stage: str, method: str,
         candidates: Sequence[Mapping[str, Any]], circuits: Sequence[str],
-        seeds: Sequence[int], resume: bool, dry_run: bool
+        seeds: Sequence[int], resume: bool, dry_run: bool, workers: int = 1,
 ) -> list[Mapping[str, Any]]:
-    registry = _canonical_registry(plan)
-    outputs = []
-    for circuit in circuits:
-        for candidate in candidates:
-            for seed in seeds:
-                outputs.append(_run_one(
-                    plan, root, registry, stage=stage, method=method,
-                    candidate=candidate, circuit=circuit, seed=seed,
-                    resume=resume, dry_run=dry_run))
-    return outputs
+    workers = _validated_workers(workers)
+    tasks = _trial_tasks(
+        plan, root, stage=stage, method=method, candidates=candidates,
+        circuits=circuits, seeds=seeds, resume=resume, dry_run=dry_run)
+    if workers == 1:
+        registry = _canonical_registry(plan)
+        return [
+            _run_one(
+                plan, root, registry, stage=stage, method=method,
+                candidate=task.get("candidate"), circuit=str(task["circuit"]),
+                seed=int(task["seed"]), resume=resume, dry_run=dry_run)
+            for task in tasks
+        ]
+    _record_parallel_execution(root, workers)
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
+        return list(pool.map(_run_one_process, tasks, chunksize=1))
 
 
 def _load_candidate_rows(
@@ -473,7 +556,7 @@ def _candidate_map(candidates: Sequence[Mapping[str, Any]]
 def _run_development_race(
         plan: ExperimentPlan, root: Path, *, stage: str, method: str,
         candidates: Sequence[Mapping[str, Any]], resume: bool,
-        dry_run: bool) -> Mapping[str, Any]:
+        dry_run: bool, workers: int = 1) -> Mapping[str, Any]:
     active = _candidate_map(candidates)
     checkpoints = []
     outputs = []
@@ -482,7 +565,8 @@ def _run_development_race(
         outputs.extend(_run_candidate_trials(
             plan, root, stage=stage, method=method,
             candidates=list(active.values()), circuits=block,
-            seeds=DEVELOPMENT_SEED, resume=resume, dry_run=dry_run))
+            seeds=DEVELOPMENT_SEED, resume=resume, dry_run=dry_run,
+            workers=workers))
         if dry_run:
             continue
         cumulative = DEVELOPMENT_CIRCUITS[:stop]
@@ -527,16 +611,16 @@ def _load_selection(root: Path, stage: str, method: str
 
 
 def run_profiles(plan: ExperimentPlan, root: Path, *, resume: bool = True,
-                 dry_run: bool = False) -> Mapping[str, Any]:
+                 dry_run: bool = False, workers: int = 1) -> Mapping[str, Any]:
     _load_workspace(plan, root)
     return {method: _run_development_race(
         plan, root, stage="profiles", method=method,
         candidates=search_profile_candidates(method), resume=resume,
-        dry_run=dry_run) for method in ("M3", "M4")}
+        dry_run=dry_run, workers=workers) for method in ("M3", "M4")}
 
 
 def run_decisions(plan: ExperimentPlan, root: Path, *, resume: bool = True,
-                  dry_run: bool = False) -> Mapping[str, Any]:
+                  dry_run: bool = False, workers: int = 1) -> Mapping[str, Any]:
     _load_workspace(plan, root)
     results = {}
     for method in ("M3", "M4"):
@@ -544,22 +628,23 @@ def run_decisions(plan: ExperimentPlan, root: Path, *, resume: bool = True,
         candidates = decision_candidates(method, parents)
         results[method] = _run_development_race(
             plan, root, stage="decisions", method=method,
-            candidates=candidates, resume=resume, dry_run=dry_run)
+            candidates=candidates, resume=resume, dry_run=dry_run,
+            workers=workers)
     return results
 
 
 def run_lookahead(plan: ExperimentPlan, root: Path, *, resume: bool = True,
-                  dry_run: bool = False) -> Mapping[str, Any]:
+                  dry_run: bool = False, workers: int = 1) -> Mapping[str, Any]:
     _load_workspace(plan, root)
     parents = _load_selection(root, "decisions", "M4")["promoted"]
     return _run_development_race(
         plan, root, stage="lookahead", method="M4",
         candidates=lookahead_candidates(parents), resume=resume,
-        dry_run=dry_run)
+        dry_run=dry_run, workers=workers)
 
 
 def run_validation(plan: ExperimentPlan, root: Path, *, resume: bool = True,
-                   dry_run: bool = False) -> Mapping[str, Any]:
+                   dry_run: bool = False, workers: int = 1) -> Mapping[str, Any]:
     _load_workspace(plan, root)
     candidates = {
         "M3": _load_selection(root, "decisions", "M3")["promoted"],
@@ -571,7 +656,8 @@ def run_validation(plan: ExperimentPlan, root: Path, *, resume: bool = True,
         outputs[method] = _run_candidate_trials(
             plan, root, stage="validation", method=method,
             candidates=candidates[method], circuits=VALIDATION_CIRCUITS,
-            seeds=VALIDATION_SEEDS, resume=resume, dry_run=dry_run)
+            seeds=VALIDATION_SEEDS, resume=resume, dry_run=dry_run,
+            workers=workers)
         if not dry_run:
             rows = _load_candidate_rows(
                 plan, root, stage="validation", method=method,
@@ -608,7 +694,7 @@ def selected_independent(root: Path) -> Mapping[str, Mapping[str, Any]]:
 
 def run_shared_forward_check(
         plan: ExperimentPlan, root: Path, *, resume: bool = True,
-        dry_run: bool = False) -> Mapping[str, Any]:
+        dry_run: bool = False, workers: int = 1) -> Mapping[str, Any]:
     _load_workspace(plan, root)
     selected = selected_independent(root)
     m3, m4 = shared_forward_pair(selected["M4"])
@@ -619,7 +705,7 @@ def run_shared_forward_check(
         outputs[method] = _run_candidate_trials(
             plan, root, stage="shared_forward_check", method=method,
             candidates=(candidates[method],), circuits=circuits,
-            seeds=(0,), resume=resume, dry_run=dry_run)
+            seeds=(0,), resume=resume, dry_run=dry_run, workers=workers)
     result: dict[str, Any] = {
         "experiment_schema": 2, "protocol_id": PROTOCOL_ID,
         "stage": "shared_forward_check", "dry_run": dry_run,

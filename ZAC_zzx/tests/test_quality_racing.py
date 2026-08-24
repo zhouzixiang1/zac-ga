@@ -28,6 +28,7 @@ from experiments_v2.quality_racing import (
 from experiments_v2.plan import _validate_pair_payloads
 from experiments_v2.plan import load_experiment_plan
 from experiments_v2.quality_racing_runner import (
+    _record_parallel_execution,
     _strongest_original_scores,
     _valid_original_baselines,
     prepare_workspace, run_baselines, run_profiles,
@@ -64,6 +65,19 @@ def trial(candidate: str, method: str, circuit: str, seed: int, *,
 
 
 class QualityRacingTests(unittest.TestCase):
+    def test_parallel_quality_amendment_is_fail_closed_and_excludes_timing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = _record_parallel_execution(root, 3)
+            self.assertEqual(3, payload["workers"])
+            self.assertEqual("spawned-process", payload["worker_isolation"])
+            self.assertTrue(payload["receipt_identity_isolation"])
+            self.assertFalse(payload["timing_benchmark_parallel"])
+            self.assertEqual(
+                payload,
+                json.loads((root / "execution" /
+                            "parallel-workers-3.json").read_text()))
+
     def test_strongest_baseline_ignores_but_preserves_invalid_original(self):
         invalid = SimpleNamespace(
             status="verifier_fail", verifier_ok=False,
