@@ -9,34 +9,48 @@ from pathlib import Path
 
 from experiments_v2.quality_racing import (
     DEVELOPMENT_CIRCUITS,
+    FORMAL_CANDIDATE_KEYS,
+    INCUMBENT_NON_DEGRADATION_TOLERANCE,
     PROTOCOL_ID,
     RacingTrial,
     SEARCH_PROFILES,
     VALIDATION_CIRCUITS,
     VALIDATION_SEEDS,
     decision_candidates,
+    incumbent_candidate,
     lookahead_candidates,
     materialize_formal_setting,
     race_checkpoint,
     search_profile_candidates,
     search_space_manifest,
+    select_non_degrading,
     select_top,
     shared_forward_pair,
     split_manifest,
     validate_shared_formal_settings,
 )
-from experiments_v2.plan import _validate_pair_payloads
-from experiments_v2.plan import load_experiment_plan
+from experiments_v2.plan import (_validate_pair_payloads,
+                                 effective_zac_setting,
+                                 load_experiment_plan)
 from experiments_v2.quality_racing_runner import (
+    _assert_validation_non_degradation,
+    _attempt_artifact_sha256,
+    _attempt_identity_lock,
+    _native_runtime_identity_payload,
     _record_parallel_execution,
+    _record_sha256,
+    _retryable_native_environment_failure,
+    _seal,
+    _setting_native_identity,
     _source_attempt_manifest,
     _strongest_original_scores,
+    _validate_attempt_receipt,
     _valid_original_baselines,
     prepare_workspace, run_baselines, run_profiles,
     validate_quality_selection_for_plan,
 )
 from experiments_v2.cli import _assert_formal_selection_gates
-from experiments_v2.contracts import stable_sha256
+from experiments_v2.contracts import RunManifest, sha256_file, stable_sha256
 from zzx.algorithm_v2 import FORMAL_NATIVE_TUNING_PROTOCOL_ID
 
 
@@ -66,6 +80,32 @@ def trial(candidate: str, method: str, circuit: str, seed: int, *,
 
 
 class QualityRacingTests(unittest.TestCase):
+    @staticmethod
+    def _clean_repository(commit: str = "1" * 40):
+        return {
+            "root": str(ROOT.parent),
+            "commit": commit,
+            "branch": "codex/test",
+            "dirty": False,
+        }
+
+    @staticmethod
+    def _native_runtime_for_plan(plan):
+        setting = effective_zac_setting(plan.methods["M3"].payload)
+        return {
+            "native_abi_version": setting["native_abi_version"],
+            "native_wheel_sha256": setting["native_wheel_sha256"],
+            "rng_version": setting["rng_version"],
+            "extension_sha256": "e" * 64,
+            "native_version": "test",
+            "build_type": "Release",
+            "compiler_id": "test",
+            "compiler_version": "test",
+            "cxx_standard": 17,
+            "openmp": False,
+            "fast_math": False,
+        }
+
     def test_archived_baseline_manifest_is_rerooted_through_attempts(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory).resolve()
@@ -198,6 +238,78 @@ class QualityRacingTests(unittest.TestCase):
             seeds=VALIDATION_SEEDS, count=2)
         self.assertEqual(["near-fast", "best"], selected["selected"])
 
+    def test_incumbent_gate_forbids_purchasing_quality_regression(self):
+        circuits = ("a", "b")
+        rows = []
+        for circuit in circuits:
+            for seed in VALIDATION_SEEDS:
+                rows.extend((
+                    trial("incumbent", "M4", circuit, seed, delta=.010,
+                          runtime=100),
+                    trial("near-fast", "M4", circuit, seed, delta=.009,
+                          runtime=1),
+                    trial("better", "M4", circuit, seed, delta=.011,
+                          runtime=40),
+                ))
+        selected = select_non_degrading(
+            rows, candidate_ids=("incumbent", "near-fast", "better"),
+            incumbent_candidate_id="incumbent", method="M4",
+            circuits=circuits, seeds=VALIDATION_SEEDS)
+        self.assertEqual(["better"], selected["selected"])
+        self.assertNotIn("near-fast", selected["eligible_candidate_ids"])
+        self.assertTrue(selected["non_degradation_passed"])
+        with self.assertRaisesRegex(ValueError, "does not contain"):
+            select_non_degrading(
+                rows, candidate_ids=("near-fast", "better"),
+                incumbent_candidate_id="incumbent", method="M4",
+                circuits=circuits, seeds=VALIDATION_SEEDS)
+
+    def test_incumbent_gate_forbids_cross_dataset_subsidy(self):
+        zac = tuple(f"z{index}" for index in range(6))
+        qmap = tuple(f"q{index}" for index in range(9))
+        circuits = zac + qmap
+        rows = []
+        for circuit in circuits:
+            for seed in VALIDATION_SEEDS:
+                rows.extend((
+                    trial("incumbent", "M4", circuit, seed, delta=0.0,
+                          runtime=100),
+                    trial(
+                        "cross-subsidy", "M4", circuit, seed,
+                        delta=(-0.01 if circuit in zac else 0.01),
+                        runtime=1),
+                ))
+        selected = select_non_degrading(
+            rows, candidate_ids=("incumbent", "cross-subsidy"),
+            incumbent_candidate_id="incumbent", method="M4",
+            circuits=circuits, seeds=VALIDATION_SEEDS)
+        self.assertEqual(["incumbent"], selected["selected"])
+        self.assertNotIn(
+            "cross-subsidy", selected["eligible_candidate_ids"])
+        self.assertEqual(
+            {"ZAC18", "QMAP154"}, set(selected["dataset_summaries"]))
+        self.assertLess(
+            next(row for row in selected["dataset_summaries"]["ZAC18"]
+                 if row["candidate_id"] == "cross-subsidy")[
+                     "median_delta_log_fidelity"],
+            selected["incumbent_median_delta_log_fidelity_by_dataset"][
+                "ZAC18"])
+
+    def test_incumbent_is_actual_tracked_config_not_cheap_profile(self):
+        config_root = ROOT / "exp_setting" / "native_ga_v1"
+        for method, name in (("M3", "ours_nl_independent.json"),
+                             ("M4", "ours_lk_independent.json")):
+            payload = json.loads((config_root / name).read_text())
+            setting = payload["zac_setting"][0]
+            candidate = incumbent_candidate(method, setting)
+            for key in FORMAL_CANDIDATE_KEYS:
+                self.assertEqual(setting[key], candidate[key])
+            self.assertEqual(0 if method == "M3" else 8,
+                             candidate["max_horizon"])
+            self.assertNotEqual(
+                search_profile_candidates(method)[0]["candidate_id"],
+                candidate["candidate_id"])
+
     def test_shared_forward_pair_materializes_horizon_only_configs(self):
         m4 = search_profile_candidates("M4")[0]
         shared_m3, shared_m4 = shared_forward_pair(m4)
@@ -234,18 +346,290 @@ class QualityRacingTests(unittest.TestCase):
             ROOT / "experiments_v2" / "experiment_plan_v2.json")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace = prepare_workspace(plan, root)
-            self.assertTrue(workspace["serial_execution"])
-            baselines = run_baselines(plan, root, dry_run=True)
-            self.assertEqual(60, baselines["planned"])
-            self.assertEqual(60, len(baselines["outputs"]))
-            self.assertEqual("bv_n14", baselines["outputs"][0]["identity"][
-                "circuit_key"])
-            profiles = run_profiles(plan, root, dry_run=True)
-            self.assertEqual(75, len(profiles["M3"]["outputs"]))
-            self.assertEqual(75, len(profiles["M4"]["outputs"]))
-            self.assertEqual(10, len(list((root / "configs").glob(
-                "*/seed-0.json"))))
+            with mock.patch(
+                    "experiments_v2.quality_racing_runner."
+                    "repository_snapshot",
+                    return_value=self._clean_repository()), mock.patch(
+                        "experiments_v2.quality_racing_runner."
+                        "_native_runtime_identity_payload",
+                        return_value=self._native_runtime_for_plan(plan)):
+                workspace = prepare_workspace(plan, root)
+                self.assertTrue(workspace["serial_execution"])
+                baselines = run_baselines(plan, root, dry_run=True)
+                self.assertEqual(60, baselines["planned"])
+                self.assertEqual(60, len(baselines["outputs"]))
+                self.assertEqual("bv_n14", baselines["outputs"][0]["identity"][
+                    "circuit_key"])
+                profiles = run_profiles(plan, root, dry_run=True)
+                self.assertEqual(75, len(profiles["M3"]["outputs"]))
+                self.assertEqual(75, len(profiles["M4"]["outputs"]))
+                self.assertEqual(10, len(list((root / "configs").glob(
+                    "*/seed-0.json"))))
+            execution = json.loads((root / "protocol" /
+                                    "tuning_execution_identity.json").read_text())
+            incumbents = json.loads((root / "protocol" /
+                                     "incumbent_configs.json").read_text())
+            self.assertEqual("1" * 40,
+                             execution["repository"]["commit"])
+            self.assertEqual(execution["record_sha256"], incumbents[
+                "execution_identity_record_sha256"])
+            for method in ("M3", "M4"):
+                candidate = incumbents["methods"][method]["candidate"]
+                setting = effective_zac_setting(plan.methods[method].payload)
+                for key in FORMAL_CANDIDATE_KEYS:
+                    self.assertEqual(setting[key], candidate[key])
+
+    def test_runner_rejects_execution_identity_drift_after_prepare(self):
+        plan = load_experiment_plan(
+            ROOT / "experiments_v2" / "experiment_plan_v2.json")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch(
+                    "experiments_v2.quality_racing_runner."
+                    "repository_snapshot",
+                    return_value=self._clean_repository("1" * 40)), mock.patch(
+                        "experiments_v2.quality_racing_runner."
+                        "_native_runtime_identity_payload",
+                        return_value=self._native_runtime_for_plan(plan)):
+                prepare_workspace(plan, root)
+            with mock.patch(
+                    "experiments_v2.quality_racing_runner."
+                    "repository_snapshot",
+                    return_value=self._clean_repository("2" * 40)), mock.patch(
+                        "experiments_v2.quality_racing_runner."
+                        "_native_runtime_identity_payload",
+                        return_value=self._native_runtime_for_plan(plan)):
+                with self.assertRaisesRegex(ValueError,
+                                            "execution identity changed"):
+                    run_profiles(plan, root, dry_run=True)
+
+    def test_prepare_runtime_preflight_rejects_loaded_wheel_drift(self):
+        expected = {
+            "native_abi_version": 8,
+            "native_wheel_sha256": "a" * 64,
+            "rng_version": "python-random-mt19937-v1",
+        }
+        loaded = {
+            "native_abi_version": 8,
+            "native_wheel_sha256": "b" * 64,
+            "rng_version": "python-random-mt19937-v1",
+            "extension_sha256": "e" * 64,
+            "wheel_registered": True,
+            "version": "test",
+            "build_type": "Release",
+            "compiler_id": "test",
+            "compiler_version": "test",
+            "cxx_standard": 17,
+            "openmp": False,
+            "fast_math": False,
+        }
+        with mock.patch("zzx.native_backend.build_info", return_value=loaded):
+            with self.assertRaisesRegex(ValueError, "loaded native runtime drift"):
+                _native_runtime_identity_payload(expected)
+
+    def test_candidate_receipt_is_bound_to_config_commit_abi_and_wheel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "candidate.json"
+            config.write_text('{"candidate": 1}\n')
+            config_hash = sha256_file(config)
+            execution = {
+                "execution_identity_record_sha256": "a" * 64,
+                "git_commit": "1" * 40,
+                "git_dirty": False,
+                "config_sha256": config_hash,
+                "algorithm_revision": "native-ga-v1",
+                "backend": "native",
+                "formal_native": True,
+                "native_abi_version": 8,
+                "native_wheel_sha256": "b" * 64,
+                "tuning_protocol_id": PROTOCOL_ID,
+                "rng_version": "python-random-mt19937-v1",
+            }
+            identity = {
+                "stage": "profiles", "dataset": "ZAC18",
+                "circuit": "toy", "circuit_key": "toy", "method": "M3",
+                "candidate_id": "candidate", "seed": 0,
+                "execution": execution,
+            }
+            artifact = root / "attempt"
+            manifest_path = artifact / "manifest.json"
+            manifest = RunManifest(
+                run_id="run", dataset="ZAC18", circuit="toy", method="M3",
+                run_kind="smoke", status="compiler_error",
+                git_commit=execution["git_commit"], git_dirty=False,
+                algorithm_revision=execution["algorithm_revision"],
+                backend="native", native_abi_version=8,
+                native_wheel_sha256=execution["native_wheel_sha256"],
+                compiler_and_flags={
+                    "cxx_standard": 17, "openmp": False,
+                    "fast_math": False,
+                },
+                tuning_protocol_id=PROTOCOL_ID,
+                rng_version=execution["rng_version"],
+                config_sha256=config_hash, artifact_dir=str(artifact),
+            )
+            manifest.write(manifest_path)
+
+            receipt_path = root / "receipt.json"
+
+            def write_receipt():
+                receipt = _seal({
+                    "experiment_schema": 2,
+                    "protocol_id": PROTOCOL_ID,
+                    "identity": identity,
+                    "config": str(config),
+                    "config_sha256": config_hash,
+                    "status": manifest.status,
+                    "attempt_manifest": str(manifest_path),
+                    "attempt_manifest_sha256": sha256_file(manifest_path),
+                })
+                receipt_path.write_text(json.dumps(receipt))
+
+            write_receipt()
+            _validate_attempt_receipt(receipt_path, identity)
+
+            config.write_text('{"candidate": 2}\n')
+            with self.assertRaisesRegex(ValueError, "candidate config drift"):
+                _validate_attempt_receipt(receipt_path, identity)
+            config.write_text('{"candidate": 1}\n')
+
+            manifest.git_commit = "2" * 40
+            manifest.write(manifest_path)
+            write_receipt()
+            with self.assertRaisesRegex(ValueError, "candidate Git drift"):
+                _validate_attempt_receipt(receipt_path, identity)
+
+            manifest.git_commit = execution["git_commit"]
+            manifest.native_abi_version = 9
+            manifest.write(manifest_path)
+            write_receipt()
+            with self.assertRaisesRegex(ValueError,
+                                        "candidate native_abi_version drift"):
+                _validate_attempt_receipt(receipt_path, identity)
+
+            manifest.native_abi_version = 8
+            manifest.native_wheel_sha256 = "c" * 64
+            manifest.write(manifest_path)
+            write_receipt()
+            with self.assertRaisesRegex(ValueError,
+                                        "candidate native_wheel_sha256 drift"):
+                _validate_attempt_receipt(receipt_path, identity)
+
+    def test_unproven_native_compiler_error_is_retryable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "attempt"
+            manifest_path = artifact / "manifest.json"
+            execution = {
+                "algorithm_revision": "native-ga-v1",
+                "backend": "native",
+                "native_abi_version": 8,
+                "native_wheel_sha256": "b" * 64,
+                "tuning_protocol_id": PROTOCOL_ID,
+                "rng_version": "python-random-mt19937-v1",
+            }
+            identity = {"execution": execution}
+            manifest = RunManifest(
+                run_id="run", dataset="ZAC18", circuit="toy", method="M3",
+                run_kind="smoke", status="compiler_error",
+                artifact_dir=str(artifact))
+            manifest.write(manifest_path)
+            payload = {
+                "identity": identity,
+                "status": "compiler_error",
+                "attempt_manifest": str(manifest_path),
+            }
+            self.assertTrue(_retryable_native_environment_failure(payload))
+
+            manifest.algorithm_revision = execution["algorithm_revision"]
+            manifest.backend = "native"
+            manifest.native_abi_version = 8
+            manifest.native_wheel_sha256 = execution["native_wheel_sha256"]
+            manifest.compiler_and_flags = {
+                "cxx_standard": 17, "openmp": False, "fast_math": False,
+            }
+            manifest.tuning_protocol_id = PROTOCOL_ID
+            manifest.rng_version = execution["rng_version"]
+            manifest.write(manifest_path)
+            self.assertFalse(_retryable_native_environment_failure(payload))
+
+    def test_attempt_identity_lock_rejects_duplicate_live_claim(self):
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "receipts" / "attempt.json"
+            identity = {"candidate_id": "candidate", "seed": 0}
+            with _attempt_identity_lock(receipt, identity):
+                with self.assertRaisesRegex(RuntimeError, "already running"):
+                    with _attempt_identity_lock(receipt, identity):
+                        self.fail("duplicate identity lock unexpectedly acquired")
+
+    def test_success_receipt_hashes_every_attempt_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "candidate.json"
+            config.write_text('{"candidate": 1}\n')
+            config_hash = sha256_file(config)
+            artifact = root / "attempt"
+            artifact.mkdir()
+            raw = artifact / "trace.zair.json.gz"
+            raw.write_bytes(b"frozen-trace")
+            timing = artifact / "compiler_timing.json"
+            timing.write_text('{"compiler_time_ns": 1}\n')
+            manifest_path = artifact / "manifest.json"
+            execution = {
+                "execution_identity_record_sha256": "a" * 64,
+                "git_commit": "1" * 40,
+                "git_dirty": False,
+                "config_sha256": config_hash,
+                "algorithm_revision": "native-ga-v1",
+                "backend": "native",
+                "formal_native": True,
+                "native_abi_version": 8,
+                "native_wheel_sha256": "b" * 64,
+                "tuning_protocol_id": PROTOCOL_ID,
+                "rng_version": "python-random-mt19937-v1",
+            }
+            identity = {
+                "stage": "profiles", "dataset": "ZAC18",
+                "circuit": "toy", "circuit_key": "toy", "method": "M3",
+                "candidate_id": "candidate", "seed": 0,
+                "execution": execution,
+            }
+            manifest = RunManifest(
+                run_id="run", dataset="ZAC18", circuit="toy", method="M3",
+                run_kind="smoke", status="success",
+                git_commit=execution["git_commit"], git_dirty=False,
+                algorithm_revision=execution["algorithm_revision"],
+                backend="native", native_abi_version=8,
+                native_wheel_sha256=execution["native_wheel_sha256"],
+                compiler_and_flags={
+                    "cxx_standard": 17, "openmp": False, "fast_math": False,
+                },
+                tuning_protocol_id=PROTOCOL_ID,
+                rng_version=execution["rng_version"],
+                config_sha256=config_hash, artifact_dir=str(artifact),
+            )
+            manifest.write(manifest_path)
+            hashes = _attempt_artifact_sha256(manifest_path)
+            self.assertEqual(
+                {"compiler_timing.json", "trace.zair.json.gz"}, set(hashes))
+            receipt_path = root / "receipt.json"
+            receipt = _seal({
+                "experiment_schema": 2,
+                "protocol_id": PROTOCOL_ID,
+                "identity": identity,
+                "config": str(config),
+                "config_sha256": config_hash,
+                "status": "success",
+                "attempt_manifest": str(manifest_path),
+                "attempt_manifest_sha256": sha256_file(manifest_path),
+                "attempt_artifact_sha256": hashes,
+            })
+            receipt_path.write_text(json.dumps(receipt))
+            _validate_attempt_receipt(receipt_path, identity)
+            raw.write_bytes(b"changed-trace")
+            with self.assertRaisesRegex(ValueError, "success artifact drift"):
+                _validate_attempt_receipt(receipt_path, identity)
 
     @mock.patch(
         "experiments_v2.initial_placement_runner."
@@ -306,11 +690,95 @@ class QualityRacingTests(unittest.TestCase):
                     shared_candidates[method] = candidate
             selections = root / "selections"
             selections.mkdir()
-            from experiments_v2.quality_racing_runner import _record_sha256
+            protocol = root / "protocol"
+            protocol.mkdir()
+            native_identity = {
+                method: {
+                    "config": f"/frozen/{method}.json",
+                    "config_sha256": ("a" if method == "M3" else "b") * 64,
+                    "native": _setting_native_identity(
+                        json.loads((selected_root / name).read_text())[
+                            "zac_setting"][0])
+                }
+                for method, name in (
+                    ("M3", "ours_nl_independent.json"),
+                    ("M4", "ours_lk_independent.json"),
+                )
+            }
+            execution = _seal({
+                "experiment_schema": 2,
+                "protocol_id": PROTOCOL_ID,
+                "kind": "quality-racing-execution-identity",
+                "repository": self._clean_repository(),
+                "methods": native_identity,
+                "native_runtime": self._native_runtime_for_plan(plan),
+            })
+            (protocol / "tuning_execution_identity.json").write_text(
+                json.dumps(execution))
+            incumbent_candidates = {
+                method: {
+                    "source_config": native_identity[method]["config"],
+                    "source_config_sha256":
+                        native_identity[method]["config_sha256"],
+                    "candidate": {
+                        "candidate_id": f"inc-{method}", "method": method,
+                    },
+                } for method in ("M3", "M4")
+            }
+            incumbents = _seal({
+                "experiment_schema": 2,
+                "protocol_id": PROTOCOL_ID,
+                "kind": "tracked-pre-tuning-incumbents",
+                "execution_identity_record_sha256":
+                    execution["record_sha256"],
+                "methods": incumbent_candidates,
+            })
+            (protocol / "incumbent_configs.json").write_text(
+                json.dumps(incumbents))
+            selection_evidence = {}
+            for method in ("M3", "M4"):
+                winner_id = selected_candidates[method]["candidate_id"]
+                incumbent_id = incumbent_candidates[method]["candidate"][
+                    "candidate_id"]
+                paired_summaries = [
+                    {
+                        "candidate_id": incumbent_id,
+                        "valid": True,
+                        "median_delta_log_fidelity": 0.0,
+                    },
+                    {
+                        "candidate_id": winner_id,
+                        "valid": True,
+                        "median_delta_log_fidelity": 0.1,
+                    },
+                ]
+                selection_evidence[method] = {
+                    "selected": [winner_id],
+                    "incumbent_candidate_id": incumbent_id,
+                    "non_degradation_passed": True,
+                    "non_degradation_tolerance":
+                        INCUMBENT_NON_DEGRADATION_TOLERANCE,
+                    "incumbent_median_delta_log_fidelity": 0.0,
+                    "winner_median_delta_log_fidelity": 0.1,
+                    "incumbent_median_delta_log_fidelity_by_dataset": {
+                        "ZAC18": 0.0, "QMAP154": 0.0,
+                    },
+                    "winner_median_delta_log_fidelity_by_dataset": {
+                        "ZAC18": 0.1, "QMAP154": 0.1,
+                    },
+                    "dataset_summaries": {
+                        "ZAC18": paired_summaries,
+                        "QMAP154": paired_summaries,
+                    },
+                    "summaries": paired_summaries,
+                }
             validation = {
                 "experiment_schema": 2,
                 "protocol_id": PROTOCOL_ID,
                 "selected_independent": selected_candidates,
+                "selections": selection_evidence,
+                "incumbent_config_record_sha256": incumbents[
+                    "record_sha256"],
             }
             validation["record_sha256"] = _record_sha256(validation)
             (selections / "validation.json").write_text(
@@ -328,6 +796,13 @@ class QualityRacingTests(unittest.TestCase):
                 "experiment_schema": 2,
                 "protocol_id": PROTOCOL_ID,
                 "selected_independent": selected_candidates,
+                "execution_identity_record_sha256":
+                    execution["record_sha256"],
+                "incumbent_config_record_sha256":
+                    incumbents["record_sha256"],
+                "validation_non_degradation":
+                    _assert_validation_non_degradation(
+                        validation, incumbents),
                 "validation_selection_record_sha256":
                     validation["record_sha256"],
                 "shared_forward_check_record_sha256":

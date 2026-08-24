@@ -44,6 +44,7 @@ VALIDATION_SEEDS = (0, 1, 2)
 RACE_BLOCK_SIZE = 5
 ELIMINATION_LOGF_MARGIN = 0.005
 NEAR_OPTIMAL_LOGF = 0.002
+INCUMBENT_NON_DEGRADATION_TOLERANCE = 1e-12
 
 ZAC_DEVELOPMENT = (
     "bv_n14", "bv_n19", "cat_n22", "ghz_n23", "ghz_n78", "wstate_n27",
@@ -127,6 +128,18 @@ STRUCTURAL_DEFAULTS: Mapping[str, Any] = {
     "max_horizon": 8,
 }
 
+# These are the only candidate-controlled fields applied to a complete formal
+# setting.  Keeping one shared list lets the runner freeze the *actual* current
+# M3/M4 settings as validation incumbents without accidentally omitting a knob.
+FORMAL_CANDIDATE_KEYS = (
+    "population_size", "iterations", "neighbor_sample_size",
+    "neighbors_per_solution", "elite_count", "early_stop_patience",
+    "max_unique_evaluations", "theta_capacity", "return_candidate_limit",
+    "return_assignment_k", "crossover_rate", "local_polish_sweeps",
+    "direct_enumeration_limit", "forecast_gate_candidate_budget",
+    "alpha_lookahead",
+)
+
 
 def _stable_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
@@ -165,6 +178,40 @@ def _method_config(method: str, profile: str) -> dict[str, Any]:
 def search_profile_candidates(method: str) -> list[dict[str, Any]]:
     """Return the five preregistered search profiles in table order."""
     return [_method_config(method, profile) for profile in SEARCH_PROFILES]
+
+
+def incumbent_candidate(method: str, setting: Mapping[str, Any]
+                        ) -> dict[str, Any]:
+    """Freeze the current formal setting as an explicit validation candidate.
+
+    The search profiles intentionally start from a bounded, cheap projection,
+    which need not equal the compiler's currently tracked setting.  This
+    helper extracts the real tunable values from that setting so validation
+    can enforce the registered no-regression gate.
+    """
+    if method not in METHODS:
+        raise ValueError(f"unknown tuning method {method!r}")
+    value = dict(setting)
+    validate_schema2_setting(value)
+    expected_method_id = "ours_nl" if method == "M3" else "ours_lk"
+    if value.get("method_id") != expected_method_id:
+        raise ValueError("incumbent setting belongs to another method")
+    lookahead = value.get("lookahead_horizon")
+    if not isinstance(lookahead, Mapping):
+        raise ValueError("incumbent setting lacks decay lookahead metadata")
+    expected_horizon = 0 if method == "M3" else 8
+    if int(lookahead.get("max_horizon", -1)) != expected_horizon:
+        raise ValueError("incumbent setting has the wrong method horizon")
+    candidate = {
+        "protocol_id": PROTOCOL_ID,
+        "method": method,
+        "stage": "incumbent_validation",
+        "search_profile": "tracked_pre_tuning_incumbent",
+        **{key: value[key] for key in FORMAL_CANDIDATE_KEYS},
+        "rho": float(lookahead["rho"]),
+        "max_horizon": expected_horizon,
+    }
+    return _with_id(candidate)
 
 
 def decision_candidates(
@@ -473,6 +520,131 @@ def select_top(
     }
 
 
+def select_non_degrading(
+        trials: Sequence[RacingTrial], *, candidate_ids: Sequence[str],
+        incumbent_candidate_id: str, method: str, circuits: Sequence[str],
+        seeds: Sequence[int]) -> dict[str, Any]:
+    """Select one winner after hard overall and per-dataset quality gates.
+
+    Runtime and Move metrics may break a quality tie only after a candidate has
+    demonstrated that its circuit-level median delta-log-fidelity is no lower
+    than the frozen incumbent both overall and within every represented
+    dataset.  In particular, a QMAP improvement may not purchase a ZAC
+    regression (or vice versa), and the ordinary 0.002 near-optimal runtime
+    band cannot purchase a quality regression relative to the current
+    implementation.
+    """
+    ids = list(dict.fromkeys(str(value) for value in candidate_ids))
+    if incumbent_candidate_id not in ids:
+        raise ValueError("validation cohort does not contain the incumbent")
+    selected_circuits = set(str(value) for value in circuits)
+    datasets_by_circuit: dict[str, set[str]] = {
+        circuit: set() for circuit in selected_circuits}
+    for row in trials:
+        if (row.method == method and row.circuit in selected_circuits
+                and row.candidate_id in ids and row.seed in seeds):
+            datasets_by_circuit[row.circuit].add(str(row.dataset))
+    malformed = {
+        circuit: sorted(datasets) for circuit, datasets in datasets_by_circuit.items()
+        if len(datasets) != 1
+    }
+    if malformed:
+        raise ValueError(
+            f"validation circuits do not map to exactly one dataset: {malformed}")
+    circuits_by_dataset: dict[str, list[str]] = {}
+    for circuit in circuits:
+        dataset = next(iter(datasets_by_circuit[str(circuit)]))
+        circuits_by_dataset.setdefault(dataset, []).append(str(circuit))
+
+    summaries = summarize_candidates(
+        trials, candidate_ids=ids, method=method,
+        circuits=circuits, seeds=seeds)
+    by_id = {str(row["candidate_id"]): row for row in summaries}
+    incumbent = by_id[incumbent_candidate_id]
+    if not incumbent["valid"]:
+        raise RuntimeError(f"{method} incumbent is invalid or incomplete")
+    incumbent_quality = float(incumbent["median_delta_log_fidelity"])
+    dataset_summaries = {
+        dataset: summarize_candidates(
+            trials, candidate_ids=ids, method=method,
+            circuits=dataset_circuits, seeds=seeds)
+        for dataset, dataset_circuits in sorted(circuits_by_dataset.items())
+    }
+    dataset_by_id = {
+        dataset: {str(row["candidate_id"]): row for row in values}
+        for dataset, values in dataset_summaries.items()
+    }
+    incumbent_quality_by_dataset = {}
+    for dataset, values in dataset_by_id.items():
+        row = values[incumbent_candidate_id]
+        if not row["valid"]:
+            raise RuntimeError(
+                f"{method} incumbent is invalid or incomplete on {dataset}")
+        incumbent_quality_by_dataset[dataset] = float(
+            row["median_delta_log_fidelity"])
+
+    def non_degrading(candidate_id: str) -> bool:
+        if (not by_id[candidate_id]["valid"]
+                or float(by_id[candidate_id]["median_delta_log_fidelity"])
+                + INCUMBENT_NON_DEGRADATION_TOLERANCE < incumbent_quality):
+            return False
+        return all(
+            dataset_by_id[dataset][candidate_id]["valid"]
+            and float(dataset_by_id[dataset][candidate_id][
+                "median_delta_log_fidelity"])
+            + INCUMBENT_NON_DEGRADATION_TOLERANCE
+            >= incumbent_quality_by_dataset[dataset]
+            for dataset in dataset_by_id
+        )
+
+    eligible = [
+        candidate_id for candidate_id in ids
+        if non_degrading(candidate_id)
+    ]
+    if incumbent_candidate_id not in eligible:
+        raise AssertionError("valid incumbent was removed by its own quality gate")
+    ranked = select_top(
+        trials, candidate_ids=eligible, method=method,
+        circuits=circuits, seeds=seeds, count=1)
+    winner_id = str(ranked["selected"][0])
+    winner_quality = float(by_id[winner_id]["median_delta_log_fidelity"])
+    if (winner_quality + INCUMBENT_NON_DEGRADATION_TOLERANCE
+            < incumbent_quality):
+        raise AssertionError("selected validation winner degrades the incumbent")
+    winner_quality_by_dataset = {
+        dataset: float(values[winner_id]["median_delta_log_fidelity"])
+        for dataset, values in dataset_by_id.items()
+    }
+    if any(
+            winner_quality_by_dataset[dataset]
+            + INCUMBENT_NON_DEGRADATION_TOLERANCE
+            < incumbent_quality_by_dataset[dataset]
+            for dataset in dataset_by_id):
+        raise AssertionError(
+            "selected validation winner degrades a dataset incumbent")
+    return {
+        "protocol_id": PROTOCOL_ID,
+        "method": method,
+        "selected": [winner_id],
+        "incumbent_candidate_id": incumbent_candidate_id,
+        "incumbent_median_delta_log_fidelity": incumbent_quality,
+        "winner_median_delta_log_fidelity": winner_quality,
+        "incumbent_median_delta_log_fidelity_by_dataset":
+            incumbent_quality_by_dataset,
+        "winner_median_delta_log_fidelity_by_dataset":
+            winner_quality_by_dataset,
+        "non_degradation_tolerance": INCUMBENT_NON_DEGRADATION_TOLERANCE,
+        "non_degradation_passed": True,
+        "eligible_candidate_ids": eligible,
+        "degraded_or_invalid_candidate_ids": [
+            candidate_id for candidate_id in ids
+            if candidate_id not in eligible
+        ],
+        "dataset_summaries": dataset_summaries,
+        "summaries": summaries,
+    }
+
+
 def shared_forward_pair(m4_config: Mapping[str, Any]
                         ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build a horizon-only pair for the small 30-circuit forward check."""
@@ -494,14 +666,7 @@ def materialize_formal_setting(base: Mapping[str, Any],
     method = candidate["method"]
     method_id = "ours_nl" if method == "M3" else "ours_lk"
     setting = dict(base)
-    for key in (
-            "population_size", "iterations", "neighbor_sample_size",
-            "neighbors_per_solution", "elite_count", "early_stop_patience",
-            "max_unique_evaluations", "theta_capacity",
-            "return_candidate_limit", "return_assignment_k",
-            "crossover_rate", "local_polish_sweeps",
-            "direct_enumeration_limit", "forecast_gate_candidate_budget",
-            "alpha_lookahead"):
+    for key in FORMAL_CANDIDATE_KEYS:
         setting[key] = candidate[key]
     setting.update({
         "method_id": method_id,
@@ -579,14 +744,15 @@ def write_protocol_files(output_directory: Path) -> dict[str, str]:
 
 __all__ = [
     "COMMON_KNOBS", "DEVELOPMENT_CIRCUITS", "DEVELOPMENT_SEED",
-    "ELIMINATION_LOGF_MARGIN", "M4_DECAY_KNOBS", "METHODS",
+    "ELIMINATION_LOGF_MARGIN", "FORMAL_CANDIDATE_KEYS",
+    "INCUMBENT_NON_DEGRADATION_TOLERANCE", "M4_DECAY_KNOBS", "METHODS",
     "PROTOCOL_ID", "QMAP_DEVELOPMENT", "QMAP_VALIDATION",
     "RACE_BLOCK_SIZE", "RacingTrial", "SEARCH_PROFILES",
     "STRUCTURAL_DEFAULTS", "VALIDATION_CIRCUITS", "VALIDATION_SEEDS",
     "ZAC_DEVELOPMENT", "ZAC_VALIDATION", "config_id",
-    "decision_candidates", "lookahead_candidates",
+    "decision_candidates", "incumbent_candidate", "lookahead_candidates",
     "materialize_formal_setting", "race_checkpoint", "search_profile_candidates",
-    "search_space_manifest", "select_top", "shared_forward_pair",
+    "search_space_manifest", "select_non_degrading", "select_top", "shared_forward_pair",
     "split_manifest", "summarize_candidates", "validate_shared_formal_settings",
     "write_protocol_files",
 ]

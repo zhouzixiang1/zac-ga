@@ -9,13 +9,16 @@ five-circuit racing checkpoints remain strict barriers.
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import json
 import multiprocessing
 import os
 import statistics
+import sys
 import uuid
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -28,15 +31,18 @@ from .plan import (ExperimentPlan, effective_zac_setting,
 from .quality_racing import (
     DEVELOPMENT_CIRCUITS,
     DEVELOPMENT_SEED,
+    INCUMBENT_NON_DEGRADATION_TOLERANCE,
     PROTOCOL_ID,
     RacingTrial,
     VALIDATION_CIRCUITS,
     VALIDATION_SEEDS,
     decision_candidates,
+    incumbent_candidate,
     lookahead_candidates,
     materialize_formal_setting,
     race_checkpoint,
     search_profile_candidates,
+    select_non_degrading,
     select_top,
     shared_forward_pair,
     split_manifest,
@@ -59,6 +65,7 @@ _SINGLE_THREAD_ENVIRONMENT = {
 }
 
 _REUSE_ARTIFACT_VALIDATION_CACHE: set[tuple[str, str]] = set()
+_HELD_ATTEMPT_LOCKS: set[str] = set()
 
 
 def _stable_json(value: Any) -> str:
@@ -153,10 +160,250 @@ def _candidate_registry_payload() -> dict[str, Any]:
     return payload
 
 
+def _setting_native_identity(setting: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: setting.get(key) for key in (
+            "algorithm_revision", "backend", "formal_native",
+            "native_abi_version", "native_wheel_sha256",
+            "tuning_protocol_id", "rng_version",
+        )
+    }
+
+
+def _native_runtime_identity_payload(
+        expected: Mapping[str, Any], *, python: str | None = None
+) -> dict[str, Any]:
+    """Verify and freeze the extension that the formal interpreter loads.
+
+    Reading a wheel digest from JSON is not an environment check.  This calls
+    the native backend's registered-wheel verifier, which binds the loaded
+    extension bytes to the wheel archive before the first racing attempt can
+    be scheduled.
+    """
+    if (python is not None
+            and Path(python).resolve() != Path(sys.executable).resolve()):
+        raise RuntimeError(
+            "quality-racing prepare must run under the compiler Python "
+            f"interpreter: {python}")
+
+    from zzx.native_backend import build_info
+
+    info = build_info(
+        require_registered_wheel=True,
+        expected_wheel_sha256=str(expected.get("native_wheel_sha256", "")),
+    )
+    required_flags = {
+        "cxx_standard": 17,
+        "openmp": False,
+        "fast_math": False,
+    }
+    observed = {
+        "native_abi_version": info.get("native_abi_version"),
+        "native_wheel_sha256": info.get("native_wheel_sha256"),
+        "rng_version": info.get("rng_version"),
+        **required_flags,
+    }
+    expected_values = {
+        "native_abi_version": expected.get("native_abi_version"),
+        "native_wheel_sha256": expected.get("native_wheel_sha256"),
+        "rng_version": expected.get("rng_version"),
+        **required_flags,
+    }
+    observed.update({key: info.get(key) for key in required_flags})
+    drift = {
+        key: (observed.get(key), value)
+        for key, value in expected_values.items()
+        if observed.get(key) != value
+    }
+    if info.get("wheel_registered") is not True:
+        drift["wheel_registered"] = (info.get("wheel_registered"), True)
+    extension_sha256 = info.get("extension_sha256")
+    if (not isinstance(extension_sha256, str)
+            or len(extension_sha256) != 64
+            or any(value not in "0123456789abcdef"
+                   for value in extension_sha256)):
+        drift["extension_sha256"] = (extension_sha256, "lowercase SHA256")
+    if drift:
+        raise ValueError(f"quality-racing loaded native runtime drift: {drift}")
+    return {
+        "native_abi_version": int(observed["native_abi_version"]),
+        "native_wheel_sha256": str(observed["native_wheel_sha256"]),
+        "rng_version": str(observed["rng_version"]),
+        "extension_sha256": str(extension_sha256),
+        "native_version": str(info.get("version", "")),
+        "build_type": str(info.get("build_type", "")),
+        "compiler_id": str(info.get("compiler_id", "")),
+        "compiler_version": str(info.get("compiler_version", "")),
+        "python": str(Path(sys.executable).resolve()),
+        "cxx_standard": 17,
+        "openmp": False,
+        "fast_math": False,
+    }
+
+
+def _execution_identity_payload(plan: ExperimentPlan) -> dict[str, Any]:
+    """Freeze the clean compiler/native identity shared by every tuning stage."""
+    repository = repository_snapshot(plan.repo_root)
+    if (repository.get("dirty") is not False or
+            repository.get("commit") in (None, "", "unknown")):
+        raise RuntimeError(
+            "quality racing requires a clean, known Git commit")
+    methods = {}
+    native_identities = []
+    for method in ("M3", "M4"):
+        spec = plan.methods[method]
+        setting = effective_zac_setting(spec.payload)
+        native = _setting_native_identity(setting)
+        methods[method] = {
+            "config": str(spec.config_path),
+            "config_sha256": sha256_file(spec.config_path),
+            "native": native,
+        }
+        native_identities.append(native)
+    if native_identities[0] != native_identities[1]:
+        raise ValueError("M3/M4 native execution identities differ")
+    native_runtime = _native_runtime_identity_payload(
+        native_identities[0], python=plan.python)
+    return _seal({
+        "experiment_schema": 2,
+        "protocol_id": PROTOCOL_ID,
+        "kind": "quality-racing-execution-identity",
+        "plan_sha256": sha256_file(plan.path),
+        "repository": repository,
+        "methods": methods,
+        "native_runtime": native_runtime,
+    })
+
+
+def _incumbent_payload(plan: ExperimentPlan,
+                       execution: Mapping[str, Any]) -> dict[str, Any]:
+    methods = {}
+    for method in ("M3", "M4"):
+        spec = plan.methods[method]
+        methods[method] = {
+            "source_config": str(spec.config_path),
+            "source_config_sha256": sha256_file(spec.config_path),
+            "candidate": incumbent_candidate(
+                method, effective_zac_setting(spec.payload)),
+        }
+    return _seal({
+        "experiment_schema": 2,
+        "protocol_id": PROTOCOL_ID,
+        "kind": "tracked-pre-tuning-incumbents",
+        "execution_identity_record_sha256": execution["record_sha256"],
+        "methods": methods,
+    })
+
+
+def _read_execution_identity(root: Path) -> Mapping[str, Any]:
+    path = root / "protocol" / "tuning_execution_identity.json"
+    if not path.is_file():
+        raise RuntimeError(
+            "quality-racing execution identity is absent; rerun prepare")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    _validate_sealed(payload)
+    if payload.get("kind") != "quality-racing-execution-identity":
+        raise ValueError("quality-racing execution identity kind mismatch")
+    repository = payload.get("repository")
+    methods = payload.get("methods")
+    if (not isinstance(repository, Mapping)
+            or repository.get("dirty") is not False
+            or not isinstance(repository.get("commit"), str)
+            or not repository["commit"]
+            or not isinstance(methods, Mapping)
+            or set(methods) != {"M3", "M4"}):
+        raise ValueError("quality-racing execution identity is incomplete")
+    native_identities = []
+    for method in ("M3", "M4"):
+        row = methods[method]
+        native = row.get("native") if isinstance(row, Mapping) else None
+        config_hash = row.get("config_sha256") if isinstance(row, Mapping) else None
+        if (not isinstance(native, Mapping)
+                or native.get("backend") != "native"
+                or native.get("formal_native") is not True
+                or native.get("tuning_protocol_id") != PROTOCOL_ID
+                or not isinstance(native.get("native_abi_version"), int)
+                or isinstance(native.get("native_abi_version"), bool)
+                or native["native_abi_version"] <= 0
+                or not isinstance(native.get("native_wheel_sha256"), str)
+                or len(native["native_wheel_sha256"]) != 64
+                or not isinstance(config_hash, str) or len(config_hash) != 64):
+            raise ValueError(
+                f"quality-racing {method} execution identity is malformed")
+        native_identities.append(dict(native))
+    if native_identities[0] != native_identities[1]:
+        raise ValueError("quality-racing M3/M4 native identities differ")
+    runtime = payload.get("native_runtime")
+    if (not isinstance(runtime, Mapping)
+            or runtime.get("native_abi_version") !=
+            native_identities[0].get("native_abi_version")
+            or runtime.get("native_wheel_sha256") !=
+            native_identities[0].get("native_wheel_sha256")
+            or runtime.get("rng_version") !=
+            native_identities[0].get("rng_version")
+            or runtime.get("cxx_standard") != 17
+            or runtime.get("openmp") is not False
+            or runtime.get("fast_math") is not False
+            or not isinstance(runtime.get("extension_sha256"), str)
+            or len(runtime["extension_sha256"]) != 64):
+        raise ValueError("quality-racing loaded native runtime is malformed")
+    return payload
+
+
+def _load_execution_identity(plan: ExperimentPlan,
+                             root: Path) -> Mapping[str, Any]:
+    frozen = _read_execution_identity(root)
+    current = _execution_identity_payload(plan)
+    if frozen != current:
+        raise ValueError(
+            "quality-racing Git/config/native execution identity changed")
+    return frozen
+
+
+def _read_incumbents(root: Path) -> Mapping[str, Any]:
+    path = root / "protocol" / "incumbent_configs.json"
+    if not path.is_file():
+        raise RuntimeError("quality-racing incumbent freeze is absent; rerun prepare")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    _validate_sealed(payload)
+    if payload.get("kind") != "tracked-pre-tuning-incumbents":
+        raise ValueError("quality-racing incumbent freeze kind mismatch")
+    methods = payload.get("methods")
+    if not isinstance(methods, Mapping) or set(methods) != {"M3", "M4"}:
+        raise ValueError("quality-racing incumbent freeze is incomplete")
+    for method in ("M3", "M4"):
+        row = methods[method]
+        candidate = row.get("candidate") if isinstance(row, Mapping) else None
+        if (not isinstance(candidate, Mapping)
+                or candidate.get("method") != method
+                or not isinstance(candidate.get("candidate_id"), str)
+                or not candidate["candidate_id"]):
+            raise ValueError(f"quality-racing {method} incumbent is malformed")
+    execution = _read_execution_identity(root)
+    if payload.get("execution_identity_record_sha256") != \
+            execution.get("record_sha256"):
+        raise ValueError("incumbent freeze uses another execution identity")
+    for method in ("M3", "M4"):
+        row = methods[method]
+        frozen = execution["methods"][method]
+        if (row.get("source_config") != frozen.get("config")
+                or row.get("source_config_sha256") !=
+                frozen.get("config_sha256")):
+            raise ValueError(
+                f"quality-racing {method} incumbent source config drift")
+    return payload
+
+
 def prepare_workspace(plan: ExperimentPlan, root: Path | None = None
                       ) -> Mapping[str, Any]:
     root = (root or default_root(plan)).resolve()
     root.mkdir(parents=True, exist_ok=True)
+    execution = _execution_identity_payload(plan)
+    incumbents = _incumbent_payload(plan, execution)
+    _write_same_or_fail(
+        root / "protocol" / "tuning_execution_identity.json", execution)
+    _write_same_or_fail(
+        root / "protocol" / "incumbent_configs.json", incumbents)
     _write_same_or_fail(
         root / "protocol" / "split_manifest.json", split_manifest())
     _write_same_or_fail(
@@ -192,6 +439,11 @@ def _load_workspace(plan: ExperimentPlan, root: Path) -> Mapping[str, Any]:
         raise ValueError("quality-racing plan changed after prepare")
     if payload.get("split_sha256") != split_manifest()["sha256"]:
         raise ValueError("quality-racing split changed after prepare")
+    if payload.get("candidate_registry_sha256") != \
+            _candidate_registry_payload()["sha256"]:
+        raise ValueError("quality-racing candidate registry changed after prepare")
+    _load_execution_identity(plan, root)
+    _read_incumbents(root)
     return payload
 
 
@@ -237,6 +489,28 @@ def _config_payload(plan: ExperimentPlan, candidate: Mapping[str, Any],
     return destination
 
 
+def _candidate_execution_identity(
+        plan: ExperimentPlan, root: Path, *, method: str, config: Path,
+        frozen: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    frozen = frozen or _load_execution_identity(plan, root)
+    method_freeze = frozen["methods"][method]
+    config_payload = json.loads(config.read_text(encoding="utf-8"))
+    setting = effective_zac_setting(config_payload)
+    native = _setting_native_identity(setting)
+    if native != method_freeze["native"]:
+        raise ValueError(
+            f"{method} candidate changes frozen native execution identity")
+    repository = frozen["repository"]
+    return {
+        "execution_identity_record_sha256": frozen["record_sha256"],
+        "git_commit": repository["commit"],
+        "git_dirty": False,
+        "config_sha256": sha256_file(config),
+        **native,
+    }
+
+
 def _receipt_path(root: Path, stage: str, method: str, candidate_id: str,
                   dataset: str, circuit: str, seed: int) -> Path:
     return (root / "receipts" / stage / method / candidate_id / dataset /
@@ -245,6 +519,84 @@ def _receipt_path(root: Path, stage: str, method: str, candidate_id: str,
 
 def _attempt_manifest_path(manifest: RunManifest) -> Path:
     return Path(manifest.artifact_dir) / "manifest.json"
+
+
+def _attempt_artifact_sha256(manifest_path: Path) -> dict[str, str]:
+    """Hash every promoted attempt file except the separately hashed manifest."""
+    root = manifest_path.parent.resolve()
+    values = {}
+    for artifact in sorted(root.rglob("*"), key=lambda value: str(value)):
+        if not artifact.is_file() or artifact.resolve() == manifest_path.resolve():
+            continue
+        relative = artifact.resolve().relative_to(root).as_posix()
+        values[relative] = sha256_file(artifact)
+    return values
+
+
+@contextmanager
+def _attempt_identity_lock(receipt: Path, identity: Mapping[str, Any]):
+    """Hold one OS-released lock for a receipt identity across CLI processes."""
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    claim = receipt.with_name(f".{receipt.name}.lock")
+    claim_key = str(claim.resolve())
+    if claim_key in _HELD_ATTEMPT_LOCKS:
+        raise RuntimeError(f"quality-racing identity is already running: {receipt}")
+    try:
+        descriptor = os.open(
+            claim, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        descriptor = os.open(claim, os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(
+                f"quality-racing identity is already running: {receipt}") from error
+        _HELD_ATTEMPT_LOCKS.add(claim_key)
+        metadata = (_stable_json({
+            "pid": os.getpid(),
+            "identity_sha256": stable_sha256(dict(identity)),
+        }) + "\n").encode("utf-8")
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, metadata)
+        os.fsync(descriptor)
+        yield
+    finally:
+        _HELD_ATTEMPT_LOCKS.discard(claim_key)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def _native_manifest_identity_complete(
+        manifest: RunManifest, execution: Mapping[str, Any]) -> bool:
+    observed = {
+        "algorithm_revision": manifest.algorithm_revision,
+        "backend": manifest.backend,
+        "native_abi_version": manifest.native_abi_version,
+        "native_wheel_sha256": manifest.native_wheel_sha256,
+        "tuning_protocol_id": manifest.tuning_protocol_id,
+        "rng_version": manifest.rng_version,
+    }
+    return all(
+        value not in (None, "") and value == execution.get(key)
+        for key, value in observed.items())
+
+
+def _retryable_native_environment_failure(
+        payload: Mapping[str, Any]) -> bool:
+    """Return true when a compiler error never proved the frozen runtime."""
+    identity = payload.get("identity")
+    execution = identity.get("execution") if isinstance(identity, Mapping) else None
+    if (payload.get("status") != "compiler_error"
+            or not isinstance(execution, Mapping)):
+        return False
+    manifest_path = Path(str(payload.get("attempt_manifest", "")))
+    if not manifest_path.is_file():
+        return False
+    manifest = load_run_manifest(manifest_path)
+    return not _native_manifest_identity_complete(manifest, execution)
 
 
 def _validate_attempt_receipt(path: Path, expected: Mapping[str, Any]
@@ -264,6 +616,45 @@ def _validate_attempt_receipt(path: Path, expected: Mapping[str, Any]
             raise ValueError(f"attempt identity {key} drift: {path}")
     if manifest.status != payload["status"]:
         raise ValueError(f"attempt status drift: {path}")
+    execution = identity.get("execution") if isinstance(identity, Mapping) else None
+    if isinstance(execution, Mapping):
+        config_path = Path(str(payload.get("config", "")))
+        config_sha256 = str(execution.get("config_sha256", ""))
+        if (payload.get("config_sha256") != config_sha256
+                or not config_path.is_file()
+                or sha256_file(config_path) != config_sha256
+                or manifest.config_sha256 != config_sha256):
+            raise ValueError(f"quality-racing candidate config drift: {path}")
+        if (manifest.git_commit != execution.get("git_commit")
+                or manifest.git_dirty is not False):
+            raise ValueError(f"quality-racing candidate Git drift: {path}")
+        manifest_fields = {
+            "algorithm_revision": manifest.algorithm_revision,
+            "backend": manifest.backend,
+            "native_abi_version": manifest.native_abi_version,
+            "native_wheel_sha256": manifest.native_wheel_sha256,
+            "tuning_protocol_id": manifest.tuning_protocol_id,
+            "rng_version": manifest.rng_version,
+        }
+        expected_fields = {
+            key: execution.get(key) for key in manifest_fields
+        }
+        compiler_completed = manifest.status in {
+            "success", "verifier_fail", "scorer_error"
+        }
+        for key, observed in manifest_fields.items():
+            if ((compiler_completed or observed not in (None, ""))
+                    and observed != expected_fields[key]):
+                raise ValueError(
+                    f"quality-racing candidate {key} drift: {path}")
+        if manifest.status == "success":
+            artifact_hashes = payload.get("attempt_artifact_sha256")
+            if not isinstance(artifact_hashes, Mapping) or not artifact_hashes:
+                raise ValueError(
+                    f"quality-racing success artifact hashes are absent: {path}")
+            if dict(artifact_hashes) != _attempt_artifact_sha256(manifest_path):
+                raise ValueError(
+                    f"quality-racing success artifact drift: {path}")
     reuse = payload.get("reuse")
     if isinstance(reuse, Mapping):
         cache_key = (str(path.resolve()), str(payload["record_sha256"]))
@@ -295,6 +686,13 @@ def _run_one(
     canonical_circuit = Path(canonical.canonical_path).stem
     candidate_id = ("paper-original" if candidate is None
                     else str(candidate["candidate_id"]))
+    if candidate is None:
+        config = plan.methods[method].config_path
+    else:
+        config = _config_payload(
+            plan, candidate, seed=seed,
+            destination=(root / "configs" / candidate_id /
+                         f"seed-{seed}.json"))
     identity = {
         "stage": stage,
         "dataset": dataset.name,
@@ -304,21 +702,19 @@ def _run_one(
         "candidate_id": candidate_id,
         "seed": int(seed),
     }
+    if candidate is not None:
+        identity["execution"] = _candidate_execution_identity(
+            plan, root, method=method, config=config)
     receipt = _receipt_path(
         root, stage, method, candidate_id, dataset.name, circuit, seed)
     if receipt.is_file():
         if not resume:
             raise FileExistsError(
                 f"quality-racing receipt exists; use resume: {receipt}")
-        return _validate_attempt_receipt(receipt, identity)
+        existing = _validate_attempt_receipt(receipt, identity)
+        if not _retryable_native_environment_failure(existing):
+            return existing
 
-    if candidate is None:
-        config = plan.methods[method].config_path
-    else:
-        config = _config_payload(
-            plan, candidate, seed=seed,
-            destination=(root / "configs" / candidate_id /
-                         f"seed-{seed}.json"))
     spec = _attempt_spec(
         plan, dataset, canonical, method, seed, 0, "smoke",
         config_path=config,
@@ -341,21 +737,38 @@ def _run_one(
             "command": list(spec.command),
             "dry_run": True,
         }
-    gate = UnifiedEvaluationGate(plan, canonical, method)
-    manifest = run_attempt(spec, verifier=gate.verifier, scorer=gate.scorer)
-    manifest_path = _attempt_manifest_path(manifest)
-    payload = _seal({
-        "experiment_schema": 2,
-        "protocol_id": PROTOCOL_ID,
-        "identity": identity,
-        "config": str(config),
-        "config_sha256": sha256_file(config),
-        "status": manifest.status,
-        "attempt_manifest": str(manifest_path),
-        "attempt_manifest_sha256": sha256_file(manifest_path),
-    })
-    _atomic_json(receipt, payload)
-    return payload
+    with _attempt_identity_lock(receipt, identity):
+        # Another CLI may have completed this identity between the optimistic
+        # existence check above and acquisition of the per-receipt lock.
+        if receipt.is_file():
+            if not resume:
+                raise FileExistsError(
+                    f"quality-racing receipt exists; use resume: {receipt}")
+            existing = _validate_attempt_receipt(receipt, identity)
+            if not _retryable_native_environment_failure(existing):
+                return existing
+        gate = UnifiedEvaluationGate(plan, canonical, method)
+        manifest = run_attempt(spec, verifier=gate.verifier, scorer=gate.scorer)
+        manifest_path = _attempt_manifest_path(manifest)
+        receipt_body = {
+            "experiment_schema": 2,
+            "protocol_id": PROTOCOL_ID,
+            "identity": identity,
+            "config": str(config),
+            "config_sha256": sha256_file(config),
+            "status": manifest.status,
+            "attempt_manifest": str(manifest_path),
+            "attempt_manifest_sha256": sha256_file(manifest_path),
+        }
+        if candidate is not None and manifest.status == "success":
+            artifact_hashes = _attempt_artifact_sha256(manifest_path)
+            if not artifact_hashes:
+                raise RuntimeError(
+                    "quality-racing success attempt has no replay artifacts")
+            receipt_body["attempt_artifact_sha256"] = artifact_hashes
+        payload = _seal(receipt_body)
+        _atomic_json(receipt, payload)
+        return _validate_attempt_receipt(receipt, identity)
 
 
 def _run_one_process(task: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -751,6 +1164,7 @@ def _load_candidate_rows(
         candidates: Sequence[Mapping[str, Any]], circuits: Sequence[str],
         seeds: Sequence[int]) -> list[RacingTrial]:
     registry = _canonical_registry(plan)
+    frozen_execution = _load_execution_identity(plan, root)
     rows = []
     for circuit in circuits:
         dataset, canonical = registry[circuit]
@@ -758,11 +1172,19 @@ def _load_candidate_rows(
         canonical_circuit = Path(canonical.canonical_path).stem
         for candidate in candidates:
             for seed in seeds:
+                config = _config_payload(
+                    plan, candidate, seed=seed,
+                    destination=(root / "configs" /
+                                 str(candidate["candidate_id"]) /
+                                 f"seed-{seed}.json"))
                 identity = {
                     "stage": stage, "dataset": dataset,
                     "circuit": canonical_circuit, "circuit_key": circuit,
                     "method": method,
                     "candidate_id": candidate["candidate_id"], "seed": seed,
+                    "execution": _candidate_execution_identity(
+                        plan, root, method=method, config=config,
+                        frozen=frozen_execution),
                 }
                 path = _receipt_path(
                     root, stage, method, candidate["candidate_id"], dataset,
@@ -875,10 +1297,15 @@ def run_lookahead(plan: ExperimentPlan, root: Path, *, resume: bool = True,
 def run_validation(plan: ExperimentPlan, root: Path, *, resume: bool = True,
                    dry_run: bool = False, workers: int = 1) -> Mapping[str, Any]:
     _load_workspace(plan, root)
+    incumbent_freeze = _read_incumbents(root)
     candidates = {
-        "M3": _load_selection(root, "decisions", "M3")["promoted"],
-        "M4": _load_selection(root, "lookahead", "M4")["promoted"],
+        "M3": list(_load_selection(root, "decisions", "M3")["promoted"]),
+        "M4": list(_load_selection(root, "lookahead", "M4")["promoted"]),
     }
+    for method in ("M3", "M4"):
+        incumbent = dict(incumbent_freeze["methods"][method]["candidate"])
+        by_id = _candidate_map([*candidates[method], incumbent])
+        candidates[method] = list(by_id.values())
     outputs = {}
     selections = {}
     for method in ("M3", "M4"):
@@ -892,15 +1319,19 @@ def run_validation(plan: ExperimentPlan, root: Path, *, resume: bool = True,
                 plan, root, stage="validation", method=method,
                 candidates=candidates[method], circuits=VALIDATION_CIRCUITS,
                 seeds=VALIDATION_SEEDS)
-            selections[method] = select_top(
+            selections[method] = select_non_degrading(
                 rows, candidate_ids=[row["candidate_id"]
                                      for row in candidates[method]],
+                incumbent_candidate_id=str(
+                    incumbent_freeze["methods"][method]["candidate"][
+                        "candidate_id"]),
                 method=method, circuits=VALIDATION_CIRCUITS,
-                seeds=VALIDATION_SEEDS, count=2)
+                seeds=VALIDATION_SEEDS)
     result: dict[str, Any] = {
         "experiment_schema": 2, "protocol_id": PROTOCOL_ID,
         "stage": "validation", "dry_run": dry_run, "outputs": outputs,
         "selections": selections,
+        "incumbent_config_record_sha256": incumbent_freeze["record_sha256"],
     }
     if not dry_run:
         selected = {
@@ -910,14 +1341,136 @@ def run_validation(plan: ExperimentPlan, root: Path, *, resume: bool = True,
             for method in ("M3", "M4")
         }
         result["selected_independent"] = selected
+        _assert_validation_non_degradation(result, incumbent_freeze)
         _write_same_or_fail(
             root / "selections" / "validation.json", _seal(result))
     return result
 
 
+def _assert_validation_non_degradation(
+        validation: Mapping[str, Any], incumbents: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    if validation.get("incumbent_config_record_sha256") != \
+            incumbents.get("record_sha256"):
+        raise ValueError("validation uses another incumbent freeze")
+    selections = validation.get("selections")
+    selected = validation.get("selected_independent")
+    if (not isinstance(selections, Mapping)
+            or not isinstance(selected, Mapping)):
+        raise ValueError("validation lacks non-degradation selection evidence")
+    evidence = {}
+    for method in ("M3", "M4"):
+        selection = selections.get(method)
+        incumbent_id = incumbents["methods"][method]["candidate"][
+            "candidate_id"]
+        if not isinstance(selection, Mapping):
+            raise ValueError(f"validation lacks {method} selection")
+        winner_ids = selection.get("selected")
+        if (not isinstance(winner_ids, list) or len(winner_ids) != 1
+                or not isinstance(winner_ids[0], str)):
+            raise ValueError(f"validation {method} must select one winner")
+        winner_id = winner_ids[0]
+        if selection.get("incumbent_candidate_id") != incumbent_id:
+            raise ValueError(f"validation {method} incumbent identity drift")
+        if selection.get("non_degradation_passed") is not True:
+            raise ValueError(f"validation {method} non-degradation gate failed")
+        if selection.get("non_degradation_tolerance") != \
+                INCUMBENT_NON_DEGRADATION_TOLERANCE:
+            raise ValueError(f"validation {method} tolerance drift")
+        summaries = selection.get("summaries")
+        if not isinstance(summaries, list):
+            raise ValueError(f"validation {method} summaries are absent")
+        by_id = {
+            str(row.get("candidate_id")): row for row in summaries
+            if isinstance(row, Mapping)
+        }
+        if incumbent_id not in by_id or winner_id not in by_id:
+            raise ValueError(f"validation {method} gate cohort is incomplete")
+        incumbent = by_id[incumbent_id]
+        winner = by_id[winner_id]
+        if incumbent.get("valid") is not True or winner.get("valid") is not True:
+            raise ValueError(f"validation {method} winner/incumbent is invalid")
+        incumbent_quality = float(incumbent["median_delta_log_fidelity"])
+        winner_quality = float(winner["median_delta_log_fidelity"])
+        if (winner_quality + INCUMBENT_NON_DEGRADATION_TOLERANCE
+                < incumbent_quality):
+            raise ValueError(f"validation {method} winner degrades incumbent")
+        if (float(selection.get(
+                "incumbent_median_delta_log_fidelity")) != incumbent_quality
+                or float(selection.get(
+                    "winner_median_delta_log_fidelity")) != winner_quality):
+            raise ValueError(f"validation {method} quality evidence drift")
+        incumbent_by_dataset = selection.get(
+            "incumbent_median_delta_log_fidelity_by_dataset")
+        winner_by_dataset = selection.get(
+            "winner_median_delta_log_fidelity_by_dataset")
+        dataset_summaries = selection.get("dataset_summaries")
+        expected_datasets = {"ZAC18", "QMAP154"}
+        if (not isinstance(incumbent_by_dataset, Mapping)
+                or set(incumbent_by_dataset) != expected_datasets
+                or not isinstance(winner_by_dataset, Mapping)
+                or set(winner_by_dataset) != expected_datasets
+                or not isinstance(dataset_summaries, Mapping)
+                or set(dataset_summaries) != expected_datasets):
+            raise ValueError(
+                f"validation {method} per-dataset evidence is incomplete")
+        dataset_evidence = {}
+        for dataset in sorted(expected_datasets):
+            rows = dataset_summaries[dataset]
+            if not isinstance(rows, list):
+                raise ValueError(
+                    f"validation {method}/{dataset} summaries are absent")
+            rows_by_id = {
+                str(row.get("candidate_id")): row for row in rows
+                if isinstance(row, Mapping)
+            }
+            if incumbent_id not in rows_by_id or winner_id not in rows_by_id:
+                raise ValueError(
+                    f"validation {method}/{dataset} gate cohort is incomplete")
+            dataset_incumbent = rows_by_id[incumbent_id]
+            dataset_winner = rows_by_id[winner_id]
+            if (dataset_incumbent.get("valid") is not True
+                    or dataset_winner.get("valid") is not True):
+                raise ValueError(
+                    f"validation {method}/{dataset} winner/incumbent is invalid")
+            incumbent_dataset_quality = float(
+                dataset_incumbent["median_delta_log_fidelity"])
+            winner_dataset_quality = float(
+                dataset_winner["median_delta_log_fidelity"])
+            if (winner_dataset_quality
+                    + INCUMBENT_NON_DEGRADATION_TOLERANCE
+                    < incumbent_dataset_quality):
+                raise ValueError(
+                    f"validation {method} winner degrades incumbent on {dataset}")
+            if (float(incumbent_by_dataset[dataset]) !=
+                    incumbent_dataset_quality
+                    or float(winner_by_dataset[dataset]) !=
+                    winner_dataset_quality):
+                raise ValueError(
+                    f"validation {method}/{dataset} quality evidence drift")
+            dataset_evidence[dataset] = {
+                "incumbent_median_delta_log_fidelity":
+                    incumbent_dataset_quality,
+                "winner_median_delta_log_fidelity": winner_dataset_quality,
+            }
+        selected_candidate = selected.get(method)
+        if (not isinstance(selected_candidate, Mapping)
+                or selected_candidate.get("candidate_id") != winner_id):
+            raise ValueError(f"validation {method} selected candidate drift")
+        evidence[method] = {
+            "incumbent_candidate_id": incumbent_id,
+            "selected_candidate_id": winner_id,
+            "incumbent_median_delta_log_fidelity": incumbent_quality,
+            "winner_median_delta_log_fidelity": winner_quality,
+            "by_dataset": dataset_evidence,
+        }
+    return evidence
+
+
 def selected_independent(root: Path) -> Mapping[str, Mapping[str, Any]]:
     payload = json.loads((root / "selections" / "validation.json").read_text())
     _validate_sealed(payload)
+    _assert_validation_non_degradation(payload, _read_incumbents(root))
     return payload["selected_independent"]
 
 
@@ -1002,6 +1555,9 @@ def selected_config_payloads(plan: ExperimentPlan, root: Path, *, seed: int = 0
 def write_selection_artifacts(plan: ExperimentPlan, root: Path) -> Mapping[str, Any]:
     from .initial_placement_runner import validate_initial_selection_for_plan
 
+    _load_workspace(plan, root)
+    execution = _read_execution_identity(root)
+    incumbents = _read_incumbents(root)
     payloads = selected_config_payloads(plan, root)
     output = root / "selected_configs"
     for name, payload in payloads.items():
@@ -1016,10 +1572,15 @@ def write_selection_artifacts(plan: ExperimentPlan, root: Path) -> Mapping[str, 
     validation = json.loads(
         (root / "selections" / "validation.json").read_text())
     _validate_sealed(validation)
+    non_degradation = _assert_validation_non_degradation(
+        validation, incumbents)
     manifest = _seal({
         "experiment_schema": 2,
         "protocol_id": PROTOCOL_ID,
         "selected_independent": selected_independent(root),
+        "execution_identity_record_sha256": execution["record_sha256"],
+        "incumbent_config_record_sha256": incumbents["record_sha256"],
+        "validation_non_degradation": non_degradation,
         "validation_selection_record_sha256": validation["record_sha256"],
         "shared_forward_check_record_sha256": shared["record_sha256"],
         "initial_selection_record_sha256": initial["record_sha256"],
@@ -1045,6 +1606,18 @@ def validate_quality_selection_for_plan(
     ).read_text(encoding="utf-8"))
     _validate_sealed(validation)
     _validate_sealed(shared)
+    execution = _read_execution_identity(root)
+    incumbents = _read_incumbents(root)
+    if (payload.get("execution_identity_record_sha256") !=
+            execution.get("record_sha256")):
+        raise ValueError("quality selection execution identity drift")
+    if (payload.get("incumbent_config_record_sha256") !=
+            incumbents.get("record_sha256")):
+        raise ValueError("quality selection incumbent freeze drift")
+    non_degradation = _assert_validation_non_degradation(
+        validation, incumbents)
+    if payload.get("validation_non_degradation") != non_degradation:
+        raise ValueError("quality selection non-degradation evidence drift")
     if (payload.get("validation_selection_record_sha256") !=
             validation.get("record_sha256")):
         raise ValueError("quality selection validation receipt drift")
@@ -1093,6 +1666,19 @@ def validate_quality_selection_for_plan(
             raise ValueError(
                 f"tracked config differs from quality selection: {name}")
         selected_payloads[name] = selected_value
+    frozen_methods = execution.get("methods")
+    if not isinstance(frozen_methods, Mapping):
+        raise ValueError("quality selection execution identity is incomplete")
+    for method, name in (("M3", "ours_nl_independent.json"),
+                         ("M4", "ours_lk_independent.json"),
+                         ("M3", "ours_nl_shared.json"),
+                         ("M4", "ours_lk_shared.json")):
+        expected_native = frozen_methods.get(method, {}).get("native")
+        observed_native = _setting_native_identity(effective_zac_setting(
+            selected_payloads[name]))
+        if observed_native != expected_native:
+            raise ValueError(
+                f"tracked {method} config changes tuning native identity")
     for method, name in (("M3", "ours_nl_independent.json"),
                          ("M4", "ours_lk_independent.json")):
         expected = selected_independent_payload[method].get("candidate_id")
