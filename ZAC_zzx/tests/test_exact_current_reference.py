@@ -7,6 +7,7 @@ from pathlib import Path
 import random
 import sys
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,7 @@ from zzx.reference_backend import (  # noqa: E402
     ReferenceResidentBackend,
     _production_replay_phase_batches,
     color_phase,
+    replay_phase_batches,
     solve_rich_exact_reference,
 )
 from zzx.zac_zzx import ZAC_zzx  # noqa: E402
@@ -213,6 +215,9 @@ class TestExactCurrentReferenceScheduler(unittest.TestCase):
         self.assertEqual(native_result.winner, python_result.winner)
         self.assertEqual(native_result.return_assignments,
                          python_result.return_assignments)
+        self.assertEqual(
+            native_result.participant_parking_assignments,
+            python_result.participant_parking_assignments)
         self.assertEqual(production.source_back_batches, ((0,),))
         self.assertEqual(production.target_out_batches, ((2, 3),))
         self.assertEqual(native_result.winner.move_batches, 2)
@@ -376,6 +381,47 @@ class TestExactCurrentReferenceScheduler(unittest.TestCase):
         if native_available():
             self.assertEqual(
                 self._native_owner_batches(phase, len(mapping_from)), expected)
+
+    def test_compact_replay_falls_back_to_fresh_strict_precedence_and_splits(self):
+        """A dead heuristic prefix is discarded before strict expanded replay."""
+        sources = (
+            Point(2.0, 3.0), Point(1.0, 0.0), Point(2.0, 6.0),
+        )
+        targets = (
+            Point(6.0, 3.0), Point(3.0, 0.0), Point(5.0, 3.0),
+        )
+        phase = MovementPhase(
+            tuple(Leg.between(source, target)
+                  for source, target in zip(sources, targets)),
+            tuple(Ghost(atom, source)
+                  for atom, source in enumerate(sources)),
+            (0, 1, 2),
+        )
+        strict_batches = []
+
+        def capture_strict(*args, **kwargs):
+            result = replay_phase_batches(*args, **kwargs)
+            strict_batches.append(result)
+            return result
+
+        with patch(
+                "zzx.reference_backend.replay_phase_batches",
+                side_effect=capture_strict) as strict_replay:
+            actual = _production_replay_phase_batches(phase, 24)
+
+        self.assertEqual(strict_replay.call_count, 1)
+        # The strict endpoint order contains the expanded-unsafe pair (q2,q1).
+        self.assertEqual(strict_batches, [((1,), (0, 2))])
+        # Fresh physical replay keeps q0 first, then splits that pair in its
+        # deterministic canonical member order.  Original indices are public.
+        self.assertEqual(
+            tuple(batch.original_members for batch in actual),
+            ((0,), (2,), (1,)),
+        )
+        self.assertEqual(
+            tuple(batch.owners for batch in actual),
+            ((0,), (2,), (1,)),
+        )
 
     def test_exact_coloring_matches_production_zcost_on_small_graph(self):
         """The compact exact-color path must use the router's batch partition."""

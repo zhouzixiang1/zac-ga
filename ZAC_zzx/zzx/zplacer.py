@@ -156,9 +156,10 @@ def _native_rich_phase_owner_orders(problem, result) -> tuple[tuple, tuple]:
 
     ``FitnessResult.phase_batches`` contains indices into C++'s geometry
     vectors, not into Python's decision dictionary or repaired placements.
-    Phase 0 is ordered as RETURN assignments followed by RESEAT assignments;
-    phase 1 is ordered by gate-domain column and then q1/q2.  Zero-length legs
-    are omitted exactly as in the native solver.
+    Phase 0 is ordered as RETURN assignments, RESEAT assignments, then derived
+    participant parking assignments; phase 1 is ordered by gate-domain column
+    and then q1/q2.  Zero-length legs are omitted exactly as in the native
+    solver.
     """
     coordinates = tuple(problem.architecture.site_coordinates)
 
@@ -189,7 +190,9 @@ def _native_rich_phase_owner_orders(problem, result) -> tuple[tuple, tuple]:
 
     back_owners = []
     for q, site_id in (*result.return_assignments,
-                       *result.reseat_assignments):
+                       *result.reseat_assignments,
+                       *getattr(
+                           result, "participant_parking_assignments", ())):
         q = int(q)
         if q < 0 or q >= len(positions):
             raise RuntimeError(
@@ -1943,12 +1946,19 @@ class ResidentPlacer(VertexMatchingPlacer):
                 return True
 
         # ② 腿主是决策 → 换落位（RETURN 换存储位，RESEAT 换区座位）
-        if owner in decisions and decisions[owner][0] in ("RETURN", "RESEAT"):
+        if owner in decisions and decisions[owner][0] in (
+                "RETURN", "RESEAT", "PARK"):
             kind = decisions[owner][0]
             sx, sy = ex(reg.current_pos(owner))
-            taken = {v[1] for v in decisions.values() if v[0] == kind}
+            storage_kinds = {"RETURN", "PARK"}
+            taken = {
+                v[1] for v in decisions.values()
+                if (v[0] in storage_kinds
+                    if kind in storage_kinds else v[0] == kind)
+            }
             taken |= {s for p in placements for s in p["seats"]}
-            pool = (self._free_storage_sites(taken) if kind == "RETURN"
+            pool = (self._free_storage_sites(taken)
+                    if kind in storage_kinds
                     else self._free_zone_seats(taken))
             ghosts = [g for a in range(n_q) if a != owner
                       for g in both(a,
@@ -1995,7 +2005,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             p = placements[gi]
             q1, q2 = p["gate"]
             vacated = {q for q, value in decisions.items()
-                       if value[0] in ("RETURN", "RESEAT")}
+                       if value[0] in ("RETURN", "RESEAT", "PARK")}
             others_seats = {seat for qq, seat in reg.zone_seat.items()
                             if qq != q1 and qq != q2 and qq not in vacated}
             used = {pp["site"] for pp in placements}
@@ -2062,14 +2072,14 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.mapping.append(m)
 
     def _append_boundary(self, decisions: dict):
-        """追加边界映射（= 门位映射 + RETURN 者落存储位 / RESEAT 者落新区座）。
+        """追加含 RETURN、RESEAT 与参与者临时 PARK 的真实边界映射。
 
         路由端按映射增量取 back 相搬运者（zac_zzx._route_resident 扫全部
-        原子的 gate→final 差分），RESEAT 腿因此自动上车，无需特判。
+        原子的 gate→final 差分），三类腿因此都会自动上车，无需特判。
         """
         m = list(self.mapping[-1])
         for q, (kind, loc) in decisions.items():
-            if kind in ("RETURN", "RESEAT"):
+            if kind in ("RETURN", "RESEAT", "PARK"):
                 m[q] = loc
         self.mapping.append(m)
 
@@ -4112,7 +4122,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             active_horizon, self.ablation_policy,
             self.ablation_fitness_mode,
             tuple(tuple(reg.current_pos(q)) for q in range(len(self.mapping[0]))),
-            # ABI7 current fitness is a fork of this exact ASAP scheduler
+            # ABI8 current fitness is a fork of this exact ASAP scheduler
             # prefix.  Equal geometry/idle with different resource or
             # dependency clocks is a different search state.
             float(scheduler_prefix.scheduler.trace_end_us),
@@ -4168,11 +4178,13 @@ class ResidentPlacer(VertexMatchingPlacer):
         native_rich_problem = None
         native_return_sites = None
         native_reseat_sites = None
+        native_participant_parking_sites = None
         native_reference_forecast = None
         rich_search_stats = {}
         rich_forecast_terms = ()
         return_option_reasons = {}
         selected_return_audit = []
+        selected_participant_parking_audit = []
         native_candidates = candidates
         if self.decay_lookahead:
             if forced_cycle_candidates or cycle_candidates:
@@ -4753,12 +4765,47 @@ class ResidentPlacer(VertexMatchingPlacer):
                 int(q): self.boundary_site_locations[int(site_id)]
                 for q, site_id in native_rich_result.reseat_assignments
             }
+            native_participant_parking_sites = {
+                int(q): self.boundary_site_locations[int(site_id)]
+                for q, site_id in
+                native_rich_result.participant_parking_assignments
+            }
             if set(native_reseat_sites) & set(native_return_sites):
                 raise RuntimeError(
                     "native rich atom cannot both RETURN and RESEAT")
+            if ((set(native_participant_parking_sites)
+                 & (set(native_return_sites) | set(native_reseat_sites)))):
+                raise RuntimeError(
+                    "native rich participant parking overlaps a resident "
+                    "RETURN/RESEAT assignment")
             if not set(native_reseat_sites) <= set(eligible):
                 raise RuntimeError(
                     "native rich RESEAT atom is outside resident decisions")
+            if not set(native_participant_parking_sites) <= set(participants):
+                raise RuntimeError(
+                    "native rich participant parking atom is outside the "
+                    "target gate layer")
+            parking_site_ids = tuple(
+                int(site_id) for _q, site_id in
+                native_rich_result.participant_parking_assignments)
+            if len(set(parking_site_ids)) != len(parking_site_ids):
+                raise RuntimeError(
+                    "native rich participant parking sites are not injective")
+            if not set(parking_site_ids) <= set(
+                    boundary_architecture.storage_site_ids):
+                raise RuntimeError(
+                    "native rich participant parking target is not storage")
+            selected_participant_parking_audit = [
+                {
+                    "atom": int(q),
+                    "site_id": int(site_id),
+                    "location": list(self.boundary_site_locations[
+                        int(site_id)]),
+                    "reason": "stationary_participant_out_ghost",
+                }
+                for q, site_id in
+                native_rich_result.participant_parking_assignments
+            ]
             selected_return_audit = [
                 {
                     "atom": int(q),
@@ -4887,6 +4934,8 @@ class ResidentPlacer(VertexMatchingPlacer):
                     native_rich_result.future_ghost_cost),
                 "pre_score_reseats": int(
                     native_rich_result.pre_score_reseats),
+                "pre_score_participant_parkings": int(
+                    native_rich_result.pre_score_participant_parkings),
                 "current_gate_anchor": list(
                     native_rich_result.current_gate_anchor),
                 "current_gate_anchor_assignment_site_ids": list(
@@ -5240,12 +5289,22 @@ class ResidentPlacer(VertexMatchingPlacer):
             else:
                 decisions[q] = ("STAY", reg.zone_seat[q])
         decisions.update({q: ("RETURN", sites[q]) for q in selected_cycles})
+        if native_participant_parking_sites:
+            overlap = set(decisions) & set(native_participant_parking_sites)
+            if overlap:
+                raise RuntimeError(
+                    "native participant parking overlaps an existing "
+                    f"decision for atoms {sorted(overlap)}")
+            decisions.update({
+                q: ("PARK", location)
+                for q, location in native_participant_parking_sites.items()
+            })
         for detail in rent_guard_details:
             selected = decisions.get(detail["q"])
             detail["selected_decision"] = (
                 None if selected is None else selected[0])
         vacated = {q for q, value in decisions.items()
-                   if value[0] in ("RETURN", "RESEAT")}
+                   if value[0] in ("RETURN", "RESEAT", "PARK")}
         if native_rich_result is not None:
             # The native winner has already been scored with its exact oriented
             # endpoints and production parking replay.  Project those endpoints
@@ -5653,6 +5712,12 @@ class ResidentPlacer(VertexMatchingPlacer):
             elif kind == "RESEAT":
                 self.residency_commitments.pop(q, None)
                 reg.reseat(q, loc)
+            elif kind == "PARK":
+                # PARK is an explicit temporary storage stop for a target
+                # participant.  _commit_round immediately re-enters it at the
+                # selected gate seat; it is not a semantic RETURN decision.
+                self.residency_commitments.pop(q, None)
+                reg.return_to_storage(q, loc)
             elif kind == "STAY" and active_horizon > 0:
                 visible = visible_use(q)
                 if visible is None:
@@ -5765,6 +5830,8 @@ class ResidentPlacer(VertexMatchingPlacer):
             "search_mode": search_mode,
             "rich_search": rich_search_stats,
             "return_assignments": selected_return_audit,
+            "participant_parking_assignments":
+                selected_participant_parking_audit,
             "production_candidate": production_candidate_audit,
             "lookahead_selection": lookahead_selection,
             "forecast_objective": selected_forecast_audit,
@@ -5777,6 +5844,8 @@ class ResidentPlacer(VertexMatchingPlacer):
             "stay": sum(1 for v in decisions.values() if v[0] == "STAY"),
             "return": sum(1 for v in decisions.values() if v[0] == "RETURN"),
             "reseat": sum(1 for v in decisions.values() if v[0] == "RESEAT"),
+            "participant_parking": sum(
+                1 for v in decisions.values() if v[0] == "PARK"),
             "eligible_decisions": len(eligible),
             "adjacent_cycle_candidates": len(cycle_candidates),
             "adjacent_cycle_returns": len(selected_cycles),

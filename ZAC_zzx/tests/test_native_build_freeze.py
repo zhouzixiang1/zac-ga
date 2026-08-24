@@ -73,8 +73,8 @@ class NativeBuildFreezeTests(unittest.TestCase):
             "extension_sha256": _sha256(self.extension),
         }), encoding="utf-8")
         self.build_info = {
-            "native_abi_version": 7,
-            "backend": "cpp-native-v7",
+            "native_abi_version": 8,
+            "backend": "cpp-native-v8",
             "flat_wire_version": 1,
             "rich_boundary_wire_version": 6,
             "rng_version": "python-random-mt19937-v1",
@@ -110,8 +110,8 @@ class NativeBuildFreezeTests(unittest.TestCase):
         wheel_sha = _sha256(self.wheel)
         extension_sha = _sha256(self.extension)
         native_build = {
-            "native_abi_version": 7,
-            "backend": "cpp-native-v7",
+            "native_abi_version": 8,
+            "backend": "cpp-native-v8",
             "flat_wire_version": 1,
             "rich_boundary_wire_version": 6,
             "rng_version": "python-random-mt19937-v1",
@@ -121,7 +121,7 @@ class NativeBuildFreezeTests(unittest.TestCase):
         micro = self.artifacts / "micro.json"
         micro.write_text(json.dumps({
             "schema": 2,
-            "protocol": "abi7-registered-native-microbenchmark-v1",
+            "protocol": "abi8-registered-native-microbenchmark-v1",
             "native_build": native_build,
             "one_call": {"speedup": 5.1},
             "fitness_core": {"speedup": 10.1},
@@ -137,7 +137,7 @@ class NativeBuildFreezeTests(unittest.TestCase):
         }]
         real = self.artifacts / "real.json"
         real.write_text(json.dumps({
-            "benchmark_id": "abi7-exact-real-boundary-ising-n42-v2",
+            "benchmark_id": "abi8-exact-real-boundary-ising-n42-v2",
             "native_build": native_build,
             "parity": {"all_passed": True, "repetitions": repetitions},
             "timing": {
@@ -152,8 +152,8 @@ class NativeBuildFreezeTests(unittest.TestCase):
         }
         pipeline = self.artifacts / "pipeline.json"
         pipeline.write_text(json.dumps({
-            "protocol": "resident-python-vs-abi7-medium-v2",
-            "backend": "cpp-native-v7",
+            "protocol": "resident-python-vs-abi8-medium-v2",
+            "backend": "cpp-native-v8",
             "wheel_sha256": wheel_sha,
             "accepted": True,
             "horizons": {
@@ -210,9 +210,9 @@ class NativeBuildFreezeTests(unittest.TestCase):
             result["evidence"]["build_attestation"]["record_sha256"],
             attestation["record_sha256"])
         self.assertTrue(result["benchmark"]["all_gates_passed"])
-        self.assertEqual(result["wheel"]["native_abi_version"], 7)
+        self.assertEqual(result["wheel"]["native_abi_version"], 8)
         self.assertEqual(result["wheel"]["rich_boundary_wire_version"], 6)
-        self.assertEqual(result["wheel"]["backend"], "cpp-native-v7")
+        self.assertEqual(result["wheel"]["backend"], "cpp-native-v8")
 
     def test_legacy_backend_evidence_is_rejected(self):
         self._attest()

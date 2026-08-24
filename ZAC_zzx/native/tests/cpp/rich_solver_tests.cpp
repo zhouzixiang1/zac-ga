@@ -184,7 +184,7 @@ int main() {
   assert(std::abs(qft_recovered.forecast_reentry_nll -
                   0.013098101931857835) < 1e-12);
   assert(std::abs(qft_recovered.forecast_nll -
-                  0.021690818983655068) < 1e-12);
+                  0.021807099187783445) < 1e-12);
   ++tests;
 
   auto problem = one_resident_problem();
@@ -294,6 +294,52 @@ int main() {
       {2, 3}};
   assert(reseated.reseat_assignments == reseat_expected);
   assert(reseated.pre_score_reseats == 1);
+  ++tests;
+
+  // Two target-layer participants already occupy their selected zero-length
+  // gate seats and block the straight out legs of their partners (the same
+  // q5/q6 and q93/q94 pattern seen in a dense Ising boundary).  Candidate
+  // evaluation must park both blockers at real storage sites in phase 0 and
+  // re-enter them in phase 1, with all six physical legs scored.
+  ArchitectureSnapshot participant_parking_architecture(
+      4, {{0.0, 0.0}, {2.0, 0.0}, {10.0, 0.0}, {12.0, 0.0},
+          {2.0, -4.0}, {12.0, -4.0}}, {4, 5});
+  RichH0Problem participant_parking;
+  participant_parking.n_atoms = 4;
+  participant_parking.current_points = {
+      {0.0, 0.0}, {2.0, 0.0}, {10.0, 0.0}, {12.0, 0.0}};
+  participant_parking.participants = {0, 1, 2, 3};
+  participant_parking.gate_domains = {
+      {{80, 0, 1, {4.0, 0.0}, {2.0, 0.0}}},
+      {{81, 2, 3, {14.0, 0.0}, {12.0, 0.0}}},
+  };
+  participant_parking.matched_gate_genes = {0, 0};
+  const auto participant_parked = solve_rich_h0(
+      participant_parking_architecture, participant_parking,
+      exact_config(), rng_fixture());
+  const std::vector<std::pair<std::int64_t, std::int64_t>>
+      expected_participant_parkings{{1, 4}, {3, 5}};
+  assert(participant_parked.winner.feasible);
+  assert(participant_parked.participant_parking_assignments ==
+         expected_participant_parkings);
+  assert(participant_parked.pre_score_participant_parkings == 2);
+  assert(participant_parked.stats.pre_score_participant_parkings >= 2);
+  assert(participant_parked.winner.transfers == 12);
+  assert(participant_parked.winner.phase_batches.size() == 2);
+  ++tests;
+
+  // With no real storage endpoint the same boundary remains explicitly
+  // infeasible; parking must never become an unscored hidden waypoint.
+  ArchitectureSnapshot no_participant_parking_architecture(
+      4, {{0.0, 0.0}, {2.0, 0.0}, {10.0, 0.0}, {12.0, 0.0},
+          {2.0, -4.0}, {12.0, -4.0}});
+  const auto participant_parking_exhausted = solve_rich_h0(
+      no_participant_parking_architecture, participant_parking,
+      exact_config(), rng_fixture());
+  assert(!participant_parking_exhausted.winner.feasible);
+  assert(participant_parking_exhausted.participant_parking_assignments.empty());
+  assert(participant_parking_exhausted.winner.error ==
+         "unresolved current single-leg ghost hit");
   ++tests;
 
   ArchitectureSnapshot moving_endpoint_architecture(

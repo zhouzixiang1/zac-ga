@@ -54,6 +54,17 @@ using Adjacency = std::vector<std::set<std::size_t>>;
 Adjacency phase_adjacency(const MovementPhase& phase) {
   const auto size = phase.legs.size();
   Adjacency adjacency(size);
+  std::set<std::int64_t> moving_owners;
+  if (!phase.owners.empty()) {
+    moving_owners.insert(phase.owners.begin(), phase.owners.end());
+  }
+  std::vector<Ghost> static_ghosts;
+  static_ghosts.reserve(phase.ghosts.size());
+  for (const auto& ghost : phase.ghosts) {
+    if (moving_owners.count(ghost.atom) == 0U) {
+      static_ghosts.push_back(ghost);
+    }
+  }
   for (std::size_t i = 0; i < size; ++i) {
     const auto& first = phase.legs[i];
     const std::array<double, 4> first_vector{
@@ -63,17 +74,14 @@ Adjacency phase_adjacency(const MovementPhase& phase) {
       const std::array<double, 4> second_vector{
           second.source.x, second.target.x, second.source.y, second.target.y};
       bool conflict = !compatible_2d(first_vector, second_vector);
-      if (!conflict && !phase.ghosts.empty()) {
-        std::vector<Ghost> remaining;
-        remaining.reserve(phase.ghosts.size());
-        for (const auto& ghost : phase.ghosts) {
-          if (!phase.owners.empty() &&
-              (ghost.atom == phase.owners[i] || ghost.atom == phase.owners[j])) {
-            continue;
-          }
-          remaining.push_back(ghost);
-        }
-        conflict = !ghost_hit_atoms({first, second}, remaining).empty();
+      if (!conflict && !static_ghosts.empty()) {
+        // A third owner in this same phase is not a stationary ghost: it may
+        // join the batch or move in an earlier/later batch.  The exact replay
+        // below derives those source/target precedence edges after coloring.
+        // Only atoms that never move in the phase are valid pairwise ghost
+        // edges here; treating every other mover as static over-colors dense
+        // layers and can manufacture an otherwise avoidable dependency cycle.
+        conflict = !ghost_hit_atoms({first, second}, static_ghosts).empty();
       }
       if (conflict) {
         adjacency[i].insert(j);
@@ -849,6 +857,23 @@ PhaseEvaluation evaluate_fast_phase_impl(const MovementPhase& phase,
     raw_atoms[ghost] = phase.ghosts[ghost].atom;
     raw_points[ghost] = phase.ghosts[ghost].position;
   }
+  // Match the generic phase-adjacency contract: a mover elsewhere in this
+  // phase is dynamic, not a stationary pairwise ghost.  Its source/target
+  // precedence is derived after coloring below.  The old fast path excluded
+  // only the two owners in the candidate pair and therefore over-colored
+  // dense phases differently from the reference/generic implementation.
+  std::array<std::int64_t, PositionCapacity> adjacency_static_atoms{};
+  std::array<Point, PositionCapacity> adjacency_static_points{};
+  std::size_t adjacency_static_count = 0;
+  for (std::size_t ghost = 0; ghost < raw_count; ++ghost) {
+    const auto moving = std::find(
+        phase.owners.begin(), phase.owners.end(), raw_atoms[ghost]) !=
+        phase.owners.end();
+    if (moving) continue;
+    adjacency_static_atoms[adjacency_static_count] = raw_atoms[ghost];
+    adjacency_static_points[adjacency_static_count] = raw_points[ghost];
+    ++adjacency_static_count;
+  }
   for (std::size_t first = 0; first < size; ++first) {
     const auto& a = phase.legs[first];
     const std::array<double, 4> av{
@@ -861,10 +886,10 @@ PhaseEvaluation evaluate_fast_phase_impl(const MovementPhase& phase,
                              (std::uint64_t{1} << second);
       const bool conflict =
           !compatible_2d(av, bv) ||
-          (raw_count != 0 &&
+          (adjacency_static_count != 0 &&
            mask_ghost_hit<LegCapacity>(
-               phase, pair_mask, raw_atoms.data(), raw_points.data(),
-               raw_count));
+               phase, pair_mask, adjacency_static_atoms.data(),
+               adjacency_static_points.data(), adjacency_static_count));
       if (conflict) {
         adjacency[first] |= std::uint64_t{1} << second;
         adjacency[second] |= std::uint64_t{1} << first;
@@ -1602,7 +1627,63 @@ ProductionReplay replay_production_phase_batches(
       return result;
     }
   }
-  if (!deferred.empty()) result.feasible = false;
+  // Dense source-seat handoffs can leave the heuristic replay in a bad partial
+  // order even though the exact endpoint-precedence replay has a valid order.
+  // When that happens, discard the heuristic prefix and replay the complete
+  // strict order from the original positions.  Every strict batch still goes
+  // through the expanded physical audit; an expanded-unsafe batch is split in
+  // stable member order and every singleton is audited before it is accepted.
+  if (!deferred.empty()) {
+    const auto strict = replay_phase_batches(routed, exact_threshold);
+    if (!strict.feasible) {
+      result.feasible = false;
+      return result;
+    }
+    positions.clear();
+    for (const auto& ghost : routed.ghosts) {
+      positions.emplace(ghost.atom, ghost.position);
+    }
+    for (std::size_t index = 0; index < routed.owners.size(); ++index) {
+      positions[routed.owners[index]] = routed.legs[index].source;
+    }
+    result.batches.clear();
+    const auto execute = [&](const std::vector<std::size_t>& members) {
+      std::vector<Leg> legs;
+      std::vector<std::int64_t> owners;
+      legs.reserve(members.size());
+      owners.reserve(members.size());
+      for (const auto member : members) {
+        legs.push_back(routed.legs.at(member));
+        owners.push_back(routed.owners.at(member));
+      }
+      if (first_ghost_tracks(legs, owners, positions).has_value() ||
+          !expanded_batch_conflict_members(
+               routed, members, positions).empty()) {
+        return false;
+      }
+      result.batches.push_back(executable_batch(
+          routed, members, canonical_to_original));
+      for (const auto member : members) {
+        positions[routed.owners[member]] = routed.legs[member].target;
+      }
+      return true;
+    };
+    for (const auto& batch : strict.batches) {
+      if (expanded_batch_conflict_members(routed, batch, positions).empty()) {
+        if (!execute(batch)) {
+          result.feasible = false;
+          return result;
+        }
+        continue;
+      }
+      for (const auto member : batch) {
+        if (!execute({member})) {
+          result.feasible = false;
+          return result;
+        }
+      }
+    }
+  }
   return result;
 }
 

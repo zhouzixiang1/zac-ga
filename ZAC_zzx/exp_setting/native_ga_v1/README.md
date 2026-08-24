@@ -9,8 +9,8 @@ effective under the default cutoff).  The current physical NLL is exact for
 the registered ASAP scheduler-ledger boundary; the final native trace is still
 reconciled by the independent scorer before formal use, and undiscounted; only
 future residency/re-entry/terminal heuristics receive
-`alpha_lookahead*rho^(offset-1)`.  Both configs require the ABI7/wire-v6
-`cpp-native-v7` backend,
+`alpha_lookahead*rho^(offset-1)`.  Both configs require the ABI8/wire-v6
+`cpp-native-v8` backend,
 the registered wheel hash, and forbid a Python fallback.
 
 The four method configs currently contain the registered default candidate.

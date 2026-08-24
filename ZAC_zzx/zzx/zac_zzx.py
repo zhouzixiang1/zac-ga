@@ -30,6 +30,86 @@ from zzx.zcost import compatible_2d, greedy_phase_batches, phase_batches
 from math import hypot
 
 
+def _strict_endpoint_precedence_batches(
+        legs, owners, ghosts, exact_threshold, node_budget):
+    """Return a deterministic whole-phase source/target precedence order.
+
+    This is the production-router counterpart of the independent compact
+    oracle's ``replay_phase_batches``.  Initial coloring sees only truly static
+    atoms.  Other phase owners become directed source/target constraints and a
+    cyclic multi-leg color class is split deterministically before retrying.
+    """
+    if len(owners) != len(legs):
+        raise ValueError("strict precedence requires one owner per movement leg")
+    moving = set(owners)
+    static_ghosts = tuple(
+        ghost for ghost in ghosts if ghost[0] not in moving)
+    _chi, initial, _method = phase_batches(
+        legs, ghosts=static_ghosts, owners=owners,
+        exact_threshold=exact_threshold, node_budget=node_budget)
+    batches = [list(batch) for batch in initial]
+
+    def ordered(candidate_batches):
+        batch_by_owner = {}
+        for batch_index, members in enumerate(candidate_batches):
+            for leg_index in members:
+                atom = owners[leg_index]
+                if atom in batch_by_owner:
+                    raise ValueError("phase owner appears in multiple legs")
+                batch_by_owner[atom] = batch_index
+        outgoing = [set() for _ in candidate_batches]
+        blocked = [False] * len(candidate_batches)
+        for batch_index, members in enumerate(candidate_batches):
+            batch_legs = [legs[index] for index in members]
+            if ghost_hits(batch_legs, static_ghosts):
+                blocked[batch_index] = True
+                continue
+            for leg_index, atom in enumerate(owners):
+                other_batch = batch_by_owner[atom]
+                if other_batch == batch_index:
+                    continue
+                leg = legs[leg_index]
+                if ghost_hits(
+                        batch_legs,
+                        [(atom, leg[1], leg[2])]):
+                    outgoing[other_batch].add(batch_index)
+                if ghost_hits(
+                        batch_legs,
+                        [(atom, leg[3], leg[4])]):
+                    outgoing[batch_index].add(other_batch)
+        indegree = [0] * len(candidate_batches)
+        for neighbors in outgoing:
+            for neighbor in neighbors:
+                indegree[neighbor] += 1
+        result = []
+        remaining = set(range(len(candidate_batches)))
+        while remaining:
+            ready = next((
+                index for index in sorted(remaining)
+                if not blocked[index] and indegree[index] == 0
+            ), None)
+            if ready is None:
+                return None
+            result.append(ready)
+            remaining.remove(ready)
+            for neighbor in outgoing[ready]:
+                indegree[neighbor] -= 1
+        return tuple(result)
+
+    while True:
+        order = ordered(batches)
+        if order is not None:
+            return tuple(tuple(batches[index]) for index in order)
+        split_index = next((
+            index for index, members in enumerate(batches)
+            if len(members) > 1
+        ), None)
+        if split_index is None:
+            raise ValueError("phase has no ghost-safe straight-leg batch order")
+        members = batches.pop(split_index)
+        batches[split_index:split_index] = [[index] for index in members]
+
+
 class ZAC_zzx(ZAC):
     """ZAC 的子类：驻留放置 + 图着色分批路由（附 ZAC_new 对照模式）。"""
 
@@ -426,7 +506,7 @@ class ZAC_zzx(ZAC):
         终止性：放置层（zplacer._repair_ghosts）保证每条腿单独不撞
         {批前,批后} 任何位置——重放中的静止位置必属其一，单腿批恒干净。
         """
-        # The registered ABI7 replay owns one canonical distance-descending
+        # The registered ABI8 replay owns one canonical distance-descending
         # order, independent of the caller's input order.  Keep the inverse
         # view so public batch members still index the original ``window``
         # consumed by ``_phase_batches``.
@@ -470,7 +550,7 @@ class ZAC_zzx(ZAC):
                         break
                     if len(pending) == 1:
                         # A stationary blocker may be another mover that lands
-                        # in an earlier clean batch.  ABI7 therefore retries a
+                        # in an earlier clean batch.  ABI8 therefore retries a
                         # singleton against the advanced position map instead
                         # of committing a premature two-leg waypoint.
                         deferred.append(pending[0])
@@ -520,9 +600,16 @@ class ZAC_zzx(ZAC):
             return clean, deferred
 
         pos = {q: ex(mapping_from[q]) for q in range(n_atoms)}
-        # 初始着色带"T0 位置鬼点边"（排除两腿主人，稀疏）——引导着色
-        # 天然避开绝大多数撞鬼组合；残余由下面的重放审计精确拆批
-        ghosts0 = [(q, *pos[q]) for q in range(n_atoms)]
+        # Pairwise coloring may treat only atoms that stay static for the
+        # complete phase as ghosts.  Freezing a third phase mover at its source
+        # creates a false edge: the endpoint-precedence replay below already
+        # decides whether that mover must leave before another batch.  This is
+        # the same phase-static contract used by the ABI8 native scorer.
+        moving_owners = set(remain_graph)
+        ghosts0 = [
+            (q, *pos[q]) for q in range(n_atoms)
+            if q not in moving_owners
+        ]
         if self.routing_strategy == "greedy":
             batcher = lambda values, **kwargs: greedy_phase_batches(
                 values, ghosts=kwargs.get("ghosts"), owners=kwargs.get("owners"))
@@ -554,9 +641,8 @@ class ZAC_zzx(ZAC):
                 singles = [[i] for i in sorted(set(deferred))]
                 more, unresolved = audit_pass(singles, pos)
                 if unresolved:
-                    atoms = [owner[i] for i in unresolved]
-                    raise ValueError(
-                        f"ghost-safe routing could not place atoms {atoms}")
+                    deferred = unresolved
+                    break
                 final += more
                 deferred = []
                 break
@@ -566,8 +652,62 @@ class ZAC_zzx(ZAC):
             sub_batches = [[sub[k] for k in members] for members in sub_batches]
             more, deferred = audit_pass(sub_batches, pos)
             final += more
+        if deferred:
+            # The three-round route above is the fast path.  It can still make
+            # a locally safe choice whose new target blocks the only remaining
+            # batch.  Rebuild endpoint precedence for the complete original
+            # phase and replay it from the untouched initial mapping; retaining
+            # any prefix in ``final``/``pos`` would retain the dead end.
+            fresh_pos = {q: ex(mapping_from[q]) for q in range(n_atoms)}
+            try:
+                strict_batches = _strict_endpoint_precedence_batches(
+                    legs, remain_graph,
+                    tuple((q, *fresh_pos[q]) for q in range(n_atoms)),
+                    self.zzx_exact_threshold, self.zzx_node_budget)
+            except ValueError as exc:
+                atoms = [owner[index] for index in sorted(set(deferred))]
+                raise ValueError(
+                    f"ghost-safe routing could not place atoms {atoms}: "
+                    f"{exc}") from exc
+            strict_final = []
+            for strict_batch in strict_batches:
+                queue = [list(strict_batch)]
+                while queue:
+                    pending = queue.pop(0)
+                    ghosts = [
+                        (q, *fresh_pos[q]) for q in range(n_atoms)
+                        if q not in {owner[i] for i in pending}
+                    ]
+                    hits = ghost_hits(
+                        [legs[i] for i in pending], ghosts, detail=True)
+                    if hits:
+                        atoms = [owner[i] for i in pending]
+                        raise ValueError(
+                            "ghost-safe routing could not place atoms "
+                            f"{atoms}: strict endpoint-precedence replay has "
+                            "a ghost hit")
+                    expanded_bad = self._expanded_batch_conflicts(
+                        pending, owner, mapping_from, mapping_to, fresh_pos)
+                    if expanded_bad:
+                        if len(pending) == 1:
+                            atoms = [owner[i] for i in pending]
+                            raise ValueError(
+                                "ghost-safe routing could not place atoms "
+                                f"{atoms}: strict endpoint-precedence "
+                                "singleton has an expanded ghost conflict")
+                        # Endpoint-compatible movers can become incompatible in
+                        # ZAC's physical parking expansion.  Split only this
+                        # strict batch, in its deterministic member order, and
+                        # re-audit every singleton before it is accepted.
+                        queue[0:0] = [[index] for index in pending]
+                        continue
+                    strict_final.append(pending)
+                    for index in pending:
+                        fresh_pos[owner[index]] = (
+                            legs[index][3], legs[index][4])
+            final = strict_final
         self.zzx_ghost_splits = getattr(self, "zzx_ghost_splits", 0) + \
-            (len(final) - len(batches))
+            max(0, len(final) - len(batches))
         # ``_phase_batches`` indexes its original ``window`` with these rows.
         # Native fitness exposes the same original-member convention.
         translated = [

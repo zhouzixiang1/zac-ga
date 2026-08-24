@@ -276,6 +276,9 @@ class TestNativeRichSolver(unittest.TestCase):
                                  native.return_assignments)
                 self.assertEqual(reference.reseat_assignments,
                                  native.reseat_assignments)
+                self.assertEqual(
+                    reference.participant_parking_assignments,
+                    native.participant_parking_assignments)
                 self.assertEqual(reference.return_assignment_rank,
                                  native.return_assignment_rank)
                 self.assertAlmostEqual(
@@ -339,6 +342,9 @@ class TestNativeRichSolver(unittest.TestCase):
                                  native.return_assignments)
                 self.assertEqual(reference.reseat_assignments,
                                  native.reseat_assignments)
+                self.assertEqual(
+                    reference.participant_parking_assignments,
+                    native.participant_parking_assignments)
                 self.assertAlmostEqual(
                     reference.search_negative_log_fidelity,
                     native.search_negative_log_fidelity, delta=1e-12)
@@ -472,6 +478,9 @@ class TestNativeRichSolver(unittest.TestCase):
                          result.return_assignments)
         self.assertEqual(reference.reseat_assignments,
                          result.reseat_assignments)
+        self.assertEqual(
+            reference.participant_parking_assignments,
+            result.participant_parking_assignments)
         self.assertEqual(reference.current_gate_anchor,
                          result.current_gate_anchor)
         self.assertEqual(
@@ -520,6 +529,44 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertEqual(((2, 3),), result.reseat_assignments)
         self.assertEqual(1, result.pre_score_reseats)
         self.assertEqual((0, 0), result.winner.chromosome)
+
+    def test_stationary_participant_is_parked_then_reenters_before_scoring(self):
+        # Atom 1 already occupies its selected target (1, 0), but that zero-leg
+        # participant is a real stationary ghost on atom 0's path (0, 0)->(2, 0).
+        # The only correct repair is an explicit storage parking in phase 0 and
+        # re-entry after atom 0 has crossed in phase 1.
+        arch = ArchitectureSnapshot.from_coordinates(
+            3,
+            ((1, 1), (2, 0), (1, 0), (0, 0), (10, 10)),
+            (0,),
+        )
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(Point(0, 0), Point(1, 0), Point(10, 10)),
+            participants=(0, 1),
+            gate_domains=((RichGateOption(
+                10, 0, 1, Point(2, 0), Point(1, 0)),),),
+            static_ghosts=(), eligible=(), min_returns=0,
+            eviction_order_indices=(), forced_return_mask=(),
+            return_domains=(), matched_gate_genes=(0,),
+            boundary_id="participant-parking",
+        )
+        config = RichSearchConfig(
+            operator_profile="exact", direct_enumeration_limit=512,
+            max_unique_evaluations=512, exact_coloring_threshold=24)
+        state = random.Random(0).getstate()
+        reference = solve_rich_exact_reference(problem, config, state)
+        native = NativeResidentBackend(arch).solve_rich_h0(
+            problem, config, state)
+        for result in (reference, native):
+            self.assertTrue(result.winner.feasible)
+            self.assertEqual(((1, 0),),
+                             result.participant_parking_assignments)
+            self.assertEqual(1, result.pre_score_participant_parkings)
+            self.assertEqual(6, result.winner.transfers)
+            self.assertEqual((((0,),), ((0,), (1,))),
+                             result.winner.phase_batches)
+        self.assertEqual(reference.winner, native.winner)
 
     def test_moving_atom_target_is_a_hard_ghost_during_out_phase(self):
         arch = ArchitectureSnapshot.from_coordinates(
@@ -945,6 +992,9 @@ class TestNativeRichSolver(unittest.TestCase):
                              other.return_assignments)
             self.assertEqual(first.reseat_assignments,
                              other.reseat_assignments)
+            self.assertEqual(
+                first.participant_parking_assignments,
+                other.participant_parking_assignments)
             self.assertEqual(first.rng_state, other.rng_state)
         self.assertGreater(first.operator_stats["crossovers"], 0)
         self.assertGreater(first.operator_stats["local_polish_evaluations"], 0)
@@ -977,6 +1027,9 @@ class TestNativeRichSolver(unittest.TestCase):
                          repeated.return_assignments)
         self.assertEqual(first.reseat_assignments,
                          repeated.reseat_assignments)
+        self.assertEqual(
+            first.participant_parking_assignments,
+            repeated.participant_parking_assignments)
         self.assertEqual(second_state, repeated.rng_state)
         self.assertEqual(1, repeated.operator_stats[
             "exact_result_cache_hits"])

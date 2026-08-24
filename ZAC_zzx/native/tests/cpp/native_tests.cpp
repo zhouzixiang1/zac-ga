@@ -96,6 +96,31 @@ int main() {
           std::vector<std::vector<std::size_t>>{{0}, {1}}));
   ++tests;
 
+  // The ordinary three-round color/defer replay can commit a bad prefix for
+  // this compact source-seat interlock.  Fresh endpoint precedence first
+  // selects owner 0 and then {2, 1}; the latter is expanded-unsafe and must be
+  // split, with every singleton physically audited in stable member order.
+  ArchitectureSnapshot production_fallback_architecture(3, {});
+  CandidatePlan production_fallback;
+  production_fallback.chromosome = {0};
+  production_fallback.phases = {{{
+      {4.0, {2.0, 3.0}, {6.0, 3.0}},
+      {2.0, {1.0, 0.0}, {3.0, 0.0}},
+      {std::sqrt(18.0), {2.0, 6.0}, {5.0, 3.0}},
+  }, {{0, {2.0, 3.0}}, {1, {1.0, 0.0}}, {2, {2.0, 6.0}}},
+      {0, 1, 2}, "phase"}};
+  auto production_fallback_config = ghost_config;
+  production_fallback_config.exact_coloring_threshold = 24;
+  production_fallback_config.production_parking_replay = true;
+  const auto production_fallback_score = evaluate_candidate(
+      production_fallback_architecture, production_fallback,
+      production_fallback_config);
+  assert(production_fallback_score.feasible);
+  assert(production_fallback_score.phase_batches.size() == 1);
+  assert((production_fallback_score.phase_batches[0] ==
+          std::vector<std::vector<std::size_t>>{{0}, {2}, {1}}));
+  ++tests;
+
   bool rejected = false;
   try {
     ArchitectureSnapshot invalid(1, {{0.0, 0.0}}, {0, 0});

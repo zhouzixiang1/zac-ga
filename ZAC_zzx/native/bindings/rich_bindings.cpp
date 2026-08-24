@@ -551,6 +551,8 @@ void bind_rich_solver(py::module_& module) {
         value["gate_option_indices"] = result.gate_option_indices;
         value["return_assignments"] = result.return_assignments;
         value["reseat_assignments"] = result.reseat_assignments;
+        value["participant_parking_assignments"] =
+            result.participant_parking_assignments;
         value["rng_state"] = rng_state_to_python(result.rng_state, rng_state_value[2]);
         value["search_mode"] = result.search_mode;
         value["operator_profile"] =
@@ -596,6 +598,8 @@ void bind_rich_solver(py::module_& module) {
         stats["current_ghost_rejections"] =
             result.stats.current_ghost_rejections;
         stats["pre_score_reseats"] = result.stats.pre_score_reseats;
+        stats["pre_score_participant_parkings"] =
+            result.stats.pre_score_participant_parkings;
         stats["forecast_terms_applied"] =
             result.stats.forecast_terms_applied;
         stats["forecast_terms_skipped_cutoff"] =
@@ -618,6 +622,8 @@ void bind_rich_solver(py::module_& module) {
             result.current_ghost_rejections;
         value["future_ghost_cost"] = result.forecast_routing_nll;
         value["pre_score_reseats"] = result.pre_score_reseats;
+        value["pre_score_participant_parkings"] =
+            result.pre_score_participant_parkings;
         value["current_gate_anchor"] = result.current_gate_anchor;
         value["current_gate_anchor_assignment_site_ids"] =
             result.current_gate_anchor_assignment_site_ids;

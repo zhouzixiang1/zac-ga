@@ -53,7 +53,7 @@ SCHEMA2_PAIR_EXEMPT_KEYS = {"method_id", "dir"}
 # explicit experiment-revision event instead of a silent wheel substitution.
 FORMAL_NATIVE_ALGORITHM_REVISION = "native-ga-v1"
 FORMAL_NATIVE_TUNING_PROTOCOL_ID = "resident-ga-quality-racing-v1"
-FORMAL_NATIVE_ABI_VERSION = 7
+FORMAL_NATIVE_ABI_VERSION = 8
 FORMAL_NATIVE_RNG_VERSION = "python-random-mt19937-v1"
 SCHEMA2_NATIVE_REQUIRED_KEYS = {
     "algorithm_revision",

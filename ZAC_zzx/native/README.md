@@ -29,11 +29,13 @@ Python verifier, so compiler and verifier do not share one implementation.
 
 For each chromosome, RETURN is a bounded joint assignment rather than one
 nearest-site Hungarian result.  The solver enumerates the first K injective
-assignments in deterministic cost order, performs any necessary derived RESEAT,
-replays the real `back -> out` phases with single-leg ghosts as hard failures,
-and only then compares candidates.  The selected assignment rank, evaluated
+assignments in deterministic cost order, performs any necessary derived RESEAT
+and temporary storage parking for stationary target participants, replays the
+real `back -> out` phases with single-leg ghosts as hard failures, and only then
+compares candidates.  Parking is emitted explicitly and charged as a real
+phase-0 move plus phase-1 re-entry.  The selected assignment rank, evaluated
 assignment count, rejected ghost assignments, geometric routing forecast, and
-pre-score RESEAT count are returned in the boundary audit.
+pre-score repair counts are returned in the boundary audit.
 
 Search uses one total unique-fitness budget shared by greedy seeding,
 crossover/mutation and local polishing.  A normalized direct space of at most
@@ -45,7 +47,7 @@ passes.  Cache on/off changes evaluation reuse only; winner, mapping, movement
 batches and RNG state remain identical for a fixed seed.
 
 The old forecast-term bitset path remains only for differential regression
-fixtures.  ABI7 runs use raw future layers, carry the resumable ASAP scheduler
+fixtures.  ABI8 runs use raw future layers, carry the resumable ASAP scheduler
 snapshot and every atom's absolute-idle prior, and fail if raw layers and
 precomputed terms are mixed.
 
@@ -67,8 +69,8 @@ ctest --test-dir /tmp/zac-native-ctest --output-on-failure
 ```
 
 The primary build intentionally uses neither OpenMP nor fast-math.  The public
-ABI version is `7`, flat scorer wire is `1`, rich-boundary wire is `6`, backend
-identity is `cpp-native-v7`, and RNG semantics are
+ABI version is `8`, flat scorer wire is `1`, rich-boundary wire is `6`, backend
+identity is `cpp-native-v8`, and RNG semantics are
 `python-random-mt19937-v1`.
 
 ## Formal build freeze

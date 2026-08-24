@@ -579,13 +579,13 @@ def boundary_legs(registry_before: dict, decisions: dict, arch) -> list:
     """决策 → 回相腿清单（zcost 格式 (dist, 起x, 起y, 终x, 终y)，dist=0 不上车）。
 
     registry_before：决策应用前各搬运决策者的激发区座位 {q: seat}
-    （决策后登记簿已变）。RESEAT 是鬼点修补引入的第三种决策——
-    驻留者区内让座（激发区 → 激发区），与 RETURN 一样发生在边界相位，
-    路由端按映射增量自动带上，无需特殊处理。
+    （决策后登记簿已变）。RESEAT 是驻留者区内让座；PARK 是目标门
+    参与者为避开 out 相鬼点而临时停入存储区。它们都与 RETURN 一样
+    发生在边界相位，路由端按映射增量自动带上。
     """
     legs = []
     for q, decision in decisions.items():
-        if decision[0] not in ("RETURN", "RESEAT"):
+        if decision[0] not in ("RETURN", "RESEAT", "PARK"):
             continue
         seat = registry_before[q]
         sx, sy = arch.exact_SLM_location_tuple(seat)

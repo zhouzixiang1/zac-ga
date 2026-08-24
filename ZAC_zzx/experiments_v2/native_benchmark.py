@@ -1,4 +1,4 @@
-"""Deterministic medium-boundary Python-reference vs ABI7/wire-v6 benchmark.
+"""Deterministic medium-boundary Python-reference vs ABI8/wire-v6 benchmark.
 
 This benchmark measures only ``ResidentPlacer.run`` after the architecture and
 placer objects exist.  It is a language-migration gate, not an ICCAD timing
@@ -116,7 +116,8 @@ def _assert_parity(reference: ResidentPlacer,
     direct_spaces = []
     for left, right in zip(reference.decision_log[:-1],
                            native.decision_log[:-1]):
-        for key in ("stay", "return", "reseat", "eligible_decisions"):
+        for key in ("stay", "return", "reseat", "participant_parking",
+                    "eligible_decisions"):
             if left.get(key) != right.get(key):
                 raise RuntimeError(f"native medium decision drift: {key}")
         current_error = abs(
@@ -194,8 +195,8 @@ def run_medium_benchmark(
             "parity": parity,
         }
     return {
-        "protocol": "resident-python-vs-abi7-medium-v2",
-        "backend": "cpp-native-v7",
+        "protocol": "resident-python-vs-abi8-medium-v2",
+        "backend": "cpp-native-v8",
         "measurement": "ResidentPlacer.run only; preprocessed architecture",
         "operator_profile": "exact",
         "wheel_sha256": wheel_sha256,

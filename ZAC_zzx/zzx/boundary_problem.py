@@ -14,7 +14,7 @@ from math import dist, isclose, isfinite
 from typing import Iterable, Mapping, Sequence
 
 
-NATIVE_ABI_VERSION = 7
+NATIVE_ABI_VERSION = 8
 RNG_VERSION = "python-random-mt19937-v1"
 
 
@@ -191,7 +191,7 @@ class BoundaryProblem:
     selected_horizon: int | None = None
     # Per-atom coherence-idle time accumulated before this boundary.  An empty
     # tuple is retained only for non-formal source compatibility and resolves
-    # to an all-zero vector.  ABI7 formal callers must send all atoms.
+    # to an all-zero vector.  ABI8 formal callers must send all atoms.
     prior_idle_time_us: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
@@ -395,7 +395,7 @@ class FitnessResult:
     transfers: int
     phase_batches: tuple[tuple[tuple[int, ...], ...], ...] = ()
     error: str | None = None
-    # Internal ABI7 audit/state handoff.  It is intentionally not part of the
+    # Internal ABI8 audit/state handoff.  It is intentionally not part of the
     # lexicographic objective or the compact legacy flat row.
     candidate_idle_time_us: tuple[float, ...] = ()
 
@@ -733,13 +733,13 @@ class RichH0Problem:
     future_layers: tuple[tuple[int, tuple[tuple[int, int], ...]], ...] = ()
     boundary_id: str = ""
     selected_horizon: int = 0
-    # Same ABI7 coherence state as BoundaryProblem.  Empty means all-zero only
+    # Same ABI8 coherence state as BoundaryProblem.  Empty means all-zero only
     # for legacy/source fixtures; registered formal DTOs must send n_atoms.
     prior_idle_time_us: tuple[float, ...] = ()
-    # ABI7 exact-current scheduler prefix.  Python owns this absolute ASAP
+    # ABI8 exact-current scheduler prefix.  Python owns this absolute ASAP
     # state; C++ forks it per chromosome and simulates source-back, target-out,
     # target CZ and the target parent-1Q block.  Empty active_union retains the
-    # ABI7 compatibility scorer for non-formal fixtures only.
+    # ABI8 compatibility scorer for non-formal fixtures only.
     scheduler_trace_end_us: float = 0.0
     scheduler_active_union_us: tuple[float, ...] = ()
     scheduler_aod_end_us: tuple[float, ...] = ()
@@ -754,7 +754,7 @@ class RichH0Problem:
     scheduler_site_dependency_site_ids: tuple[int, ...] = ()
     scheduler_site_dependency_activation_finish_us: tuple[float, ...] = ()
     target_one_qubit_atoms: tuple[int, ...] = ()
-    # Frozen physical constants consumed by the ABI7 exact-current scheduler.
+    # Frozen physical constants consumed by the ABI8 exact-current scheduler.
     # They are carried explicitly so a production architecture cannot silently
     # drift away from the native constants used to rank candidates.
     scheduler_one_qubit_duration_us: float = 52.0
@@ -937,7 +937,7 @@ class RichH0Problem:
                     or one_qubit_common < 0.0 or transfer_duration < 0.0
                     or acceleration <= 0.0 or coherence_t2 <= 0.0):
                 raise ValueError(
-                    "ABI7 exact scheduler physical constants are invalid")
+                    "ABI8 exact scheduler physical constants are invalid")
             frozen_physics = (
                 ("1Q duration", one_qubit_duration, 52.0),
                 ("Rydberg duration", rydberg_duration, 0.36),
@@ -951,7 +951,7 @@ class RichH0Problem:
                     if not isclose(
                             actual, expected, rel_tol=0.0, abs_tol=1e-12):
                         raise ValueError(
-                            f"ABI7 exact scheduler {label} differs from the "
+                            f"ABI8 exact scheduler {label} differs from the "
                             "frozen physical model")
             if len(scheduler_active) != self.architecture.n_atoms:
                 raise ValueError(
@@ -1255,6 +1255,12 @@ class RichH0Result:
     gate_option_indices: tuple[int, ...]
     return_assignments: tuple[tuple[int, int], ...]
     reseat_assignments: tuple[tuple[int, int], ...]
+    # Target-layer participants can themselves be stationary ghosts when their
+    # selected gate seat equals the current seat.  Such an atom is moved to a
+    # deterministic temporary storage site in phase 0 and re-enters its gate
+    # seat in phase 1.  This is a derived physical repair, not a GA gene and not
+    # a semantic RETURN decision.
+    participant_parking_assignments: tuple[tuple[int, int], ...]
     rng_state: tuple
     search_mode: str
     operator_profile: str
@@ -1281,6 +1287,7 @@ class RichH0Result:
     current_ghost_rejections: int
     future_ghost_cost: float
     pre_score_reseats: int
+    pre_score_participant_parkings: int
     current_gate_anchor: tuple[int, ...]
     current_gate_anchor_assignment_site_ids: tuple[int, ...]
     current_gate_final_assignment_site_ids: tuple[int, ...]

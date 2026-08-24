@@ -194,7 +194,7 @@ def register_native_wheel(wheel_path: str | Path) -> dict:
 class NativeResidentBackend:
     """One persistent architecture object and one native call per boundary."""
 
-    name = "cpp-native-v7"
+    name = "cpp-native-v8"
 
     def __init__(self, architecture, *, flat_buffers: bool = True,
                  require_registered_wheel: bool = False,
@@ -402,10 +402,10 @@ class NativeResidentBackend:
         """
         if self._formal_native and not problem.exact_current_scheduler:
             raise NativeBackendError(
-                "formal ABI7 rich boundary requires an exact scheduler snapshot")
+                "formal ABI8 rich boundary requires an exact scheduler snapshot")
         if self._formal_native and not problem.enforce_frozen_physical_model:
             raise NativeBackendError(
-                "formal ABI7 rich boundary requires the frozen physical model")
+                "formal ABI8 rich boundary requires the frozen physical model")
         if problem.architecture != self._architecture_dto:
             raise NativeBackendError(
                 "rich boundary architecture differs from backend snapshot")
@@ -537,6 +537,10 @@ class NativeResidentBackend:
                 reseat_assignments=tuple(
                     (int(atom), int(site))
                     for atom, site in value["reseat_assignments"]),
+                participant_parking_assignments=tuple(
+                    (int(atom), int(site))
+                    for atom, site in
+                    value["participant_parking_assignments"]),
                 rng_state=tuple(value["rng_state"]),
                 search_mode=str(value["search_mode"]),
                 operator_profile=str(value["operator_profile"]),
@@ -576,6 +580,8 @@ class NativeResidentBackend:
                     value["current_ghost_rejections"]),
                 future_ghost_cost=float(value["future_ghost_cost"]),
                 pre_score_reseats=int(value["pre_score_reseats"]),
+                pre_score_participant_parkings=int(
+                    value["pre_score_participant_parkings"]),
                 current_gate_anchor=tuple(
                     int(item) for item in value["current_gate_anchor"]),
                 current_gate_anchor_assignment_site_ids=tuple(

@@ -175,6 +175,7 @@ struct RichSearchStats {
   std::size_t return_assignment_evaluated{};
   std::size_t current_ghost_rejections{};
   std::size_t pre_score_reseats{};
+  std::size_t pre_score_participant_parkings{};
   std::size_t forecast_terms_applied{};
   std::size_t forecast_terms_skipped_cutoff{};
   std::size_t forecast_state_cache_hits{};
@@ -185,6 +186,8 @@ struct RichSolveResult {
   std::vector<std::size_t> gate_option_indices;
   std::vector<std::pair<std::int64_t, std::int64_t>> return_assignments;
   std::vector<std::pair<std::int64_t, std::int64_t>> reseat_assignments;
+  std::vector<std::pair<std::int64_t, std::int64_t>>
+      participant_parking_assignments;
   PythonRandomState rng_state;
   std::string search_mode;
   RichOperatorProfile operator_profile{RichOperatorProfile::kExact};
@@ -200,6 +203,7 @@ struct RichSolveResult {
   std::size_t return_assignment_evaluated{};
   std::size_t current_ghost_rejections{};
   std::size_t pre_score_reseats{};
+  std::size_t pre_score_participant_parkings{};
   std::vector<std::int64_t> current_gate_anchor;
   std::vector<std::int64_t> current_gate_anchor_assignment_site_ids;
   std::vector<std::int64_t> current_gate_final_assignment_site_ids;

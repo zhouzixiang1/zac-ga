@@ -232,11 +232,18 @@ struct ReturnAssignment {
   Point point;
 };
 
+struct ParticipantParkingAssignment {
+  std::int64_t atom{};
+  std::int64_t site_id{};
+  Point point;
+};
+
 struct Evaluated {
   FitnessResult fitness;
   DecodeResult decoded;
   std::vector<ReturnAssignment> assignments;
   std::vector<ReturnAssignment> reseats;
+  std::vector<ParticipantParkingAssignment> participant_parkings;
   double forecast_nll{};
   double search_nll{};
   std::vector<double> forecast_by_depth;
@@ -246,6 +253,7 @@ struct Evaluated {
   std::size_t return_assignment_evaluated{};
   std::size_t current_ghost_rejections{};
   std::size_t pre_score_reseats{};
+  std::size_t pre_score_participant_parkings{};
   bool forecast_feasible{true};
   std::string forecast_error;
 };
@@ -301,12 +309,18 @@ struct PlanGeometry {
   std::vector<Ghost> ghosts_t0;
   std::vector<Ghost> ghosts_t1;
   std::set<std::int64_t> blockers;
+  std::set<std::int64_t> stationary_out_participant_blockers;
   std::size_t violations{};
   std::size_t ghost_violations{};
 };
 
 struct ReseatRepair {
   std::vector<ReturnAssignment> reseats;
+  PlanGeometry geometry;
+};
+
+struct ParticipantParkingRepair {
+  std::vector<ParticipantParkingAssignment> parkings;
   PlanGeometry geometry;
 };
 
@@ -799,10 +813,14 @@ class RichSolver {
           (details.empty() ? std::string{} : std::string(": ") + details));
     }
     auto final_geometry = build_geometry(
-        final_value.decoded, final_value.assignments, final_value.reseats);
-    const auto recorded_winner = score_geometry(
-        winner, std::move(final_geometry), final_value.assignments.size(),
-        config_.enforce_single_leg_ghost, true);
+        final_value.decoded, final_value.assignments, final_value.reseats,
+        final_value.participant_parkings);
+    const auto recorded_winner = final_value.fitness.feasible
+        ? score_geometry(
+              winner, std::move(final_geometry),
+              final_value.assignments.size(),
+              config_.enforce_single_leg_ghost, true)
+        : final_value.fitness;
     const auto same_value = [](double first, double second) {
       return first == second ||
              (std::isinf(first) && std::isinf(second) &&
@@ -840,6 +858,10 @@ class RichSolver {
       result.reseat_assignments.emplace_back(
           problem_.eligible[reseat.eligible_index], reseat.site_id);
     }
+    for (const auto& parking : final_value.participant_parkings) {
+      result.participant_parking_assignments.emplace_back(
+          parking.atom, parking.site_id);
+    }
     result.rng_state = rng_.state();
     result.search_mode = std::move(search_mode);
     result.operator_profile = config_.operator_profile;
@@ -856,6 +878,8 @@ class RichSolver {
         final_value.return_assignment_evaluated;
     result.current_ghost_rejections = final_value.current_ghost_rejections;
     result.pre_score_reseats = final_value.pre_score_reseats;
+    result.pre_score_participant_parkings =
+        final_value.pre_score_participant_parkings;
     result.current_gate_anchor = current_gate_anchor_;
     result.current_gate_anchor_assignment_site_ids =
         current_gate_anchor_assignment_site_ids_;
@@ -1181,7 +1205,7 @@ class RichSolver {
           !std::isfinite(problem_.coherence_t2_us) ||
           problem_.coherence_t2_us <= 0.0) {
         throw std::invalid_argument(
-            "ABI7 exact scheduler physical constants are invalid");
+            "ABI8 exact scheduler physical constants are invalid");
       }
       if (problem_.enforce_frozen_physical_model &&
           (!frozen_equal(problem_.scheduler_one_qubit_duration_us, kOneQUs) ||
@@ -1192,7 +1216,7 @@ class RichSolver {
                         kAccelUmPerUs2) ||
           !frozen_equal(problem_.coherence_t2_us, kT2Us))) {
         throw std::invalid_argument(
-            "ABI7 exact scheduler physical constants differ from the frozen model");
+            "ABI8 exact scheduler physical constants differ from the frozen model");
       }
       if (problem_.current_site_ids.size() != problem_.n_atoms ||
           problem_.scheduler_active_union_us.size() != problem_.n_atoms ||
@@ -1200,7 +1224,7 @@ class RichSolver {
           problem_.scheduler_back_dependency_end_us.size() != problem_.n_atoms ||
           problem_.prior_idle_time_us.size() != problem_.n_atoms) {
         throw std::invalid_argument(
-            "ABI7 exact scheduler atom vectors are not aligned");
+            "ABI8 exact scheduler atom vectors are not aligned");
       }
       // Current formal ZAC architectures own one AOD and one Rydberg zone.  The
       // compact wire intentionally fails closed until zone ids are carried per
@@ -1208,11 +1232,11 @@ class RichSolver {
       if (problem_.scheduler_aod_end_us.size() != 1 ||
           problem_.scheduler_rydberg_end_us.size() != 1) {
         throw std::invalid_argument(
-            "ABI7 exact scheduler currently requires one AOD and one Rydberg zone");
+            "ABI8 exact scheduler currently requires one AOD and one Rydberg zone");
       }
       if (!finite_non_negative(problem_.scheduler_trace_end_us) ||
           !finite_non_negative(problem_.scheduler_one_qubit_end_us)) {
-        throw std::invalid_argument("ABI7 scheduler scalar clock is invalid");
+        throw std::invalid_argument("ABI8 scheduler scalar clock is invalid");
       }
       for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
         const auto active = problem_.scheduler_active_union_us[atom];
@@ -1223,34 +1247,34 @@ class RichSolver {
             active > problem_.scheduler_trace_end_us + 1e-7 ||
             !finite_non_negative(ordinary) ||
             !finite_non_negative(back) || back + 1e-7 < ordinary) {
-          throw std::invalid_argument("ABI7 scheduler atom clock is invalid");
+          throw std::invalid_argument("ABI8 scheduler atom clock is invalid");
         }
         const auto expected =
             std::max(0.0, problem_.scheduler_trace_end_us - active);
         if (std::abs(problem_.prior_idle_time_us[atom] - expected) > 1e-7) {
           throw std::invalid_argument(
-              "ABI7 prior idle differs from absolute scheduler state");
+              "ABI8 prior idle differs from absolute scheduler state");
         }
         const auto site_id = problem_.current_site_ids[atom];
         if (site_id < 0 || static_cast<std::size_t>(site_id) >=
                                architecture_.site_coordinates().size()) {
-          throw std::invalid_argument("ABI7 current site id is invalid");
+          throw std::invalid_argument("ABI8 current site id is invalid");
         }
       }
       for (const auto value : problem_.scheduler_aod_end_us) {
         if (!finite_non_negative(value)) {
-          throw std::invalid_argument("ABI7 AOD clock is invalid");
+          throw std::invalid_argument("ABI8 AOD clock is invalid");
         }
       }
       for (const auto value : problem_.scheduler_rydberg_end_us) {
         if (!finite_non_negative(value)) {
-          throw std::invalid_argument("ABI7 Rydberg clock is invalid");
+          throw std::invalid_argument("ABI8 Rydberg clock is invalid");
         }
       }
       if (problem_.scheduler_site_dependency_site_ids.size() !=
           problem_.scheduler_site_dependency_activation_finish_us.size()) {
         throw std::invalid_argument(
-            "ABI7 scheduler site dependency columns differ in length");
+            "ABI8 scheduler site dependency columns differ in length");
       }
       std::set<std::int64_t> dependency_sites;
       for (std::size_t index = 0;
@@ -1264,19 +1288,19 @@ class RichSolver {
             !dependency_sites.insert(site_id).second ||
             !finite_non_negative(activation)) {
           throw std::invalid_argument(
-              "ABI7 scheduler site dependency is invalid");
+              "ABI8 scheduler site dependency is invalid");
         }
       }
       for (const auto atom : problem_.target_one_qubit_atoms) {
         if (atom < 0 || static_cast<std::size_t>(atom) >= problem_.n_atoms) {
-          throw std::invalid_argument("ABI7 target 1Q atom is invalid");
+          throw std::invalid_argument("ABI8 target 1Q atom is invalid");
         }
       }
       for (const auto& domain : problem_.gate_domains) {
         for (const auto& option : domain) {
           if (option.target1_site_id < 0 || option.target2_site_id < 0) {
             throw std::invalid_argument(
-                "ABI7 indexed gate option lacks target site ids");
+                "ABI8 indexed gate option lacks target site ids");
           }
         }
       }
@@ -1290,7 +1314,7 @@ class RichSolver {
                !problem_.target_one_qubit_atoms.empty() ||
                problem_.scheduler_trace_end_us != 0.0 ||
                problem_.scheduler_one_qubit_end_us != 0.0) {
-      throw std::invalid_argument("partial ABI7 scheduler snapshot is forbidden");
+      throw std::invalid_argument("partial ABI8 scheduler snapshot is forbidden");
     }
     if (config_.population_size == 0 || config_.iterations == 0 ||
         config_.neighbors_per_solution == 0 ||
@@ -1887,7 +1911,7 @@ class RichSolver {
     auto positions = problem_.current_points;
     auto accumulated_idle = problem_.prior_idle_time_us;
     if (result.fitness.candidate_idle_time_us.size() != problem_.n_atoms) {
-      throw std::logic_error("current ABI7 fitness lacks per-atom idle delta");
+      throw std::logic_error("current ABI8 fitness lacks per-atom idle delta");
     }
     for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
       accumulated_idle[atom] += result.fitness.candidate_idle_time_us[atom];
@@ -2358,7 +2382,9 @@ class RichSolver {
   PlanGeometry build_geometry(
       const DecodeResult& decoded,
       const std::vector<ReturnAssignment>& assignments,
-      const std::vector<ReturnAssignment>& reseats) const {
+      const std::vector<ReturnAssignment>& reseats,
+      const std::vector<ParticipantParkingAssignment>& participant_parkings =
+          {}) const {
     PlanGeometry geometry;
     geometry.positions_t1 = problem_.current_points;
     geometry.site_ids_t1 = problem_.current_site_ids;
@@ -2383,6 +2409,19 @@ class RichSolver {
     };
     for (const auto& assignment : assignments) append_back(assignment);
     for (const auto& reseat : reseats) append_back(reseat);
+    for (const auto& parking : participant_parkings) {
+      const auto atom = static_cast<std::size_t>(parking.atom);
+      const auto& source = problem_.current_points[atom];
+      const auto distance = point_distance(source, parking.point);
+      if (distance > 1e-9) {
+        geometry.back_legs.push_back({distance, source, parking.point});
+        geometry.back_owners.push_back(parking.atom);
+      }
+      geometry.positions_t1[atom] = parking.point;
+      if (!geometry.site_ids_t1.empty()) {
+        geometry.site_ids_t1[atom] = parking.site_id;
+      }
+    }
 
     constexpr std::size_t kStackAtoms = 256;
     if (geometry.positions_t1.size() <= kStackAtoms) {
@@ -2479,7 +2518,8 @@ class RichSolver {
     }
     const auto replay_single_legs = [&](const auto& legs,
                                         const auto& ghosts,
-                                        const auto& movers) {
+                                        const auto& movers,
+                                        bool record_out_participant_blockers) {
       for (std::size_t index = 0; index < legs.size(); ++index) {
         const auto& leg = legs[index];
         for (const auto& ghost : ghosts) {
@@ -2491,13 +2531,17 @@ class RichSolver {
           ++geometry.violations;
           ++geometry.ghost_violations;
           geometry.blockers.insert(ghost.atom);
+          if (record_out_participant_blockers && atom < participant_mask_.size() &&
+              participant_mask_[atom] && !movers[atom]) {
+            geometry.stationary_out_participant_blockers.insert(ghost.atom);
+          }
         }
       }
     };
     replay_single_legs(
-        geometry.back_legs, geometry.ghosts_t0, back_movers);
+        geometry.back_legs, geometry.ghosts_t0, back_movers, false);
     replay_single_legs(
-        geometry.out_legs, geometry.ghosts_t1, out_movers);
+        geometry.out_legs, geometry.ghosts_t1, out_movers, true);
     return geometry;
   }
 
@@ -2568,12 +2612,12 @@ class RichSolver {
         if (phase_index >= candidate.phases.size() ||
             phase_index >= result.executable_phase_batches.size()) {
           throw std::logic_error(
-              "ABI7 candidate executable phase batches are incomplete");
+              "ABI8 candidate executable phase batches are incomplete");
         }
         const auto& phase = candidate.phases[phase_index];
         if (target_site_ids.size() != problem_.n_atoms ||
             phase.owners.size() != phase.legs.size()) {
-          throw std::logic_error("ABI7 candidate phase geometry is incomplete");
+          throw std::logic_error("ABI8 candidate phase geometry is incomplete");
         }
         const auto site_id_for_point = [&](const Point& point) {
           const auto& coordinates = architecture_.site_coordinates();
@@ -2584,13 +2628,13 @@ class RichSolver {
             }
           }
           throw std::logic_error(
-              "ABI7 executable batch target is not a registered SLM site");
+              "ABI8 executable batch target is not a registered SLM site");
         };
         for (const auto& batch :
              result.executable_phase_batches[phase_index]) {
           if (batch.legs.size() != batch.owners.size()) {
             throw std::logic_error(
-                "ABI7 executable batch owner geometry is incomplete");
+                "ABI8 executable batch owner geometry is incomplete");
           }
           const auto timing = expanded_batch_timing_model(
               batch.legs, transfer_us, acceleration);
@@ -2601,7 +2645,7 @@ class RichSolver {
             const auto raw_owner = batch.owners[member];
             if (raw_owner < 0 ||
                 static_cast<std::size_t>(raw_owner) >= problem_.n_atoms) {
-              throw std::logic_error("ABI7 phase owner is invalid");
+              throw std::logic_error("ABI8 phase owner is invalid");
             }
             const auto owner = static_cast<std::size_t>(raw_owner);
             begin = std::max(
@@ -2701,7 +2745,7 @@ class RichSolver {
       for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
         if (active[atom] > trace_end + 1e-7) {
           throw std::logic_error(
-              "ABI7 active union exceeds candidate trace makespan");
+              "ABI8 active union exceeds candidate trace makespan");
         }
         idle_after[atom] = std::max(0.0, trace_end - active[atom]);
         const auto before = problem_.prior_idle_time_us[atom];
@@ -2843,7 +2887,7 @@ class RichSolver {
           auto trial_geometry =
               build_geometry(decoded, assignments, trial_reseats);
           const auto trial_violations = trial_geometry.violations;
-          if (trial_violations >= best_violations) continue;
+          if (trial_violations >= geometry.violations) continue;
           const auto relaxed = score_geometry(
               chromosome, std::move(trial_geometry), return_count, false);
           if (!found ||
@@ -2868,6 +2912,123 @@ class RichSolver {
       selected[best_index] = best_assignment;
       reseats = as_vector();
       geometry = build_geometry(decoded, assignments, reseats);
+    }
+    return {as_vector(), std::move(geometry)};
+  }
+
+  ParticipantParkingRepair derive_participant_parkings(
+      const std::vector<std::int64_t>& chromosome,
+      const DecodeResult& decoded,
+      const std::vector<ReturnAssignment>& assignments,
+      const std::vector<ReturnAssignment>& reseats,
+      std::size_t return_count) const {
+    std::map<std::int64_t, ParticipantParkingAssignment> selected;
+    const auto as_vector = [&]() {
+      std::vector<ParticipantParkingAssignment> result;
+      result.reserve(selected.size());
+      for (const auto& [atom, assignment] : selected) {
+        (void)atom;
+        result.push_back(assignment);
+      }
+      return result;
+    };
+    auto parkings = as_vector();
+    auto geometry = build_geometry(
+        decoded, assignments, reseats, parkings);
+    for (std::size_t step = 0;
+         step < problem_.participants.size() && geometry.violations != 0;
+         ++step) {
+      std::set<std::int64_t> out_owners(
+          geometry.out_owners.begin(), geometry.out_owners.end());
+      std::set<std::int64_t> occupied_sites(
+          problem_.occupied_storage_site_ids.begin(),
+          problem_.occupied_storage_site_ids.end());
+      for (const auto site_id : geometry.site_ids_t1) {
+        if (storage_site_ids_.count(site_id) != 0U) {
+          occupied_sites.insert(site_id);
+        }
+      }
+
+      bool found = false;
+      std::size_t best_violations = geometry.violations;
+      FitnessResult best_relaxed;
+      std::int64_t best_atom{};
+      ParticipantParkingAssignment best_assignment;
+      for (const auto atom : geometry.stationary_out_participant_blockers) {
+        if (atom < 0 || static_cast<std::size_t>(atom) >= problem_.n_atoms ||
+            !participant_mask_[static_cast<std::size_t>(atom)] ||
+            out_owners.count(atom) != 0U || selected.count(atom) != 0U) {
+          continue;
+        }
+        const auto& source = problem_.current_points[
+            static_cast<std::size_t>(atom)];
+        std::vector<std::pair<double, std::int64_t>> sites;
+        sites.reserve(storage_site_ids_.size());
+        for (const auto site_id : storage_site_ids_) {
+          if (site_id < 0 ||
+              static_cast<std::size_t>(site_id) >=
+                  architecture_.site_coordinates().size() ||
+              occupied_sites.count(site_id) != 0U) {
+            continue;
+          }
+          const auto& point = architecture_.site_coordinates()[
+              static_cast<std::size_t>(site_id)];
+          const auto point_occupied = std::any_of(
+              geometry.positions_t1.begin(), geometry.positions_t1.end(),
+              [&](const auto& occupied) {
+                return same_point(point, occupied);
+              });
+          if (point_occupied) continue;
+          sites.emplace_back(point_distance(source, point), site_id);
+        }
+        std::sort(sites.begin(), sites.end());
+        if (sites.size() > config_.return_candidate_limit) {
+          sites.resize(config_.return_candidate_limit);
+        }
+        for (const auto& [distance, site_id] : sites) {
+          if (distance <= 1e-9) continue;
+          auto trial = selected;
+          trial[atom] = {
+              atom, site_id,
+              architecture_.site_coordinates()[static_cast<std::size_t>(
+                  site_id)]};
+          std::vector<ParticipantParkingAssignment> trial_parkings;
+          trial_parkings.reserve(trial.size());
+          for (const auto& [trial_atom, assignment] : trial) {
+            (void)trial_atom;
+            trial_parkings.push_back(assignment);
+          }
+          auto trial_geometry = build_geometry(
+              decoded, assignments, reseats, trial_parkings);
+          const auto trial_violations = trial_geometry.violations;
+          if (trial_violations >= geometry.violations) continue;
+          const auto relaxed = score_geometry(
+              chromosome, std::move(trial_geometry), return_count, false);
+          if (!found ||
+              std::tie(trial_violations,
+                       relaxed.negative_log_fidelity,
+                       relaxed.move_batches,
+                       relaxed.move_time_us,
+                       relaxed.total_distance_um,
+                       atom, site_id) <
+                  std::tie(best_violations,
+                           best_relaxed.negative_log_fidelity,
+                           best_relaxed.move_batches,
+                           best_relaxed.move_time_us,
+                           best_relaxed.total_distance_um,
+                           best_atom, best_assignment.site_id)) {
+            found = true;
+            best_violations = trial_violations;
+            best_relaxed = relaxed;
+            best_atom = atom;
+            best_assignment = trial[atom];
+          }
+        }
+      }
+      if (!found) break;
+      selected[best_atom] = best_assignment;
+      parkings = as_vector();
+      geometry = build_geometry(decoded, assignments, reseats, parkings);
     }
     return {as_vector(), std::move(geometry)};
   }
@@ -2901,7 +3062,22 @@ class RichSolver {
         result.assignment_key.push_back(reseat.site_id);
       }
     }
-    const auto& geometry = reseat_repair.geometry;
+    auto participant_parking_repair = derive_participant_parkings(
+        chromosome, decoded, assignments, result.reseats, returners.size());
+    result.participant_parkings = std::move(
+        participant_parking_repair.parkings);
+    result.pre_score_participant_parkings =
+        result.participant_parkings.size();
+    stats_.pre_score_participant_parkings +=
+        result.pre_score_participant_parkings;
+    if (!result.participant_parkings.empty()) {
+      result.assignment_key.push_back(-2);
+      for (const auto& parking : result.participant_parkings) {
+        result.assignment_key.push_back(parking.atom);
+        result.assignment_key.push_back(parking.site_id);
+      }
+    }
+    const auto& geometry = participant_parking_repair.geometry;
     if (geometry.violations != 0) {
       result.fitness = infeasible_fitness(
           chromosome,
@@ -2910,7 +3086,8 @@ class RichSolver {
               : "unresolved current gate occupancy");
     } else {
       result.fitness = score_geometry(
-          chromosome, std::move(reseat_repair.geometry), returners.size(),
+          chromosome, std::move(participant_parking_repair.geometry),
+          returners.size(),
           config_.enforce_single_leg_ghost);
     }
     if (!result.fitness.feasible &&

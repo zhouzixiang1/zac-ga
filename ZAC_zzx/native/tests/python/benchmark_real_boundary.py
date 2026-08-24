@@ -1,4 +1,4 @@
-"""Real-circuit Python-reference versus ABI7/wire-v6 exact-boundary benchmark.
+"""Real-circuit Python-reference versus ABI8/wire-v6 exact-boundary benchmark.
 
 This benchmark deliberately measures the existing :class:`ResidentPlacer`
 boundary implementation instead of a synthetic collection of candidate legs.
@@ -416,6 +416,32 @@ def _transition_rows(placer: TimedResidentPlacer,
                 or set(assignment_atoms) != return_set):
             raise AssertionError(
                 "ABI7 RETURN assignments differ from winner decision bits")
+        parking_rows = row.get("participant_parking_assignments", [])
+        if not isinstance(parking_rows, list):
+            raise AssertionError(
+                "participant parking assignment audit is not a list")
+        parking_atoms = []
+        for assignment in parking_rows:
+            if not isinstance(assignment, Mapping):
+                raise AssertionError(
+                    "participant parking assignment row is invalid")
+            atom = assignment.get("atom")
+            location = assignment.get("location")
+            if (isinstance(atom, bool) or not isinstance(atom, int)
+                    or atom not in target_participants
+                    or not isinstance(location, list)
+                    or tuple(location) != tuple(boundary_mapping[atom])
+                    or tuple(source_mapping[atom]) ==
+                    tuple(boundary_mapping[atom])):
+                raise AssertionError(
+                    "participant parking assignment differs from executable "
+                    "boundary mapping")
+            parking_atoms.append(atom)
+        if (len(parking_atoms) != len(set(parking_atoms))
+                or len(parking_atoms) != int(
+                    row.get("participant_parking", 0))):
+            raise AssertionError(
+                "participant parking audit differs from decision count")
         physical = dict(row["physical"])
         forecast = dict(row["forecast_objective"])
         current_nll = float(physical["negative_log_fidelity"])
@@ -434,6 +460,8 @@ def _transition_rows(placer: TimedResidentPlacer,
             "return_atoms": list(return_atoms),
             "reseat_atoms": list(reseat_atoms),
             "reseat": len(reseat_atoms),
+            "participant_parking_atoms": list(parking_atoms),
+            "participant_parking": len(parking_atoms),
             "current_physical_nll": current_nll,
             "forecast_nll": forecast_nll,
             "search_nll": search_nll,
@@ -645,7 +673,7 @@ def benchmark(*, qasm_path: Path = DEFAULT_QASM,
     if repeats <= 0:
         raise ValueError("repeats must be positive")
     if not native_available():
-        raise RuntimeError("ABI7/wire-v6 zac_native_core is not installed")
+        raise RuntimeError("ABI8/wire-v6 zac_native_core is not installed")
     native_build = build_info(
         require_registered_wheel=require_registered_wheel,
         expected_wheel_sha256=expected_wheel_sha256)
@@ -714,7 +742,7 @@ def benchmark(*, qasm_path: Path = DEFAULT_QASM,
     }
     return {
         "schema": 1,
-        "benchmark_id": "abi7-exact-real-boundary-ising-n42-v2",
+        "benchmark_id": "abi8-exact-real-boundary-ising-n42-v2",
         "claim_scope": "migration benchmark; not a formal quality result",
         "case": {
             "dataset": "zac18",
@@ -791,7 +819,7 @@ def _markdown(payload: dict[str, Any]) -> str:
     native = timing["summary"]["native"]
     primary = "complete_boundary_solve_ns"
     return "\n".join((
-        "# ABI7/wire-v6 exact real-boundary benchmark",
+        "# ABI8/wire-v6 exact real-boundary benchmark",
         "",
         f"- Case: ZAC18 `{case['circuit']}`; {case['qubits']} qubits, "
         f"{case['two_qubit_gates']} two-qubit gates, "
@@ -801,7 +829,7 @@ def _markdown(payload: dict[str, Any]) -> str:
         "- Unique fitness evaluations also match. Python records two extra "
         "cached incumbent requests; neither changes search work or RNG state.",
         f"- Complete boundary median: Python "
-        f"{reference[primary]['median'] / 1e6:.3f} ms, ABI7 C++ "
+        f"{reference[primary]['median'] / 1e6:.3f} ms, ABI8 C++ "
         f"{native[primary]['median'] / 1e6:.3f} ms.",
         f"- Complete boundary speedup: {speedup[primary]:.3f}x "
         f"(5x gate: {'PASS' if timing['meets_5x_complete_boundary_gate'] else 'FAIL'}).",

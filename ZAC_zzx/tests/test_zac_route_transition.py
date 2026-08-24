@@ -20,7 +20,10 @@ from evaluation import normalize_zair, score_trace, validate_trace_physics  # no
 from streaming.zac_m1_transition import ZACM1TransitionKernel  # noqa: E402
 from streaming.zac_route_transition import ZACRouteTransitionDriver  # noqa: E402
 from zac.ds.architecture import Architecture  # noqa: E402
-from zzx.zac_zzx import ZAC_zzx  # noqa: E402
+from zzx.zac_zzx import (  # noqa: E402
+    ZAC_zzx,
+    _strict_endpoint_precedence_batches,
+)
 from zzx.zcost import greedy_phase_batches, phase_batches  # noqa: E402
 
 
@@ -51,6 +54,26 @@ def _compiler(architecture, n_qubits, placer_kind="resident"):
     compiler.zzx_route_log = []
     compiler.zzx_ghost_splits = 0
     return compiler
+
+
+class _StrictFallbackArchitecture:
+    """Coordinate oracle for a deterministic heuristic-prefix dead end."""
+
+    def __init__(self):
+        sources = ((2.0, 3.0), (1.0, 0.0), (2.0, 6.0))
+        targets = ((6.0, 3.0), (3.0, 0.0), (5.0, 3.0))
+        self.points = {
+            **{(0, atom, 0): point
+               for atom, point in enumerate(sources)},
+            **{(1, atom, 0): point
+               for atom, point in enumerate(targets)},
+        }
+
+    def exact_SLM_location(self, array, row, column):
+        return self.points[(array, row, column)]
+
+    def exact_SLM_location_tuple(self, location):
+        return self.points[tuple(location)]
 
 
 def _route_batch(
@@ -168,6 +191,32 @@ class TestZACRouteTransition(unittest.TestCase):
                 compiler._coloring_batches([0], mapping_from, mapping_to)
         safe_waypoint.assert_not_called()
         self.assertFalse(compiler._zzx_waypoint_plan)
+
+    def test_router_discards_dead_prefix_and_splits_strict_expanded_batch(self):
+        architecture = _StrictFallbackArchitecture()
+        compiler = _compiler(architecture, 3)
+        mapping_from = [(0, atom, 0) for atom in range(3)]
+        mapping_to = [(1, atom, 0) for atom in range(3)]
+        strict_batches = []
+        original = _strict_endpoint_precedence_batches
+
+        def capture_strict(*args, **kwargs):
+            result = original(*args, **kwargs)
+            strict_batches.append(result)
+            return result
+
+        with patch(
+                "zzx.zac_zzx._strict_endpoint_precedence_batches",
+                side_effect=capture_strict) as strict_replay:
+            actual = compiler._coloring_batches(
+                [0, 1, 2], mapping_from, mapping_to)
+
+        self.assertEqual(strict_replay.call_count, 1)
+        self.assertEqual(strict_batches, [((1,), (0, 2))])
+        # The endpoint-safe second strict batch is unsafe after ZAC parking
+        # expansion, so both contributors are re-audited as singletons.
+        self.assertEqual(actual, (2, [[0], [2], [1]], "exact"))
+        self.assertEqual(compiler.zzx_ghost_splits, 1)
 
     def test_streamed_native_chunks_are_dictionary_exact_to_batch(self):
         mappings, schedule, gate_ids, one_qubit, initial_one_qubit = _fixture()

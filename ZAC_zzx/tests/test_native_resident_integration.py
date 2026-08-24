@@ -39,7 +39,7 @@ TIMING_KEYS = {
     "backend_calls", "backend_candidates", "cache",
 }
 NATIVE_WHEEL_SHA256 = (
-    "2b3daac0f2f2281129817f7f93100e745fc74e47913fe9482751fa6cfbc1d1fd")
+    "49cc94c68c8109a6769bdf48280197652d137cb7b30603846001f5249678cb54")
 
 
 def architecture(*, frozen_physics=False):
@@ -557,10 +557,11 @@ class TestNativeResidentIntegration(unittest.TestCase):
                 schedule, horizon=decay_lookahead_spec(8), seed=seed)
 
     def test_joint_participant_source_seat_handoff_reaches_router_unchanged(self):
-        # At the L1 -> L2 boundary q3 takes q2's source seat after q2 leaves in
-        # the first out batch.  The rich solver scores this ordered handoff as
-        # [[2, 7], [3]].  A legacy post-selection repair used to relocate the
-        # second gate and make the production router deadlock on atom 5.
+        # At the L1 -> L2 boundary q3 takes q2's source seat in the same phase.
+        # All three legs are physically compatible, so q2 must not be frozen as
+        # a false stationary ghost while q3 is considered.  A legacy
+        # post-selection repair used to relocate the second gate and make the
+        # production router deadlock on atom 5.
         schedule = [
             [[3, 4], [5, 0]],
             [[7, 6], [2, 5]],
@@ -577,7 +578,7 @@ class TestNativeResidentIntegration(unittest.TestCase):
         self.assertEqual(
             placer.decision_log[1]["production_candidate"][
                 "target_out_batches"],
-            [[2, 7], [3]],
+            [[2, 3, 7]],
         )
         self.assertEqual(0, placer.decision_log[1].get("ghost_fix", 0))
 

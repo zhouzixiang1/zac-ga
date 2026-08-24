@@ -1,4 +1,4 @@
-"""Fail-closed ABI7/wire-v6 build attestation and freeze protocol.
+"""Fail-closed ABI8/wire-v6 build attestation and freeze protocol.
 
 The native wheel is not reproducible byte-for-byte on every supported build
 host, so this module deliberately creates a *build attestation*, not a claim
@@ -34,14 +34,14 @@ DEFAULT_NATIVE_ROOT = PACKAGE_ROOT / "native"
 ATTESTATION_PROTOCOL = "native-build-attestation-v1"
 FREEZE_PROTOCOL = "native-build-freeze-v1"
 SOURCE_HASH_ALGORITHM = "tracked-tree-v1"
-NATIVE_ABI_VERSION = 7
+NATIVE_ABI_VERSION = 8
 RNG_VERSION = "python-random-mt19937-v1"
 RICH_BOUNDARY_WIRE_VERSION = 6
 FLAT_WIRE_VERSION = 1
-NATIVE_BACKEND = "cpp-native-v7"
-MICROBENCHMARK_PROTOCOL = "abi7-registered-native-microbenchmark-v1"
-REAL_BOUNDARY_BENCHMARK_ID = "abi7-exact-real-boundary-ising-n42-v2"
-FULL_PIPELINE_PROTOCOL = "resident-python-vs-abi7-medium-v2"
+NATIVE_BACKEND = "cpp-native-v8"
+MICROBENCHMARK_PROTOCOL = "abi8-registered-native-microbenchmark-v1"
+REAL_BOUNDARY_BENCHMARK_ID = "abi8-exact-real-boundary-ising-n42-v2"
+FULL_PIPELINE_PROTOCOL = "resident-python-vs-abi8-medium-v2"
 
 MINIMUM_ONE_CALL_SPEEDUP = 5.0
 MINIMUM_FITNESS_SPEEDUP = 10.0
@@ -388,7 +388,7 @@ def _validate_micro_benchmark(path: Path,
     if value.get("schema") != 2 or value.get("protocol") != (
             MICROBENCHMARK_PROTOCOL):
         raise NativeBuildFreezeError(
-            "microbenchmark must use registered ABI7/wire-v6 schema 2")
+            "microbenchmark must use registered ABI8/wire-v6 schema 2")
     build = value.get("native_build")
     if not isinstance(build, Mapping):
         raise NativeBuildFreezeError("microbenchmark lacks native_build")
@@ -597,7 +597,7 @@ def freeze_native_build(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Attest and freeze the registered ABI7/wire-v6 native build")
+        description="Attest and freeze the registered ABI8/wire-v6 native build")
     subparsers = parser.add_subparsers(dest="command", required=True)
     attest = subparsers.add_parser("attest")
     attest.add_argument("--repo-root", type=Path, default=DEFAULT_REPO_ROOT)

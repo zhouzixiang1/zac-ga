@@ -176,17 +176,23 @@ def ghost_hit_atoms(legs: Sequence[Leg], ghosts: Sequence[Ghost]) -> tuple[int, 
 def _phase_adjacency(phase: MovementPhase) -> list[set[int]]:
     legs = phase.legs
     adjacency = [set() for _ in legs]
+    moving_owners = set(phase.owners)
+    static_ghosts = tuple(
+        ghost for ghost in phase.ghosts
+        if ghost.atom not in moving_owners)
     vectors = [
         (leg.source.x, leg.target.x, leg.source.y, leg.target.y)
         for leg in legs]
     for i in range(len(legs)):
         for j in range(i + 1, len(legs)):
             conflict = not compatible_2d(vectors[i], vectors[j])
-            if not conflict and phase.ghosts:
-                skipped = ({phase.owners[i], phase.owners[j]}
-                           if phase.owners else set())
-                ghosts = tuple(g for g in phase.ghosts if g.atom not in skipped)
-                conflict = bool(ghost_hit_atoms((legs[i], legs[j]), ghosts))
+            if not conflict and static_ghosts:
+                # Other owners in this phase are dynamic: they may join this
+                # batch or move before/after it.  Exact replay derives their
+                # source/target precedence after coloring.  Only truly static
+                # atoms form pairwise ghost edges at this stage.
+                conflict = bool(ghost_hit_atoms(
+                    (legs[i], legs[j]), static_ghosts))
             if conflict:
                 adjacency[i].add(j)
                 adjacency[j].add(i)
@@ -538,11 +544,15 @@ def _production_replay_phase_batches(
         tuple(phase.owners[index] for index in canonical_to_original),
         phase.batching,
     )
-    positions = {ghost.atom: ghost.position for ghost in routed.ghosts}
-    if len(positions) != len(routed.ghosts):
-        raise ValueError("production replay repeats a ghost atom")
-    positions.update({owner: routed.legs[index].source
-                      for index, owner in enumerate(routed.owners)})
+    def initial_positions() -> dict[int, Point]:
+        result = {ghost.atom: ghost.position for ghost in routed.ghosts}
+        if len(result) != len(routed.ghosts):
+            raise ValueError("production replay repeats a ghost atom")
+        result.update({owner: routed.legs[index].source
+                       for index, owner in enumerate(routed.owners)})
+        return result
+
+    positions = initial_positions()
 
     def executable(members: Sequence[int]) -> _ExecutableBatch:
         return _ExecutableBatch(
@@ -624,7 +634,41 @@ def _production_replay_phase_batches(
         deferred = []
         audit_pass(batches, clean, deferred)
     if deferred:
-        raise ValueError("production route has unresolved ghost batches")
+        # The bounded defer/recolor heuristic is intentionally retained as the
+        # fast path, but it can commit a locally safe batch that makes the
+        # remaining phase impossible.  Fall back to the exact source/target
+        # precedence order for the *whole original phase*, then replay from a
+        # fresh position map.  Reusing ``clean`` or ``positions`` here would
+        # preserve precisely the greedy prefix that caused the dead end.
+        strict_batches = replay_phase_batches(routed, exact_threshold)
+        strict_positions = initial_positions()
+        strict_clean: list[_ExecutableBatch] = []
+        for strict_batch in strict_batches:
+            queue = [list(strict_batch)]
+            while queue:
+                pending = queue.pop(0)
+                legs = tuple(routed.legs[index] for index in pending)
+                owners = tuple(routed.owners[index] for index in pending)
+                if _first_ghost_tracks(legs, owners, strict_positions) is not None:
+                    raise ValueError(
+                        "strict endpoint-precedence replay has a ghost hit")
+                expanded_bad = _expanded_batch_conflict_members(
+                    routed, pending, strict_positions)
+                if expanded_bad:
+                    if len(pending) == 1:
+                        raise ValueError(
+                            "strict endpoint-precedence singleton has an "
+                            "expanded ghost conflict")
+                    # Expansion can invalidate an endpoint-safe color class.
+                    # Split in its already deterministic member order and
+                    # subject every singleton to both physical audits.
+                    queue[0:0] = [[index] for index in pending]
+                    continue
+                strict_clean.append(executable(pending))
+                for index in pending:
+                    strict_positions[routed.owners[index]] = (
+                        routed.legs[index].target)
+        clean = strict_clean
     return tuple(clean)
 
 
@@ -664,14 +708,14 @@ def evaluate_candidate(problem: BoundaryProblem, candidate: CandidatePlan,
                        config: BoundaryConfig | None = None) -> FitnessResult:
     """Evaluate the candidate-dependent physical increment.
 
-    ABI7 uses the exact per-atom coherence log-ratio against the accumulated
+    ABI8 uses the exact per-atom coherence log-ratio against the accumulated
     boundary-entry idle times.  Target-CZ and already-scheduled 1Q durations are
     omitted because they are identical for every chromosome at this boundary;
     the scheduler commits those common terms once.  Location-dependent idle
     excitation remains in ``idle_exposures``.
 
     Owner-less phases are retained only for non-formal, empty-prior source
-    compatibility.  A formal ABI7 DTO supplies all prior times and one owner
+    compatibility.  A formal ABI8 DTO supplies all prior times and one owner
     per movement leg and fails closed otherwise.
     """
     config = config or BoundaryConfig()
@@ -807,6 +851,7 @@ class _RichEvaluated:
     option_indices: tuple[int, ...]
     assignments: tuple[tuple[int, int, Point], ...]
     reseats: tuple[tuple[int, int, Point], ...]
+    participant_parkings: tuple[tuple[int, int, Point], ...]
     assignment_key: tuple[int, ...]
     forecast_nll: float
     search_nll: float
@@ -1025,7 +1070,9 @@ def _rich_return_assignments(problem: RichH0Problem,
 def _rich_geometry(problem: RichH0Problem,
                    option_indices: Sequence[int],
                    assignments: Sequence[tuple[int, int, Point]],
-                   reseats: Sequence[tuple[int, int, Point]]) -> _RichGeometry:
+                   reseats: Sequence[tuple[int, int, Point]],
+                   participant_parkings: Sequence[
+                       tuple[int, int, Point]] = ()) -> _RichGeometry:
     current = _rich_points(problem)
     positions = list(current)
     site_ids = list(problem.current_site_ids)
@@ -1033,6 +1080,19 @@ def _rich_geometry(problem: RichH0Problem,
     back_owners: list[int] = []
     for eligible_index, _site_id, target in (*assignments, *reseats):
         atom = problem.eligible[eligible_index]
+        source = current[atom]
+        leg = Leg.between(source, target)
+        if leg.distance_um > EPS:
+            back_legs.append(leg)
+            back_owners.append(atom)
+        positions[atom] = target
+        if site_ids:
+            site_ids[atom] = int(_site_id)
+    # A target-layer participant whose selected gate target equals its current
+    # point has no ordinary out leg and is therefore a real stationary ghost.
+    # A derived participant parking creates an explicit phase-0 leg to storage;
+    # the ordinary gate loop below then creates its phase-1 re-entry leg.
+    for atom, _site_id, target in participant_parkings:
         source = current[atom]
         leg = Leg.between(source, target)
         if leg.distance_um > EPS:
@@ -1110,8 +1170,10 @@ def _score_exact_current_scheduler(
         score: FitnessResult,
         candidate: CandidatePlan,
         geometry: _RichGeometry,
+        *,
+        enforce_ghost: bool,
 ) -> FitnessResult:
-    """Independent compact replay of the ABI7 current scheduler suffix.
+    """Independent compact replay of the ABI8 current scheduler suffix.
 
     This intentionally mirrors resource/dependency semantics instead of calling
     the production router.  Tests compare both implementations to make the C++
@@ -1119,7 +1181,7 @@ def _score_exact_current_scheduler(
     """
     if len(problem.scheduler_aod_end_us) != 1 or \
             len(problem.scheduler_rydberg_end_us) != 1:
-        raise ValueError("ABI7 reference currently requires one AOD/Rydberg zone")
+        raise ValueError("ABI8 reference currently requires one AOD/Rydberg zone")
     n_atoms = problem.architecture.n_atoms
     active = list(problem.scheduler_active_union_us)
     qubit_dependency = list(problem.scheduler_qubit_dependency_end_us)
@@ -1147,12 +1209,27 @@ def _score_exact_current_scheduler(
         nonlocal aod_end, trace_end, model_move_time_us
         phase = candidate.phases[phase_index]
         if len(target_sites) != n_atoms or len(phase.owners) != len(phase.legs):
-            raise ValueError("ABI7 exact phase geometry is incomplete")
-        executable_batches = _production_replay_phase_batches(
-            phase, config.exact_coloring_threshold)
+            raise ValueError("ABI8 exact phase geometry is incomplete")
+        if enforce_ghost:
+            executable_batches = _production_replay_phase_batches(
+                phase, config.exact_coloring_threshold)
+        else:
+            # RESEAT/participant-parking derivation deliberately scores a
+            # partially repaired geometry.  Mirror C++'s relaxed scorer: use
+            # its ordinary colored batches while remaining ghost violations
+            # are still expected, rather than converting every intermediate
+            # repair into +inf through the strict production replay.
+            executable_batches = tuple(
+                _ExecutableBatch(
+                    tuple(members),
+                    tuple(phase.legs[index] for index in members),
+                    tuple(phase.owners[index] for index in members),
+                )
+                for members in score.phase_batches[phase_index]
+            )
         if tuple(batch.original_members for batch in executable_batches) != \
                 score.phase_batches[phase_index]:
-            raise ValueError("ABI7 executable batch audit payload drift")
+            raise ValueError("ABI8 executable batch audit payload drift")
         for batch in executable_batches:
             rows = {leg.source.y for leg in batch.legs}
             duration = _expanded_batch_time(
@@ -1175,7 +1252,7 @@ def _score_exact_current_scheduler(
                     target_site = site_id_by_point[leg.target]
                 except KeyError as exc:
                     raise ValueError(
-                        "ABI7 executable batch target is not an SLM site") from exc
+                        "ABI8 executable batch target is not an SLM site") from exc
                 batch_target_sites.append(target_site)
                 prior_site = site_dependency.get(target_site)
                 if prior_site is not None:
@@ -1306,7 +1383,8 @@ def _score_rich_geometry(problem: RichH0Problem,
             return score
         try:
             return _score_exact_current_scheduler(
-                problem, config, score, candidate, geometry)
+                problem, config, score, candidate, geometry,
+                enforce_ghost=enforce_ghost)
         except ValueError as exc:
             # The production router would require an explicit two-leg waypoint.
             # Until that payload is native-owned, treat this chromosome as
@@ -1370,14 +1448,15 @@ def _evaluate_native_future_rollout(
         option_indices: Sequence[int],
         assignments: Sequence[tuple[int, int, Point]],
         reseats: Sequence[tuple[int, int, Point]],
+        participant_parkings: Sequence[tuple[int, int, Point]],
         current_idle_delta_us: Sequence[float],
 ) -> tuple[float, tuple[float, ...], dict[str, float], int, int]:
-    """Independent physical oracle for ABI7 raw future-layer rollout."""
+    """Independent physical oracle for ABI8 raw future-layer rollout."""
     if problem.selected_horizon != config.max_horizon:
         raise ValueError("problem/config horizon mismatch")
     positions = list(_rich_points(problem))
     if len(current_idle_delta_us) != problem.architecture.n_atoms:
-        raise ValueError("current ABI7 fitness lacks per-atom idle delta")
+        raise ValueError("current ABI8 fitness lacks per-atom idle delta")
     accumulated_idle = list(
         problem.prior_idle_time_us or
         (0.0,) * problem.architecture.n_atoms)
@@ -1385,6 +1464,8 @@ def _evaluate_native_future_rollout(
         accumulated_idle[atom] += delta
     for eligible_index, _site_id, point in (*assignments, *reseats):
         positions[problem.eligible[eligible_index]] = point
+    for atom, _site_id, point in participant_parkings:
+        positions[atom] = point
     for domain, option_index in zip(problem.gate_domains, option_indices):
         option = domain[option_index]
         target1, target2 = _gate_targets(problem, option)
@@ -1816,6 +1897,112 @@ def _rich_reseats(problem: RichH0Problem, config: RichSearchConfig,
     return tuple(selected[index] for index in sorted(selected))
 
 
+def _rich_participant_parkings(
+        problem: RichH0Problem,
+        config: RichSearchConfig,
+        chromosome: tuple[int, ...],
+        option_indices: tuple[int, ...],
+        assignments: tuple[tuple[int, int, Point], ...],
+        reseats: tuple[tuple[int, int, Point], ...],
+        return_count: int,
+) -> tuple[tuple[int, int, Point], ...]:
+    """Derive explicit temporary parking for stationary participant ghosts.
+
+    This repair intentionally remains outside the chromosome.  It is invoked
+    for every candidate before ranking, accepts only a strict reduction in the
+    exact current geometry's violations, and emits two real movements through
+    :func:`_rich_geometry`: current->storage in phase 0 and storage->gate in
+    phase 1.  Consequently the transfer, time, distance and coherence cost are
+    all part of the candidate's physical objective.
+    """
+    participants = set(problem.participants)
+    architecture = problem.architecture
+    coordinates = architecture.site_coordinates
+    reserved_sites = set(problem.occupied_storage_site_ids)
+    reserved_sites.update(site_id for _index, site_id, _point in assignments)
+    reserved_sites.update(site_id for _index, site_id, _point in reseats)
+    selected: dict[int, tuple[int, int, Point]] = {}
+    geometry = _rich_geometry(
+        problem, option_indices, assignments, reseats, ())
+
+    # One participant can be parked at most once, so this is a hard finite
+    # bound even on dense layers.
+    for _ in range(len(participants)):
+        if not geometry.violations:
+            break
+        out_movers = set(geometry.out_owners)
+        out_static = tuple(
+            ghost for ghost in geometry.ghosts_t1
+            if ghost.atom not in out_movers)
+        # Parking is narrowly a target re-entry repair.  A participant that
+        # blocks an eligible atom's phase-0 RETURN remains a reason to reject
+        # that RETURN assignment; otherwise parking would silently change the
+        # semantics and diagnostics of the residency decision itself.
+        out_single_leg_blockers = {
+            blocker
+            for leg in geometry.out_legs
+            for blocker in ghost_hit_atoms((leg,), out_static)
+        }
+        blockers = tuple(
+            atom for atom in sorted(out_single_leg_blockers)
+            if atom in participants
+            and atom not in out_movers
+            and atom not in selected)
+        if not blockers:
+            break
+        best = None
+        used_sites = reserved_sites | {
+            site_id for _atom, site_id, _point in selected.values()}
+        for atom in blockers:
+            source = geometry.positions_t1[atom]
+            available = []
+            for site_id in architecture.storage_site_ids:
+                if site_id in used_sites:
+                    continue
+                point = coordinates[site_id]
+                if any(
+                        other != atom and other_point == point
+                        for other, other_point in enumerate(
+                            geometry.positions_t1)):
+                    continue
+                distance = dist(
+                    (source.x, source.y), (point.x, point.y))
+                if distance <= EPS:
+                    continue
+                available.append((distance, site_id, point))
+            available.sort(key=lambda row: (row[0], row[1]))
+            for _distance, site_id, point in available[
+                    :config.return_candidate_limit]:
+                trial = dict(selected)
+                trial[atom] = (atom, site_id, point)
+                trial_parkings = tuple(
+                    trial[index] for index in sorted(trial))
+                trial_geometry = _rich_geometry(
+                    problem, option_indices, assignments, reseats,
+                    trial_parkings)
+                if trial_geometry.violations >= geometry.violations:
+                    continue
+                relaxed = _score_rich_geometry(
+                    problem, config, chromosome, trial_geometry,
+                    return_count, enforce_ghost=False)
+                key = (
+                    trial_geometry.violations,
+                    relaxed.negative_log_fidelity,
+                    relaxed.move_batches,
+                    relaxed.move_time_us,
+                    relaxed.total_distance_um,
+                    atom,
+                    site_id,
+                )
+                if best is None or key < best[0]:
+                    best = (key, atom, (atom, site_id, point), trial_geometry)
+        if best is None:
+            break
+        selected[best[1]] = best[2]
+        geometry = best[3]
+    return tuple(selected[atom] for atom in sorted(selected))
+
+
 def _infeasible_rich(chromosome: tuple[int, ...], error: str) -> FitnessResult:
     return FitnessResult(
         chromosome, False, inf, inf, inf, inf, 0, 0.0, 0.0, 0, 0, (), error)
@@ -1828,10 +2015,11 @@ def _evaluate_rich_assignment_cohort(
 ) -> tuple[_RichEvaluated, ...]:
     """Evaluate every bounded RETURN assignment for one chromosome.
 
-    ABI7's forecast guard selects a *complete* evaluated value: chromosome,
-    RETURN assignment and derived RESEATs.  Keeping the cohort construction in
-    one oracle function prevents the ordinary exact search and the downstream
-    current-physics guard from drifting to different assignment semantics.
+    The forecast guard selects a *complete* evaluated value: chromosome,
+    RETURN assignment, derived RESEATs, and derived participant parking.
+    Keeping the cohort construction in one oracle function prevents the
+    ordinary exact search and the downstream current-physics guard from
+    drifting to different assignment semantics.
     """
     chromosome = _rich_normalize(problem, raw_chromosome)
     option_indices = _rich_decode(problem, chromosome)
@@ -1839,7 +2027,11 @@ def _evaluate_rich_assignment_cohort(
         fitness = _infeasible_rich(
             chromosome, "gate menu cannot form an injection")
         return (_RichEvaluated(
-            fitness, (), (), (), (), inf, inf, (), {}, 0, 0, 0),)
+            fitness=fitness, option_indices=(), assignments=(), reseats=(),
+            participant_parkings=(), assignment_key=(), forecast_nll=inf,
+            search_nll=inf, forecast_by_depth=(), forecast_breakdown={},
+            return_assignment_rank=0, return_assignment_evaluated=0,
+            current_ghost_rejections=0),)
     gate_count = len(problem.gate_domains)
     returners = tuple(index for index in range(len(problem.eligible))
                       if chromosome[gate_count + index])
@@ -1849,14 +2041,22 @@ def _evaluate_rich_assignment_cohort(
         fitness = _infeasible_rich(
             chromosome, "RETURN matching has no bounded injective assignment")
         return (_RichEvaluated(
-            fitness, option_indices, (), (), (), inf, inf, (), {}, 0, 0, 0),)
+            fitness=fitness, option_indices=option_indices, assignments=(),
+            reseats=(), participant_parkings=(), assignment_key=(),
+            forecast_nll=inf, search_nll=inf, forecast_by_depth=(),
+            forecast_breakdown={}, return_assignment_rank=0,
+            return_assignment_evaluated=0, current_ghost_rejections=0),)
     evaluated = []
     for rank, assignments in enumerate(assignment_candidates, 1):
         reseats = _rich_reseats(
             problem, config, chromosome, option_indices, assignments,
             len(returners))
+        participant_parkings = _rich_participant_parkings(
+            problem, config, chromosome, option_indices, assignments,
+            reseats, len(returners))
         geometry = _rich_geometry(
-            problem, option_indices, assignments, reseats)
+            problem, option_indices, assignments, reseats,
+            participant_parkings)
         if geometry.violations:
             error = ("unresolved current single-leg ghost hit"
                      if geometry.ghost_violations
@@ -1876,6 +2076,11 @@ def _evaluate_rich_assignment_cohort(
                 component
                 for eligible_index, site_id, _point in reseats
                 for component in (problem.eligible[eligible_index], site_id))
+        if participant_parkings:
+            assignment_key += (-2,) + tuple(
+                component
+                for atom, site_id, _point in participant_parkings
+                for component in (atom, site_id))
         if fitness.feasible:
             return_pairs = tuple(
                 (problem.eligible[index], site_id)
@@ -1884,6 +2089,7 @@ def _evaluate_rich_assignment_cohort(
                 if problem.future_layers:
                     forecast = _evaluate_native_future_rollout(
                         problem, config, option_indices, assignments, reseats,
+                        participant_parkings,
                         fitness.candidate_idle_time_us)
                 else:
                     forecast = evaluate_decay_forecast(
@@ -1907,9 +2113,9 @@ def _evaluate_rich_assignment_cohort(
             by_depth, breakdown = (), {}
             forecast_feasible, forecast_error = True, ""
         evaluated.append(_RichEvaluated(
-            fitness, option_indices, assignments, reseats, assignment_key,
-            forecast_nll, search_nll, by_depth, breakdown, rank,
-            len(assignment_candidates), rejected,
+            fitness, option_indices, assignments, reseats,
+            participant_parkings, assignment_key, forecast_nll, search_nll,
+            by_depth, breakdown, rank, len(assignment_candidates), rejected,
             forecast_feasible, forecast_error))
     return tuple(evaluated)
 
@@ -1981,7 +2187,7 @@ def _guard_rich_forecast_gate_projection(
         provisional: _RichEvaluated,
         complete_values: Sequence[_RichEvaluated],
 ) -> tuple[_RichEvaluated, dict]:
-    """Independent Python truth for ABI7's current-physics forecast guard."""
+    """Independent Python truth for ABI8's current-physics forecast guard."""
     inactive = {
         "current_gate_anchor": (),
         "current_gate_anchor_assignment_site_ids": (),
@@ -2154,6 +2360,9 @@ def solve_rich_exact_reference(
         reseat_assignments=tuple(
             (problem.eligible[index], site_id)
             for index, site_id, _point in winner.reseats),
+        participant_parking_assignments=tuple(
+            (atom, site_id)
+            for atom, site_id, _point in winner.participant_parkings),
         rng_state=rng_state,
         search_mode="direct" if raw_space <= 1 else "enumerate",
         operator_profile=config.operator_profile,
@@ -2180,6 +2389,8 @@ def solve_rich_exact_reference(
         current_ghost_rejections=winner.current_ghost_rejections,
         future_ghost_cost=winner.forecast_breakdown.get("routing", 0.0),
         pre_score_reseats=len(winner.reseats),
+        pre_score_participant_parkings=len(
+            winner.participant_parkings),
         current_gate_anchor=guard["current_gate_anchor"],
         current_gate_anchor_assignment_site_ids=
             guard["current_gate_anchor_assignment_site_ids"],
