@@ -33,12 +33,23 @@ TIMING_KEYS = {
     "backend_calls", "backend_candidates", "cache",
 }
 NATIVE_WHEEL_SHA256 = (
-    "7938080c63e9202e6782ccda872db8765c912a247efee8553e7e301ce953c550")
+    "60893195432f3c83481d2a05ed0c8acf0158cf9b8db3f11969f2d31471816b5d")
 
 
-def architecture():
+def architecture(*, frozen_physics=False):
     value = json.loads(
         (ROOT / "hardware_spec/toy_architecture.json").read_text())
+    if frozen_physics:
+        # This geometry-only toy predates the formal fidelity contract and
+        # therefore omits ``operation_duration``.  A registered native run is
+        # a formal run, so its scheduler fixture must carry the same immutable
+        # ZAC model as ``full_architecture.json`` instead of inheriting
+        # Architecture's historical 0.625-us diagnostic 1Q default.
+        value["operation_duration"] = {
+            "rydberg": 0.36,
+            "1qGate": 52.0,
+            "atom_transfer": 15.0,
+        }
     result = Architecture(value)
     result.preprocessing()
     return result
@@ -73,7 +84,8 @@ def run(schedule, *, backend, horizon, seed, ablation_policy="optimize",
         ablation_fitness_mode=ablation_fitness_mode,
     )
     placer.run(
-        architecture(), [initial], schedule, True,
+        architecture(frozen_physics=backend == "native"),
+        [initial], schedule, True,
         [set() for _ in schedule])
     return placer
 

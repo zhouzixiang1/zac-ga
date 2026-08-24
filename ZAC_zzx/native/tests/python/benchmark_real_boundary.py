@@ -27,7 +27,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 # Keep the reproducible benchmark single-threaded before scipy/qiskit import.
@@ -196,6 +196,138 @@ def _resident_parameters(backend: str, seed: int) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
+class ABI7TransitionState:
+    """Fail-closed projection of the ABI7 transition-cache key.
+
+    The key is the persisted audit record that binds winner residency bits to
+    atom identities.  Decode its complete ABI7 layout explicitly so a later
+    key-layout change cannot silently relabel scheduler state as eligible
+    atoms, which is what a bare positional lookup did after ABI6.
+    """
+
+    gate_domains: tuple[int, ...]
+    eligible_atoms: tuple[int, ...]
+    minimum_returns: int
+    forced_return_atoms: frozenset[int]
+
+
+ABI7_TRANSITION_CACHE_FIELDS = (
+    "selected_horizon",
+    "ablation_policy",
+    "fitness_phase_mode",
+    "current_positions",
+    "scheduler_trace_end_us",
+    "scheduler_idle_prior_us",
+    "scheduler_active_union_us",
+    "scheduler_aod_end_us",
+    "scheduler_one_qubit_end_us",
+    "scheduler_rydberg_end_us",
+    "scheduler_qubit_dependency_end_us",
+    "scheduler_back_dependency_end_us",
+    "scheduler_site_dependency_activation_finish_us",
+    "target_one_qubit_gates",
+    "target_two_qubit_gates",
+    "visible_window",
+    "gate_domains",
+    "eligible_atoms",
+    "minimum_returns",
+    "physical_forced_returns",
+    "rent_forced_returns",
+    "residency_commitments",
+)
+
+
+def _strict_int_tuple(value: Any, label: str) -> tuple[int, ...]:
+    if not isinstance(value, tuple):
+        raise AssertionError(f"ABI7 transition cache {label} is not a tuple")
+    if any(isinstance(item, bool) or not isinstance(item, int)
+           for item in value):
+        raise AssertionError(
+            f"ABI7 transition cache {label} contains a non-integer")
+    return tuple(value)
+
+
+def _strict_gate_ledger(value: Any, label: str
+                        ) -> tuple[tuple[int, int], ...]:
+    if not isinstance(value, tuple):
+        raise AssertionError(f"ABI7 transition cache {label} is not a tuple")
+    gates = []
+    for gate in value:
+        if (not isinstance(gate, tuple) or len(gate) != 2
+                or any(isinstance(atom, bool) or not isinstance(atom, int)
+                       for atom in gate)):
+            raise AssertionError(
+                f"ABI7 transition cache {label} has an invalid gate")
+        gates.append((gate[0], gate[1]))
+    return tuple(gates)
+
+
+def _decode_abi7_transition_state(
+        state_key: Any, row: Mapping[str, Any],
+        expected_target_gates: tuple[tuple[int, int], ...],
+        ) -> ABI7TransitionState:
+    if (not isinstance(state_key, tuple)
+            or len(state_key) != len(ABI7_TRANSITION_CACHE_FIELDS)):
+        raise AssertionError(
+            "transition cache does not match the explicit ABI7 state layout")
+    state = dict(zip(ABI7_TRANSITION_CACHE_FIELDS, state_key))
+    for key in ("selected_horizon", "ablation_policy",
+                "fitness_phase_mode"):
+        if state[key] != row.get(key):
+            raise AssertionError(
+                f"ABI7 transition cache {key} differs from decision log")
+
+    target_gates = _strict_gate_ledger(
+        state["target_two_qubit_gates"], "target two-qubit ledger")
+    if target_gates != expected_target_gates:
+        raise AssertionError(
+            "ABI7 transition cache target gates differ from the real schedule")
+    gate_domains = _strict_int_tuple(
+        state["gate_domains"], "gate domains")
+    if (len(gate_domains) != len(target_gates)
+            or any(domain <= 0 for domain in gate_domains)):
+        raise AssertionError(
+            "ABI7 transition cache gate domains do not match target gates")
+
+    eligible_atoms = _strict_int_tuple(
+        state["eligible_atoms"], "eligible atoms")
+    if (eligible_atoms != tuple(sorted(eligible_atoms))
+            or len(eligible_atoms) != len(set(eligible_atoms))
+            or any(atom < 0 for atom in eligible_atoms)):
+        raise AssertionError(
+            "ABI7 transition cache eligible atoms are not canonical")
+    if len(eligible_atoms) != int(row["eligible_decisions"]):
+        raise AssertionError(
+            "ABI7 eligible atom count differs from the executable log")
+
+    minimum_returns = state["minimum_returns"]
+    if (isinstance(minimum_returns, bool)
+            or not isinstance(minimum_returns, int)
+            or not 0 <= minimum_returns <= len(eligible_atoms)
+            or minimum_returns != int(row["capacity"])):
+        raise AssertionError(
+            "ABI7 minimum RETURN count differs from the executable log")
+    physical_forced = _strict_int_tuple(
+        state["physical_forced_returns"], "physical forced returns")
+    rent_forced = _strict_int_tuple(
+        state["rent_forced_returns"], "rent forced returns")
+    if (len(physical_forced) != int(row["physical_guard_returns"])
+            or len(rent_forced) != int(row["rent_guard_returns"])):
+        raise AssertionError(
+            "ABI7 forced RETURN sets differ from the executable log")
+    forced = frozenset(physical_forced) | frozenset(rent_forced)
+    if not forced <= set(eligible_atoms):
+        raise AssertionError(
+            "ABI7 forced RETURN atom is outside the eligible set")
+    return ABI7TransitionState(
+        gate_domains=gate_domains,
+        eligible_atoms=eligible_atoms,
+        minimum_returns=minimum_returns,
+        forced_return_atoms=forced,
+    )
+
+
 def _transition_rows(placer: TimedResidentPlacer,
                      schedule: tuple[tuple[tuple[int, int], ...], ...]
                      ) -> list[dict[str, Any]]:
@@ -206,20 +338,84 @@ def _transition_rows(placer: TimedResidentPlacer,
     result = []
     for index, (row, (state_key, chromosome)) in enumerate(
             zip(nonterminal, cached)):
-        winner = tuple(int(value) for value in chromosome)
-        gate_count = len(schedule[index + 1])
-        eligible_atoms = tuple(int(value) for value in state_key[7])
+        winner = _strict_int_tuple(chromosome, "winner chromosome")
+        expected_target_gates = tuple(
+            tuple(int(atom) for atom in gate)
+            for gate in schedule[index + 1])
+        state = _decode_abi7_transition_state(
+            state_key, row, expected_target_gates)
+        gate_count = len(state.gate_domains)
+        eligible_atoms = state.eligible_atoms
+        if len(winner) != gate_count + len(eligible_atoms):
+            raise AssertionError(
+                "winner chromosome does not match the ABI7 gate/atom ledger")
+        gate_option_genes = winner[:gate_count]
+        if any(not 0 <= gene < domain for gene, domain in zip(
+                gate_option_genes, state.gate_domains)):
+            raise AssertionError("winner gate gene is outside its ABI7 domain")
         residency_bits = winner[gate_count:]
-        if len(residency_bits) != len(eligible_atoms):
-            raise AssertionError("winner decision bits do not align with eligible atoms")
-        stay_atoms = tuple(atom for atom, bit in zip(
-            eligible_atoms, residency_bits) if not bit)
+        if any(bit not in (0, 1) for bit in residency_bits):
+            raise AssertionError("winner residency gene is not a binary bit")
         return_atoms = tuple(atom for atom, bit in zip(
             eligible_atoms, residency_bits) if bit)
-        if (len(stay_atoms), len(return_atoms)) != (
-                int(row["stay"]), int(row["return"])):
+        if (len(placer.mapping) != 2 * len(schedule) + 1
+                or any(atom >= len(placer.mapping[0])
+                       for atom in eligible_atoms)):
             raise AssertionError(
-                "winner STAY/RETURN bits differ from the executable log")
+                "executable mapping stream cannot audit ABI7 decisions")
+        source_mapping = placer.mapping[2 * index + 1]
+        boundary_mapping = placer.mapping[2 * index + 2]
+        target_mapping = placer.mapping[2 * index + 3]
+        target_participants = {
+            atom for gate in expected_target_gates for atom in gate}
+        if set(eligible_atoms) & target_participants:
+            raise AssertionError(
+                "ABI7 resident decision atom participates in the target layer")
+        if any(tuple(boundary_mapping[atom]) != tuple(target_mapping[atom])
+               for atom in eligible_atoms):
+            raise AssertionError(
+                "target commit moved an ABI7 non-participant")
+        return_set = set(return_atoms)
+        stay_atoms = tuple(
+            atom for atom, bit in zip(eligible_atoms, residency_bits)
+            if not bit and tuple(source_mapping[atom]) ==
+            tuple(boundary_mapping[atom]))
+        reseat_atoms = tuple(
+            atom for atom, bit in zip(eligible_atoms, residency_bits)
+            if not bit and tuple(source_mapping[atom]) !=
+            tuple(boundary_mapping[atom]))
+        if any(tuple(source_mapping[atom]) == tuple(boundary_mapping[atom])
+               for atom in return_atoms):
+            raise AssertionError(
+                "ABI7 RETURN bit did not produce a boundary movement")
+        if not state.forced_return_atoms <= return_set:
+            raise AssertionError("ABI7 forced RETURN atom stayed resident")
+        if len(return_atoms) < state.minimum_returns:
+            raise AssertionError("ABI7 winner violates minimum RETURN capacity")
+        if (len(stay_atoms), len(return_atoms), len(reseat_atoms)) != (
+                int(row["stay"]), int(row["return"]), int(row["reseat"])):
+            raise AssertionError(
+                "winner residency bits differ from executable STAY/RETURN/RESEAT")
+        assignments = row.get("return_assignments")
+        if not isinstance(assignments, list):
+            raise AssertionError("ABI7 RETURN assignment audit is missing")
+        assignment_atoms = []
+        for assignment in assignments:
+            if not isinstance(assignment, Mapping):
+                raise AssertionError("ABI7 RETURN assignment row is invalid")
+            atom = assignment.get("atom")
+            location = assignment.get("location")
+            if (isinstance(atom, bool) or not isinstance(atom, int)
+                    or atom < 0 or atom >= len(boundary_mapping)
+                    or not isinstance(location, list)
+                    or tuple(location) != tuple(boundary_mapping[atom])):
+                raise AssertionError(
+                    "ABI7 RETURN assignment differs from executable mapping")
+            assignment_atoms.append(atom)
+        if (len(assignment_atoms) != len(set(assignment_atoms))
+                or set(assignment_atoms) != return_set):
+            raise AssertionError(
+                "ABI7 RETURN assignments differ from winner decision bits")
         physical = dict(row["physical"])
         forecast = dict(row["forecast_objective"])
         current_nll = float(physical["negative_log_fidelity"])
@@ -231,12 +427,13 @@ def _transition_rows(placer: TimedResidentPlacer,
         result.append({
             "layer": int(row["layer"]),
             "winner": list(winner),
-            "gate_option_genes": list(winner[:gate_count]),
+            "gate_option_genes": list(gate_option_genes),
             "eligible_atoms": list(eligible_atoms),
             "residency_bits": list(residency_bits),
             "stay_atoms": list(stay_atoms),
             "return_atoms": list(return_atoms),
-            "reseat": int(row["reseat"]),
+            "reseat_atoms": list(reseat_atoms),
+            "reseat": len(reseat_atoms),
             "current_physical_nll": current_nll,
             "forecast_nll": forecast_nll,
             "search_nll": search_nll,
@@ -271,6 +468,7 @@ def _snapshot(placer: TimedResidentPlacer, case: RealCase) -> dict[str, Any]:
             "layer": row["layer"],
             "stay_atoms": row["stay_atoms"],
             "return_atoms": row["return_atoms"],
+            "reseat_atoms": row["reseat_atoms"],
         } for row in transitions],
         "mapping": mapping,
         "mapping_sha256": _stable_sha256(mapping),
@@ -347,7 +545,8 @@ def assert_parity(reference: dict[str, Any], native: dict[str, Any]
     for first, second in zip(
             reference["transitions"], native["transitions"]):
         for structural in (
-                "winner", "stay_atoms", "return_atoms", "reseat",
+                "winner", "stay_atoms", "return_atoms", "reseat_atoms",
+                "reseat",
                 "move_batches", "transfers", "search_mode",
                 "unique_evaluations"):
             if first[structural] != second[structural]:

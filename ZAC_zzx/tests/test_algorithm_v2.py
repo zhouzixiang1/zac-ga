@@ -55,6 +55,19 @@ def make_arch():
     return arch
 
 
+def make_formal_arch():
+    """Reuse toy geometry with the frozen ZAC physical timing contract."""
+    spec = json.loads((ROOT / "hardware_spec/toy_architecture.json").read_text())
+    spec["operation_duration"] = {
+        "rydberg": 0.36,
+        "1qGate": 52.0,
+        "atom_transfer": 15.0,
+    }
+    arch = Architecture(spec)
+    arch.preprocessing()
+    return arch
+
+
 class _ExpansionArchitecture:
     """Minimal coordinate oracle for the reused-column parking regression."""
 
@@ -555,7 +568,7 @@ class TestResidentDecisionMechanics(unittest.TestCase):
         ]
         setting = load_setting("ours_lk_v2.json")
         placer = ResidentPlacer(initial, **setting)
-        placer.run(self.arch, [initial], schedule, True,
+        placer.run(make_formal_arch(), [initial], schedule, True,
                    [set() for _ in schedule])
 
         self.assertFalse(placer.adaptive_lookahead)
@@ -590,7 +603,7 @@ class TestResidentDecisionMechanics(unittest.TestCase):
             **load_setting("ours_nl_v2.json"),
             "name": "horizon-boundary-regression",
         })
-        compiler.architecture = self.arch
+        compiler.architecture = make_formal_arch()
         compiler.qubit_mapping = [initial]
         compiler.gate_scheduling = schedule
         compiler.dynamic_placement = True

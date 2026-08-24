@@ -131,27 +131,29 @@ class TestZACRouteTransition(unittest.TestCase):
                     remain, mapping_from, mapping_to)
                 self.assertEqual(actual, expected)
 
-    def test_single_leg_fast_path_still_runs_waypoint_audit(self):
-        mapping_from = [(0, 0, 0), (0, 9, 9)]
-        mapping_to = [(0, 1, 0), (0, 9, 9)]
+    def test_source_blocked_singleton_defers_and_translates_original_indices(self):
+        # Atom 1 initially occupies atom 0's destination.  The executable
+        # order is therefore atom 0 followed by atom 1 after the first mover
+        # has vacated its source.  Supply the reverse input order to prove that
+        # internal distance canonicalization is translated back to the
+        # caller's original ``window`` indices.
+        mapping_from = [
+            (0, 0, 5), (0, 3, 6), (1, 2, 2), (2, 0, 4), (0, 9, 5),
+            (2, 1, 5), (0, 1, 5), (0, 7, 9), (1, 2, 4), (0, 5, 8),
+        ]
+        mapping_to = [
+            (0, 2, 7), (0, 0, 5), (1, 2, 2), (2, 0, 4), (0, 9, 5),
+            (2, 1, 5), (0, 1, 5), (0, 7, 9), (1, 2, 4), (0, 5, 8),
+        ]
         compiler = _compiler(self.architecture, len(mapping_from))
-        waypoint = (0, 2, 0)
-        forced_hit = [(1, 27.0, 27.0, (0.0, 0.0),
-                       (0.0, 3.0), 0.5)]
-        with patch("zzx.zac_zzx.ghost_hits", return_value=forced_hit), \
-                patch.object(
-                    compiler, "_safe_slm_waypoint",
-                    return_value=waypoint) as safe_waypoint:
+        with patch.object(compiler, "_safe_slm_waypoint") as safe_waypoint:
             result = compiler._coloring_batches(
-                [0], mapping_from, mapping_to)
-        self.assertEqual(result, (1, [[0]], "heuristic"))
-        safe_waypoint.assert_called_once()
-        self.assertEqual(
-            compiler._zzx_waypoint_plan[
-                (0, tuple(mapping_from[0]), tuple(mapping_to[0]))],
-            waypoint)
+                [1, 0], mapping_from, mapping_to)
+        self.assertEqual(result, (2, [[1], [0]], "exact"))
+        safe_waypoint.assert_not_called()
+        self.assertFalse(compiler._zzx_waypoint_plan)
 
-    def test_single_leg_fast_path_fails_when_audit_cannot_repair(self):
+    def test_single_leg_fast_path_fails_when_retry_cannot_clear_blocker(self):
         mapping_from = [(0, 0, 0), (0, 9, 9)]
         mapping_to = [(0, 1, 0), (0, 9, 9)]
         compiler = _compiler(self.architecture, len(mapping_from))
@@ -164,7 +166,8 @@ class TestZACRouteTransition(unittest.TestCase):
             with self.assertRaisesRegex(
                     ValueError, "ghost-safe routing could not place atoms"):
                 compiler._coloring_batches([0], mapping_from, mapping_to)
-        self.assertGreaterEqual(safe_waypoint.call_count, 1)
+        safe_waypoint.assert_not_called()
+        self.assertFalse(compiler._zzx_waypoint_plan)
 
     def test_streamed_native_chunks_are_dictionary_exact_to_batch(self):
         mappings, schedule, gate_ids, one_qubit, initial_one_qubit = _fixture()

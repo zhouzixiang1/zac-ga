@@ -426,9 +426,25 @@ class ZAC_zzx(ZAC):
         终止性：放置层（zplacer._repair_ghosts）保证每条腿单独不撞
         {批前,批后} 任何位置——重放中的静止位置必属其一，单腿批恒干净。
         """
-        vectors = self.graph_construction(remain_graph, mapping_from, mapping_to)
-        legs = [(hypot(v[0] - v[1], v[2] - v[3]), v[0], v[2], v[1], v[3])
-                for v in vectors]
+        # The registered ABI7 replay owns one canonical distance-descending
+        # order, independent of the caller's input order.  Keep the inverse
+        # view so public batch members still index the original ``window``
+        # consumed by ``_phase_batches``.
+        original_graph = list(remain_graph)
+        original_vectors = self.graph_construction(
+            original_graph, mapping_from, mapping_to)
+        original_legs = [
+            (hypot(v[0] - v[1], v[2] - v[3]), v[0], v[2], v[1], v[3])
+            for v in original_vectors
+        ]
+        canonical_to_original = tuple(sorted(
+            range(len(original_graph)),
+            key=lambda index: original_legs[index][0],
+            reverse=True,
+        ))
+        remain_graph = [
+            original_graph[index] for index in canonical_to_original]
+        legs = [original_legs[index] for index in canonical_to_original]
         arch = self.architecture
         ex = lambda loc: arch.exact_SLM_location_tuple(tuple(loc))
         n_atoms = len(mapping_from)
@@ -445,7 +461,6 @@ class ZAC_zzx(ZAC):
             while queue:
                 members = queue.pop(0)
                 pending = list(members)
-                waypoint_repaired = False
                 while True:
                     ghosts = [(q, *pos[q]) for q in range(n_atoms)
                               if q not in {owner[i] for i in pending}]
@@ -454,16 +469,12 @@ class ZAC_zzx(ZAC):
                     if not hits:
                         break
                     if len(pending) == 1:
-                        q = owner[pending[0]]
-                        waypoint = self._safe_slm_waypoint(
-                            q, mapping_from, mapping_to, pos)
-                        if waypoint is None:
-                            deferred.append(pending[0])
-                            pending = []
-                            break
-                        key = (q, tuple(mapping_from[q]), tuple(mapping_to[q]))
-                        self._zzx_waypoint_plan[key] = waypoint
-                        waypoint_repaired = True
+                        # A stationary blocker may be another mover that lands
+                        # in an earlier clean batch.  ABI7 therefore retries a
+                        # singleton against the advanced position map instead
+                        # of committing a premature two-leg waypoint.
+                        deferred.append(pending[0])
+                        pending = []
                         break
                     _, _, _, ct, rt, _s = hits[0]
                     bad = {i for i in pending
@@ -475,26 +486,12 @@ class ZAC_zzx(ZAC):
                     pending = [i for i in pending if i not in bad]
                     if not pending:
                         break
-                if pending and waypoint_repaired:
-                    clean.append(pending)
-                    i = pending[0]
-                    pos[owner[i]] = (legs[i][3], legs[i][4])
-                    continue
                 if pending:
                     expanded_bad = self._expanded_batch_conflicts(
                         pending, owner, mapping_from, mapping_to, pos)
                     if expanded_bad:
                         if len(pending) == 1:
-                            q = owner[pending[0]]
-                            waypoint = self._safe_slm_waypoint(
-                                q, mapping_from, mapping_to, pos)
-                            if waypoint is None:
-                                raise ValueError(
-                                    f"single-leg expanded route remains unsafe for atom {q}")
-                            key = (q, tuple(mapping_from[q]), tuple(mapping_to[q]))
-                            self._zzx_waypoint_plan[key] = waypoint
-                            clean.append(pending)
-                            pos[q] = (legs[pending[0]][3], legs[pending[0]][4])
+                            deferred.append(pending[0])
                             continue
                         # First preserve as much concurrency as possible by
                         # deferring only the phase contributors.  If every leg
@@ -538,7 +535,7 @@ class ZAC_zzx(ZAC):
             # The conflict graph of one leg has one isolated vertex.  Both
             # registered batchers therefore return the same singleton batch;
             # retain their public method label and still run the full ordered
-            # ghost/waypoint audit below.  This removes graph construction and
+            # ghost defer/retry audit below.  This removes graph construction and
             # DSATUR setup from serial circuits without relaxing safety.
             chi, batches, method = (
                 1, [[0]],
@@ -554,7 +551,7 @@ class ZAC_zzx(ZAC):
                 break
             if round_i == 2:
                 # 最终单飞仍走同一真实展开审计；绝不在 repair 后绕过重放。
-                singles = [[i] for i in sorted(deferred)]
+                singles = [[i] for i in sorted(set(deferred))]
                 more, unresolved = audit_pass(singles, pos)
                 if unresolved:
                     atoms = [owner[i] for i in unresolved]
@@ -563,7 +560,7 @@ class ZAC_zzx(ZAC):
                 final += more
                 deferred = []
                 break
-            sub = sorted(deferred)
+            sub = sorted(set(deferred))
             _, sub_batches, _ = batcher(
                 [legs[i] for i in sub], exact_threshold=self.zzx_exact_threshold)
             sub_batches = [[sub[k] for k in members] for members in sub_batches]
@@ -571,7 +568,13 @@ class ZAC_zzx(ZAC):
             final += more
         self.zzx_ghost_splits = getattr(self, "zzx_ghost_splits", 0) + \
             (len(final) - len(batches))
-        return chi, final, method
+        # ``_phase_batches`` indexes its original ``window`` with these rows.
+        # Native fitness exposes the same original-member convention.
+        translated = [
+            [canonical_to_original[index] for index in batch]
+            for batch in final
+        ]
+        return chi, translated, method
 
     def _phase_batches(self, remain_graph, mapping_from, mapping_to):
         """一个搬运相位的批次生成器：coloring 一次着色；mis/maximalis* 逐轮剥离。
