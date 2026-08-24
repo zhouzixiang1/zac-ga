@@ -20,9 +20,9 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .cli import UnifiedEvaluationGate, _attempt_spec
+from .cli import UnifiedEvaluationGate, _attempt_spec, command_verify_run
 from .contracts import (RunManifest, load_run_manifest, sha256_file,
-                        stable_sha256)
+                        repository_snapshot, stable_sha256)
 from .plan import (ExperimentPlan, effective_zac_setting,
                    load_experiment_plan)
 from .quality_racing import (
@@ -57,6 +57,8 @@ _SINGLE_THREAD_ENVIRONMENT = {
     "VECLIB_MAXIMUM_THREADS": "1",
     "NUMEXPR_NUM_THREADS": "1",
 }
+
+_REUSE_ARTIFACT_VALIDATION_CACHE: set[tuple[str, str]] = set()
 
 
 def _stable_json(value: Any) -> str:
@@ -262,6 +264,25 @@ def _validate_attempt_receipt(path: Path, expected: Mapping[str, Any]
             raise ValueError(f"attempt identity {key} drift: {path}")
     if manifest.status != payload["status"]:
         raise ValueError(f"attempt status drift: {path}")
+    reuse = payload.get("reuse")
+    if isinstance(reuse, Mapping):
+        cache_key = (str(path.resolve()), str(payload["record_sha256"]))
+        if cache_key not in _REUSE_ARTIFACT_VALIDATION_CACHE:
+            source_receipt = Path(str(reuse.get("source_receipt", "")))
+            if (not source_receipt.is_file() or
+                    sha256_file(source_receipt) !=
+                    reuse.get("source_receipt_sha256")):
+                raise ValueError(f"reused source receipt drift: {path}")
+            artifact_hashes = reuse.get("source_artifact_sha256")
+            if not isinstance(artifact_hashes, Mapping) or not artifact_hashes:
+                raise ValueError(f"reused artifact hashes are absent: {path}")
+            for name, expected_hash in artifact_hashes.items():
+                artifact = manifest_path.parent / str(name)
+                if (not artifact.is_file() or
+                        sha256_file(artifact) != expected_hash):
+                    raise ValueError(
+                        f"reused source artifact drift: {artifact}")
+            _REUSE_ARTIFACT_VALIDATION_CACHE.add(cache_key)
     return payload
 
 
@@ -485,7 +506,7 @@ def import_baselines(plan: ExperimentPlan, root: Path, source_root: Path
     M3/M4 attempts are never imported.  The new receipt records the archived
     source and continues to hash the original immutable manifest.
     """
-    _load_workspace(plan, root)
+    workspace = _load_workspace(plan, root)
     source_root = source_root.resolve()
     if source_root == root.resolve():
         raise ValueError("source and destination quality workspaces are equal")
@@ -546,6 +567,43 @@ def import_baselines(plan: ExperimentPlan, root: Path, source_root: Path
                 raise ValueError(
                     f"source baseline status drift: {source_receipt_path}")
 
+            if manifest.status == "success":
+                revalidation = dict(command_verify_run(plan, manifest_path))
+                revalidation["status"] = "success"
+            elif manifest.status == "verifier_fail":
+                try:
+                    UnifiedEvaluationGate(
+                        plan, canonical, method, write_artifacts=False
+                    ).evaluate(manifest_path.parent)
+                except Exception as error:  # preserve the original failure
+                    observed = f"{type(error).__name__}: {error}"
+                    if observed not in str(manifest.error):
+                        raise ValueError(
+                            "source verifier failure changed under current "
+                            f"gate: {manifest_path}: {observed}") from error
+                    revalidation = {
+                        "verified": True,
+                        "status": "verifier_fail",
+                        "observed_exception": observed,
+                    }
+                else:
+                    raise ValueError(
+                        "source verifier failure now passes current gate: "
+                        f"{manifest_path}")
+            else:
+                raise ValueError(
+                    "only success/verifier_fail baseline evidence may be "
+                    f"reused: {manifest_path}: {manifest.status}")
+
+            source_artifact_hashes = {
+                artifact.name: sha256_file(artifact)
+                for artifact in sorted(manifest_path.parent.iterdir())
+                if artifact.is_file() and artifact != manifest_path
+            }
+            if not source_artifact_hashes:
+                raise ValueError(
+                    f"source baseline has no raw artifacts: {manifest_path}")
+
             destination = _receipt_path(
                 root, "baselines", method, "paper-original", dataset.name,
                 circuit, 0)
@@ -564,7 +622,19 @@ def import_baselines(plan: ExperimentPlan, root: Path, source_root: Path
                     "source_receipt": str(source_receipt_path),
                     "source_receipt_sha256": sha256_file(
                         source_receipt_path),
+                    "source_artifact_sha256": source_artifact_hashes,
                     "verified_hashes": current_hashes,
+                    "source_compile": {
+                        "git_commit": manifest.git_commit,
+                        "git_dirty": manifest.git_dirty,
+                    },
+                    "current_validation": {
+                        "repository": repository_snapshot(plan.package_root),
+                        "workspace_record_sha256": workspace["record_sha256"],
+                        "plan_sha256": sha256_file(plan.path),
+                        "split_sha256": split_manifest()["sha256"],
+                        "result": revalidation,
+                    },
                 },
             })
             _write_same_or_fail(destination, payload)
