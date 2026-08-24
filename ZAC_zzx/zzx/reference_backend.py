@@ -128,6 +128,27 @@ def _cover(begin: float, end: float, coordinate: float):
 def ghost_hit_atoms(legs: Sequence[Leg], ghosts: Sequence[Ghost]) -> tuple[int, ...]:
     if not legs or not ghosts:
         return ()
+    if len(legs) == 1:
+        # The general combined-ghost test constructs the Cartesian product of
+        # all distinct row and column trajectories.  For one leg that product
+        # has exactly one element, so evaluate it directly.  Future rollout
+        # endpoint replay performs this check millions of times; avoiding the
+        # temporary sets/lists is an exact fast path, not a geometric proxy.
+        leg = legs[0]
+        min_x, max_x = sorted((leg.source.x, leg.target.x))
+        min_y, max_y = sorted((leg.source.y, leg.target.y))
+        hits = []
+        for ghost in ghosts:
+            gx, gy = ghost.position.x, ghost.position.y
+            if not (min_x - EPS <= gx <= max_x + EPS
+                    and min_y - EPS <= gy <= max_y + EPS):
+                continue
+            ok_x, sx = _cover(leg.source.x, leg.target.x, gx)
+            ok_y, sy = _cover(leg.source.y, leg.target.y, gy)
+            if (ok_x and ok_y and
+                    (sx is None or sy is None or abs(sx - sy) < S_TOL)):
+                hits.append(ghost.atom)
+        return tuple(hits)
     columns = sorted({(leg.source.x, leg.target.x) for leg in legs})
     rows = sorted({(leg.source.y, leg.target.y) for leg in legs})
     x_values = [value for pair in columns for value in pair]

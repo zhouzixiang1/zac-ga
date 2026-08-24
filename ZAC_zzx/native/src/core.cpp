@@ -1119,6 +1119,16 @@ FitnessResult evaluate_candidate_impl(
 }
 }  // namespace
 
+std::vector<std::vector<std::size_t>> replay_phase_batches_strict(
+    const MovementPhase& phase, std::size_t exact_threshold) {
+  auto replay = replay_phase_batches(phase, exact_threshold);
+  if (!replay.feasible) {
+    throw std::runtime_error(
+        "phase has no ghost-safe straight-leg batch order");
+  }
+  return replay.batches;
+}
+
 FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
                                  const CandidatePlan& candidate,
                                  const BoundaryConfig& config) {

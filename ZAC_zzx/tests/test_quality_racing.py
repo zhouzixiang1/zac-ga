@@ -112,14 +112,19 @@ class QualityRacingTests(unittest.TestCase):
         self.assertEqual(5, len(m3))
         self.assertTrue(all(row["max_horizon"] == 0 for row in m3))
         self.assertTrue(all(row["max_horizon"] == 8 for row in m4))
+        self.assertTrue(all(
+            row["forecast_gate_candidate_budget"] == 1 for row in m4))
         decision = decision_candidates("M3", m3[:2])
         self.assertEqual(14, len(decision))
         self.assertEqual(14, len({row["candidate_id"] for row in decision}))
         decay = lookahead_candidates(decision_candidates("M4", m4[:2])[:2])
-        self.assertEqual(12, len(decay))
+        self.assertEqual(36, len(decay))
         self.assertEqual({.1, .2, .35},
                          {row["alpha_lookahead"] for row in decay})
         self.assertEqual({.5, .7}, {row["rho"] for row in decay})
+        self.assertEqual(
+            {1, 2, 4},
+            {row["forecast_gate_candidate_budget"] for row in decay})
         self.assertEqual(
             "sequential-profile-then-one-factor-then-m4-decay",
             search_space_manifest()["design"])
@@ -180,6 +185,8 @@ class QualityRacingTests(unittest.TestCase):
         validate_shared_formal_settings(nl, lk)
         self.assertEqual(0, nl["lookahead_horizon"]["max_horizon"])
         self.assertEqual(8, lk["lookahead_horizon"]["max_horizon"])
+        self.assertEqual(1, nl["forecast_gate_candidate_budget"])
+        self.assertEqual(1, lk["forecast_gate_candidate_budget"])
 
     def test_independent_main_track_accepts_independently_selected_knobs(self):
         config_root = ROOT / "exp_setting" / "native_ga_v1"

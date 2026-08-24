@@ -62,6 +62,7 @@ SCHEMA2_NATIVE_REQUIRED_KEYS = {
     "elite_count",
     "crossover_rate",
     "direct_enumeration_limit",
+    "forecast_gate_candidate_budget",
     "formal_native",
     "local_polish_sweeps",
     "max_unique_evaluations",
@@ -80,6 +81,7 @@ SCHEMA2_NATIVE_MARKER_KEYS = (
         "backend", "crossover_rate", "direct_enumeration_limit",
         "early_stop_patience", "elite_count", "local_polish_sweeps",
         "max_unique_evaluations", "operator_profile",
+        "forecast_gate_candidate_budget",
         "return_assignment_k", "return_candidate_limit",
     }
 )
@@ -154,10 +156,13 @@ def _validate_native_contract(setting: dict) -> None:
             raise ValueError(
                 "max_unique_evaluations 不能小于 population_size")
     for key in ("direct_enumeration_limit", "return_candidate_limit",
-                "return_assignment_k"):
+                "return_assignment_k", "forecast_gate_candidate_budget"):
         value = setting[key]
         if not _is_integer(value) or value <= 0:
             raise ValueError(f"{key} 必须是正整数")
+    if setting["forecast_gate_candidate_budget"] not in {1, 2, 4}:
+        raise ValueError(
+            "forecast_gate_candidate_budget 必须来自注册集合 {1,2,4}")
     local_polish = setting["local_polish_sweeps"]
     if not _is_integer(local_polish) or local_polish < 0:
         raise ValueError("local_polish_sweeps 必须是非负整数")

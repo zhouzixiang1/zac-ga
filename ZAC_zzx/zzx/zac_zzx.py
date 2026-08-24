@@ -54,7 +54,7 @@ class ZAC_zzx(ZAC):
                     "max_unique_evaluations", "operator_profile",
                     "direct_enumeration_limit", "crossover_rate",
                     "local_polish_sweeps", "return_candidate_limit",
-                    "return_assignment_k",
+                    "return_assignment_k", "forecast_gate_candidate_budget",
                     # ---- 初始布局引擎（"ga" = GAInitialPlacer 换掉 ZAC 的 SA）----
                     "init_engine", "init_pop", "init_gens")
     # ZAC 原版认识的键（消费断言用； Zac.parse_setting 同步维护）

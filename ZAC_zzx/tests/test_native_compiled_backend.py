@@ -31,6 +31,7 @@ from zzx.reference_backend import (  # noqa: E402
     ReferenceResidentBackend,
     compatible_2d,
     ghost_hit_atoms,
+    replay_phase_batches,
 )
 
 
@@ -181,6 +182,43 @@ class TestCompiledBackend(unittest.TestCase):
         self.assertFitnessEqual(first, second)
         self.assertTrue(second.feasible)
         self.assertEqual(second.phase_batches, (((0,), (1,)),))
+
+    def test_public_replay_kernel_matches_independent_python_oracle(self):
+        rng = random.Random(38127)
+        for _ in range(250):
+            points = tuple(Point(float(rng.randrange(0, 7)),
+                                 float(rng.randrange(0, 7)))
+                           for _ in range(8))
+            owners = tuple(rng.sample(range(8), rng.randrange(1, 7)))
+            legs = []
+            for owner in owners:
+                target = Point(float(rng.randrange(0, 7)),
+                               float(rng.randrange(0, 7)))
+                if target == points[owner]:
+                    target = Point(target.x + 1.0, target.y)
+                legs.append(Leg.between(points[owner], target))
+            phase = MovementPhase(
+                tuple(legs),
+                tuple(Ghost(atom, point)
+                      for atom, point in enumerate(points)),
+                owners,
+            )
+            try:
+                expected = replay_phase_batches(phase)
+            except ValueError:
+                with self.assertRaises(RuntimeError):
+                    self.native._module.replay_phase_batches(phase.to_wire(), 0)
+            else:
+                actual = tuple(tuple(batch) for batch in
+                               self.native._module.replay_phase_batches(
+                                   phase.to_wire(), 0))
+                self.assertEqual(expected, actual)
+                raw = tuple(tuple(batch) for batch in
+                            self.native._module.replay_phase_batches_raw(
+                                [leg.to_wire() for leg in phase.legs],
+                                [ghost.to_wire() for ghost in phase.ghosts],
+                                list(phase.owners), 0))
+                self.assertEqual(expected, raw)
 
     def test_seeded_random_phases_match(self):
         rng = random.Random(9473)

@@ -343,6 +343,24 @@ PYBIND11_MODULE(zac_native_core, module) {
   module.def("color_phase", [](const py::dict& phase, std::size_t threshold) {
     return color_phase(parse_phase(phase), threshold);
   }, py::arg("phase"), py::arg("exact_threshold") = 0);
+  module.def("replay_phase_batches", [](const py::dict& phase,
+                                         std::size_t threshold) {
+    return replay_phase_batches_strict(parse_phase(phase), threshold);
+  }, py::arg("phase"), py::arg("exact_threshold") = 0);
+  module.def("replay_phase_batches_raw", [](const py::sequence& legs,
+                                             const py::sequence& ghosts,
+                                             const std::vector<std::int64_t>& owners,
+                                             std::size_t threshold) {
+    MovementPhase phase;
+    phase.legs.reserve(legs.size());
+    phase.ghosts.reserve(ghosts.size());
+    for (const auto& value : legs) phase.legs.push_back(parse_leg(value));
+    for (const auto& value : ghosts) phase.ghosts.push_back(parse_ghost(value));
+    phase.owners = owners;
+    phase.batching = "phase";
+    return replay_phase_batches_strict(phase, threshold);
+  }, py::arg("legs"), py::arg("ghosts"), py::arg("owners"),
+     py::arg("exact_threshold") = 0);
 
   module.def("evaluate_many", [](const ArchitectureSnapshot& architecture,
                                   const py::list& values,

@@ -17,6 +17,12 @@ std::vector<std::int64_t> ghost_hit_atoms(const std::vector<Leg>& legs,
 std::vector<std::vector<std::size_t>> color_phase(
     const MovementPhase& phase, std::size_t exact_threshold = 0);
 
+// Exact colored replay with mover source/target precedence.  Unlike
+// ``color_phase`` this rejects an execution for which no ghost-safe batch
+// order exists and returns batches in executable order.
+std::vector<std::vector<std::size_t>> replay_phase_batches_strict(
+    const MovementPhase& phase, std::size_t exact_threshold = 0);
+
 FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
                                  const CandidatePlan& candidate,
                                  const BoundaryConfig& config);

@@ -206,6 +206,37 @@ struct ReseatRepair {
   PlanGeometry geometry;
 };
 
+using ForecastBits = std::vector<std::uint64_t>;
+
+struct CompiledForecastTerm {
+  double contribution{};
+  std::size_t depth{};
+  std::size_t category{};
+  bool active{};
+};
+
+void set_forecast_bit(ForecastBits& bits, std::size_t index) {
+  bits[index / 64U] |= (std::uint64_t{1} << (index % 64U));
+}
+
+void merge_forecast_bits(ForecastBits& target, const ForecastBits& source) {
+  if (target.size() != source.size()) {
+    throw std::logic_error("forecast bitset size mismatch");
+  }
+  for (std::size_t word = 0; word < target.size(); ++word) {
+    target[word] |= source[word];
+  }
+}
+
+unsigned trailing_zeroes(std::uint64_t value) {
+  unsigned result = 0;
+  while ((value & std::uint64_t{1}) == 0U) {
+    value >>= 1U;
+    ++result;
+  }
+  return result;
+}
+
 std::int64_t objective_bucket(double value, double quantum) {
   if (!std::isfinite(value)) return std::numeric_limits<std::int64_t>::max();
   return static_cast<std::int64_t>(std::floor(value / quantum + 0.5));
@@ -452,6 +483,7 @@ class RichSolver {
       }
       domain = std::move(limited);
     }
+    compile_forecast();
     stats_.stochastic_budget = config_.max_unique_evaluations;
   }
 
@@ -866,71 +898,141 @@ class RichSolver {
     return result;
   }
 
+  void compile_forecast() {
+    forecast_word_count_ = (problem_.forecast_terms.size() + 63U) / 64U;
+    const auto empty_bits = ForecastBits(forecast_word_count_, 0U);
+    compiled_forecast_terms_.assign(
+        problem_.forecast_terms.size(), CompiledForecastTerm{});
+    constant_forecast_bits_ = empty_bits;
+    stay_forecast_bits_.assign(problem_.eligible.size(), empty_bits);
+    return_forecast_bits_.assign(problem_.eligible.size(), empty_bits);
+    gate_option_forecast_bits_.resize(problem_.gate_domains.size());
+    for (std::size_t gate = 0; gate < problem_.gate_domains.size(); ++gate) {
+      gate_option_forecast_bits_[gate].assign(
+          problem_.gate_domains[gate].size(), empty_bits);
+    }
+
+    for (std::size_t index = 0; index < problem_.forecast_terms.size();
+         ++index) {
+      const auto& term = problem_.forecast_terms[index];
+      const auto decay_factor = std::pow(
+          config_.decay_rho, static_cast<double>(term.depth - 1));
+      if (decay_factor < config_.decay_epsilon) {
+        ++forecast_terms_skipped_cutoff_;
+        continue;
+      }
+      compiled_forecast_terms_[index] = {
+          config_.alpha_lookahead * decay_factor * term.nll,
+          term.depth,
+          static_cast<std::size_t>(term.category),
+          true,
+      };
+      const auto eligible_index = static_cast<std::size_t>(term.index);
+      switch (term.kind) {
+        case RichForecastKind::kConstant:
+          set_forecast_bit(constant_forecast_bits_, index);
+          break;
+        case RichForecastKind::kStay:
+          set_forecast_bit(stay_forecast_bits_[eligible_index], index);
+          break;
+        case RichForecastKind::kReturn:
+          set_forecast_bit(return_forecast_bits_[eligible_index], index);
+          break;
+        case RichForecastKind::kReturnSite: {
+          auto& bits = return_site_forecast_bits_[
+              {eligible_index, term.selector}];
+          if (bits.empty()) bits = empty_bits;
+          set_forecast_bit(bits, index);
+          break;
+        }
+        case RichForecastKind::kGateOption:
+          set_forecast_bit(
+              gate_option_forecast_bits_[eligible_index]
+                                        [static_cast<std::size_t>(term.selector)],
+              index);
+          break;
+        case RichForecastKind::kStayPair: {
+          auto& bits = stay_pair_forecast_bits_[
+              {eligible_index, static_cast<std::size_t>(term.second_index)}];
+          if (bits.empty()) bits = empty_bits;
+          set_forecast_bit(bits, index);
+          break;
+        }
+        case RichForecastKind::kReturnPair: {
+          auto& bits = return_pair_forecast_bits_[
+              {eligible_index, static_cast<std::size_t>(term.second_index)}];
+          if (bits.empty()) bits = empty_bits;
+          set_forecast_bit(bits, index);
+          break;
+        }
+      }
+    }
+  }
+
   void apply_forecast(Evaluated& result,
                       const std::vector<std::int64_t>& chromosome) {
     const auto started = Clock::now();
     result.forecast_by_depth.assign(config_.max_horizon + 1, 0.0);
     result.forecast_by_category.fill(0.0);
+    result.forecast_nll = 0.0;
     if (config_.max_horizon == 0 || problem_.forecast_terms.empty() ||
         config_.alpha_lookahead == 0.0) {
-      result.forecast_nll = 0.0;
       result.search_nll = result.fitness.negative_log_fidelity;
       forecast_ns_ += elapsed_ns(started);
       return;
     }
     const auto gate_count = problem_.gate_domains.size();
-    std::map<std::size_t, std::int64_t> assigned_sites;
-    for (const auto& assignment : result.assignments) {
-      assigned_sites[assignment.eligible_index] = assignment.site_id;
+    auto applicable = constant_forecast_bits_;
+    for (std::size_t gate = 0; gate < gate_count; ++gate) {
+      merge_forecast_bits(
+          applicable,
+          gate_option_forecast_bits_[gate][result.decoded.option_indices[gate]]);
     }
-    for (const auto& term : problem_.forecast_terms) {
-      const auto decay_factor = std::pow(
-          config_.decay_rho, static_cast<double>(term.depth - 1));
-      if (decay_factor < config_.decay_epsilon) {
-        ++stats_.forecast_terms_skipped_cutoff;
-        continue;
+    for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
+      const auto returned = chromosome[gate_count + index] != 0;
+      merge_forecast_bits(
+          applicable,
+          returned ? return_forecast_bits_[index] : stay_forecast_bits_[index]);
+    }
+    for (const auto& assignment : result.assignments) {
+      const auto found = return_site_forecast_bits_.find(
+          {assignment.eligible_index, assignment.site_id});
+      if (found != return_site_forecast_bits_.end()) {
+        merge_forecast_bits(applicable, found->second);
       }
-      const auto weight = config_.alpha_lookahead * decay_factor;
-      bool applies = false;
-      const auto bit = [&](std::int64_t index) {
-        return chromosome[gate_count + static_cast<std::size_t>(index)] != 0;
-      };
-      switch (term.kind) {
-        case RichForecastKind::kConstant:
-          applies = true;
-          break;
-        case RichForecastKind::kStay:
-          applies = !bit(term.index);
-          break;
-        case RichForecastKind::kReturn:
-          applies = bit(term.index);
-          break;
-        case RichForecastKind::kReturnSite: {
-          const auto found = assigned_sites.find(
-              static_cast<std::size_t>(term.index));
-          applies = found != assigned_sites.end() &&
-                    found->second == term.selector;
-          break;
+    }
+    const auto returned = [&](std::size_t index) {
+      return chromosome[gate_count + index] != 0;
+    };
+    for (const auto& [indices, bits] : stay_pair_forecast_bits_) {
+      if (!returned(indices.first) && !returned(indices.second)) {
+        merge_forecast_bits(applicable, bits);
+      }
+    }
+    for (const auto& [indices, bits] : return_pair_forecast_bits_) {
+      if (returned(indices.first) && returned(indices.second)) {
+        merge_forecast_bits(applicable, bits);
+      }
+    }
+
+    stats_.forecast_terms_skipped_cutoff +=
+        forecast_terms_skipped_cutoff_;
+    for (std::size_t word_index = 0; word_index < applicable.size();
+         ++word_index) {
+      auto word = applicable[word_index];
+      while (word != 0U) {
+        const auto bit = trailing_zeroes(word);
+        const auto index = word_index * 64U + bit;
+        const auto& term = compiled_forecast_terms_[index];
+        if (!term.active) {
+          throw std::logic_error("inactive forecast term is marked applicable");
         }
-        case RichForecastKind::kGateOption:
-          applies = result.decoded.option_indices[
-                        static_cast<std::size_t>(term.index)] ==
-                    static_cast<std::size_t>(term.selector);
-          break;
-        case RichForecastKind::kStayPair:
-          applies = !bit(term.index) && !bit(term.second_index);
-          break;
-        case RichForecastKind::kReturnPair:
-          applies = bit(term.index) && bit(term.second_index);
-          break;
+        result.forecast_nll += term.contribution;
+        result.forecast_by_depth[term.depth] += term.contribution;
+        result.forecast_by_category[term.category] += term.contribution;
+        ++stats_.forecast_terms_applied;
+        word &= word - 1U;
       }
-      if (!applies) continue;
-      const auto contribution = weight * term.nll;
-      result.forecast_nll += contribution;
-      result.forecast_by_depth[term.depth] += contribution;
-      result.forecast_by_category[static_cast<std::size_t>(term.category)] +=
-          contribution;
-      ++stats_.forecast_terms_applied;
     }
     result.search_nll = result.fitness.negative_log_fidelity +
                         result.forecast_nll;
@@ -1833,6 +1935,19 @@ class RichSolver {
                      VectorHash<std::int64_t>> fitness_cache_;
   std::unordered_set<std::vector<std::int64_t>, VectorHash<std::int64_t>>
       evaluated_keys_;
+  std::size_t forecast_word_count_{};
+  std::size_t forecast_terms_skipped_cutoff_{};
+  std::vector<CompiledForecastTerm> compiled_forecast_terms_;
+  ForecastBits constant_forecast_bits_;
+  std::vector<ForecastBits> stay_forecast_bits_;
+  std::vector<ForecastBits> return_forecast_bits_;
+  std::vector<std::vector<ForecastBits>> gate_option_forecast_bits_;
+  std::map<std::pair<std::size_t, std::int64_t>, ForecastBits>
+      return_site_forecast_bits_;
+  std::map<std::pair<std::size_t, std::size_t>, ForecastBits>
+      stay_pair_forecast_bits_;
+  std::map<std::pair<std::size_t, std::size_t>, ForecastBits>
+      return_pair_forecast_bits_;
   std::int64_t normalize_ns_{};
   std::int64_t decode_ns_{};
   std::int64_t return_match_ns_{};

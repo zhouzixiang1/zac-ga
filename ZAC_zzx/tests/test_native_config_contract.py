@@ -51,6 +51,7 @@ class NativeConfigContractTests(unittest.TestCase):
                 setting["native_abi_version"], FORMAL_NATIVE_ABI_VERSION)
             self.assertEqual(setting["rng_version"], FORMAL_NATIVE_RNG_VERSION)
             self.assertEqual(setting["operator_profile"], "tuned")
+            self.assertEqual(setting["forecast_gate_candidate_budget"], 4)
             self.assertEqual(len(setting["native_wheel_sha256"]), 64)
 
     def test_parse_setting_consumes_every_native_and_search_control(self):
@@ -115,6 +116,8 @@ class NativeConfigContractTests(unittest.TestCase):
             ("early_stop_patience", -1),
             ("max_unique_evaluations", 0),
             ("max_unique_evaluations", self.nl["population_size"] - 1),
+            ("forecast_gate_candidate_budget", 0),
+            ("forecast_gate_candidate_budget", 3),
         )
         for key, value in invalid:
             broken = {**self.nl, key: value}

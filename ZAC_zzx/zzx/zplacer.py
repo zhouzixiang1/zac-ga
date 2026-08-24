@@ -114,7 +114,8 @@ class _BackendMovementPhase:
 
 
 def _replay_phase_batches(architecture, legs, owners, positions,
-                          *, batching="phase"):
+                          *, batching="phase", native_replay=False,
+                          retain_boundary_ghosts=True):
     """Replay a colored phase against each atom's position before every batch.
 
     Movers are not conservatively frozen at both endpoints.  They remain at
@@ -124,19 +125,34 @@ def _replay_phase_batches(architecture, legs, owners, positions,
     """
     if len(legs) != len(owners):
         raise ValueError("phase legs and owners are not aligned")
+    ghost_rows = tuple(
+        (int(atom), *map(float,
+            architecture.exact_SLM_location_tuple(location)))
+        for atom, location in sorted(positions.items())
+    )
+    boundary_ghosts = (tuple(BoundaryGhost(
+        atom, BoundaryPoint(x, y)) for atom, x, y in ghost_rows)
+        if retain_boundary_ghosts else ())
     phase = BoundaryMovementPhase(
         legs=tuple(BoundaryLeg(
             float(leg[0]),
             BoundaryPoint(float(leg[1]), float(leg[2])),
             BoundaryPoint(float(leg[3]), float(leg[4])))
             for leg in legs),
-        ghosts=tuple(BoundaryGhost(
-            int(atom), BoundaryPoint(*map(float,
-                architecture.exact_SLM_location_tuple(location))))
-            for atom, location in sorted(positions.items())),
+        ghosts=boundary_ghosts,
         owners=tuple(int(owner) for owner in owners),
         batching=batching,
     )
+    if native_replay and batching == "phase":
+        try:
+            import zac_native_core
+            batches = zac_native_core.replay_phase_batches_raw(
+                [tuple(map(float, leg)) for leg in legs],
+                ghost_rows, [int(owner) for owner in owners], 0)
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        return tuple(tuple(int(index) for index in batch)
+                     for batch in batches), phase
     from zzx.reference_backend import replay_phase_batches
     return replay_phase_batches(phase), phase
 
@@ -602,6 +618,12 @@ class ResidentPlacer(VertexMatchingPlacer):
             params.get("return_candidate_limit", 6))
         self.return_assignment_k: int = int(
             params.get("return_assignment_k", 8))
+        # Number of ghost-safe future gate sites replayed before choosing the
+        # deterministic physical minimum.  The geometric support itself stays
+        # fixed at four sites; this bounded evaluation budget prevents the
+        # rollout from becoming a nested placement search at every GA fitness.
+        self.forecast_gate_candidate_budget: int = int(
+            params.get("forecast_gate_candidate_budget", 4))
         self.operator_profile: str = params.get("operator_profile", "exact")
         if not 1 <= self.elite_count <= self.population_size:
             raise ValueError("elite_count must be in [1, population_size]")
@@ -619,6 +641,9 @@ class ResidentPlacer(VertexMatchingPlacer):
             raise ValueError("return_candidate_limit must be positive")
         if self.return_assignment_k <= 0:
             raise ValueError("return_assignment_k must be positive")
+        if self.forecast_gate_candidate_budget not in {1, 2, 4}:
+            raise ValueError(
+                "forecast_gate_candidate_budget must be one of {1, 2, 4}")
         if self.operator_profile not in {"exact", "tuned"}:
             raise ValueError("operator_profile must be 'exact' or 'tuned'")
         self.experiment_schema: int = params.get("experiment_schema", 1)
@@ -2459,11 +2484,11 @@ class ResidentPlacer(VertexMatchingPlacer):
             phases, exposures, terms = [], 0, []
             batching = ("greedy" if self.ablation_fitness_mode == "lumped_greedy"
                         else "phase")
+            native_forecast_replay = bool(
+                use_rich_boundary
+                and self.resident_backend_requested == "native")
 
-            def replayed_movement_phase(legs, owners, positions):
-                batches, boundary = _replay_phase_batches(
-                    arch, tuple(legs), tuple(owners), positions,
-                    batching=batching)
+            def phase_from_replay(legs, batches, boundary):
                 physical_value = MovementPhaseCost(
                     batches=len(batches),
                     move_time_us=sum(
@@ -2473,6 +2498,13 @@ class ResidentPlacer(VertexMatchingPlacer):
                     movers=len(legs),
                 )
                 return _BackendMovementPhase(physical_value, boundary)
+
+            def replayed_movement_phase(legs, owners, positions):
+                batches, boundary = _replay_phase_batches(
+                    arch, tuple(legs), tuple(owners), positions,
+                    batching=batching, native_replay=native_forecast_replay,
+                    retain_boundary_ghosts=not native_forecast_replay)
+                return phase_from_replay(legs, batches, boundary)
 
             sim_locations = {
                 q: tuple(sites[q]) if q in returners
@@ -2610,7 +2642,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                     if q not in future_participants and reg._is_zone(location)}
                 chosen_rows, used_sites = [], set()
 
-                def future_gate_geometry(locations, rows):
+                def future_gate_geometry(locations, rows, *, replay=True):
                     after = dict(locations)
                     legs, owners = [], []
                     for gate, pair in rows:
@@ -2632,12 +2664,16 @@ class ResidentPlacer(VertexMatchingPlacer):
                         for leg in legs
                         for hit in leg_hits(leg, static_ghosts)
                     }))
-                    try:
-                        batches, boundary = _replay_phase_batches(
-                            arch, legs, owners, locations,
-                            batching=batching)
-                    except ValueError:
-                        batches, boundary = None, None
+                    batches, boundary = None, None
+                    if replay:
+                        try:
+                            batches, boundary = _replay_phase_batches(
+                                arch, legs, owners, locations,
+                                batching=batching,
+                                native_replay=native_forecast_replay,
+                                retain_boundary_ghosts=not native_forecast_replay)
+                        except ValueError:
+                            batches, boundary = None, None
                     return legs, owners, after, hits, batches, boundary
 
                 for q1, q2 in gates:
@@ -2658,7 +2694,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                         (combined_legs, combined_owners, _combined_after,
                          hit_atoms, _combined_batches,
                          _combined_boundary) = future_gate_geometry(
-                            local_locations, prospective_rows)
+                            local_locations, prospective_rows, replay=False)
                         # A hit future participant is not treated as a static
                         # obstacle or ignored.  It performs an explicit
                         # pre-gate cycle to storage and then re-enters with its
@@ -2666,6 +2702,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                         # RESEAT phase.  Both movements are included in the
                         # rollout cost and endpoint replay below.
                         relocations = {}
+                        relocation_single_phases = {}
                         for atom in sorted(set(hit_atoms)):
                             source = tuple(local_locations[atom])
                             source_xy = arch.exact_SLM_location_tuple(source)
@@ -2684,23 +2721,30 @@ class ResidentPlacer(VertexMatchingPlacer):
                                 return (math.dist(source_xy, target_xy), candidate)
 
                             chosen = None
+                            chosen_phase = None
                             for candidate in sorted(
                                     candidates_storage, key=relocation_key):
                                 target_xy = arch.exact_SLM_location_tuple(candidate)
                                 move_distance = math.dist(source_xy, target_xy)
                                 move_leg = (move_distance, *source_xy, *target_xy)
                                 try:
-                                    _replay_phase_batches(
+                                    batches, boundary = _replay_phase_batches(
                                         arch, (move_leg,), (atom,),
-                                        local_locations, batching=batching)
+                                        local_locations, batching=batching,
+                                        native_replay=native_forecast_replay,
+                                        retain_boundary_ghosts=(
+                                            not native_forecast_replay))
                                 except ValueError:
                                     continue
                                 chosen = tuple(candidate)
+                                chosen_phase = phase_from_replay(
+                                    (move_leg,), batches, boundary)
                                 break
                             if chosen is None:
                                 rejection_counts["no_reseat_site"] += 1
                                 return None
                             relocations[atom] = chosen
+                            relocation_single_phases[atom] = chosen_phase
                             local_locations[atom] = chosen
 
                         (combined_legs, combined_owners, _combined_after,
@@ -2721,13 +2765,19 @@ class ResidentPlacer(VertexMatchingPlacer):
                                 relocation_legs.append(
                                     (distance, *p0, *p1))
                                 relocation_owners.append(atom)
-                        try:
-                            relocation_phase = replayed_movement_phase(
-                                relocation_legs, relocation_owners,
-                                sim_locations)
-                        except ValueError:
-                            rejection_counts["reseat_endpoint"] += 1
-                            return None
+                        relocation_phase = None
+                        if relocation_legs:
+                            if len(relocation_legs) == 1:
+                                relocation_phase = relocation_single_phases[
+                                    relocation_owners[0]]
+                            else:
+                                try:
+                                    relocation_phase = replayed_movement_phase(
+                                        relocation_legs, relocation_owners,
+                                        sim_locations)
+                                except ValueError:
+                                    rejection_counts["reseat_endpoint"] += 1
+                                    return None
                         phase_physical = MovementPhaseCost(
                             batches=len(combined_batches),
                             move_time_us=sum(
@@ -2745,8 +2795,11 @@ class ResidentPlacer(VertexMatchingPlacer):
                                 and score_key in rollout_phase_score_cache):
                             objective = rollout_phase_score_cache[score_key]
                         else:
+                            score_phases = ([relocation_phase]
+                                            if relocation_phase is not None
+                                            else [])
                             objective, _ = physical.score(
-                                [relocation_phase, phase], 0, (q1, q2))
+                                [*score_phases, phase], 0, (q1, q2))
                             if self.fitness_cache:
                                 rollout_phase_score_cache[score_key] = objective
                         return objective, pair, relocations, relocation_phase
@@ -2760,6 +2813,9 @@ class ResidentPlacer(VertexMatchingPlacer):
                             objective, pair, relocations, relocation_phase = scored
                             options.append((objective, site, pair, relocations,
                                             relocation_phase))
+                            if (len(options)
+                                    >= self.forecast_gate_candidate_budget):
+                                break
                     if not options and not self.decay_lookahead:
                         # Preserve the historical discrete-H regression
                         # contract.  Formal decay M4 intentionally stops at the
@@ -2787,7 +2843,8 @@ class ResidentPlacer(VertexMatchingPlacer):
                             f"chosen_gates={len(chosen_rows)}, "
                             f"rejections={rejection_counts}")
                     _, site, pair, relocations, relocation_phase = min(options)
-                    if relocation_phase.boundary.legs:
+                    if (relocation_phase is not None
+                            and relocation_phase.boundary.legs):
                         phases.append(relocation_phase)
                     for atom, new_location in relocations.items():
                         blocked.discard(tuple(sim_locations[atom]))

@@ -9,7 +9,8 @@ The search is deliberately sequential rather than a Cartesian grid:
 
 1. compare five search-budget profiles;
 2. expand the best two with one-factor decision/RETURN variants;
-3. for M4 only, expand the best two over the six registered decay pairs;
+3. for M4 only, expand the best two over decay pairs and 1/2/4-site rollout
+   budgets;
 4. validate the best two per method with seeds 0, 1, and 2.
 
 Every ranking uses externally measured strongest-baseline log fidelity.  The
@@ -104,9 +105,10 @@ COMMON_KNOBS: Mapping[str, tuple[Any, ...]] = {
     "crossover_rate": (0.25, 0.50),
     "local_polish_sweeps": (1, 2),
 }
-M4_DECAY_KNOBS: Mapping[str, tuple[float, ...]] = {
+M4_DECAY_KNOBS: Mapping[str, tuple[Any, ...]] = {
     "alpha_lookahead": (0.10, 0.20, 0.35),
     "rho": (0.50, 0.70),
+    "forecast_gate_candidate_budget": (1, 2, 4),
 }
 STRUCTURAL_DEFAULTS: Mapping[str, Any] = {
     "theta_capacity": 0.90,
@@ -115,6 +117,11 @@ STRUCTURAL_DEFAULTS: Mapping[str, Any] = {
     "crossover_rate": 0.25,
     "local_polish_sweeps": 1,
     "direct_enumeration_limit": 512,
+    # Start profile/decision racing with the bounded fast projection so every
+    # preregistered QMAP circuit, including dist_223, fits the 600-s protocol.
+    # The M4 lookahead stage then compares 1/2/4 and may restore the full
+    # four-site physical minimum when its quality gain justifies the time.
+    "forecast_gate_candidate_budget": 1,
     "alpha_lookahead": 0.10,
     "rho": 0.60,
     "max_horizon": 8,
@@ -191,7 +198,7 @@ def decision_candidates(
 
 def lookahead_candidates(
         promoted: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Expand two M4 decision candidates over all six registered decay pairs."""
+    """Expand two M4 candidates over decay pairs and rollout support budgets."""
     if len(promoted) != 2:
         raise ValueError("lookahead expansion requires exactly two candidates")
     values: dict[str, dict[str, Any]] = {}
@@ -200,17 +207,20 @@ def lookahead_candidates(
             raise ValueError("lookahead expansion only accepts M4 candidates")
         for alpha in M4_DECAY_KNOBS["alpha_lookahead"]:
             for rho in M4_DECAY_KNOBS["rho"]:
-                value = {key: item for key, item in parent.items()
-                         if key != "candidate_id"}
-                value.update({
-                    "stage": "lookahead",
-                    "parent_candidate_id": parent["candidate_id"],
-                    "alpha_lookahead": alpha,
-                    "rho": rho,
-                    "max_horizon": 8,
-                })
-                identified = _with_id(value)
-                values[identified["candidate_id"]] = identified
+                for gate_budget in M4_DECAY_KNOBS[
+                        "forecast_gate_candidate_budget"]:
+                    value = {key: item for key, item in parent.items()
+                             if key != "candidate_id"}
+                    value.update({
+                        "stage": "lookahead",
+                        "parent_candidate_id": parent["candidate_id"],
+                        "alpha_lookahead": alpha,
+                        "rho": rho,
+                        "forecast_gate_candidate_budget": gate_budget,
+                        "max_horizon": 8,
+                    })
+                    identified = _with_id(value)
+                    values[identified["candidate_id"]] = identified
     return [values[key] for key in sorted(values)]
 
 
@@ -490,7 +500,8 @@ def materialize_formal_setting(base: Mapping[str, Any],
             "max_unique_evaluations", "theta_capacity",
             "return_candidate_limit", "return_assignment_k",
             "crossover_rate", "local_polish_sweeps",
-            "direct_enumeration_limit", "alpha_lookahead"):
+            "direct_enumeration_limit", "forecast_gate_candidate_budget",
+            "alpha_lookahead"):
         setting[key] = candidate[key]
     setting.update({
         "method_id": method_id,

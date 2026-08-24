@@ -22,6 +22,16 @@ marginals are passed as an auditable term table.  C++ applies
 factor falls below epsilon.  Current physical NLL is never discounted or mixed
 into the forecast breakdown.
 
+The future gate support is fixed at four deterministic geometric sites.  The
+registered `forecast_gate_candidate_budget` chooses whether 1, 2, or all 4
+ghost-safe sites are physically replayed before taking the local minimum.  It
+is a tuning dimension, not an extra future-information source; M3 carries the
+same setting but cannot consume it at H=0.  Formal native forecasts call the
+public exact replay kernel directly with raw leg/ghost rows.  The independent
+Python replay remains the differential oracle, while compiler-only DTOs omit
+ghost objects after a successful replay because the scalar physical phase no
+longer consumes them.
+
 For each chromosome, RETURN is a bounded joint assignment rather than one
 nearest-site Hungarian result.  The solver enumerates the first K injective
 assignments in deterministic cost order, performs any necessary derived RESEAT,
@@ -38,6 +48,12 @@ joint high-cost-gate plus related-RETURN mutation, duplicate-free populations,
 deterministic elites and up to `local_polish_sweeps` single-gene improvement
 passes.  Cache on/off changes evaluation reuse only; winner, mapping, movement
 batches and RNG state remain identical for a fixed seed.
+
+Forecast terms are compiled once per boundary into dynamic bitsets for STAY,
+RETURN, RETURN-site, gate-option and pair predicates.  Each candidate ORs only
+its applicable masks and accumulates marked terms in the original index order,
+preserving floating-point addition and deterministic tie semantics while
+avoiding a full term-table scan for every fitness evaluation.
 
 The extension is fail-closed: `zzx.native_backend.NativeResidentBackend` raises
 when the wheel is missing, ABI/RNG differs, or a required registered wheel hash

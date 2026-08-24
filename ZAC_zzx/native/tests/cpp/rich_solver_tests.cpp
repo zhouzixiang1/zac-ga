@@ -200,6 +200,81 @@ int main() {
   assert(decay.stats.forecast_terms_skipped_cutoff > 0);
   ++tests;
 
+  ArchitectureSnapshot indexed_forecast_architecture(
+      4, {{0.0, 0.0}, {1.0, 0.0}, {2.0, 0.0}, {3.0, 0.0},
+          {0.0, 2.0}, {1.0, 2.0}}, {4, 5});
+  RichH0Problem indexed_forecast;
+  indexed_forecast.n_atoms = 4;
+  indexed_forecast.current_points = {
+      {0.0, 0.0}, {1.0, 0.0}, {2.0, 0.0}, {3.0, 0.0}};
+  indexed_forecast.participants = {0, 1};
+  indexed_forecast.gate_domains = {{
+      {10, 0, 1, {0.0, 0.0}, {1.0, 0.0}},
+      {11, 0, 1, {0.0, 0.0}, {1.0, 0.0}},
+  }};
+  indexed_forecast.eligible = {2, 3};
+  indexed_forecast.min_returns = 2;
+  indexed_forecast.eviction_order_indices = {0, 1};
+  indexed_forecast.forced_return_mask = {true, true};
+  indexed_forecast.return_domains = {
+      {{4, {0.0, 2.0}, 1.0}, {5, {1.0, 2.0}, 10.0}},
+      {{4, {0.0, 2.0}, 10.0}, {5, {1.0, 2.0}, 1.0}},
+  };
+  indexed_forecast.matched_gate_genes = {0};
+  indexed_forecast.forecast_terms = {
+      {1, RichForecastKind::kConstant, RichForecastCategory::kTerminal,
+       -1, -1, -1, 0.1},
+      {1, RichForecastKind::kReturn, RichForecastCategory::kReentry,
+       0, -1, -1, 0.2},
+      {1, RichForecastKind::kReturn, RichForecastCategory::kReentry,
+       1, -1, -1, 0.3},
+      {1, RichForecastKind::kStay, RichForecastCategory::kResidency,
+       0, -1, -1, 100.0},
+      {2, RichForecastKind::kReturnSite, RichForecastCategory::kRouting,
+       0, -1, 4, 0.3},
+      {2, RichForecastKind::kReturnSite, RichForecastCategory::kRouting,
+       1, -1, 5, 0.4},
+      {3, RichForecastKind::kGateOption, RichForecastCategory::kResidency,
+       0, -1, 0, 0.4},
+      {3, RichForecastKind::kGateOption, RichForecastCategory::kResidency,
+       0, -1, 1, 0.1},
+      {4, RichForecastKind::kReturnPair, RichForecastCategory::kRouting,
+       0, 1, -1, 0.6},
+      {4, RichForecastKind::kStayPair, RichForecastCategory::kRouting,
+       0, 1, -1, 100.0},
+      {8, RichForecastKind::kConstant, RichForecastCategory::kTerminal,
+       -1, -1, -1, 100.0},
+  };
+  auto indexed_forecast_config = exact_config();
+  indexed_forecast_config.max_horizon = 8;
+  indexed_forecast_config.alpha_lookahead = 0.2;
+  indexed_forecast_config.decay_rho = 0.5;
+  indexed_forecast_config.decay_epsilon = 0.05;
+  const auto indexed_forecast_value = solve_rich_h0(
+      indexed_forecast_architecture, indexed_forecast,
+      indexed_forecast_config, rng_fixture());
+  assert(indexed_forecast_value.gate_option_indices ==
+         std::vector<std::size_t>({1}));
+  const std::vector<std::pair<std::int64_t, std::int64_t>>
+      indexed_forecast_returns{{2, 4}, {3, 5}};
+  assert(indexed_forecast_value.return_assignments ==
+         indexed_forecast_returns);
+  assert(std::abs(indexed_forecast_value.forecast_nll - 0.21) < 1e-15);
+  const std::vector<double> expected_forecast_by_depth{
+      0.0, 0.12, 0.07, 0.005, 0.015, 0.0, 0.0, 0.0, 0.0};
+  assert(indexed_forecast_value.forecast_by_depth ==
+         expected_forecast_by_depth);
+  assert(std::abs(indexed_forecast_value.forecast_residency_nll - 0.005) <
+         1e-15);
+  assert(std::abs(indexed_forecast_value.forecast_reentry_nll - 0.10) <
+         1e-15);
+  assert(std::abs(indexed_forecast_value.forecast_terminal_nll - 0.02) <
+         1e-15);
+  assert(std::abs(indexed_forecast_value.forecast_routing_nll - 0.085) <
+         1e-15);
+  assert(indexed_forecast_value.stats.forecast_terms_skipped_cutoff > 0);
+  ++tests;
+
   ArchitectureSnapshot enum_architecture(
       2, {{0.0, 0.0}, {1.0, 0.0}});
   RichH0Problem enum_problem;
