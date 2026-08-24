@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(zac_native VERSION 0.5.15 LANGUAGES CXX)
+project(zac_native VERSION 0.5.17 LANGUAGES CXX)
 
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)

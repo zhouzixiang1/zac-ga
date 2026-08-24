@@ -183,8 +183,12 @@ int main() {
   assert(qft_recovered.forecast_reentry_nll > 0.0);
   assert(std::abs(qft_recovered.forecast_reentry_nll -
                   0.013098101931857835) < 1e-12);
+  // Every endpoint-zone atom belongs to the final visible gate, so there is
+  // no non-participant resident for the Bellman cleanup potential.  The old
+  // per-layer terminal RETURN was both speculative and double-counted here.
+  assert(qft_recovered.forecast_terminal_nll == 0.0);
   assert(std::abs(qft_recovered.forecast_nll -
-                  0.021807099187783445) < 1e-12);
+                  qft_recovered.forecast_reentry_nll) < 1e-12);
   ++tests;
 
   auto problem = one_resident_problem();

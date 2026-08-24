@@ -906,8 +906,13 @@ class RichSolver {
     // Keep H=0 byte-for-byte on the established path.  In particular, the
     // short-circuit prevents an H=0 solve from consulting either future
     // representation merely to decide whether the guard exists.
-    return config_.max_horizon != 0 && config_.alpha_lookahead > 0.0 &&
-           (!problem_.forecast_terms.empty() || !problem_.future_layers.empty());
+    if (config_.max_horizon == 0) return false;
+    // Native rollout's endpoint Phi(s_H) is independent of alpha. A visible
+    // native future therefore still needs the complete gate guard at alpha=0;
+    // only legacy precomputed terms disappear with alpha.
+    return !problem_.future_layers.empty() ||
+           (config_.alpha_lookahead > 0.0 &&
+            !problem_.forecast_terms.empty());
   }
 
   void archive_complete_evaluation(const Evaluated& value) {
@@ -1185,8 +1190,17 @@ class RichSolver {
     if (problem_.matched_gate_genes.size() != problem_.gate_domains.size()) {
       throw std::invalid_argument("matched gate genes have wrong size");
     }
-    if (problem_.min_returns > problem_.eligible.size()) {
-      throw std::invalid_argument("min_returns exceeds eligible count");
+    const std::set<std::int64_t> participant_atoms(
+        problem_.participants.begin(), problem_.participants.end());
+    const auto nonparticipant_eligible_count = static_cast<std::size_t>(
+        std::count_if(problem_.eligible.begin(), problem_.eligible.end(),
+                      [&participant_atoms](const auto atom) {
+                        return participant_atoms.find(atom) ==
+                               participant_atoms.end();
+                      }));
+    if (problem_.min_returns > nonparticipant_eligible_count) {
+      throw std::invalid_argument(
+          "min_returns exceeds nonparticipant eligible count");
     }
     if (problem_.exact_current_scheduler) {
       const auto finite_non_negative = [](double value) {
@@ -1385,6 +1399,10 @@ class RichSolver {
       throw std::invalid_argument(
           "native future rollout requires entangling site pairs");
     }
+    if (problem_.terminal_boundary && !problem_.future_layers.empty()) {
+      throw std::invalid_argument(
+          "terminal boundary cannot contain future layers");
+    }
     std::size_t previous_depth = 0;
     for (const auto& layer : problem_.future_layers) {
       if (layer.depth == 0 || layer.depth > config_.max_horizon ||
@@ -1441,10 +1459,16 @@ class RichSolver {
         bit = true;
       }
       value[gate_count + index] = bit ? 1 : 0;
-      if (bit) ++selected;
+      const auto atom = static_cast<std::size_t>(problem_.eligible[index]);
+      // A participant RETURN is a back->out cycle and therefore does not
+      // release target-layer entangling-zone capacity.  min_returns counts
+      // only ordinary resident evictions.
+      if (bit && !participant_mask_[atom]) ++selected;
     }
     if (selected < problem_.min_returns) {
       for (const auto index : problem_.eviction_order_indices) {
+        const auto atom = static_cast<std::size_t>(problem_.eligible[index]);
+        if (participant_mask_[atom]) continue;
         if (value[gate_count + index] == 0) {
           value[gate_count + index] = 1;
           if (++selected == problem_.min_returns) break;
@@ -1625,23 +1649,17 @@ class RichSolver {
     const auto layer_count = problem_.future_layers.size();
     future_participant_masks_.assign(
         layer_count, std::vector<unsigned char>(problem_.n_atoms, 0U));
-    future_later_use_masks_.assign(
-        layer_count, std::vector<unsigned char>(problem_.n_atoms, 0U));
     future_decay_.resize(layer_count);
-    std::vector<unsigned char> suffix(problem_.n_atoms, 0U);
-    for (std::size_t reverse = layer_count; reverse-- > 0;) {
-      future_later_use_masks_[reverse] = suffix;
-      for (const auto& gate : problem_.future_layers[reverse].gates) {
-        future_participant_masks_[reverse][
+    for (std::size_t index = 0; index < layer_count; ++index) {
+      for (const auto& gate : problem_.future_layers[index].gates) {
+        future_participant_masks_[index][
             static_cast<std::size_t>(gate.first)] = 1U;
-        future_participant_masks_[reverse][
+        future_participant_masks_[index][
             static_cast<std::size_t>(gate.second)] = 1U;
-        suffix[static_cast<std::size_t>(gate.first)] = 1U;
-        suffix[static_cast<std::size_t>(gate.second)] = 1U;
       }
-      future_decay_[reverse] = std::pow(
+      future_decay_[index] = std::pow(
           config_.decay_rho,
-          static_cast<double>(problem_.future_layers[reverse].depth - 1));
+          static_cast<double>(problem_.future_layers[index].depth - 1));
     }
   }
 
@@ -1651,15 +1669,28 @@ class RichSolver {
     result.forecast_by_depth.assign(config_.max_horizon + 1, 0.0);
     result.forecast_by_category.fill(0.0);
     result.forecast_nll = 0.0;
-    if (config_.max_horizon == 0 ||
-        (problem_.forecast_terms.empty() && problem_.future_layers.empty()) ||
-        config_.alpha_lookahead == 0.0) {
-      result.search_nll = result.fitness.negative_log_fidelity;
+    if (config_.max_horizon == 0) {
+      // H=0 still owns a current-state Bellman cleanup value for ordinary
+      // eligible residents.  apply_native_rollout() receives no future-layer
+      // payload on this path, so the strict no-future-access contract holds.
+      if (problem_.terminal_boundary) {
+        result.search_nll = result.fitness.negative_log_fidelity;
+      } else {
+        apply_native_rollout(result);
+      }
       forecast_ns_ += elapsed_ns(started);
       return;
     }
     if (!problem_.future_layers.empty()) {
+      // Rollout layer terms are alpha-weighted, but endpoint Phi(s_H) is not.
+      // Do not silently remove that Bellman value when alpha is zero.
       apply_native_rollout(result);
+      forecast_ns_ += elapsed_ns(started);
+      return;
+    }
+    if (problem_.forecast_terms.empty() ||
+        config_.alpha_lookahead == 0.0) {
+      result.search_nll = result.fitness.negative_log_fidelity;
       forecast_ns_ += elapsed_ns(started);
       return;
     }
@@ -1905,6 +1936,21 @@ class RichSolver {
     result.forecast_nll += contribution;
     result.forecast_by_depth[depth] += contribution;
     result.forecast_by_category[category] += contribution;
+  }
+
+  void add_terminal_cleanup_potential(Evaluated& result, std::size_t depth,
+                                      double raw_nll) {
+    // Costs of physical events *inside* the visible rollout keep their
+    // alpha*rho attenuation.  The cleanup immediately after the final
+    // visible layer is instead the bounded Bellman cost-to-go Phi(s_H).
+    // Attenuating that endpoint value again permits a receding horizon to
+    // postpone the same RETURN indefinitely.  raw_nll is still obtained by
+    // relocate_to_storage(), so endpoint selection, joint replay, ghost
+    // safety, transfer, Move time and coherence use the ordinary physics.
+    result.forecast_nll += raw_nll;
+    result.forecast_by_depth[depth] += raw_nll;
+    result.forecast_by_category[2] += raw_nll;
+    ++stats_.forecast_terms_applied;
   }
 
   void apply_native_rollout(Evaluated& result) {
@@ -2349,31 +2395,48 @@ class RichSolver {
         }
       }
 
-      const auto& later_use = future_later_use_masks_[layer_index];
-      std::vector<std::int64_t> terminal_atoms;
-      for (std::size_t atom = 0; atom < positions.size(); ++atom) {
-        const auto atom_id = static_cast<std::int64_t>(atom);
-        if (!is_zone_point(positions[atom]) ||
-            later_use[atom] != 0U) {
-          continue;
-        }
-        terminal_atoms.push_back(atom_id);
-      }
-      const auto terminal_nll =
-          relocate_to_storage(terminal_atoms);
-      if (!terminal_nll.has_value()) {
-        reject_forecast(
-            "bounded physical forecast terminal recovery exhausted safe "
-            "storage moves");
-        return;
-      }
-
       add_weighted_forecast(result, layer.depth, 0, residency_nll);
       add_weighted_forecast(result, layer.depth, 1, *reentry_nll);
-      add_weighted_forecast(result, layer.depth, 2, *terminal_nll);
       add_weighted_forecast(result, layer.depth, 3, *routing_nll);
       ++stats_.forecast_terms_applied;
     }
+
+    std::size_t endpoint_depth = 0;
+    std::vector<unsigned char> endpoint_participant_mask(problem_.n_atoms, 0U);
+    std::vector<unsigned char> endpoint_candidate_mask(problem_.n_atoms, 0U);
+    if (!problem_.future_layers.empty()) {
+      endpoint_depth = problem_.future_layers.back().depth;
+      endpoint_participant_mask = future_participant_masks_.back();
+      std::fill(endpoint_candidate_mask.begin(),
+                endpoint_candidate_mask.end(), 1U);
+    } else {
+      // Strict H=0: only ordinary current eligible residents can contribute
+      // to Phi(s_0).  No future representation is read or inferred.
+      for (const auto atom_id : problem_.eligible) {
+        const auto atom = static_cast<std::size_t>(atom_id);
+        if (participant_mask_[atom] == 0U) endpoint_candidate_mask[atom] = 1U;
+      }
+      for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+        endpoint_participant_mask[atom] = participant_mask_[atom] ? 1U : 0U;
+      }
+    }
+    std::vector<std::int64_t> endpoint_atoms;
+    for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+      if (endpoint_candidate_mask[atom] == 0U ||
+          endpoint_participant_mask[atom] != 0U ||
+          !is_zone_point(positions[atom])) {
+        continue;
+      }
+      endpoint_atoms.push_back(static_cast<std::int64_t>(atom));
+    }
+    const auto terminal_nll = relocate_to_storage(endpoint_atoms);
+    if (!terminal_nll.has_value()) {
+      reject_forecast(
+          "bounded physical forecast terminal potential exhausted safe "
+          "storage moves");
+      return;
+    }
+    add_terminal_cleanup_potential(result, endpoint_depth, *terminal_nll);
     result.search_nll = result.fitness.negative_log_fidelity +
                         result.forecast_nll;
     remember();
@@ -4061,6 +4124,28 @@ class RichSolver {
         }
       }
       if (problem_.decision_policy == RichDecisionPolicy::kOptimize) {
+        // A serial layer has one coupled placement/residency decision.  A
+        // gate-only or residency-only descent can therefore be trapped even
+        // when changing both is strictly better (including a participant's
+        // RETURN->re-entry cycle).  Enumerate this bounded two-gene
+        // neighbourhood in stable eligible/option order.  score_unique()
+        // performs normalization, de-duplication, and the same strict unique
+        // evaluation-budget check as every other polish candidate.
+        if (gate_count == 1) {
+          const auto current = positive_mod(
+              winner[0], problem_.gate_domains[0].size());
+          for (std::size_t index = 0;
+               index < problem_.eligible.size(); ++index) {
+            for (std::size_t option = 0;
+                 option < problem_.gate_domains[0].size(); ++option) {
+              if (option == current) continue;
+              auto trial = winner;
+              trial[0] = static_cast<std::int64_t>(option);
+              trial[gate_count + index] ^= 1;
+              neighbors.push_back(std::move(trial));
+            }
+          }
+        }
         for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
           auto trial = winner;
           trial[gate_count + index] ^= 1;
@@ -4148,7 +4233,6 @@ class RichSolver {
   std::vector<ForecastBits> stay_forecast_bits_;
   std::vector<ForecastBits> return_forecast_bits_;
   std::vector<std::vector<unsigned char>> future_participant_masks_;
-  std::vector<std::vector<unsigned char>> future_later_use_masks_;
   std::vector<double> future_decay_;
   std::vector<std::vector<ForecastBits>> gate_option_forecast_bits_;
   std::map<std::pair<std::size_t, std::int64_t>, ForecastBits>

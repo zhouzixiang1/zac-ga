@@ -642,33 +642,66 @@ def _production_replay_phase_batches(
         # preserve precisely the greedy prefix that caused the dead end.
         strict_batches = replay_phase_batches(routed, exact_threshold)
         strict_positions = initial_positions()
-        strict_clean: list[_ExecutableBatch] = []
-        for strict_batch in strict_batches:
-            queue = [list(strict_batch)]
-            while queue:
-                pending = queue.pop(0)
+        full_mask = (1 << len(routed.legs)) - 1
+        failed_masks: set[int] = set()
+
+        def strict_candidates(moved_mask: int) -> tuple[tuple[int, ...], ...]:
+            """Prefer intact strict batches, then deterministic singletons.
+
+            Splitting a physically expanded batch invalidates the fixed member
+            order inherited from endpoint coloring: a later member may first
+            have to vacate a source that blocks an earlier member.  Search the
+            remaining strict suffix instead of committing that arbitrary
+            order.  Whole batches stay first so the fallback retains all safe
+            concurrency.
+            """
+            result: list[tuple[int, ...]] = []
+            for batch in strict_batches:
+                remaining = tuple(
+                    index for index in batch
+                    if not moved_mask & (1 << index))
+                if not remaining:
+                    continue
+                if len(remaining) > 1:
+                    result.append(remaining)
+                result.extend((index,) for index in remaining)
+            return tuple(result)
+
+        def exact_suffix(
+                moved_mask: int,
+                positions_now: dict[int, Point],
+        ) -> tuple[_ExecutableBatch, ...] | None:
+            if moved_mask == full_mask:
+                return ()
+            if moved_mask in failed_masks:
+                return None
+            for pending in strict_candidates(moved_mask):
                 legs = tuple(routed.legs[index] for index in pending)
                 owners = tuple(routed.owners[index] for index in pending)
-                if _first_ghost_tracks(legs, owners, strict_positions) is not None:
-                    raise ValueError(
-                        "strict endpoint-precedence replay has a ghost hit")
-                expanded_bad = _expanded_batch_conflict_members(
-                    routed, pending, strict_positions)
-                if expanded_bad:
-                    if len(pending) == 1:
-                        raise ValueError(
-                            "strict endpoint-precedence singleton has an "
-                            "expanded ghost conflict")
-                    # Expansion can invalidate an endpoint-safe color class.
-                    # Split in its already deterministic member order and
-                    # subject every singleton to both physical audits.
-                    queue[0:0] = [[index] for index in pending]
+                if _first_ghost_tracks(
+                        legs, owners, positions_now) is not None:
                     continue
-                strict_clean.append(executable(pending))
+                if _expanded_batch_conflict_members(
+                        routed, pending, positions_now):
+                    continue
+                next_positions = dict(positions_now)
+                next_mask = moved_mask
                 for index in pending:
-                    strict_positions[routed.owners[index]] = (
+                    next_positions[routed.owners[index]] = (
                         routed.legs[index].target)
-        clean = strict_clean
+                    next_mask |= 1 << index
+                suffix = exact_suffix(next_mask, next_positions)
+                if suffix is not None:
+                    return (executable(pending),) + suffix
+            failed_masks.add(moved_mask)
+            return None
+
+        strict_clean = exact_suffix(0, strict_positions)
+        if strict_clean is None:
+            raise ValueError(
+                "strict endpoint-precedence replay has no expanded "
+                "ghost-safe batch order")
+        clean = list(strict_clean)
     return tuple(clean)
 
 
@@ -911,6 +944,12 @@ def _rich_normalize(problem: RichH0Problem,
     gate_count = len(problem.gate_domains)
     if len(chromosome) != gate_count + len(problem.eligible):
         raise ValueError("rich chromosome length mismatch")
+    participants = set(problem.participants)
+    nonparticipant_eligible = sum(
+        atom not in participants for atom in problem.eligible)
+    if problem.min_returns > nonparticipant_eligible:
+        raise ValueError(
+            "min_returns exceeds nonparticipant eligible count")
     value = [int(chromosome[index]) % len(problem.gate_domains[index])
              for index in range(gate_count)]
     selected = 0
@@ -923,9 +962,16 @@ def _rich_normalize(problem: RichH0Problem,
         elif problem.forced_return_mask[index]:
             bit = True
         value.append(int(bit))
-        selected += int(bit)
+        # An eligible target participant's RETURN bit represents a physical
+        # back->out cycle: it frees no entangling-zone capacity for the target
+        # layer because that atom immediately re-enters to execute its gate.
+        # Only non-participant residents can satisfy min_returns.
+        if problem.eligible[index] not in participants:
+            selected += int(bit)
     if selected < problem.min_returns:
         for index in problem.eviction_order_indices:
+            if problem.eligible[index] in participants:
+                continue
             offset = gate_count + index
             if not value[offset]:
                 value[offset] = 1
@@ -1729,6 +1775,20 @@ def _evaluate_native_future_rollout(
         by_depth[depth] += contribution
         breakdown[category] += contribution
 
+    def add_terminal_potential(depth: int, raw_nll: float) -> None:
+        """Add the Bellman endpoint value without heuristic attenuation.
+
+        Movement, reentry, residency and any cleanup performed *inside* the
+        visible rollout are real predicted costs and retain ``alpha*rho``
+        weighting.  The cleanup immediately after the last visible layer is
+        different: it is the bounded cost-to-go ``Phi(s_H)``.  Attenuating it
+        again lets a receding horizon postpone the same RETURN forever.  The
+        physical RETURN is nevertheless produced by the same joint,
+        ghost-safe storage matching/replay path as every other relocation.
+        """
+        by_depth[depth] += raw_nll
+        breakdown["terminal"] += raw_nll
+
     for layer_index, (depth, gates) in enumerate(problem.future_layers):
         decay = config.decay_rho ** (depth - 1)
         if decay < config.decay_epsilon:
@@ -1821,23 +1881,39 @@ def _evaluate_native_future_rollout(
             for atom, delta in enumerate(pulse_idle):
                 accumulated_idle[atom] += delta
 
-        later_use = {
-            atom
-            for _later_depth, later_gates in problem.future_layers[
-                layer_index + 1:]
-            for gate in later_gates for atom in gate
-        }
-        terminal_atoms = {
-            atom for atom, point in enumerate(positions)
-            if point in zone_points and atom not in later_use
-        }
-        terminal_nll = relocate_to_storage(terminal_atoms, "terminal")
-
         add(depth, "residency", residency_nll)
         add(depth, "reentry", reentry_nll)
-        add(depth, "terminal", terminal_nll)
         add(depth, "routing", routing_nll)
         applied += 1
+
+    if problem.terminal_boundary:
+        # The target is the final circuit layer. There is no post-circuit
+        # cost-to-go; do not turn the Bellman proxy into a forced final RETURN.
+        return sum(by_depth), tuple(by_depth), breakdown, applied, skipped
+    if problem.future_layers:
+        endpoint_depth, endpoint_gates = problem.future_layers[-1]
+        endpoint_participants = {
+            atom for gate in endpoint_gates for atom in gate}
+        endpoint_atoms = {
+            atom for atom, point in enumerate(positions)
+            if point in zone_points and atom not in endpoint_participants
+        }
+    else:
+        # H=0 is deliberately current-state only: this set is derived solely
+        # from the current BoundaryProblem and never consults a future layer.
+        endpoint_depth = 0
+        current_participants = set(problem.participants)
+        ordinary_eligible = {
+            atom for atom in problem.eligible
+            if atom not in current_participants}
+        endpoint_atoms = {
+            atom for atom in ordinary_eligible
+            if positions[atom] in zone_points
+        }
+    terminal_nll = relocate_to_storage(
+        tuple(sorted(endpoint_atoms)), "terminal potential")
+    add_terminal_potential(endpoint_depth, terminal_nll)
+    applied += 1
     return sum(by_depth), tuple(by_depth), breakdown, applied, skipped
 
 
@@ -2086,7 +2162,7 @@ def _evaluate_rich_assignment_cohort(
                 (problem.eligible[index], site_id)
                 for index, site_id, _point in assignments)
             try:
-                if problem.future_layers:
+                if problem.future_layers or config.max_horizon == 0:
                     forecast = _evaluate_native_future_rollout(
                         problem, config, option_indices, assignments, reseats,
                         participant_parkings,

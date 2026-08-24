@@ -669,42 +669,62 @@ class ZAC_zzx(ZAC):
                 raise ValueError(
                     f"ghost-safe routing could not place atoms {atoms}: "
                     f"{exc}") from exc
-            strict_final = []
-            for strict_batch in strict_batches:
-                queue = [list(strict_batch)]
-                while queue:
-                    pending = queue.pop(0)
-                    ghosts = [
-                        (q, *fresh_pos[q]) for q in range(n_atoms)
-                        if q not in {owner[i] for i in pending}
-                    ]
-                    hits = ghost_hits(
-                        [legs[i] for i in pending], ghosts, detail=True)
-                    if hits:
-                        atoms = [owner[i] for i in pending]
-                        raise ValueError(
-                            "ghost-safe routing could not place atoms "
-                            f"{atoms}: strict endpoint-precedence replay has "
-                            "a ghost hit")
-                    expanded_bad = self._expanded_batch_conflicts(
-                        pending, owner, mapping_from, mapping_to, fresh_pos)
-                    if expanded_bad:
-                        if len(pending) == 1:
-                            atoms = [owner[i] for i in pending]
-                            raise ValueError(
-                                "ghost-safe routing could not place atoms "
-                                f"{atoms}: strict endpoint-precedence "
-                                "singleton has an expanded ghost conflict")
-                        # Endpoint-compatible movers can become incompatible in
-                        # ZAC's physical parking expansion.  Split only this
-                        # strict batch, in its deterministic member order, and
-                        # re-audit every singleton before it is accepted.
-                        queue[0:0] = [[index] for index in pending]
+            full_mask = (1 << len(legs)) - 1
+            failed_masks = set()
+
+            def strict_candidates(moved_mask):
+                """Keep safe concurrency, but search split-member order."""
+                result = []
+                for batch in strict_batches:
+                    remaining = tuple(
+                        index for index in batch
+                        if not moved_mask & (1 << index))
+                    if not remaining:
                         continue
-                    strict_final.append(pending)
+                    if len(remaining) > 1:
+                        result.append(remaining)
+                    result.extend((index,) for index in remaining)
+                return result
+
+            def exact_suffix(moved_mask, positions_now):
+                if moved_mask == full_mask:
+                    return []
+                if moved_mask in failed_masks:
+                    return None
+                for pending_tuple in strict_candidates(moved_mask):
+                    pending = list(pending_tuple)
+                    moving = {owner[index] for index in pending}
+                    ghosts = [
+                        (q, *positions_now[q]) for q in range(n_atoms)
+                        if q not in moving
+                    ]
+                    if ghost_hits(
+                            [legs[index] for index in pending], ghosts,
+                            detail=True):
+                        continue
+                    if self._expanded_batch_conflicts(
+                            pending, owner, mapping_from, mapping_to,
+                            positions_now):
+                        continue
+                    next_positions = dict(positions_now)
+                    next_mask = moved_mask
                     for index in pending:
-                        fresh_pos[owner[index]] = (
+                        next_positions[owner[index]] = (
                             legs[index][3], legs[index][4])
+                        next_mask |= 1 << index
+                    suffix = exact_suffix(next_mask, next_positions)
+                    if suffix is not None:
+                        return [pending] + suffix
+                failed_masks.add(moved_mask)
+                return None
+
+            strict_final = exact_suffix(0, fresh_pos)
+            if strict_final is None:
+                atoms = [owner[index] for index in range(len(legs))]
+                raise ValueError(
+                    "ghost-safe routing could not place atoms "
+                    f"{atoms}: strict endpoint-precedence replay has no "
+                    "expanded ghost-safe batch order")
             final = strict_final
         self.zzx_ghost_splits = getattr(self, "zzx_ghost_splits", 0) + \
             max(0, len(final) - len(batches))

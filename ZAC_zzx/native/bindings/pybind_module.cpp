@@ -290,14 +290,14 @@ PYBIND11_MODULE(zac_native_core, module) {
   module.attr("NATIVE_ABI_VERSION") = kNativeAbiVersion;
   module.attr("FLAT_WIRE_VERSION") = 1;
   module.attr("RICH_H0_WIRE_VERSION") = 1;
-  module.attr("RICH_BOUNDARY_WIRE_VERSION") = 6;
+  module.attr("RICH_BOUNDARY_WIRE_VERSION") = 7;
   module.attr("RNG_VERSION") = "python-random-mt19937-v1";
   module.def("build_info", []() {
     py::dict value;
     value["native_abi_version"] = kNativeAbiVersion;
     value["flat_wire_version"] = 1;
     value["rich_h0_wire_version"] = 1;
-    value["rich_boundary_wire_version"] = 6;
+    value["rich_boundary_wire_version"] = 7;
     value["version"] = VERSION_INFO;
     value["compiler_id"] = ZAC_CXX_COMPILER_ID;
     value["compiler_version"] = ZAC_CXX_COMPILER_VERSION;

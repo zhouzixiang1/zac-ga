@@ -76,7 +76,7 @@ class NativeBuildFreezeTests(unittest.TestCase):
             "native_abi_version": 8,
             "backend": "cpp-native-v8",
             "flat_wire_version": 1,
-            "rich_boundary_wire_version": 6,
+            "rich_boundary_wire_version": 7,
             "rng_version": "python-random-mt19937-v1",
             "cxx_standard": 17,
             "build_type": "Release",
@@ -113,7 +113,7 @@ class NativeBuildFreezeTests(unittest.TestCase):
             "native_abi_version": 8,
             "backend": "cpp-native-v8",
             "flat_wire_version": 1,
-            "rich_boundary_wire_version": 6,
+            "rich_boundary_wire_version": 7,
             "rng_version": "python-random-mt19937-v1",
             "native_wheel_sha256": wheel_sha,
             "extension_sha256": extension_sha,
@@ -211,7 +211,7 @@ class NativeBuildFreezeTests(unittest.TestCase):
             attestation["record_sha256"])
         self.assertTrue(result["benchmark"]["all_gates_passed"])
         self.assertEqual(result["wheel"]["native_abi_version"], 8)
-        self.assertEqual(result["wheel"]["rich_boundary_wire_version"], 6)
+        self.assertEqual(result["wheel"]["rich_boundary_wire_version"], 7)
         self.assertEqual(result["wheel"]["backend"], "cpp-native-v8")
 
     def test_legacy_backend_evidence_is_rejected(self):

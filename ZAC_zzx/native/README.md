@@ -7,7 +7,7 @@ matching, physical scoring, future-layer rollout, exact/GA search and stable
 selection in that single call.
 
 The scorer-only nested and flat-v1 wires remain for migration tests.  Formal
-resident calls use rich-boundary wire v6.  Its indexed mode resolves current,
+resident calls use rich-boundary wire v7.  Its indexed mode resolves current,
 gate-target and RETURN coordinates from a persistent `ArchitectureSnapshot`, so
 repeated point/leg dictionaries never cross the language boundary.
 
@@ -16,10 +16,12 @@ Both methods carry the same geometric decay specification.  M3 sets
 only the bounded future 2Q atom ledger (at most eight layers).  C++ starts from
 each candidate's real post-boundary positions, selects future gate pairs,
 parks endpoint and single-leg ghost blockers, replays the phases, performs
-terminal RETURN, and scores transfer, idle excitation and coherence.  It then
-applies `alpha_lookahead * rho ** (offset - 1)` and stops when the bare decay
-factor falls below epsilon.  Python no longer expands per-candidate forecast
-terms on the formal path.
+scores transfer, idle excitation and coherence, and closes the visible window
+with an unattenuated Bellman cleanup potential. In-window costs use
+`alpha_lookahead * rho ** (offset - 1)` and stop when the bare decay factor
+falls below epsilon. A target-final marker suppresses fictitious post-circuit
+cleanup without exposing any future gate content to M3. Python no longer
+expands per-candidate forecast terms on the formal path.
 
 The persistent architecture snapshot contains every entangling pair and
 storage site once.  A boundary therefore crosses Python/C++ only once with
@@ -37,13 +39,21 @@ phase-0 move plus phase-1 re-entry.  The selected assignment rank, evaluated
 assignment count, rejected ghost assignments, geometric routing forecast, and
 pre-score repair counts are returned in the boundary audit.
 
+For a serial two-qubit chain boundary, the reused resident participant is also
+part of that joint chromosome.  Its RETURN bit means a real `back -> storage ->
+out` cycle coordinated with the incoming participant and the selected gate
+site.  Because it immediately re-enters the entangling zone, this bit does not
+count toward the ordinary-resident `min_returns` capacity requirement.
+
 Search uses one total unique-fitness budget shared by greedy seeding,
 crossover/mutation and local polishing.  A normalized direct space of at most
 `direct_enumeration_limit` (512 by default) is exhaustively enumerated when it
 also fits that budget.  Larger spaces use separate gate/residency crossover,
 joint high-cost-gate plus related-RETURN mutation, duplicate-free populations,
-deterministic elites and up to `local_polish_sweeps` single-gene improvement
-passes.  Cache on/off changes evaluation reuse only; winner, mapping, movement
+deterministic elites and up to `local_polish_sweeps` improvement passes. Serial
+layers also polish the bounded gate-site x residency-bit neighbourhood, which
+escapes strict two-gene traps without changing the unique-evaluation budget.
+Cache on/off changes evaluation reuse only; winner, mapping, movement
 batches and RNG state remain identical for a fixed seed.
 
 The old forecast-term bitset path remains only for differential regression
@@ -69,7 +79,7 @@ ctest --test-dir /tmp/zac-native-ctest --output-on-failure
 ```
 
 The primary build intentionally uses neither OpenMP nor fast-math.  The public
-ABI version is `8`, flat scorer wire is `1`, rich-boundary wire is `6`, backend
+ABI version is `8`, flat scorer wire is `1`, rich-boundary wire is `7`, backend
 identity is `cpp-native-v8`, and RNG semantics are
 `python-random-mt19937-v1`.
 

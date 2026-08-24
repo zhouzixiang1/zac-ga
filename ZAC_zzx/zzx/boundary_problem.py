@@ -733,6 +733,10 @@ class RichH0Problem:
     future_layers: tuple[tuple[int, tuple[tuple[int, int], ...]], ...] = ()
     boundary_id: str = ""
     selected_horizon: int = 0
+    # True only when the target 2Q layer is the circuit's final layer. This
+    # structural end-of-stream bit carries no future gate contents; H=0 may
+    # use it without observing L+2.
+    terminal_boundary: bool = False
     # Same ABI8 coherence state as BoundaryProblem.  Empty means all-zero only
     # for legacy/source fixtures; registered formal DTOs must send n_atoms.
     prior_idle_time_us: tuple[float, ...] = ()
@@ -912,6 +916,10 @@ class RichH0Problem:
                 raise ValueError("future gate atom is outside architecture")
         if self.selected_horizon == 0 and (forecast_terms or future_layers):
             raise ValueError("strict H=0 problem cannot contain future data")
+        if not isinstance(self.terminal_boundary, bool):
+            raise ValueError("terminal_boundary must be boolean")
+        if self.terminal_boundary and future_layers:
+            raise ValueError("terminal boundary cannot contain future layers")
         if future_layers and not self.architecture.entangling_site_pairs:
             raise ValueError(
                 "native future rollout requires entangling_site_pairs")
@@ -1246,6 +1254,8 @@ class RichH0Problem:
             "future_layer_depths": future_layer_depths,
             "future_layer_gate_offsets": future_layer_gate_offsets,
             "future_gate_atoms": future_gate_atoms,
+            "terminal_boundary": array(
+                "B", [1 if self.terminal_boundary else 0]),
         }
 
 

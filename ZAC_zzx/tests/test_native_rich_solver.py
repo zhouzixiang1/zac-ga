@@ -30,7 +30,9 @@ from zzx.native_backend import (
 )
 from zzx.reference_backend import (
     ReferenceResidentBackend,
+    _rich_normalize,
     evaluate_decay_forecast,
+    evaluate_rich_exact_candidate,
     solve_rich_exact_reference,
 )
 
@@ -67,6 +69,36 @@ def toy_problem(*, indexed=False, terms=(), horizon=0):
         boundary_id="toy",
         selected_horizon=horizon,
         forecast_terms=tuple(terms),
+    )
+
+
+def participant_cycle_capacity_problem():
+    """A target participant cycle cannot satisfy resident eviction demand."""
+    arch = ArchitectureSnapshot.from_coordinates(
+        3,
+        ((0, 0), (10, 10), (20, 20), (1, 2), (21, 22)),
+        (3, 4),
+    )
+    return arch, RichH0Problem(
+        architecture=arch,
+        current_points=(Point(0, 0), Point(10, 10), Point(20, 20)),
+        participants=(0, 1),
+        gate_domains=((RichGateOption(
+            10, 0, 1, Point(0, 0), Point(10, 10)),),),
+        static_ghosts=(),
+        # Atom 0 is both eligible and a target participant.  Its forced
+        # RETURN is a back->out cycle, while atom 2 is the only resident that
+        # can actually release one unit of target-layer capacity.
+        eligible=(0, 2),
+        min_returns=1,
+        eviction_order_indices=(0, 1),
+        forced_return_mask=(True, False),
+        return_domains=(
+            (RichReturnOption(3, Point(1, 2), 1.0),),
+            (RichReturnOption(4, Point(21, 22), 1.0),),
+        ),
+        matched_gate_genes=(0,),
+        boundary_id="participant-cycle-capacity",
     )
 
 
@@ -167,6 +199,49 @@ def tuned_search_problem():
         local_polish_sweeps=2,
     )
     return arch, problem, config
+
+
+def serial_participant_pair_polish_problem():
+    """One gate and one cycle bit form a strict two-gene local trap.
+
+    Gate option 1 is short but its direct first leg hits atom 2 at (1, 1).
+    Cycling participant 0 through the real storage site removes that hit.  The
+    long gate option 0 makes the cycle alone worse, while the joint gate/cycle
+    edit is the exhaustive physical optimum.
+    """
+    coordinates = (
+        (0.0, 0.0), (0.0, 4.0), (1.0, 1.0), (0.0, -300.0),
+        (0.0, 10000.0), (2.0, 10000.0),
+        (2.0, 2.0), (2.0, 4.0),
+        (0.0, 12000.0), (2.0, 12000.0),
+        (0.0, 13000.0), (2.0, 13000.0),
+        (0.0, 14000.0), (2.0, 14000.0),
+    )
+    arch = ArchitectureSnapshot.from_coordinates(3, coordinates, (3,))
+    target_pairs = ((4, 5), (6, 7), (8, 9), (10, 11), (12, 13))
+    gates = tuple(
+        RichGateOption(10 + option, 0, 1,
+                       Point(*coordinates[first]),
+                       Point(*coordinates[second]), first, second)
+        for option, (first, second) in enumerate(target_pairs)
+    )
+    problem = RichH0Problem(
+        architecture=arch,
+        current_points=tuple(Point(*value) for value in coordinates[:3]),
+        participants=(0, 1),
+        gate_domains=(gates,),
+        static_ghosts=(),
+        # Participant 0's true decision bit is a RETURN->re-entry cycle.
+        eligible=(0,),
+        min_returns=0,
+        eviction_order_indices=(0,),
+        forced_return_mask=(False,),
+        return_domains=((RichReturnOption(
+            3, Point(*coordinates[3]), 300.0),),),
+        matched_gate_genes=(0,),
+        boundary_id="serial-participant-pair-polish",
+    )
+    return arch, problem
 
 
 @unittest.skipUnless(native_available(), "ABI7 native extension is not installed")
@@ -284,6 +359,48 @@ class TestNativeRichSolver(unittest.TestCase):
                 self.assertAlmostEqual(
                     reference.search_negative_log_fidelity,
                     native.search_negative_log_fidelity, delta=1e-12)
+
+    def test_participant_cycle_does_not_satisfy_min_returns(self):
+        arch, problem = participant_cycle_capacity_problem()
+        config = RichSearchConfig(operator_profile="exact")
+        state = random.Random(20260825).getstate()
+
+        # The participant bit is already one, but normalization must still
+        # evict the ordinary resident despite the participant appearing first
+        # in eviction_order_indices.
+        expected = (0, 1, 1)
+        self.assertEqual(expected, _rich_normalize(problem, (0, 1, 0)))
+        reference = solve_rich_exact_reference(problem, config, state)
+        backend = NativeResidentBackend(arch)
+        native = backend.solve_rich_boundary(
+            problem, config, state)
+        native_from_raw = backend.solve_rich_boundary(
+            problem, config, state, cached_winner=(0, 1, 0))
+        self.assertEqual(expected, reference.winner.chromosome)
+        self.assertEqual(reference.winner, native.winner)
+        self.assertEqual("lru", native_from_raw.search_mode)
+        self.assertEqual(expected, native_from_raw.winner.chromosome)
+        self.assertEqual(reference.winner, native_from_raw.winner)
+        self.assertEqual(reference.return_assignments,
+                         native.return_assignments)
+        self.assertEqual(((0, 3), (2, 4)), native.return_assignments)
+
+    def test_min_returns_rejects_participant_only_capacity(self):
+        arch, problem = participant_cycle_capacity_problem()
+        impossible = replace(problem, eligible=(0,), min_returns=1,
+                             eviction_order_indices=(0,),
+                             forced_return_mask=(True,),
+                             recommended_return_mask=(False,),
+                             return_domains=(problem.return_domains[0],))
+        config = RichSearchConfig(operator_profile="exact")
+        state = random.Random(0).getstate()
+        with self.assertRaisesRegex(
+                ValueError, "nonparticipant eligible count"):
+            solve_rich_exact_reference(impossible, config, state)
+        with self.assertRaisesRegex(
+                NativeBackendError, "nonparticipant eligible count"):
+            NativeResidentBackend(arch).solve_rich_boundary(
+                impossible, config, state)
 
     def test_random_small_rich_boundaries_match_python_truth(self):
         arch = ArchitectureSnapshot.from_coordinates(
@@ -731,6 +848,154 @@ class TestNativeRichSolver(unittest.TestCase):
         )
         self.assertGreater(result.forecast_terms_applied, 0)
 
+    def test_terminal_cleanup_is_unattenuated_bellman_potential(self):
+        """Tiny alpha/rho cannot make the horizon-end RETURN disappear."""
+        arch = ArchitectureSnapshot.from_coordinates(
+            3,
+            (
+                (0, 0), (1, 0), (4, 0), (5, 0),
+                (0, 10), (1, 10), (4, 10), (5, 10),
+            ),
+            (4, 5, 6, 7),
+        )
+        arch = replace(
+            arch, entangling_site_pairs=((0, 1), (2, 3)))
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(),
+            current_site_ids=(0, 1, 2),
+            participants=(),
+            gate_domains=(),
+            static_ghosts=(),
+            # Atom 2 is an ordinary resident throughout the visible window.
+            # always_stay keeps the fixture focused on the endpoint value
+            # rather than the current-boundary RETURN choice.
+            eligible=(2,),
+            min_returns=0,
+            eviction_order_indices=(0,),
+            forced_return_mask=(False,),
+            return_domains=((RichReturnOption(6, None, 0.0),),),
+            matched_gate_genes=(),
+            # Both atoms stay live through depth 1.  Their joint ghost-safe
+            # RETURN after depth 2 is exactly Phi(s_H), rather than another
+            # alpha*rho-weighted in-window event.
+            future_layers=(
+                (1, ((0, 1),)),
+                (2, ((0, 1),)),
+            ),
+            boundary_id="terminal-cleanup-potential",
+            selected_horizon=2,
+            prior_idle_time_us=(0.0, 0.0, 0.0),
+            decision_policy="always_stay",
+        )
+        tiny = RichSearchConfig(
+            operator_profile="exact",
+            max_horizon=2,
+            alpha_lookahead=0.0,
+            decay_rho=1e-9,
+            decay_epsilon=0.0,
+            forecast_gate_candidate_budget=4,
+        )
+        unit = replace(tiny, alpha_lookahead=1.0, decay_rho=1.0)
+        state = random.Random(20260825).getstate()
+        tiny_reference = solve_rich_exact_reference(problem, tiny, state)
+        unit_reference = solve_rich_exact_reference(problem, unit, state)
+        tiny_native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, tiny, state)
+
+        terminal = tiny_reference.forecast_breakdown["terminal"]
+        self.assertGreater(terminal, 0.0)
+        self.assertAlmostEqual(
+            unit_reference.forecast_breakdown["terminal"], terminal,
+            delta=1e-15)
+        self.assertAlmostEqual(
+            tiny_reference.forecast_by_depth[2], terminal, delta=1e-15)
+        self.assertEqual(tiny_reference.winner, tiny_native.winner)
+        self.assertAlmostEqual(
+            tiny_native.forecast_breakdown["terminal"], terminal,
+            delta=1e-12)
+        self.assertAlmostEqual(
+            tiny_native.forecast_nll, tiny_reference.forecast_nll,
+            delta=1e-12)
+
+    def test_h0_terminal_potential_prevents_repeated_stay_deferral(self):
+        """H=0 uses Phi(s0), but receives no future-layer representation."""
+        arch = ArchitectureSnapshot.from_coordinates(
+            3,
+            (
+                (0, 0), (1, 0), (4, 0), (5, 0),
+                (1000, 1000),
+            ),
+            (4,),
+        )
+        arch = replace(
+            arch, entangling_site_pairs=((0, 1), (2, 3)))
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(),
+            current_site_ids=(0, 1, 2),
+            participants=(0, 1),
+            gate_domains=((RichGateOption(
+                0, 0, 1, None, None,
+                target1_site_id=0, target2_site_id=1),),),
+            static_ghosts=(),
+            eligible=(2,),
+            min_returns=0,
+            eviction_order_indices=(0,),
+            forced_return_mask=(False,),
+            return_domains=((RichReturnOption(4, None, 0.0),),),
+            matched_gate_genes=(0,),
+            future_layers=(),
+            boundary_id="h0-terminal-cleanup-winner",
+            selected_horizon=0,
+            prior_idle_time_us=(0.0, 0.0, 0.0),
+        )
+        config = RichSearchConfig(
+            operator_profile="exact",
+            max_horizon=0,
+            alpha_lookahead=1e-12,
+            decay_rho=1e-12,
+            decay_epsilon=0.0,
+        )
+        state = random.Random(20260825).getstate()
+        stay = evaluate_rich_exact_candidate(problem, config, (0, 0))
+        returned = evaluate_rich_exact_candidate(problem, config, (0, 1))
+        reference = solve_rich_exact_reference(problem, config, state)
+        native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, state)
+
+        # Myopic current physics prefers the cheap STAY.  Adding the physical
+        # cleanup value to that same post-current state makes RETURN win now,
+        # so the resident cannot repeat the one-layer deferral forever.
+        self.assertLess(
+            stay.fitness.negative_log_fidelity,
+            returned.fitness.negative_log_fidelity)
+        self.assertGreater(stay.forecast_breakdown["terminal"], 0.0)
+        self.assertEqual(0.0, returned.forecast_breakdown["terminal"])
+        self.assertGreater(stay.search_nll, returned.search_nll)
+        self.assertEqual((0, 1), reference.winner.chromosome)
+        self.assertEqual(reference.winner, native.winner)
+        self.assertAlmostEqual(
+            reference.search_negative_log_fidelity,
+            native.search_negative_log_fidelity,
+            delta=1e-12)
+        self.assertEqual((), problem.future_layers)
+        self.assertEqual((0.0,), returned.forecast_by_depth)
+
+        # Entering the final 2Q layer is structurally marked by the scheduler.
+        # H=0 still sees no future gate, but it must not price a cleanup after
+        # the circuit has already ended.
+        terminal_problem = replace(problem, terminal_boundary=True)
+        terminal_reference = solve_rich_exact_reference(
+            terminal_problem, config, state)
+        terminal_native = NativeResidentBackend(arch).solve_rich_boundary(
+            terminal_problem, config, state)
+        self.assertEqual((0, 0), terminal_reference.winner.chromosome)
+        self.assertEqual(terminal_reference.winner, terminal_native.winner)
+        self.assertEqual(0.0, terminal_reference.forecast_nll)
+        self.assertEqual(0.0, terminal_native.forecast_nll)
+        self.assertEqual(0, terminal_native.forecast_terms_applied)
+
     def test_qft_style_reentry_interlock_uses_finite_physical_recovery(self):
         """A cyclic future front is parked/reentered, never scored as inf."""
         arch = ArchitectureSnapshot.from_coordinates(
@@ -1000,6 +1265,63 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertGreater(first.operator_stats["local_polish_evaluations"], 0)
         self.assertLessEqual(first.unique_evaluations,
                              config.max_unique_evaluations)
+
+    def test_serial_gate_cycle_pair_polish_escapes_two_gene_trap(self):
+        arch, problem = serial_participant_pair_polish_problem()
+        # Seed 1 deliberately avoids the conflict-cluster mutation, so the
+        # tiny GA itself does not happen to sample the coupled edit.
+        state = random.Random(1).getstate()
+        exact_config = RichSearchConfig(
+            operator_profile="exact",
+            direct_enumeration_limit=16,
+            max_unique_evaluations=16,
+            local_polish_sweeps=0,
+            fitness_cache=False,
+        )
+        baseline = evaluate_rich_exact_candidate(
+            problem, exact_config, (0, 0))
+        gate_only = evaluate_rich_exact_candidate(
+            problem, exact_config, (1, 0))
+        cycle_only = evaluate_rich_exact_candidate(
+            problem, exact_config, (0, 1))
+        self.assertFalse(gate_only.fitness.feasible)
+        self.assertGreater(cycle_only.search_nll, baseline.search_nll)
+
+        truth = solve_rich_exact_reference(problem, exact_config, state)
+        self.assertEqual((1, 1), truth.winner.chromosome)
+
+        small_ga = RichSearchConfig(
+            operator_profile="tuned",
+            population_size=1,
+            iterations=1,
+            neighbors_per_solution=1,
+            neighbor_sample_size=2,
+            elite_count=1,
+            max_unique_evaluations=32,
+            direct_enumeration_limit=1,
+            crossover_rate=0.0,
+            local_polish_sweeps=0,
+            fitness_cache=False,
+        )
+        backend = NativeResidentBackend(arch)
+        without_polish = backend.solve_rich_boundary(
+            problem, small_ga, state)
+        self.assertNotEqual(truth.winner.chromosome,
+                            without_polish.winner.chromosome)
+
+        with_polish = backend.solve_rich_boundary(
+            problem, replace(small_ga, local_polish_sweeps=1), state)
+        self.assertEqual(truth.winner.chromosome,
+                         with_polish.winner.chromosome)
+        self.assertAlmostEqual(
+            truth.winner.negative_log_fidelity,
+            with_polish.winner.negative_log_fidelity,
+            places=12,
+        )
+        self.assertGreater(
+            with_polish.operator_stats["local_polish_evaluations"], 0)
+        self.assertLessEqual(with_polish.unique_evaluations,
+                             small_ga.max_unique_evaluations)
 
     def test_repeated_tuned_direct_boundary_reuses_exact_result_without_rng(self):
         problem = toy_problem(indexed=True)

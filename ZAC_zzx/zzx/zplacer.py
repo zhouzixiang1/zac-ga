@@ -2779,13 +2779,24 @@ class ResidentPlacer(VertexMatchingPlacer):
                     }
                 gate_cache.append(cached_sites)
 
-        # Every non-participating resident is a real decision, including dead ones.
-        # Immediate target participants are searched separately below as bounded
-        # RETURN -> re-entry relocation moves, so the registered residency GA and
-        # its RNG stream remain byte-identical when no cycle is selected.
-        eligible = sorted(potential_returners)
+        # Every non-participating resident is a real decision, including dead
+        # ones.  On a serial chain, the one resident target participant is also
+        # a native joint decision: bit 0 moves it directly in the out phase,
+        # while bit 1 performs a physical back-to-storage then out-to-gate
+        # cycle.  This is part of the same chromosome as gate placement and
+        # RETURN matching; it is never a winner-after-the-fact Python repair.
+        resident_eligible = sorted(potential_returners)
         adjacent_resident_participants = sorted(
             set(reg.zone_seat) & participants)
+        formal_cycle_candidates = (
+            adjacent_resident_participants
+            if (use_rich_boundary
+                and self.ablation_policy == "optimize"
+                and len(list_gate) == 1
+                and len(adjacent_resident_participants) == 1)
+            else [])
+        eligible = sorted(
+            set(resident_eligible) | set(formal_cycle_candidates))
         # The extra RETURN -> re-entry refinement is exact only for a serial
         # chain boundary: one target gate with one reused resident endpoint.
         # On a parallel target front, independently cycling one endpoint can
@@ -2808,14 +2819,20 @@ class ResidentPlacer(VertexMatchingPlacer):
         if max_stays < 0:
             raise RuntimeError(
                 f"layer {next_layer} 当前门需求 {demand} 已超过驻留容量阈值")
-        min_returns = max(0, len(eligible) - max_stays)
+        # A participant cycle returns only transiently: the atom re-enters as
+        # part of ``demand`` and therefore does not free final zone capacity.
+        # Native/reference normalization count only non-participant RETURN bits
+        # toward this lower bound.
+        min_returns = max(0, len(resident_eligible) - max_stays)
 
         # Capacity is normalized before fitness, never patched onto the winner.
         def eviction_key(q):
             visible = visible_use(q)
             return (visible is None, visible[0] if visible else -1, q)
 
-        eviction_order = sorted(eligible, key=eviction_key, reverse=True)
+        eviction_order = (
+            sorted(resident_eligible, key=eviction_key, reverse=True)
+            + sorted(formal_cycle_candidates))
         # Receding-horizon guard: LK may retain an atom only when its next use
         # is actually visible inside L+2/L+3.  Otherwise every boundary can
         # postpone the same terminal RETURN by two layers and the atom remains
@@ -2852,7 +2869,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         if (not self.decay_lookahead
                 and self.ablation_policy == "optimize"
                 and active_horizon > 0):
-            for q in eligible:
+            for q in resident_eligible:
                 visible = visible_use(q)
                 if visible is None:
                     continue
@@ -2934,7 +2951,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             return selected
 
         if self.decay_lookahead and self.ablation_policy == "optimize":
-            for q in eligible:
+            for q in resident_eligible:
                 # The explicit branch is an H=0 information firewall: no
                 # visible-use lookup, future layer access or future-dependent
                 # return anchor is evaluated for M3.
@@ -4692,6 +4709,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                 future_layers=native_future_layers,
                 boundary_id=f"{self.method_id}:L{layer}",
                 selected_horizon=active_horizon,
+                terminal_boundary=(layer + 2 >= forecast.layer_count),
                 prior_idle_time_us=tuple(scheduler_idle_prior),
                 scheduler_trace_end_us=float(
                     scheduler_prefix.scheduler.trace_end_us),
@@ -4827,7 +4845,8 @@ class ResidentPlacer(VertexMatchingPlacer):
                     if bit}:
                 raise RuntimeError(
                     "native rich RETURN assignments disagree with winner bits")
-            if native_rich_problem.future_layers:
+            if (native_rich_problem.future_layers
+                    or rich_config.max_horizon == 0):
                 # The formal ABI5 forecast is deliberately native-owned.  Its
                 # independent contract is raw layer isolation plus final trace
                 # verification; reconstructing it in Python would restore the
@@ -5274,6 +5293,20 @@ class ResidentPlacer(VertexMatchingPlacer):
         bits = best_chrom[n_gates:]
         returners = ({q for q, bit in zip(eligible, bits) if bit}
                      | selected_cycles)
+        formal_selected_cycles = (
+            set(formal_cycle_candidates) & returners)
+        if formal_cycle_candidates:
+            cycle_search_log.extend({
+                "q": int(q),
+                "accepted": q in formal_selected_cycles,
+                "forced": False,
+                "native_joint": True,
+                "negative_log_fidelity_gain": None,
+                "gate_index": next(
+                    index for index, gate in enumerate(list_gate) if q in gate),
+                "gate_gene": int(best_chrom[next(
+                    index for index, gate in enumerate(list_gate) if q in gate)]),
+            } for q in formal_cycle_candidates)
         sites = (dict(native_return_sites)
                  if native_rich_result is not None
                  else return_sites_for_atoms(returners))
@@ -5847,12 +5880,14 @@ class ResidentPlacer(VertexMatchingPlacer):
             "participant_parking": sum(
                 1 for v in decisions.values() if v[0] == "PARK"),
             "eligible_decisions": len(eligible),
-            "adjacent_cycle_candidates": len(cycle_candidates),
-            "adjacent_cycle_returns": len(selected_cycles),
+            "adjacent_cycle_candidates": (
+                len(cycle_candidates) + len(formal_cycle_candidates)),
+            "adjacent_cycle_returns": (
+                len(selected_cycles) + len(formal_selected_cycles)),
             "forced_commitment_cycles": len(forced_cycle_candidates),
             "adjacent_cycle_search": cycle_search_log,
             "no_visible_use": sum(
-                1 for q in eligible
+                1 for q in resident_eligible
                 if visible_use(q) is None),
             "forced_e2": 0,
             "capacity": min_returns,

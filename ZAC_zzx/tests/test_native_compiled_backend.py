@@ -58,7 +58,7 @@ class TestCompiledBackend(unittest.TestCase):
     def test_build_manifest_is_auditable(self):
         info = build_info()
         self.assertEqual(info["native_abi_version"], NATIVE_ABI_VERSION)
-        self.assertEqual(info["rich_boundary_wire_version"], 6)
+        self.assertEqual(info["rich_boundary_wire_version"], 7)
         self.assertEqual(info["backend"], "cpp-native-v8")
         self.assertTrue(info["extension_sha256"])
         self.assertEqual(info["flat_wire_version"], 1)
@@ -313,6 +313,77 @@ class TestCompiledBackend(unittest.TestCase):
         self.assertEqual(len(fast), len(generic))
         for optimized, oracle in zip(fast, generic):
             self.assertFitnessEqual(oracle, optimized)
+
+    def test_dense_bitset_coloring_matches_python_reference(self):
+        """A QMAP-sized >128-leg phase must retain generic DSATUR semantics."""
+        rng = random.Random(82019)
+        legs = tuple(
+            Leg.between(
+                (float(rng.randrange(-12, 13)),
+                 float(rng.randrange(-12, 13))),
+                (float(rng.randrange(-12, 13)),
+                 float(rng.randrange(-12, 13))),
+            )
+            for _ in range(160)
+        )
+        ghosts = tuple(
+            Ghost(1000 + atom,
+                  Point(float(rng.randrange(-12, 13)),
+                        float(rng.randrange(-12, 13))))
+            for atom in range(96)
+        )
+        phase = MovementPhase(legs, ghosts)
+        problem = BoundaryProblem(
+            self.architecture,
+            (CandidatePlan((0,), (phase,), 0),),
+            boundary_id="dense-bitset-coloring",
+        )
+        config = BoundaryConfig(
+            exact_coloring_threshold=24,
+            enforce_single_leg_ghost=False,
+        )
+        reference = self.reference.evaluate_many(problem, config=config)[0]
+        native = self.native.evaluate_many(problem, config=config)[0]
+        self.assertFitnessEqual(reference, native)
+
+    def test_production_suffix_replay_matches_python_reference(self):
+        """Strict full-suffix DFS must match the independent router oracle."""
+        rng = random.Random(91207)
+        config = BoundaryConfig(
+            exact_coloring_threshold=24,
+            enforce_single_leg_ghost=True,
+            production_parking_replay=True,
+        )
+        for case in range(120):
+            size = rng.randrange(1, 7)
+            sources = []
+            while len(sources) < size:
+                point = Point(float(rng.randrange(0, 8)),
+                              float(rng.randrange(0, 8)))
+                if point not in sources:
+                    sources.append(point)
+            legs = []
+            for source in sources:
+                target = source
+                while target == source:
+                    target = Point(float(rng.randrange(0, 8)),
+                                   float(rng.randrange(0, 8)))
+                legs.append(Leg.between(source, target))
+            phase = MovementPhase(
+                tuple(legs),
+                tuple(Ghost(atom, source)
+                      for atom, source in enumerate(sources)),
+                tuple(range(size)),
+            )
+            problem = BoundaryProblem(
+                self.architecture,
+                (CandidatePlan((case,), (phase,), 0),),
+                boundary_id=f"strict-suffix-{case}",
+            )
+            reference = self.reference.evaluate_many(
+                problem, config=config)[0]
+            native = self.native.evaluate_many(problem, config=config)[0]
+            self.assertFitnessEqual(reference, native)
 
     def test_exact_coloring_path_matches(self):
         phase = MovementPhase((

@@ -122,6 +122,9 @@ struct RichH0Problem {
   // scored inside C++.  ``forecast_terms`` remains only for legacy regression
   // fixtures and must not be mixed with this representation.
   std::vector<RichFutureLayer> future_layers;
+  // The target layer is the final circuit layer. This carries no future gate
+  // content and suppresses a fictitious post-circuit Bellman cleanup.
+  bool terminal_boundary{false};
 };
 
 struct RichSearchConfig {

@@ -423,6 +423,31 @@ class TestExactCurrentReferenceScheduler(unittest.TestCase):
             ((0,), (2,), (1,)),
         )
 
+    def test_compact_replay_backtracks_over_expanded_split_member_order(self):
+        """A blocked first singleton must not make a feasible phase fail."""
+        sources = (
+            Point(3.0, 1.0), Point(2.0, 4.0), Point(2.0, 3.0),
+        )
+        targets = (
+            Point(0.0, 2.0), Point(2.0, 1.0), Point(2.0, 0.0),
+        )
+        phase = MovementPhase(
+            tuple(Leg.between(source, target)
+                  for source, target in zip(sources, targets)),
+            tuple(Ghost(atom, source)
+                  for atom, source in enumerate(sources)),
+            (0, 1, 2),
+        )
+
+        self.assertEqual(replay_phase_batches(phase, 24), ((0,), (1, 2)))
+        first = _production_replay_phase_batches(phase, 24)
+        second = _production_replay_phase_batches(phase, 24)
+        self.assertEqual(
+            tuple(batch.original_members for batch in first),
+            ((0,), (2,), (1,)),
+        )
+        self.assertEqual(second, first)
+
     def test_exact_coloring_matches_production_zcost_on_small_graph(self):
         """The compact exact-color path must use the router's batch partition."""
         raw = (

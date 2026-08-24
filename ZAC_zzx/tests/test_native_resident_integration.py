@@ -39,7 +39,7 @@ TIMING_KEYS = {
     "backend_calls", "backend_candidates", "cache",
 }
 NATIVE_WHEEL_SHA256 = (
-    "49cc94c68c8109a6769bdf48280197652d137cb7b30603846001f5249678cb54")
+    "56c9cc70c4dc1d1f78167d1584d5ad0914175fbccc0c47ae567be63b8a95c890")
 
 
 def architecture(*, frozen_physics=False):
@@ -132,6 +132,25 @@ class TestGateCacheFastPath(unittest.TestCase):
         self.assertEqual(placer.decision_log[0]["backend_calls"], 1)
         self.assertEqual(
             placer.decision_log[0]["rich_search"]["native_future_layers"], 0)
+
+    def test_formal_serial_chain_exposes_joint_participant_cycle_gene(self):
+        schedule = [[[0, 1]], [[1, 2]], [[2, 3]]]
+        for horizon in (
+                decay_lookahead_spec(0), decay_lookahead_spec(8)):
+            with self.subTest(
+                    horizon=maximum_lookahead_horizon(horizon)):
+                placer = run(
+                    schedule, backend="reference", horizon=horizon, seed=5)
+                first = placer.decision_log[0]
+                # q0 is the ordinary dead resident; reused participant q1 is
+                # the additional back-to-storage then out-to-gate cycle bit.
+                self.assertEqual(first["eligible_decisions"], 2)
+                self.assertEqual(first["adjacent_cycle_candidates"], 1)
+                self.assertEqual(
+                    [entry["q"] for entry in first["adjacent_cycle_search"]
+                     if entry.get("native_joint")],
+                    [1],
+                )
 
     @unittest.skipUnless(
         native_available(), "zac_native_core wheel is not installed")

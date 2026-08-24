@@ -451,6 +451,7 @@ class NativeResidentBackend:
                 problem.forecast_terms,
                 problem.future_layers,
                 problem.selected_horizon,
+                problem.terminal_boundary,
                 problem.prior_idle_time_us,
                 problem.scheduler_trace_end_us,
                 problem.scheduler_active_union_us,

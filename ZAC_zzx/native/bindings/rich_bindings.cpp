@@ -423,6 +423,12 @@ RichH0Problem parse_problem(const ArchitectureSnapshot& architecture,
     }
     problem.future_layers.push_back(std::move(future));
   }
+  const auto terminal_boundary =
+      copy_buffer<std::uint8_t>(buffers, "terminal_boundary");
+  if (terminal_boundary.size() != 1 || terminal_boundary[0] > 1) {
+    throw std::invalid_argument("invalid terminal boundary flag");
+  }
+  problem.terminal_boundary = terminal_boundary[0] != 0;
   return problem;
 }
 

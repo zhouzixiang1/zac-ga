@@ -121,6 +121,28 @@ int main() {
           std::vector<std::vector<std::size_t>>{{0}, {2}, {1}}));
   ++tests;
 
+  // The strict fallback colors {1, 2} together after mover 0.  Their expanded
+  // batch is unsafe, but blindly trying singleton 1 first is also unsafe while
+  // owner 2 remains at (2, 3).  Exact deterministic singleton ordering must
+  // backtrack to 0 -> 2 -> 1 instead of reporting a false ghost failure.
+  ArchitectureSnapshot expanded_split_architecture(3, {});
+  CandidatePlan expanded_split;
+  expanded_split.chromosome = {0};
+  expanded_split.phases = {{{
+      {std::sqrt(10.0), {3.0, 1.0}, {0.0, 2.0}},
+      {3.0, {2.0, 4.0}, {2.0, 1.0}},
+      {3.0, {2.0, 3.0}, {2.0, 0.0}},
+  }, {{0, {3.0, 1.0}}, {1, {2.0, 4.0}}, {2, {2.0, 3.0}}},
+      {0, 1, 2}, "phase"}};
+  const auto expanded_split_score = evaluate_candidate(
+      expanded_split_architecture, expanded_split,
+      production_fallback_config);
+  assert(expanded_split_score.feasible);
+  assert(expanded_split_score.phase_batches.size() == 1);
+  assert((expanded_split_score.phase_batches[0] ==
+          std::vector<std::vector<std::size_t>>{{0}, {2}, {1}}));
+  ++tests;
+
   bool rejected = false;
   try {
     ArchitectureSnapshot invalid(1, {{0.0, 0.0}}, {0, 0});

@@ -76,6 +76,26 @@ class _StrictFallbackArchitecture:
         return self.points[tuple(location)]
 
 
+class _SplitOrderArchitecture:
+    """Strict expanded replay must choose q2 before blocked q1."""
+
+    def __init__(self):
+        sources = ((3.0, 1.0), (2.0, 4.0), (2.0, 3.0))
+        targets = ((0.0, 2.0), (2.0, 1.0), (2.0, 0.0))
+        self.points = {
+            **{(0, atom, 0): point
+               for atom, point in enumerate(sources)},
+            **{(1, atom, 0): point
+               for atom, point in enumerate(targets)},
+        }
+
+    def exact_SLM_location(self, array, row, column):
+        return self.points[(array, row, column)]
+
+    def exact_SLM_location_tuple(self, location):
+        return self.points[tuple(location)]
+
+
 def _route_batch(
     architecture, mappings, schedule, gate_ids, one_qubit, initial_one_qubit,
     placer_kind="resident",
@@ -217,6 +237,20 @@ class TestZACRouteTransition(unittest.TestCase):
         # expansion, so both contributors are re-audited as singletons.
         self.assertEqual(actual, (2, [[0], [2], [1]], "exact"))
         self.assertEqual(compiler.zzx_ghost_splits, 1)
+
+    def test_router_backtracks_over_expanded_split_member_order(self):
+        architecture = _SplitOrderArchitecture()
+        compiler = _compiler(architecture, 3)
+        mapping_from = [(0, atom, 0) for atom in range(3)]
+        mapping_to = [(1, atom, 0) for atom in range(3)]
+
+        first = compiler._coloring_batches(
+            [0, 1, 2], mapping_from, mapping_to)
+        second = compiler._coloring_batches(
+            [0, 1, 2], mapping_from, mapping_to)
+
+        self.assertEqual(first, (2, [[0], [2], [1]], "exact"))
+        self.assertEqual(second, first)
 
     def test_streamed_native_chunks_are_dictionary_exact_to_batch(self):
         mappings, schedule, gate_ids, one_qubit, initial_one_qubit = _fixture()

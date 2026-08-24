@@ -1,9 +1,11 @@
 #include "zac_native/core.hpp"
 
 #include <algorithm>
+#include <bitset>
 #include <chrono>
 #include <cmath>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -51,6 +53,49 @@ Coverage cover(double begin, double end, double coordinate) {
 
 using Adjacency = std::vector<std::set<std::size_t>>;
 
+// ``phase_adjacency`` asks the same yes/no question for every pair of legs.
+// Routing that tiny query through ``ghost_hit_atoms`` used to allocate two
+// vectors and four red-black-tree nodes per pair.  Dense 2Q layers have O(n^2)
+// pairs, and candidate repair evaluates the layer several times, so allocator
+// traffic dominated the resident search.  The two-leg specialization below is
+// the exact Cartesian-product test used by ``ghost_hit_atoms`` (two columns by
+// two rows), only without materialising the temporary sets.  Repeated tracks
+// are harmless because this is a boolean query.
+bool pair_hits_ghost(const Leg& first, const Leg& second,
+                     const std::vector<Ghost>& ghosts) {
+  if (ghosts.empty()) return false;
+  const std::array<const Leg*, 2> legs{&first, &second};
+  const double x_min = std::min(
+      {first.source.x, first.target.x, second.source.x, second.target.x});
+  const double x_max = std::max(
+      {first.source.x, first.target.x, second.source.x, second.target.x});
+  const double y_min = std::min(
+      {first.source.y, first.target.y, second.source.y, second.target.y});
+  const double y_max = std::max(
+      {first.source.y, first.target.y, second.source.y, second.target.y});
+  for (const auto& ghost : ghosts) {
+    const auto gx = ghost.position.x;
+    const auto gy = ghost.position.y;
+    if (gx < x_min - kEps || gx > x_max + kEps ||
+        gy < y_min - kEps || gy > y_max + kEps) {
+      continue;
+    }
+    for (const auto* column : legs) {
+      const auto x = cover(column->source.x, column->target.x, gx);
+      if (!x.valid) continue;
+      for (const auto* row : legs) {
+        const auto y = cover(row->source.y, row->target.y, gy);
+        if (!y.valid) continue;
+        if (x.always || y.always ||
+            std::abs(x.time - y.time) < kSTolerance) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 Adjacency phase_adjacency(const MovementPhase& phase) {
   const auto size = phase.legs.size();
   Adjacency adjacency(size);
@@ -81,7 +126,7 @@ Adjacency phase_adjacency(const MovementPhase& phase) {
         // Only atoms that never move in the phase are valid pairwise ghost
         // edges here; treating every other mover as static over-colors dense
         // layers and can manufacture an otherwise avoidable dependency cycle.
-        conflict = !ghost_hit_atoms({first, second}, static_ghosts).empty();
+        conflict = pair_hits_ghost(first, second, static_ghosts);
       }
       if (conflict) {
         adjacency[i].insert(j);
@@ -205,6 +250,167 @@ std::vector<std::vector<std::size_t>> batches_from_colors(
     return longest(first) > longest(second);
   });
   return batches;
+}
+
+// QMAP154 can expose every atom in one movement phase.  Keep enough headroom
+// for resident RETURN/PARK bookkeeping without falling back to tree adjacency
+// at 129 legs; two 256x256-bit matrices consume only 16 KiB on the stack.
+constexpr std::size_t kDenseColorCapacity = 256;
+
+// Allocation-free adjacency/DSATUR for large current layers.  Exact coloring
+// is attempted only at or below ``exact_threshold``; above that threshold the
+// registered semantics are precisely the heuristic below.  The generic path's
+// ``std::set`` representation is useful to the recursive exact colorer but is
+// unnecessarily expensive for the 96-leg ising boundary, where every fitness
+// evaluation rebuilds thousands of tiny tree nodes.
+std::vector<std::vector<std::size_t>> color_phase_dense_heuristic(
+    const MovementPhase& phase) {
+  const auto size = phase.legs.size();
+  std::array<std::bitset<kDenseColorCapacity>, kDenseColorCapacity>
+      adjacency{};
+  std::set<std::int64_t> moving_owners;
+  if (!phase.owners.empty()) {
+    moving_owners.insert(phase.owners.begin(), phase.owners.end());
+  }
+  std::vector<Ghost> static_ghosts;
+  static_ghosts.reserve(phase.ghosts.size());
+  for (const auto& ghost : phase.ghosts) {
+    if (moving_owners.count(ghost.atom) == 0U) {
+      static_ghosts.push_back(ghost);
+    }
+  }
+  // A dense layer reuses each leg/ghost track in O(n) different pair tests.
+  // Cache the one-dimensional coverage once instead of recomputing divisions
+  // in every O(n^2) pair.  The later 2x2 Cartesian-product check is exactly
+  // the column/row set semantics of ``ghost_hit_atoms``.
+  const auto static_count = static_ghosts.size();
+  std::vector<Coverage> x_coverage(size * static_count);
+  std::vector<Coverage> y_coverage(size * static_count);
+  std::vector<double> leg_x_min(size);
+  std::vector<double> leg_x_max(size);
+  std::vector<double> leg_y_min(size);
+  std::vector<double> leg_y_max(size);
+  for (std::size_t leg = 0; leg < size; ++leg) {
+    leg_x_min[leg] = std::min(
+        phase.legs[leg].source.x, phase.legs[leg].target.x);
+    leg_x_max[leg] = std::max(
+        phase.legs[leg].source.x, phase.legs[leg].target.x);
+    leg_y_min[leg] = std::min(
+        phase.legs[leg].source.y, phase.legs[leg].target.y);
+    leg_y_max[leg] = std::max(
+        phase.legs[leg].source.y, phase.legs[leg].target.y);
+    for (std::size_t ghost = 0; ghost < static_count; ++ghost) {
+      const auto offset = leg * static_count + ghost;
+      x_coverage[offset] = cover(
+          phase.legs[leg].source.x, phase.legs[leg].target.x,
+          static_ghosts[ghost].position.x);
+      y_coverage[offset] = cover(
+          phase.legs[leg].source.y, phase.legs[leg].target.y,
+          static_ghosts[ghost].position.y);
+    }
+  }
+  const auto pair_static_conflict = [&](std::size_t first,
+                                        std::size_t second) {
+    const std::array<std::size_t, 2> legs{first, second};
+    const auto x_min = std::min(leg_x_min[first], leg_x_min[second]);
+    const auto x_max = std::max(leg_x_max[first], leg_x_max[second]);
+    const auto y_min = std::min(leg_y_min[first], leg_y_min[second]);
+    const auto y_max = std::max(leg_y_max[first], leg_y_max[second]);
+    for (std::size_t ghost = 0; ghost < static_count; ++ghost) {
+      const auto& point = static_ghosts[ghost].position;
+      if (point.x < x_min - kEps || point.x > x_max + kEps ||
+          point.y < y_min - kEps || point.y > y_max + kEps) {
+        continue;
+      }
+      for (const auto column : legs) {
+        const auto& x = x_coverage[column * static_count + ghost];
+        if (!x.valid) continue;
+        for (const auto row : legs) {
+          const auto& y = y_coverage[row * static_count + ghost];
+          if (!y.valid) continue;
+          if (x.always || y.always ||
+              std::abs(x.time - y.time) < kSTolerance) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+  for (std::size_t first = 0; first < size; ++first) {
+    const auto& a = phase.legs[first];
+    const std::array<double, 4> av{
+        a.source.x, a.target.x, a.source.y, a.target.y};
+    for (std::size_t second = first + 1; second < size; ++second) {
+      const auto& b = phase.legs[second];
+      const std::array<double, 4> bv{
+          b.source.x, b.target.x, b.source.y, b.target.y};
+      if (!compatible_2d(av, bv) || pair_static_conflict(first, second)) {
+        adjacency[first].set(second);
+        adjacency[second].set(first);
+      }
+    }
+  }
+
+  if (phase.batching == "greedy") {
+    std::vector<std::size_t> priority(size);
+    std::iota(priority.begin(), priority.end(), 0U);
+    std::stable_sort(priority.begin(), priority.end(),
+                     [&](auto first, auto second) {
+                       return phase.legs[first].distance_um >
+                              phase.legs[second].distance_um;
+                     });
+    std::bitset<kDenseColorCapacity> remaining;
+    for (std::size_t index = 0; index < size; ++index) remaining.set(index);
+    std::vector<std::vector<std::size_t>> batches;
+    while (remaining.any()) {
+      std::bitset<kDenseColorCapacity> selected;
+      std::vector<std::size_t> members;
+      for (const auto index : priority) {
+        if (!remaining.test(index) ||
+            (adjacency[index] & selected).any()) {
+          continue;
+        }
+        selected.set(index);
+        members.push_back(index);
+      }
+      remaining &= ~selected;
+      batches.push_back(std::move(members));
+    }
+    return batches;
+  }
+  if (phase.batching != "phase") {
+    throw std::invalid_argument("unknown batching policy: " + phase.batching);
+  }
+
+  std::vector<int> colors(size, -1);
+  std::array<std::bitset<kDenseColorCapacity>, kDenseColorCapacity>
+      neighbor_colors{};
+  for (std::size_t step = 0; step < size; ++step) {
+    std::size_t best = size;
+    std::tuple<std::size_t, std::size_t, double> best_key{};
+    bool have_best = false;
+    for (std::size_t vertex = 0; vertex < size; ++vertex) {
+      if (colors[vertex] >= 0) continue;
+      const auto key = std::make_tuple(
+          neighbor_colors[vertex].count(), adjacency[vertex].count(),
+          phase.legs[vertex].distance_um);
+      if (!have_best || key > best_key) {
+        have_best = true;
+        best = vertex;
+        best_key = key;
+      }
+    }
+    std::size_t color = 0;
+    while (neighbor_colors[best].test(color)) ++color;
+    colors[best] = static_cast<int>(color);
+    for (std::size_t neighbor = 0; neighbor < size; ++neighbor) {
+      if (adjacency[best].test(neighbor)) {
+        neighbor_colors[neighbor].set(color);
+      }
+    }
+  }
+  return batches_from_colors(phase, colors);
 }
 
 std::vector<std::vector<std::size_t>> greedy_batches(
@@ -614,6 +820,10 @@ std::vector<std::vector<std::size_t>> color_phase(
     const MovementPhase& phase, std::size_t exact_threshold) {
   if (phase.legs.empty()) {
     return {};
+  }
+  if (phase.legs.size() <= kDenseColorCapacity &&
+      (exact_threshold == 0 || phase.legs.size() > exact_threshold)) {
+    return color_phase_dense_heuristic(phase);
   }
   const auto adjacency = phase_adjacency(phase);
   if (phase.batching == "greedy") {
@@ -1631,8 +1841,11 @@ ProductionReplay replay_production_phase_batches(
   // order even though the exact endpoint-precedence replay has a valid order.
   // When that happens, discard the heuristic prefix and replay the complete
   // strict order from the original positions.  Every strict batch still goes
-  // through the expanded physical audit; an expanded-unsafe batch is split in
-  // stable member order and every singleton is audited before it is accepted.
+  // through the expanded physical audit.  When any group is unsafe, a
+  // deterministic full-suffix search prefers each remaining intact group and
+  // then its stable singletons; failed moved-subsets are memoized.  A moved
+  // subset uniquely determines the physical source/target positions, so the
+  // memo is exact and avoids factorial retry blow-ups.
   if (!deferred.empty()) {
     const auto strict = replay_phase_batches(routed, exact_threshold);
     if (!strict.feasible) {
@@ -1647,7 +1860,7 @@ ProductionReplay replay_production_phase_batches(
       positions[routed.owners[index]] = routed.legs[index].source;
     }
     result.batches.clear();
-    const auto execute = [&](const std::vector<std::size_t>& members) {
+    const auto physically_safe = [&](const std::vector<std::size_t>& members) {
       std::vector<Leg> legs;
       std::vector<std::int64_t> owners;
       legs.reserve(members.size());
@@ -1661,27 +1874,83 @@ ProductionReplay replay_production_phase_batches(
                routed, members, positions).empty()) {
         return false;
       }
-      result.batches.push_back(executable_batch(
-          routed, members, canonical_to_original));
-      for (const auto member : members) {
-        positions[routed.owners[member]] = routed.legs[member].target;
-      }
       return true;
     };
-    for (const auto& batch : strict.batches) {
-      if (expanded_batch_conflict_members(routed, batch, positions).empty()) {
-        if (!execute(batch)) {
-          result.feasible = false;
-          return result;
-        }
-        continue;
+    // Search the complete remaining strict suffix, not merely the member
+    // order inside one expanded-unsafe batch.  Moving a singleton from a later
+    // strict group can be the only way to vacate a source that blocks an
+    // earlier group.  Each moved mask uniquely fixes all source/target
+    // positions, making failed-mask memoization exact.
+    const auto word_count = (routed.legs.size() + 63U) / 64U;
+    std::vector<std::uint64_t> moved_mask(word_count, 0U);
+    std::size_t moved_count = 0;
+    std::set<std::vector<std::uint64_t>> failed_masks;
+    std::vector<std::vector<std::size_t>> selected_batches;
+    selected_batches.reserve(strict.batches.size());
+    const auto is_moved = [&](std::size_t member) {
+      return (moved_mask[member / 64U] &
+              (std::uint64_t{1} << (member % 64U))) != 0U;
+    };
+    const auto set_moved = [&](std::size_t member, bool value) {
+      auto& word = moved_mask[member / 64U];
+      const auto bit = std::uint64_t{1} << (member % 64U);
+      if (value) {
+        word |= bit;
+      } else {
+        word &= ~bit;
       }
-      for (const auto member : batch) {
-        if (!execute({member})) {
-          result.feasible = false;
-          return result;
+    };
+    std::function<bool()> exact_suffix = [&]() {
+      if (moved_count == routed.legs.size()) return true;
+      if (failed_masks.count(moved_mask) != 0U) return false;
+      const auto attempt = [&](const std::vector<std::size_t>& pending,
+                               const auto& recurse) {
+        if (!physically_safe(pending)) return false;
+        std::vector<Point> previous;
+        previous.reserve(pending.size());
+        for (const auto member : pending) {
+          const auto owner = routed.owners[member];
+          previous.push_back(positions.at(owner));
+          positions[owner] = routed.legs[member].target;
+          set_moved(member, true);
+        }
+        moved_count += pending.size();
+        selected_batches.push_back(pending);
+        if (recurse()) return true;
+        selected_batches.pop_back();
+        moved_count -= pending.size();
+        for (std::size_t index = 0; index < pending.size(); ++index) {
+          const auto member = pending[index];
+          positions[routed.owners[member]] = previous[index];
+          set_moved(member, false);
+        }
+        return false;
+      };
+      for (const auto& strict_batch : strict.batches) {
+        std::vector<std::size_t> remaining;
+        remaining.reserve(strict_batch.size());
+        for (const auto member : strict_batch) {
+          if (!is_moved(member)) remaining.push_back(member);
+        }
+        if (remaining.empty()) continue;
+        if (remaining.size() > 1 &&
+            attempt(remaining, exact_suffix)) {
+          return true;
+        }
+        for (const auto member : remaining) {
+          if (attempt({member}, exact_suffix)) return true;
         }
       }
+      failed_masks.insert(moved_mask);
+      return false;
+    };
+    if (!exact_suffix()) {
+      result.feasible = false;
+      return result;
+    }
+    for (const auto& batch : selected_batches) {
+      result.batches.push_back(executable_batch(
+          routed, batch, canonical_to_original));
     }
   }
   return result;
