@@ -1305,6 +1305,36 @@ class RichSolver {
         Point target1;
         Point target2;
       };
+      // Future gate-site selection is evaluated many times for the same
+      // physical state.  Looking for blockers by scanning every atom for
+      // every pair/orientation made the rollout quadratic in the number of
+      // atoms.  Preserve the exact duplicate-occupancy semantics by indexing
+      // every point to all atoms currently held there.
+      std::map<std::pair<double, double>, std::vector<std::int64_t>>
+          occupants_by_point;
+      for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+        occupants_by_point[{positions[atom].x, positions[atom].y}].push_back(
+            static_cast<std::int64_t>(atom));
+      }
+      const auto blocker_distance = [&](const Point& target) {
+        double total = 0.0;
+        const auto occupied = occupants_by_point.find({target.x, target.y});
+        if (occupied == occupants_by_point.end()) return total;
+        for (const auto atom_id : occupied->second) {
+          if (participants.count(atom_id) != 0U) continue;
+          const auto atom = static_cast<std::size_t>(atom_id);
+          const auto& ordered =
+              architecture_.storage_site_ids_by_distance(positions[atom]);
+          if (ordered.empty()) {
+            return std::numeric_limits<double>::infinity();
+          }
+          total += point_distance(
+              positions[atom],
+              architecture_.site_coordinates()[
+                  static_cast<std::size_t>(ordered.front())]);
+        }
+        return total;
+      };
       std::vector<FuturePlacement> placements;
       std::set<std::size_t> used_pairs;
       for (const auto& gate : layer.gates) {
@@ -1326,24 +1356,13 @@ class RichSolver {
                         point_distance(
                             positions[static_cast<std::size_t>(gate.second)],
                             second);
-            for (std::size_t atom = 0; atom < positions.size(); ++atom) {
-              const auto atom_id = static_cast<std::int64_t>(atom);
-              if (participants.count(atom_id) != 0U) continue;
-              if (same_point(positions[atom], first) ||
-                  same_point(positions[atom], second)) {
-                // This is only a deterministic placement ordering key.  The
-                // selected blocker is physically moved and scored below.
-                auto nearest_storage = std::numeric_limits<double>::infinity();
-                for (const auto site_id : architecture_.storage_site_ids()) {
-                  nearest_storage = std::min(
-                      nearest_storage,
-                      point_distance(
-                          positions[atom],
-                          architecture_.site_coordinates()[
-                              static_cast<std::size_t>(site_id)]));
-                }
-                cost += nearest_storage;
-              }
+            // This is only a deterministic placement ordering key.  The
+            // selected blocker is physically moved and scored below.  The
+            // architecture cache returns the same nearest-storage distance as
+            // the former full scan, including deterministic distance ties.
+            cost += blocker_distance(first);
+            if (!same_point(first, second)) {
+              cost += blocker_distance(second);
             }
             const auto key = std::make_tuple(cost, pair_index, reversed);
             if (!selected.has_value() || key < *selected) selected = key;
@@ -1370,12 +1389,11 @@ class RichSolver {
 
       std::set<std::int64_t> blockers;
       for (const auto& placement : placements) {
-        for (std::size_t atom = 0; atom < positions.size(); ++atom) {
-          const auto atom_id = static_cast<std::int64_t>(atom);
-          if (participants.count(atom_id) != 0U) continue;
-          if (same_point(positions[atom], placement.target1) ||
-              same_point(positions[atom], placement.target2)) {
-            blockers.insert(atom_id);
+        for (const auto& target : {placement.target1, placement.target2}) {
+          const auto occupied = occupants_by_point.find({target.x, target.y});
+          if (occupied == occupants_by_point.end()) continue;
+          for (const auto atom_id : occupied->second) {
+            if (participants.count(atom_id) == 0U) blockers.insert(atom_id);
           }
         }
       }
