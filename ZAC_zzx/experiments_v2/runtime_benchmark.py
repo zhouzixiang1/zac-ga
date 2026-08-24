@@ -16,6 +16,8 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
+from .protocol import FORMAL_TIMING_REPETITIONS
+
 
 RUNTIME_PROTOCOL_ID = "transition-placement-v1"
 METHODS = ("M1", "M2", "M3", "M4")
@@ -152,9 +154,11 @@ class StageTiming:
                 raise ValueError("successful timing row lacks a non-negative stage time")
 
 
-def build_balanced_schedule(circuits: Sequence[str], *, repetitions: int = 5,
-                            seed: int = 0,
-                            methods: Sequence[str] = METHODS) -> dict[str, Any]:
+def build_balanced_schedule(
+        circuits: Sequence[str], *,
+        repetitions: int = FORMAL_TIMING_REPETITIONS,
+        seed: int = 0,
+        methods: Sequence[str] = METHODS) -> dict[str, Any]:
     if repetitions < 1:
         raise ValueError("repetitions must be positive")
     if (not circuits or any(not isinstance(circuit, str) or not circuit
@@ -200,7 +204,8 @@ def build_balanced_schedule(circuits: Sequence[str], *, repetitions: int = 5,
 
 def validate_balanced_schedule(schedule: Mapping[str, Any],
                                circuits: Sequence[str], *,
-                               repetitions: int = 5, seed: int = 0,
+                               repetitions: int = FORMAL_TIMING_REPETITIONS,
+                               seed: int = 0,
                                methods: Sequence[str] = METHODS
                                ) -> dict[str, Any]:
     """Verify the schedule seal and replay its deterministic construction."""
@@ -253,7 +258,7 @@ def _bootstrap_geometric_ci(values: Sequence[float], *, iterations: int,
 
 def summarize_stage_timing(rows: Sequence[StageTiming], *,
                            timeout_seconds: float = 600.0,
-                           expected_repetitions: int = 5,
+                           expected_repetitions: int = FORMAL_TIMING_REPETITIONS,
                            bootstrap_iterations: int = 10_000,
                            bootstrap_seed: int = 0) -> dict[str, Any]:
     if expected_repetitions < 1:

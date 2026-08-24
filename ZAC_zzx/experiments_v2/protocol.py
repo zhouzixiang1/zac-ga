@@ -16,6 +16,12 @@ TRACE_PROTOCOLS = {
     "M4": "ours_lk_ghost_safe_v2",
 }
 
+# The compact formal experiment protocol has one authoritative cohort shape.
+# Keep these values here so execution, aggregation, sealing, and tests cannot
+# silently drift to different seed/repetition counts.
+FORMAL_QUALITY_SEEDS = (0, 1, 2)
+FORMAL_TIMING_REPETITIONS = 3
+
 
 def ghost_policy_for_method(method: str) -> str:
     """Return the only registered ghost policy for a formal method."""
@@ -47,6 +53,8 @@ def trace_protocol_for_method(method: str) -> str:
 
 __all__ = [
     "BASELINE_METHODS",
+    "FORMAL_QUALITY_SEEDS",
+    "FORMAL_TIMING_REPETITIONS",
     "OURS_METHODS",
     "PAPER_NATIVE_GHOST_POLICY",
     "PAPER_NATIVE_PHYSICALIZATION",

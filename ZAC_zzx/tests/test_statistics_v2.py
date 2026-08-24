@@ -13,6 +13,8 @@ sys.path.insert(0, str(ROOT))
 
 from experiments_v2.contracts import RunManifest, RunStatus  # noqa: E402
 from experiments_v2.protocol import (  # noqa: E402
+    FORMAL_QUALITY_SEEDS,
+    FORMAL_TIMING_REPETITIONS,
     ghost_policy_for_method,
     physicalization_policy_for_method,
     trace_protocol_for_method,
@@ -107,7 +109,7 @@ def add_quality(factory: ManifestFactory, circuit: str, *,
                              move_batches=100, move_time_us=1000))
     paths.append(factory.add(circuit, "M2", "main", log_fidelity=-0.9,
                              move_batches=90, move_time_us=900))
-    for seed in range(5):
+    for seed in FORMAL_QUALITY_SEEDS:
         paths.append(factory.add(
             circuit, "M3", "main", seed=seed, log_fidelity=-0.8,
             move_batches=85, move_time_us=850))
@@ -130,7 +132,7 @@ class TestStrictStatistics(unittest.TestCase):
                     paths.append(factory.add(circuit, method, "coverage"))
                 paths.extend(add_quality(factory, circuit))
                 for method in ("M1", "M2", "M3", "M4"):
-                    for repetition in range(5):
+                    for repetition in range(FORMAL_TIMING_REPETITIONS):
                         paths.append(factory.add(
                             circuit, method, "timing", repetition=repetition,
                             compiler_seconds=1 + repetition / 10))
@@ -224,13 +226,14 @@ class TestStrictStatistics(unittest.TestCase):
     def test_main_rejects_any_missing_paired_seed(self):
         with tempfile.TemporaryDirectory() as directory:
             factory = ManifestFactory(Path(directory))
-            paths = add_quality(factory, "c0", omit_m4_seed=4)
+            paths = add_quality(
+                factory, "c0", omit_m4_seed=FORMAL_QUALITY_SEEDS[-1])
             report = aggregate_experiment(
                 paths, dataset="zac18", frozen_circuits=["c0"],
                 bootstrap_iterations=10)
             self.assertEqual(report["main"]["valid"], 0)
             reason = report["main"]["methods"]["M4"]["invalid_reasons"]["c0"]
-            self.assertIn("exactly five", reason)
+            self.assertIn("exactly 3", reason)
             self.assertFalse(report["claim_gate"]["passed"])
 
     def test_bstar_and_move_best_baseline_identities_are_separate(self):
@@ -256,7 +259,7 @@ class TestStrictStatistics(unittest.TestCase):
                 factory.add("c0", "M2", "main", log_fidelity=-0.9,
                             move_batches=90, move_time_us=900),
             ]
-            for seed in range(5):
+            for seed in FORMAL_QUALITY_SEEDS:
                 paths.append(factory.add(
                     "c0", "M3", "main", seed=seed, log_fidelity=-0.8,
                     move_batches=85, move_time_us=850))
@@ -280,9 +283,10 @@ class TestStrictStatistics(unittest.TestCase):
             factory = ManifestFactory(Path(directory))
             paths: list[Path] = []
             for method in ("M1", "M2", "M3", "M4"):
-                for repetition in range(5):
+                for repetition in range(FORMAL_TIMING_REPETITIONS):
                     status = (RunStatus.TIMEOUT.value
-                              if method == "M1" and repetition == 4
+                              if method == "M1" and
+                              repetition == FORMAL_TIMING_REPETITIONS - 1
                               else RunStatus.SUCCESS.value)
                     paths.append(factory.add(
                         "c0", method, "timing", repetition=repetition,
@@ -293,7 +297,7 @@ class TestStrictStatistics(unittest.TestCase):
             self.assertTrue(report["timing"]["gate"]["passed"])
             self.assertAlmostEqual(
                 report["timing"]["methods"]["M1"]["PAR2_seconds"],
-                (4 + 1200) / 5)
+                (2 + 1200) / FORMAL_TIMING_REPETITIONS)
             self.assertEqual(
                 report["timing"]["methods"]["M1"]["status_counts"]["timeout"], 1)
 
@@ -302,10 +306,11 @@ class TestStrictStatistics(unittest.TestCase):
             factory = ManifestFactory(Path(directory))
             paths: list[Path] = []
             for method in ("M1", "M2", "M3", "M4"):
-                for repetition in range(5):
+                for repetition in range(FORMAL_TIMING_REPETITIONS):
                     paths.append(factory.add(
                         "c0", method, "timing", repetition=repetition,
-                        seed=1 if method == "M4" and repetition == 4 else 0,
+                        seed=(1 if method == "M4" and repetition ==
+                              FORMAL_TIMING_REPETITIONS - 1 else 0),
                     ))
             report = aggregate_experiment(
                 paths, dataset="zac18", frozen_circuits=["c0"],
@@ -318,7 +323,7 @@ class TestStrictStatistics(unittest.TestCase):
             factory = ManifestFactory(Path(directory))
             paths = []
             for method in ("M1", "M2", "M3", "M4"):
-                for repetition in range(5):
+                for repetition in range(FORMAL_TIMING_REPETITIONS):
                     paths.append(factory.add(
                         "c0", method, "timing", repetition=repetition,
                         status=RunStatus.TIMEOUT.value))

@@ -18,6 +18,7 @@ from .contracts import (RunStatus, load_run_manifest,
                         repository_snapshot, sha256_file)
 from .final_results import aggregate_final_results, write_final_results
 from .plan import METHODS, effective_zac_setting, load_experiment_plan
+from .protocol import FORMAL_QUALITY_SEEDS, FORMAL_TIMING_REPETITIONS
 
 
 INDEX_SCHEMA = 1
@@ -427,7 +428,8 @@ def aggregate_from_indices(
         "final_resolved_config_sha256": {
             method: {
                 str(seed): sha256_file(plan.resolved_config(method, seed))
-                for seed in (range(5) if method in {"M3", "M4"} else (0,))
+                for seed in (FORMAL_QUALITY_SEEDS
+                             if method in {"M3", "M4"} else (0,))
             }
             for method in METHODS
         },
@@ -738,11 +740,13 @@ def _formal_report_identities(plan: Any, *, run_kind: str
                                   for method in ("M1", "M2"))
                 identities.extend(
                     (dataset_name, circuit, method, seed, 0)
-                    for method in ("M3", "M4") for seed in range(5))
+                    for method in ("M3", "M4")
+                    for seed in FORMAL_QUALITY_SEEDS)
             else:
                 identities.extend(
                     (dataset_name, circuit, method, 0, repetition)
-                    for method in METHODS for repetition in range(5))
+                    for method in METHODS
+                    for repetition in range(FORMAL_TIMING_REPETITIONS))
     identities.sort()
     if len(identities) != len(set(identities)):
         raise ValueError("formal report plan contains duplicate identities")
@@ -824,7 +828,9 @@ def _cohort_paths_from_report(
             raise FileNotFoundError(f"timing schedule disappeared: {schedule_path}")
         schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
         validate_balanced_schedule(
-            schedule, circuit_keys, repetitions=5, seed=plan.bootstrap_seed,
+            schedule, circuit_keys,
+            repetitions=FORMAL_TIMING_REPETITIONS,
+            seed=plan.bootstrap_seed,
             methods=METHODS)
         schedule_sha = str(schedule["sha256"])
         timed = report.get("timed")

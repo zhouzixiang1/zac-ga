@@ -6,8 +6,8 @@ checked by the artifact-tool workflow after these rows have been frozen.
 
 The accepted cohorts are intentionally narrow:
 
-* quality: ``run_kind=main``; one M1/M2 attempt and five paired M3/M4 seeds;
-* timing: ``run_kind=timing``; five repetitions for every method;
+* quality: ``run_kind=main``; one M1/M2 attempt and three paired M3/M4 seeds;
+* timing: ``run_kind=timing``; three repetitions for every method;
 * datasets: exactly the frozen ``zac18`` and ``qmap154`` suites.
 
 Every expected attempt must have a terminal manifest, including failures.  A
@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .contracts import RunManifest, RunStatus, SCHEMA_VERSION, load_run_manifest
+from .protocol import FORMAL_QUALITY_SEEDS, FORMAL_TIMING_REPETITIONS
 from zzx.algorithm_v2 import (
     FORMAL_NATIVE_ABI_VERSION,
     FORMAL_NATIVE_ALGORITHM_REVISION,
@@ -39,8 +40,11 @@ FINAL_RESULTS_CONTRACT_ID = "native-ga-v1-two-sheet-results-v1"
 METHODS = ("M1", "M2", "M3", "M4")
 DATASET_SHEETS = {"zac18": "ZAC18", "qmap154": "QMAP154"}
 SHEET_NAMES = ("ZAC18", "QMAP154")
-QUALITY_NUMERATOR = {"M1": 1, "M2": 1, "M3": 5, "M4": 5}
-TIMING_REPETITIONS = 5
+QUALITY_NUMERATOR = {
+    "M1": 1, "M2": 1,
+    "M3": len(FORMAL_QUALITY_SEEDS), "M4": len(FORMAL_QUALITY_SEEDS),
+}
+TIMING_REPETITIONS = FORMAL_TIMING_REPETITIONS
 OVERALL_LABEL = "整体汇总"
 
 
@@ -111,7 +115,7 @@ def _expected_quality_identities(
             for method in ("M1", "M2"):
                 identities.add((dataset, circuit, method, 0, 0))
             for method in ("M3", "M4"):
-                for seed in range(5):
+                for seed in FORMAL_QUALITY_SEEDS:
                     identities.add((dataset, circuit, method, seed, 0))
     return identities
 
@@ -352,7 +356,7 @@ def _overall_runtime_row(
                 _complete_geometric_mean(
                     item.get(f"{method}__{suffix}") for item in circuit_rows)
                 if method_complete else None)
-        # Per-circuit Q1/Q3/IQR describe five repetitions of one circuit.  A
+        # Per-circuit Q1/Q3/IQR describe the formal repetitions of one circuit.  A
         # geometric mean of those endpoints is not a dataset-level IQR, so the
         # overall row deliberately leaves them blank.
         for suffix in ("transition_decision_s_q1",
@@ -373,9 +377,9 @@ def _overall_runtime_row(
 
 
 def _fidelity_median(runs: Sequence[RunManifest]) -> float | None:
-    # A five-seed quality cohort is one indivisible physical-model result.
-    # Silently dropping an OOD seed would turn 4/5 values into an apparently
-    # complete median while valid/N still reads 5/5.  Preserve compile coverage
+    # A formal three-seed quality cohort is one indivisible physical-model
+    # result.  Silently dropping an OOD seed would make an incomplete cohort
+    # look complete.  Preserve compile coverage
     # but leave linear-model fidelity blank whenever any required seed is OOD.
     if (not runs or any(run.fidelity_ood or run.log_fidelity is None
                         for run in runs)):
@@ -632,12 +636,12 @@ def aggregate_final_results(
         "sheet_names": list(SHEET_NAMES),
         "charts": False,
         "notes": {
-            "quality_seed_rule": "M1/M2 one run; M3/M4 median of seeds 0-4",
+            "quality_seed_rule": "M1/M2 one run; M3/M4 median of seeds 0-2",
             "quality_valid_N": "successful verified quality attempts / required attempts",
             "fidelity_ood_rule": (
                 "if any required successful seed is outside the linear coherence "
                 "model, Fidelity is blank; valid/N remains compiler coverage"),
-            "quality_stage_time": "median of the five separate timing repetitions",
+            "quality_stage_time": "median of the three separate timing repetitions",
             "runtime_primary_metric": "transition_decision_ns",
             "speedup_definition": "M2 median / ours median; values above 1 are faster",
             "overall_row": (

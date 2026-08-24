@@ -18,12 +18,14 @@ from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequ
 
 from .contracts import RunManifest, RunStatus, load_run_manifest
 from .protocol import (ghost_policy_for_method,
+                       FORMAL_QUALITY_SEEDS, FORMAL_TIMING_REPETITIONS,
                        physicalization_policy_for_method,
                        trace_protocol_for_method)
 
 
 METHODS = ("M1", "M2", "M3", "M4")
-QUALITY_SEEDS = frozenset(range(5))
+QUALITY_SEEDS = frozenset(FORMAL_QUALITY_SEEDS)
+TIMING_REPETITIONS = frozenset(range(FORMAL_TIMING_REPETITIONS))
 TERMINAL_STATUSES = tuple(item.value for item in RunStatus)
 
 
@@ -302,11 +304,15 @@ def _quality_group_valid(method: str,
         if records[0].seed != 0 or records[0].repetition != 0:
             return False, "baseline quality record must be seed=0 repetition=0"
     else:
-        if len(records) != 5:
-            return False, f"requires exactly five quality records, found {len(records)}"
+        if len(records) != len(FORMAL_QUALITY_SEEDS):
+            return False, (
+                f"requires exactly {len(FORMAL_QUALITY_SEEDS)} quality records, "
+                f"found {len(records)}")
         seeds = [record.seed for record in records]
         if set(seeds) != QUALITY_SEEDS or len(set(seeds)) != len(seeds):
-            return False, f"requires paired seeds 0..4 exactly once, found {sorted(seeds)}"
+            return False, (
+                f"requires paired seeds {list(FORMAL_QUALITY_SEEDS)} exactly "
+                f"once, found {sorted(seeds)}")
         if any(record.repetition != 0 for record in records):
             return False, "quality repetitions must be zero"
     if any(record.status != RunStatus.SUCCESS.value for record in records):
@@ -419,7 +425,7 @@ def _main_report(runs: Sequence[RunManifest], circuits: Sequence[str], dataset: 
                     "move_time_us": values[(circuit, method, "move_time_us")],
                     # Quality-run timing is retained for audit only.  The
                     # publication runtime column is joined from the separate
-                    # five-repeat timing cohort by the exporter.
+                    # separate formal timing cohort by the exporter.
                     "quality_compiler_seconds": (
                         values[(circuit, method, "compiler_time_ns")] / 1e9),
                 })
@@ -432,7 +438,8 @@ def _main_report(runs: Sequence[RunManifest], circuits: Sequence[str], dataset: 
     status_by_method: Dict[str, object] = {}
     for method in METHODS:
         method_runs = [run for run in runs if run.method == method]
-        expected = len(circuits) * (1 if method in ("M1", "M2") else 5)
+        expected = len(circuits) * (
+            1 if method in ("M1", "M2") else len(FORMAL_QUALITY_SEEDS))
         status_by_method[method] = {
             "valid": method_valid[method], "N": len(circuits),
             "status": "complete" if method_valid[method] == len(circuits) else "incomplete",
@@ -674,17 +681,19 @@ def _timing_report(runs: Sequence[RunManifest], circuits: Sequence[str],
             for record in records:
                 by_rep[record.repetition].append(record)
             protocol_ok = (
-                set(by_rep) == QUALITY_SEEDS
-                and all(len(by_rep[index]) == 1 for index in QUALITY_SEEDS)
+                set(by_rep) == TIMING_REPETITIONS
+                and all(len(by_rep[index]) == 1
+                        for index in TIMING_REPETITIONS)
                 # Quality seeds belong to the stochastic M3/M4 comparison.
                 # Timed repeats are deliberately fixed at seed 0 so runtime
                 # variation is not confounded with a different search path.
-                and all(by_rep[index][0].seed == 0 for index in QUALITY_SEEDS)
+                and all(by_rep[index][0].seed == 0
+                        for index in TIMING_REPETITIONS)
             )
             successful: List[float] = []
             successful_full: List[float] = []
             circuit_penalties: List[float] = []
-            for repetition in range(5):
+            for repetition in range(FORMAL_TIMING_REPETITIONS):
                 candidates = sorted(by_rep.get(repetition, []), key=lambda run: run.run_id)
                 if not candidates:
                     value = 2.0 * timeout_seconds
@@ -768,8 +777,11 @@ def _timing_report(runs: Sequence[RunManifest], circuits: Sequence[str],
                                           for value in positive_medians])
                 if positive_medians else None),
             "status_counts": _status_counts(
-                method_runs, max(0, len(circuits) * 5 - len(method_runs)),
-                max(0, len(method_runs) - len(circuits) * 5)),
+                method_runs,
+                max(0, len(circuits) * FORMAL_TIMING_REPETITIONS
+                    - len(method_runs)),
+                max(0, len(method_runs)
+                    - len(circuits) * FORMAL_TIMING_REPETITIONS)),
             "circuits": circuit_rows,
         }
 
@@ -1094,7 +1106,7 @@ def aggregate_experiment(
             "requires": [
                 "explicit frozen suite", "clean consistent provenance",
                 "coverage gate", "main fidelity and move gates",
-                "five-repeat timing protocol with at least one successful runtime "
+                "three-repeat timing protocol with at least one successful runtime "
                 "per circuit and method"],
             "missing_sections": [
                 name for name, section in (("coverage", coverage),

@@ -35,6 +35,8 @@ from experiments_v2.final_results_cli import (  # noqa: E402
     seal_report_manifest_index,
 )
 from experiments_v2.protocol import (  # noqa: E402
+    FORMAL_QUALITY_SEEDS,
+    FORMAL_TIMING_REPETITIONS,
     ghost_policy_for_method,
     physicalization_policy_for_method,
     trace_protocol_for_method,
@@ -137,7 +139,7 @@ class FinalFixture:
             self.quality.append(self._manifest(
                 dataset, circuit, "M2", "main", log_fidelity=-0.9,
                 move_batches=18, move_time_us=180.0))
-            for seed in range(5):
+            for seed in FORMAL_QUALITY_SEEDS:
                 self.quality.append(self._manifest(
                     dataset, circuit, "M3", "main", seed=seed,
                     log_fidelity=-0.84 + seed * 0.02,
@@ -148,7 +150,7 @@ class FinalFixture:
                     move_batches=12 + seed, move_time_us=120.0 + seed * 10))
             base_seconds = {"M1": 1.0, "M2": 2.0, "M3": 1.0, "M4": 0.5}
             for method in ("M1", "M2", "M3", "M4"):
-                for repetition in range(5):
+                for repetition in range(FORMAL_TIMING_REPETITIONS):
                     seconds = base_seconds[method] + repetition
                     self.timing.append(self._manifest(
                         dataset, circuit, method, "timing",
@@ -215,7 +217,7 @@ class FormalPlanFixture:
         }
         self._configs = {}
         for method in ("M1", "M2", "M3", "M4"):
-            seeds = range(5) if method in {"M3", "M4"} else (0,)
+            seeds = FORMAL_QUALITY_SEEDS if method in {"M3", "M4"} else (0,)
             for seed in seeds:
                 path = root / "resolved" / method / f"seed-{seed}.json"
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -327,25 +329,25 @@ class TestFinalResults(unittest.TestCase):
 
         zac = result["rows"]["ZAC18"][0]
         self.assertEqual(zac["circuit"], "zac_toy")
-        self.assertAlmostEqual(zac["M3__fidelity"], math.exp(-0.80))
-        self.assertEqual(zac["M3__move_batches"], 16)
-        self.assertEqual(zac["M4__move_time_us"], 140.0)
+        self.assertAlmostEqual(zac["M3__fidelity"], math.exp(-0.82))
+        self.assertEqual(zac["M3__move_batches"], 15)
+        self.assertEqual(zac["M4__move_time_us"], 130.0)
         self.assertEqual(zac["M1__valid_over_N"], "1/1")
-        self.assertEqual(zac["M4__valid_over_N"], "5/5")
-        # Front-sheet stage time comes from the independent five-repeat timing run.
-        self.assertEqual(zac["M2__transition_decision_s"], 4.0)
+        self.assertEqual(zac["M4__valid_over_N"], "3/3")
+        # Front-sheet stage time comes from the independent three-repeat timing run.
+        self.assertEqual(zac["M2__transition_decision_s"], 3.0)
 
         zac_overall = result["rows"]["ZAC18"][1]
         self.assertEqual(zac_overall["circuit"], OVERALL_LABEL)
-        self.assertAlmostEqual(zac_overall["M3__fidelity"], math.exp(-0.80))
-        self.assertEqual(zac_overall["M3__valid_over_N"], "5/5")
+        self.assertAlmostEqual(zac_overall["M3__fidelity"], math.exp(-0.82))
+        self.assertEqual(zac_overall["M3__valid_over_N"], "3/3")
 
     def test_timing_failure_blanks_dataset_stage_time(self):
         fixture = FinalFixture()
         timing = copy.deepcopy(fixture.timing)
         target = next(run for run in timing
                       if run.dataset == "zac18" and run.method == "M4"
-                      and run.repetition == 4)
+                      and run.repetition == FORMAL_TIMING_REPETITIONS - 1)
         target.status = RunStatus.TIMEOUT.value
         target.verifier_ok = None
         result = fixture.aggregate(timing=timing)
@@ -380,25 +382,25 @@ class TestFinalResults(unittest.TestCase):
         quality = copy.deepcopy(fixture.quality)
         target = next(run for run in quality
                       if run.dataset == "zac18" and run.method == "M4"
-                      and run.seed == 4)
+                      and run.seed == FORMAL_QUALITY_SEEDS[-1])
         target.status = RunStatus.VERIFIER_FAIL.value
         target.verifier_ok = False
         result = fixture.aggregate(quality=quality)
         row = result["rows"]["ZAC18"][0]
-        self.assertEqual(row["M4__valid_over_N"], "4/5")
+        self.assertEqual(row["M4__valid_over_N"], "2/3")
         self.assertIsNone(row["M4__fidelity"])
         self.assertIsNone(row["M4__move_batches"])
         self.assertIsNone(row["M4__move_time_us"])
         overall = result["rows"]["ZAC18"][1]
         self.assertIsNone(overall["M4__fidelity"])
-        self.assertEqual(overall["M4__valid_over_N"], "4/5")
+        self.assertEqual(overall["M4__valid_over_N"], "2/3")
 
     def test_one_ood_seed_blanks_fidelity_without_hiding_compile_coverage(self):
         fixture = FinalFixture()
         quality = copy.deepcopy(fixture.quality)
         target = next(run for run in quality
                       if run.dataset == "zac18" and run.method == "M4"
-                      and run.seed == 4)
+                      and run.seed == FORMAL_QUALITY_SEEDS[-1])
         target.fidelity_ood = True
         target.log_fidelity = None
         target.fidelity = None
@@ -407,7 +409,7 @@ class TestFinalResults(unittest.TestCase):
         target.exponential_sensitivity_fidelity = math.exp(-2.0)
         result = fixture.aggregate(quality=quality)
         row = result["rows"]["ZAC18"][0]
-        self.assertEqual(row["M4__valid_over_N"], "5/5")
+        self.assertEqual(row["M4__valid_over_N"], "3/3")
         self.assertIsNone(row["M4__fidelity"])
         self.assertIsNotNone(row["M4__move_batches"])
         self.assertIsNone(result["rows"]["ZAC18"][1]["M4__fidelity"])
@@ -463,7 +465,7 @@ class TestFinalResults(unittest.TestCase):
         timing = copy.deepcopy(fixture.timing)
         target = next(run for run in timing
                       if run.dataset == "zac18" and run.method == "M2"
-                      and run.repetition == 3)
+                      and run.repetition == FORMAL_TIMING_REPETITIONS - 1)
         target.config_sha256 = _digest("mixed-config")
         with self.assertRaisesRegex(ValueError, "mixed config hashes"):
             fixture.aggregate(timing=timing)
@@ -711,7 +713,8 @@ class TestFinalResults(unittest.TestCase):
             }
             # Re-signing the index does not make a pre-selection config current.
             stale = next(run for run in fixture.quality
-                         if run.method == "M4" and run.seed == 3)
+                         if run.method == "M4"
+                         and run.seed == FORMAL_QUALITY_SEEDS[-1])
             stale.config_sha256 = _digest("provisional-old-config")
             quality, timing = _write_fixture_indices(root, fixture)
             with self.assertRaisesRegex(

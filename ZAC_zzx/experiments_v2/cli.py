@@ -8,6 +8,7 @@ normalisation, unified physical scoring, and exact canonical gate-ledger checks.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import gzip
 import json
 import math
@@ -47,6 +48,7 @@ from .provenance import (ENVIRONMENT_LOCKS, build_reproduction_provenance,
                          validate_frozen_environments,
                          validate_reproduction_provenance)
 from .protocol import (enforces_ghost_safety, ghost_policy_for_method,
+                       FORMAL_QUALITY_SEEDS, FORMAL_TIMING_REPETITIONS,
                        physicalization_policy_for_method,
                        trace_protocol_for_method)
 from .reproduction import reproduce_baselines
@@ -802,12 +804,17 @@ def _assert_formal_selection_gates(plan: ExperimentPlan) -> Mapping[str, Any]:
 
 def _run_matrix(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
                 jobs: Sequence[tuple[str, int, int]], *, phase: str,
-                resume: bool, dry_run: bool) -> Mapping[str, Any]:
+                resume: bool, dry_run: bool, workers: int = 1
+                ) -> Mapping[str, Any]:
     if phase == "large":
         raise RuntimeError(
             "generic experiment matrix is forbidden for Large; "
             "use the fail-closed streaming run-large path"
         )
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError("workers must be a positive integer")
+    if workers > 1 and phase != "main":
+        raise ValueError("parallel workers are registered only for run-main")
     seeds = sorted({seed for method, seed, _ in jobs if method in ("M3", "M4")})
     for seed in seeds:
         plan.validate_resolved_pair(seed)
@@ -842,6 +849,8 @@ def _run_matrix(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
     attempted: list[Mapping[str, Any]] = []
     skipped: list[Mapping[str, Any]] = []
     commands: list[Mapping[str, Any]] = []
+    pending: list[tuple[AttemptSpec, CanonicalCircuitManifest,
+                        tuple[Any, ...]]] = []
     registry: dict[tuple[Any, ...], tuple[RunManifest, Path]] = {}
     expected_keys: list[tuple[Any, ...]] = []
     for dataset in datasets:
@@ -873,23 +882,45 @@ def _run_matrix(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
                 if dry_run:
                     commands.append(command_row)
                     continue
-                gate = UnifiedEvaluationGate(plan, canonical, method)
-                manifest = run_attempt(spec, verifier=gate.verifier, scorer=gate.scorer)
-                manifest_path = _manifest_path(manifest)
-                if _resume_key(manifest) != spec_key:
-                    raise ValueError(
-                        f"completed attempt identity differs from plan: {manifest_path}")
-                registry[spec_key] = (manifest, manifest_path)
-                attempted.append({
-                    "dataset": manifest.dataset,
-                    "circuit": manifest.circuit,
-                    "method": manifest.method,
-                    "seed": manifest.seed,
-                    "repetition": manifest.repetition,
-                    "status": manifest.status,
-                    "manifest": str(manifest_path),
-                    "manifest_sha256": sha256_file(manifest_path),
-                })
+                pending.append((spec, canonical, spec_key))
+
+    def execute(item: tuple[AttemptSpec, CanonicalCircuitManifest,
+                            tuple[Any, ...]]
+                ) -> tuple[tuple[Any, ...], RunManifest, Path]:
+        spec, canonical, spec_key = item
+        gate = UnifiedEvaluationGate(plan, canonical, spec.method)
+        manifest = run_attempt(
+            spec, verifier=gate.verifier, scorer=gate.scorer)
+        manifest_path = _manifest_path(manifest)
+        if _resume_key(manifest) != spec_key:
+            raise ValueError(
+                f"completed attempt identity differs from plan: {manifest_path}")
+        return spec_key, manifest, manifest_path
+
+    if workers == 1:
+        completed = [execute(item) for item in pending]
+    else:
+        # Threads only orchestrate run_attempt.  Every compiler remains an
+        # isolated child process group with its own UUID temporary directory
+        # and atomic final rename.  executor.map preserves plan order even
+        # when attempts finish out of order, keeping reports deterministic.
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="formal-run-main") as executor:
+            completed = list(executor.map(execute, pending))
+
+    for spec_key, manifest, manifest_path in completed:
+        registry[spec_key] = (manifest, manifest_path)
+        attempted.append({
+            "dataset": manifest.dataset,
+            "circuit": manifest.circuit,
+            "method": manifest.method,
+            "seed": manifest.seed,
+            "repetition": manifest.repetition,
+            "status": manifest.status,
+            "manifest": str(manifest_path),
+            "manifest_sha256": sha256_file(manifest_path),
+        })
     statuses = Counter(row["status"] for row in attempted)
     cohort = ([] if dry_run else
               _sorted_complete_cohort(registry, expected_keys))
@@ -898,6 +929,8 @@ def _run_matrix(plan: ExperimentPlan, datasets: Sequence[DatasetSpec],
         "experiment_schema": 2,
         "phase": phase,
         "dry_run": dry_run,
+        "workers": workers,
+        "parallel_execution": workers > 1 and len(pending) > 1,
         "planned_jobs": len(expected_keys),
         "attempted": attempted,
         "status_counts": dict(sorted(statuses.items())),
@@ -1114,15 +1147,21 @@ def command_run_coverage(plan: ExperimentPlan, dataset_names: Sequence[str] | No
 
 def command_run_main(plan: ExperimentPlan, dataset_names: Sequence[str] | None,
                      seeds: Sequence[int], *, dry_run: bool,
-                     resume: bool = False) -> Mapping[str, Any]:
-    if list(sorted(set(seeds))) != [0, 1, 2, 3, 4]:
-        raise ValueError("formal run-main requires paired seeds exactly 0,1,2,3,4")
+                     resume: bool = False, workers: int = 1
+                     ) -> Mapping[str, Any]:
+    if tuple(sorted(seeds)) != FORMAL_QUALITY_SEEDS:
+        rendered = ",".join(str(seed) for seed in FORMAL_QUALITY_SEEDS)
+        raise ValueError(
+            f"formal run-main requires paired seeds exactly {rendered}")
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError("workers must be a positive integer")
     selection = None if dry_run else _assert_formal_selection_gates(plan)
     datasets = plan.select_datasets(dataset_names, kind="main")
     jobs = [("M1", 0, 0), ("M2", 0, 0)]
     jobs.extend((method, seed, 0) for seed in seeds for method in ("M3", "M4"))
     report = _run_matrix(
-        plan, datasets, jobs, phase="main", resume=resume, dry_run=dry_run)
+        plan, datasets, jobs, phase="main", resume=resume, dry_run=dry_run,
+        workers=workers)
     report = {**report, "formal_selection": selection}
     if not dry_run:
         _atomic_json(_report_path(plan, "run-main"), report)
@@ -1192,12 +1231,14 @@ def _load_or_create_timing_schedule(
     """Load the one immutable schedule, or exclusively create it once."""
     path = _timing_schedule_path(plan)
     expected = build_balanced_schedule(
-        circuit_keys, repetitions=5, seed=plan.bootstrap_seed,
+        circuit_keys, repetitions=FORMAL_TIMING_REPETITIONS,
+        seed=plan.bootstrap_seed,
         methods=METHODS)
     if path.is_file():
         observed = json.loads(path.read_text(encoding="utf-8"))
         validate_balanced_schedule(
-            observed, circuit_keys, repetitions=5, seed=plan.bootstrap_seed,
+            observed, circuit_keys, repetitions=FORMAL_TIMING_REPETITIONS,
+            seed=plan.bootstrap_seed,
             methods=METHODS)
         return observed, path, False
     if path.exists():
@@ -1214,7 +1255,8 @@ def _load_or_create_timing_schedule(
     except FileExistsError:
         observed = json.loads(path.read_text(encoding="utf-8"))
         validate_balanced_schedule(
-            observed, circuit_keys, repetitions=5, seed=plan.bootstrap_seed,
+            observed, circuit_keys, repetitions=FORMAL_TIMING_REPETITIONS,
+            seed=plan.bootstrap_seed,
             methods=METHODS)
         return observed, path, False
     return expected, path, True
@@ -1827,6 +1869,7 @@ def build_parser() -> argparse.ArgumentParser:
     main_run.add_argument("--plan", required=True, type=Path)
     main_run.add_argument("--datasets", nargs="+")
     main_run.add_argument("--seeds", nargs="+", required=True)
+    main_run.add_argument("--workers", type=int, default=1)
     main_run.add_argument("--resume", action="store_true")
     main_run.add_argument("--dry-run", action="store_true")
 
@@ -1913,7 +1956,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "run-main":
             result = command_run_main(
                 plan, args.datasets, _parse_ints(args.seeds),
-                resume=args.resume, dry_run=args.dry_run)
+                resume=args.resume, dry_run=args.dry_run,
+                workers=args.workers)
         elif args.command == "run-timing":
             result = command_run_timing(
                 plan, args.datasets, resume=args.resume, dry_run=args.dry_run)

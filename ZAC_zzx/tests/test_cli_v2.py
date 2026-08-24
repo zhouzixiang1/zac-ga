@@ -11,6 +11,8 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -33,6 +35,8 @@ from experiments_v2.contracts import (  # noqa: E402
     CanonicalCircuitManifest, RunManifest, load_run_manifest, sha256_file)
 from experiments_v2.plan import effective_zac_setting, load_experiment_plan  # noqa: E402
 from experiments_v2.protocol import (  # noqa: E402
+    FORMAL_QUALITY_SEEDS,
+    FORMAL_TIMING_REPETITIONS,
     ghost_policy_for_method,
     physicalization_policy_for_method,
     trace_protocol_for_method,
@@ -230,7 +234,7 @@ class TestCliPlan(unittest.TestCase):
             fixture = PlanFixture(Path(directory))
             plan = load_experiment_plan(fixture.plan_path)
             report = command_run_main(
-                plan, ["zac"], [0, 1, 2, 3, 4],
+                plan, ["zac"], FORMAL_QUALITY_SEEDS,
                 dry_run=False, resume=False)
         selection_gate.assert_called_once_with(plan)
         self.assertEqual(report["formal_selection"],
@@ -396,11 +400,13 @@ class TestCliPlan(unittest.TestCase):
             with contextlib.redirect_stdout(stdout):
                 code = main([
                     "run-main", "--plan", str(fixture.plan_path),
-                    "--datasets", "zac", "--seeds", "0,1,2,3,4", "--dry-run",
+                    "--datasets", "zac", "--seeds", "0,1,2", "--dry-run",
                 ])
             self.assertEqual(code, 0)
             report = json.loads(stdout.getvalue())
-            self.assertEqual(len(report["commands"]), 12)
+            self.assertEqual(len(report["commands"]), 8)
+            self.assertEqual(report["workers"], 1)
+            self.assertFalse(report["parallel_execution"])
             inputs = {
                 row["command"][row["command"].index("--input") + 1]
                 for row in report["commands"]
@@ -441,13 +447,13 @@ class TestCliPlan(unittest.TestCase):
             with contextlib.redirect_stdout(stdout):
                 code = main([
                     "run-main", "--plan", str(fixture.plan_path),
-                    "--datasets", "zac", "--seeds", "0,1,2,3,4",
+                    "--datasets", "zac", "--seeds", "0,1,2",
                     "--resume", "--dry-run",
                 ])
             self.assertEqual(code, 0)
             report = json.loads(stdout.getvalue())
             self.assertEqual(len(report["skipped_existing"]), 1)
-            self.assertEqual(len(report["commands"]), 11)
+            self.assertEqual(len(report["commands"]), 7)
 
     @mock.patch("experiments_v2.cli.run_attempt")
     @mock.patch("experiments_v2.cli.repository_snapshot")
@@ -517,13 +523,14 @@ class TestCliPlan(unittest.TestCase):
             run_attempt_mock.side_effect = complete
             jobs = [("M1", 0, 0), ("M2", 0, 0)]
             jobs.extend((method, seed, 0)
-                        for seed in range(5) for method in ("M3", "M4"))
+                        for seed in FORMAL_QUALITY_SEEDS
+                        for method in ("M3", "M4"))
             report = _run_matrix(
                 plan, [dataset], jobs, phase="main", resume=True,
                 dry_run=False)
-            self.assertEqual(report["planned_jobs"], 12)
-            self.assertEqual(len(report["cohort_manifests"]), 12)
-            self.assertEqual(len(report["attempted"]), 11)
+            self.assertEqual(report["planned_jobs"], 8)
+            self.assertEqual(len(report["cohort_manifests"]), 8)
+            self.assertEqual(len(report["attempted"]), 7)
             self.assertEqual(len(report["skipped_existing"]), 1)
             self.assertEqual(
                 report["skipped_existing"][0]["manifest"],
@@ -532,7 +539,99 @@ class TestCliPlan(unittest.TestCase):
                 [row["identity"] for row in report["cohort_manifests"]],
                 sorted(row["identity"] for row in report["cohort_manifests"]))
 
-    def test_timing_dry_run_has_excluded_warmups_and_five_repetitions(self):
+    @mock.patch("experiments_v2.cli.run_attempt")
+    @mock.patch("experiments_v2.cli._assert_reproduction_gate")
+    def test_run_main_workers_overlap_isolated_attempts_and_keep_plan_order(
+            self, reproduction_gate, run_attempt_mock):
+        del reproduction_gate
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = PlanFixture(Path(directory))
+            plan = load_experiment_plan(fixture.plan_path)
+            dataset = plan.datasets["zac"]
+            lock = threading.Lock()
+            active = 0
+            peak = 0
+
+            def complete(spec, **_kwargs):
+                nonlocal active, peak
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                try:
+                    time.sleep(0.03)
+                    artifact = (
+                        spec.output_root /
+                        f"parallel-{spec.method}-s{spec.seed}-r{spec.repetition}")
+                    artifact.mkdir(parents=True)
+                    manifest = RunManifest(
+                        run_id=artifact.name, dataset=spec.dataset,
+                        circuit=spec.circuit, method=spec.method,
+                        seed=spec.seed, repetition=spec.repetition,
+                        run_kind=spec.run_kind,
+                        experiment_id=spec.experiment_id,
+                        status="compiler_error", git_commit="a" * 40,
+                        git_dirty=False,
+                        input_sha256=sha256_file(spec.input_path),
+                        config_sha256=sha256_file(spec.config_path),
+                        architecture_sha256=sha256_file(spec.architecture_path),
+                        model_sha256=sha256_file(spec.model_path),
+                        trace_protocol=trace_protocol_for_method(spec.method),
+                        ghost_policy=ghost_policy_for_method(spec.method),
+                        physicalization_policy=physicalization_policy_for_method(
+                            spec.method),
+                        artifact_dir=str(artifact),
+                    )
+                    manifest.write(artifact / "manifest.json")
+                    return manifest
+                finally:
+                    with lock:
+                        active -= 1
+
+            run_attempt_mock.side_effect = complete
+            jobs = [("M1", 0, 0), ("M2", 0, 0)]
+            jobs.extend(
+                (method, seed, 0)
+                for seed in FORMAL_QUALITY_SEEDS
+                for method in ("M3", "M4"))
+            report = _run_matrix(
+                plan, [dataset], jobs, phase="main", resume=False,
+                dry_run=False, workers=3)
+
+            self.assertGreaterEqual(peak, 2)
+            self.assertEqual(report["workers"], 3)
+            self.assertTrue(report["parallel_execution"])
+            expected_order = [
+                (method, seed, repetition)
+                for method, seed, repetition in jobs
+            ]
+            self.assertEqual(
+                [(row["method"], row["seed"], row["repetition"])
+                 for row in report["attempted"]],
+                expected_order)
+            paths = [row["manifest"] for row in report["attempted"]]
+            self.assertEqual(len(paths), len(set(paths)))
+            self.assertEqual(
+                [row["identity"] for row in report["cohort_manifests"]],
+                sorted(row["identity"] for row in report["cohort_manifests"]))
+
+    def test_run_main_rejects_non_positive_workers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = PlanFixture(Path(directory))
+            plan = load_experiment_plan(fixture.plan_path)
+            with self.assertRaisesRegex(ValueError, "workers must be a positive"):
+                command_run_main(
+                    plan, ["zac"], FORMAL_QUALITY_SEEDS,
+                    dry_run=True, workers=0)
+
+    def test_run_main_rejects_duplicate_formal_seed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = PlanFixture(Path(directory))
+            plan = load_experiment_plan(fixture.plan_path)
+            with self.assertRaisesRegex(ValueError, "paired seeds exactly 0,1,2"):
+                command_run_main(
+                    plan, ["zac"], [0, 1, 2, 2], dry_run=True)
+
+    def test_timing_dry_run_has_excluded_warmups_and_three_repetitions(self):
         with tempfile.TemporaryDirectory() as directory:
             fixture = PlanFixture(Path(directory))
             stdout = io.StringIO()
@@ -546,12 +645,12 @@ class TestCliPlan(unittest.TestCase):
             self.assertTrue(report["warmups"]["excluded_from_statistics"])
             self.assertEqual(len(report["warmups"]["attempts"]), 4)
             commands = report["timed"]["commands"]
-            self.assertEqual(len(commands), 20)
+            self.assertEqual(len(commands), 12)
             for method in ("M1", "M2", "M3", "M4"):
                 self.assertEqual(
                     sorted(row["repetition"] for row in commands
                            if row["method"] == method),
-                    list(range(5)),
+                    list(range(FORMAL_TIMING_REPETITIONS)),
                 )
 
     def test_timing_resume_preserves_remaining_frozen_schedule_order(self):
@@ -633,8 +732,9 @@ class TestCliPlan(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             fixture = PlanFixture(Path(directory))
-            schedule = build_balanced_schedule(["zac/toy"], repetitions=5)
-            schedule["jobs"][0]["repetition"] = 4
+            schedule = build_balanced_schedule(
+                ["zac/toy"], repetitions=FORMAL_TIMING_REPETITIONS)
+            schedule["jobs"][0]["repetition"] = FORMAL_TIMING_REPETITIONS
             schedule_path = fixture.output / "timing" / "randomized_schedule.json"
             schedule_path.parent.mkdir(parents=True)
             schedule_path.write_text(json.dumps(schedule), encoding="utf-8")

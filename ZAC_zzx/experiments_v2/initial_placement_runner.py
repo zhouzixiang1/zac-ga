@@ -195,8 +195,16 @@ def _load_schedule(
     plan_path = Path(str(schedule.get("plan_path", "")))
     suite_path = Path(str(schedule.get("suite_manifest_path", "")))
     split_path = root / "split_manifest.json"
-    if (not plan_path.is_file()
-            or schedule.get("plan_sha256") != sha256_file(plan_path)):
+    # Preparing or resuming this gate must bind the live plan exactly.  A
+    # completed selection, however, is durable evidence about the initializer:
+    # later changes to formal seed counts, result paths, or the resident-search
+    # wheel do not alter any of its 180 SA-vs-GA receipts.  The consumer still
+    # validates every receipt below and, when requested, compares the relevant
+    # M3/M4 initial-placement config core.  Do not invalidate that evidence on
+    # unrelated whole-plan drift.
+    if (require_current_repository and
+            (not plan_path.is_file()
+             or schedule.get("plan_sha256") != sha256_file(plan_path))):
         raise ValueError("initial-placement frozen plan drift")
     if (not suite_path.is_file()
             or schedule.get("suite_manifest_sha256") != sha256_file(suite_path)):
