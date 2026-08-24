@@ -342,6 +342,45 @@ class TestFinalResults(unittest.TestCase):
         self.assertAlmostEqual(zac_overall["M3__fidelity"], math.exp(-0.82))
         self.assertEqual(zac_overall["M3__valid_over_N"], "3/3")
 
+    def test_two_sheet_column_contract_is_exact_and_method_grouped(self):
+        fixture = FinalFixture()
+        contract = fixture.aggregate()["workbook_contract"]
+        self.assertEqual(contract["exact_sheet_count"], 2)
+        self.assertEqual(contract["sheet_names"], ["ZAC18", "QMAP154"])
+        self.assertNotIn("Runtime", contract["sheet_names"])
+        expected_labels = [
+            "Fidelity", "Move批次", "Move时间 (us)",
+            "逐层放置时间 (s)", "valid/N",
+        ]
+        for sheet in contract["sheets"]:
+            columns = sheet["columns"]
+            self.assertEqual(len(columns), 1 + 4 * len(expected_labels))
+            self.assertEqual(columns[0]["key"], "circuit")
+            self.assertEqual(columns[0]["label"], "电路")
+            self.assertIsNone(columns[0]["group"])
+            for method_index, method in enumerate(("M1", "M2", "M3", "M4")):
+                start = 1 + method_index * len(expected_labels)
+                group = columns[start:start + len(expected_labels)]
+                self.assertEqual([column["group"] for column in group],
+                                 [method] * len(expected_labels))
+                self.assertEqual([column["label"] for column in group],
+                                 expected_labels)
+                self.assertEqual(
+                    [column["key"] for column in group],
+                    [
+                        f"{method}__fidelity",
+                        f"{method}__move_batches",
+                        f"{method}__move_time_us",
+                        f"{method}__transition_decision_s",
+                        f"{method}__valid_over_N",
+                    ],
+                )
+            forbidden = ("speedup", "full_compile", "_q1", "_q3", "_iqr")
+            self.assertFalse(any(
+                any(token in column["key"] for token in forbidden)
+                for column in columns
+            ))
+
     def test_timing_failure_blanks_dataset_stage_time(self):
         fixture = FinalFixture()
         timing = copy.deepcopy(fixture.timing)
@@ -422,6 +461,9 @@ class TestFinalResults(unittest.TestCase):
             self.assertEqual(
                 {path.name for path in paths.values()},
                 {"zac18.csv", "qmap154.csv", "workbook_contract.json"})
+            self.assertEqual(
+                set(paths), {"ZAC18", "QMAP154", "workbook_contract"})
+            self.assertFalse((Path(directory) / "runtime_vs_iccad.csv").exists())
             self.assertFalse(any(Path(directory).glob("*.xlsx")))
             with open(paths["ZAC18"], encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
@@ -754,6 +796,7 @@ class TestFinalResults(unittest.TestCase):
             provenance_path = root / "aggregation_provenance.json"
             provenance_path.write_text(json.dumps(provenance), encoding="utf-8")
             contract = {
+                "experiment_schema": 2,
                 "contract_id": "native-ga-v1-two-sheet-results-v1",
                 "sheet_names": ["ZAC18", "QMAP154"],
                 "exact_sheet_count": 2,
@@ -824,6 +867,49 @@ class TestFinalResults(unittest.TestCase):
                     contract_path=contract_path, output_path=output,
                     qa_directory=qa, node_executable=node,
                     node_modules=modules)
+
+    @mock.patch("experiments_v2.final_results_cli.subprocess.run")
+    def test_render_rejects_runtime_sheet_or_wrong_schema_before_node(self, run_mock):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {
+                "experiment_schema": 2,
+                "contract_id": "native-ga-v1-two-sheet-results-v1",
+                "sheet_names": ["ZAC18", "QMAP154"],
+                "exact_sheet_count": 2,
+                "charts": False,
+                "sheets": [
+                    {"name": "ZAC18", "source_csv": "zac18.csv"},
+                    {"name": "QMAP154", "source_csv": "qmap154.csv"},
+                ],
+            }
+            contract_path = root / "workbook_contract.json"
+            output = root / "four_methods_results.xlsx"
+            qa = root / "qa"
+            node = root / "node"
+            modules = root / "modules"
+
+            wrong_schema = copy.deepcopy(base)
+            wrong_schema["experiment_schema"] = 1
+            contract_path.write_text(json.dumps(wrong_schema), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "non-final workbook contract"):
+                render_final_workbook(
+                    contract_path=contract_path, output_path=output,
+                    qa_directory=qa, node_executable=node,
+                    node_modules=modules)
+
+            three_sheet = copy.deepcopy(base)
+            three_sheet["sheet_names"].append("Runtime")
+            three_sheet["exact_sheet_count"] = 3
+            three_sheet["sheets"].append(
+                {"name": "Runtime", "source_csv": "runtime.csv"})
+            contract_path.write_text(json.dumps(three_sheet), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "non-final workbook contract"):
+                render_final_workbook(
+                    contract_path=contract_path, output_path=output,
+                    qa_directory=qa, node_executable=node,
+                    node_modules=modules)
+            run_mock.assert_not_called()
 
 
 if __name__ == "__main__":

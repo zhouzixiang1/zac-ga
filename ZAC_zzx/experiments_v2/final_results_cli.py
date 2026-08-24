@@ -16,7 +16,12 @@ from zipfile import ZipFile
 
 from .contracts import (RunStatus, load_run_manifest,
                         repository_snapshot, sha256_file)
-from .final_results import aggregate_final_results, write_final_results
+from .final_results import (
+    FINAL_RESULTS_CONTRACT_ID,
+    SHEET_NAMES,
+    aggregate_final_results,
+    write_final_results,
+)
 from .plan import METHODS, effective_zac_setting, load_experiment_plan
 from .protocol import FORMAL_QUALITY_SEEDS, FORMAL_TIMING_REPETITIONS
 
@@ -543,7 +548,7 @@ def _render_input_binding(
         "quality_index": provenance["quality_index"],
         "timing_index": provenance["timing_index"],
         "xlsx_path": str(output_path),
-        "sheet_names": ["ZAC18", "QMAP154"],
+        "sheet_names": list(SHEET_NAMES),
         "charts": False,
     }
 
@@ -571,7 +576,7 @@ def _reuse_immutable_render(
     xlsx = Path(str(manifest.get("xlsx_path", ""))).resolve()
     if (not xlsx.is_file()
             or manifest.get("xlsx_sha256") != sha256_file(xlsx)
-            or _xlsx_sheet_names(xlsx) != ["ZAC18", "QMAP154"]):
+            or _xlsx_sheet_names(xlsx) != list(SHEET_NAMES)):
         raise FileExistsError("existing immutable XLSX changed or disappeared")
     qa_hashes = manifest.get("qa_files_sha256")
     if not isinstance(qa_hashes, Mapping) or not qa_hashes:
@@ -605,7 +610,9 @@ def render_final_workbook(
     if not contract_path.is_file() or not FINAL_RENDERER.is_file():
         raise FileNotFoundError("final workbook contract or renderer is missing")
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
-    if (contract.get("sheet_names") != ["ZAC18", "QMAP154"]
+    if (contract.get("experiment_schema") != 2
+            or contract.get("contract_id") != FINAL_RESULTS_CONTRACT_ID
+            or contract.get("sheet_names") != list(SHEET_NAMES)
             or contract.get("exact_sheet_count") != 2
             or contract.get("charts") is not False):
         raise ValueError("refusing a non-final workbook contract")
@@ -613,7 +620,7 @@ def render_final_workbook(
     if (not isinstance(sheets, list)
             or [sheet.get("name") for sheet in sheets
                 if isinstance(sheet, Mapping)] !=
-            ["ZAC18", "QMAP154"]
+            list(SHEET_NAMES)
             or len(sheets) != 2):
         raise ValueError("final workbook sheet descriptors drifted")
     for sheet in sheets:
@@ -668,7 +675,7 @@ def render_final_workbook(
         if not temporary_xlsx.is_file():
             raise RuntimeError("artifact-tool did not create the final XLSX")
         names = _xlsx_sheet_names(temporary_xlsx)
-        if names != ["ZAC18", "QMAP154"]:
+        if names != list(SHEET_NAMES):
             raise RuntimeError(f"rendered workbook sheet drift: {names}")
         with ZipFile(temporary_xlsx) as archive:
             charts = [name for name in archive.namelist()
