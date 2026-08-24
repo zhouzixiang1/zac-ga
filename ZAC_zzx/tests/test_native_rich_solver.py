@@ -684,6 +684,136 @@ class TestNativeRichSolver(unittest.TestCase):
         )
         self.assertGreater(result.forecast_terms_applied, 0)
 
+    def test_qft_style_reentry_interlock_uses_finite_physical_recovery(self):
+        """A cyclic future front is parked/reentered, never scored as inf."""
+        arch = ArchitectureSnapshot.from_coordinates(
+            4,
+            (
+                (0, 0), (2, 0), (0, 4), (2, 4),
+                (-6, -6), (6, -6), (-6, 10), (6, 10),
+                (0, -8), (2, -8),
+            ),
+            (4, 5, 6, 7, 8, 9),
+        )
+        arch = replace(
+            arch, entangling_site_pairs=((0, 1), (2, 3)))
+        # The deterministic future placement maps each pair to the other's
+        # occupied endpoints.  A strict whole-phase replay has a target/source
+        # precedence cycle, while parking at the real storage sites breaks it.
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(
+                Point(4, 3), Point(0, 2), Point(3, 4), Point(0, 4)),
+            participants=(),
+            gate_domains=(),
+            static_ghosts=(),
+            eligible=(),
+            min_returns=0,
+            eviction_order_indices=(),
+            forced_return_mask=(),
+            return_domains=(),
+            matched_gate_genes=(),
+            future_layers=((1, ((0, 1), (2, 3))),),
+            boundary_id="qft-style-reentry-interlock",
+            selected_horizon=1,
+            prior_idle_time_us=(0.0, 0.0, 0.0, 0.0),
+        )
+        config = RichSearchConfig(
+            operator_profile="exact",
+            max_horizon=1,
+            alpha_lookahead=1.0,
+            decay_rho=1.0,
+            decay_epsilon=0.0,
+            forecast_gate_candidate_budget=4,
+        )
+        state = random.Random(0).getstate()
+        reference = solve_rich_exact_reference(problem, config, state)
+        result = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, state)
+        for value in (
+                reference.forecast_nll,
+                reference.forecast_breakdown["reentry"],
+                result.forecast_nll,
+                result.forecast_breakdown["reentry"]):
+            self.assertTrue(math.isfinite(value))
+            self.assertGreater(value, 0.0)
+        self.assertEqual(reference.winner, result.winner)
+        self.assertAlmostEqual(
+            reference.forecast_nll, result.forecast_nll, delta=1e-12)
+        for category in ("residency", "reentry", "terminal", "routing"):
+            self.assertAlmostEqual(
+                reference.forecast_breakdown[category],
+                result.forecast_breakdown[category],
+                delta=1e-12,
+            )
+
+    def test_unrecoverable_forecast_rejects_only_that_candidate(self):
+        """One failed rollout cannot abort search while a peer is executable."""
+        arch = ArchitectureSnapshot.from_coordinates(
+            4, ((0, 0), (2, 0), (0, 4), (2, 4)), ())
+        arch = replace(
+            arch, entangling_site_pairs=((0, 1), (2, 3)))
+        unsafe = (Point(4, 3), Point(0, 2))
+        safe = (Point(-3, 2), Point(5, -3))
+        fixed = (Point(3, 4), Point(0, 4))
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=safe + fixed,
+            participants=(0, 1),
+            gate_domains=((
+                RichGateOption(10, 0, 1, *unsafe),
+                RichGateOption(11, 0, 1, *safe),
+            ),),
+            static_ghosts=(),
+            eligible=(),
+            min_returns=0,
+            eviction_order_indices=(),
+            forced_return_mask=(),
+            return_domains=(),
+            matched_gate_genes=(0,),
+            # Depth 2 is below the cutoff, but keeps every depth-1 atom live
+            # so this fixture isolates reentry rather than terminal RETURN.
+            future_layers=(
+                (1, ((0, 1), (2, 3))),
+                (2, ((0, 1), (2, 3))),
+            ),
+            boundary_id="one-unrecoverable-forecast-candidate",
+            selected_horizon=2,
+            prior_idle_time_us=(0.0, 0.0, 0.0, 0.0),
+        )
+        config = RichSearchConfig(
+            operator_profile="exact",
+            max_horizon=2,
+            alpha_lookahead=1.0,
+            decay_rho=0.1,
+            decay_epsilon=0.5,
+            forecast_gate_candidate_budget=4,
+            direct_enumeration_limit=512,
+            max_unique_evaluations=512,
+        )
+        state = random.Random(0).getstate()
+        reference = solve_rich_exact_reference(problem, config, state)
+        result = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, state)
+        self.assertEqual((1,), reference.winner.chromosome)
+        self.assertEqual(reference.winner, result.winner)
+        self.assertTrue(math.isfinite(result.forecast_nll))
+        self.assertAlmostEqual(
+            reference.forecast_nll, result.forecast_nll, delta=1e-12)
+
+        bad_only = replace(
+            problem,
+            gate_domains=((problem.gate_domains[0][0],),),
+            matched_gate_genes=(0,),
+            boundary_id="all-forecast-candidates-unrecoverable",
+        )
+        with self.assertRaisesRegex(RuntimeError, "no feasible candidate"):
+            solve_rich_exact_reference(bad_only, config, state)
+        with self.assertRaisesRegex(
+                NativeBackendError, "no feasible candidate"):
+            NativeResidentBackend(arch).solve_rich_boundary(
+                bad_only, config, state)
+
     def test_native_future_rollout_reuses_identical_post_boundary_state(self):
         arch = ArchitectureSnapshot.from_coordinates(
             4,

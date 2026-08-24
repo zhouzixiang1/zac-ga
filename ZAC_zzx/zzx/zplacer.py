@@ -132,6 +132,163 @@ class _IndexedRichGateDomain:
     canonical_order: tuple[_IndexedRichGateRow, ...]
 
 
+def _formal_rich_blocked_seats(zone_seat, participants,
+                               movable_before_out) -> set:
+    """Return only seats whose owners cannot vacate either physical phase.
+
+    Every target-layer participant is part of the native out phase, including
+    participants belonging to another gate column.  Their source seats are
+    therefore legal rows in the *complete* joint gate domain; the native
+    geometry replay, rather than a per-column Python filter, decides whether a
+    particular simultaneous hand-off is executable.  A nonparticipant that can
+    RETURN/RESEAT in the back phase is dynamic for the same reason.
+    """
+    participants = set(participants)
+    movable_before_out = set(movable_before_out)
+    return {
+        seat for q, seat in zone_seat.items()
+        if q not in participants and q not in movable_before_out
+    }
+
+
+def _native_rich_phase_owner_orders(problem, result) -> tuple[tuple, tuple]:
+    """Rebuild the two raw-leg owner orders used by C++ ``build_geometry``.
+
+    ``FitnessResult.phase_batches`` contains indices into C++'s geometry
+    vectors, not into Python's decision dictionary or repaired placements.
+    Phase 0 is ordered as RETURN assignments followed by RESEAT assignments;
+    phase 1 is ordered by gate-domain column and then q1/q2.  Zero-length legs
+    are omitted exactly as in the native solver.
+    """
+    coordinates = tuple(problem.architecture.site_coordinates)
+
+    def site_point(site_id):
+        site_id = int(site_id)
+        if site_id < 0 or site_id >= len(coordinates):
+            raise RuntimeError(
+                f"native rich geometry references invalid site id {site_id}")
+        return coordinates[site_id]
+
+    if problem.current_site_ids:
+        if len(problem.current_site_ids) != problem.architecture.n_atoms:
+            raise RuntimeError(
+                "native rich current_site_ids do not cover every atom")
+        positions = [site_point(site_id)
+                     for site_id in problem.current_site_ids]
+    elif problem.current_points:
+        if len(problem.current_points) != problem.architecture.n_atoms:
+            raise RuntimeError(
+                "native rich current_points do not cover every atom")
+        positions = list(problem.current_points)
+    else:
+        raise RuntimeError("native rich geometry has no current positions")
+
+    def moved(source, target):
+        return math.hypot(source.x - target.x,
+                          source.y - target.y) > 1e-9
+
+    back_owners = []
+    for q, site_id in (*result.return_assignments,
+                       *result.reseat_assignments):
+        q = int(q)
+        if q < 0 or q >= len(positions):
+            raise RuntimeError(
+                f"native rich geometry references invalid atom {q}")
+        target = site_point(site_id)
+        if moved(positions[q], target):
+            back_owners.append(q)
+        positions[q] = target
+
+    if len(result.gate_option_indices) != len(problem.gate_domains):
+        raise RuntimeError(
+            "native rich gate-option indices do not match gate domains")
+    out_owners = []
+    for gate_index, option_index in enumerate(result.gate_option_indices):
+        domain = problem.gate_domains[gate_index]
+        option_index = int(option_index)
+        if option_index < 0 or option_index >= len(domain):
+            raise RuntimeError(
+                "native rich geometry references invalid gate option "
+                f"{option_index} in column {gate_index}")
+        option = domain[option_index]
+        targets = (
+            (int(option.q1),
+             site_point(option.target1_site_id)
+             if option.target1_site_id is not None else option.target1),
+            (int(option.q2),
+             site_point(option.target2_site_id)
+             if option.target2_site_id is not None else option.target2),
+        )
+        for q, target in targets:
+            if q < 0 or q >= len(positions) or target is None:
+                raise RuntimeError(
+                    "native rich gate geometry has an invalid endpoint")
+            if moved(positions[q], target):
+                out_owners.append(q)
+    return tuple(back_owners), tuple(out_owners)
+
+
+def _phase_batches_by_owner(batches, owners, *, phase) -> tuple:
+    """Translate raw native leg indices with explicit alignment checks."""
+    translated = []
+    for batch in batches:
+        owner_batch = []
+        for raw_index in batch:
+            index = int(raw_index)
+            if index < 0 or index >= len(owners):
+                raise RuntimeError(
+                    f"native {phase} batch index {index} is outside "
+                    f"the {len(owners)} reconstructed legs")
+            owner_batch.append(int(owners[index]))
+        translated.append(tuple(sorted(owner_batch)))
+    return tuple(translated)
+
+
+def _rich_result_placements(problem, result, site_locations) -> list[dict]:
+    """Decode the selected native DTO endpoints without changing its plan.
+
+    A rich gate option owns both the interaction-site id and the oriented seat
+    ids selected during candidate evaluation.  Re-running ``_pair_seats`` or
+    the legacy post-matching repair after C++ returns can silently choose a
+    different orientation/site (in particular when one gate hands another
+    participant's vacated source seat to its partner).  The executable Python
+    mapping must therefore be a direct projection of the scored DTO.
+    """
+    locations = tuple(tuple(location) for location in site_locations)
+
+    def decode_site(raw_site_id, *, label):
+        if raw_site_id is None:
+            raise RuntimeError(f"native rich {label} lacks a registered site id")
+        site_id = int(raw_site_id)
+        if site_id < 0 or site_id >= len(locations):
+            raise RuntimeError(
+                f"native rich {label} site id {site_id} is outside "
+                f"the {len(locations)} registered locations")
+        return locations[site_id]
+
+    if len(result.gate_option_indices) != len(problem.gate_domains):
+        raise RuntimeError(
+            "native rich gate-option indices do not match gate domains")
+    placements = []
+    for gate_index, raw_option_index in enumerate(
+            result.gate_option_indices):
+        domain = problem.gate_domains[gate_index]
+        option_index = int(raw_option_index)
+        if option_index < 0 or option_index >= len(domain):
+            raise RuntimeError(
+                "native rich gate option is outside its registered domain")
+        option = domain[option_index]
+        placements.append({
+            "gate": (int(option.q1), int(option.q2)),
+            "site": decode_site(option.site_id, label="interaction"),
+            "seats": (
+                decode_site(option.target1_site_id, label="target1"),
+                decode_site(option.target2_site_id, label="target2"),
+            ),
+        })
+    return placements
+
+
 def _replay_phase_batches(architecture, legs, owners, positions,
                           *, batching="phase", native_replay=False,
                           retain_boundary_ghosts=True):
@@ -2441,6 +2598,16 @@ class ResidentPlacer(VertexMatchingPlacer):
             q: seat for q, (use_layer, seat) in self.residency_commitments.items()
             if use_layer == next_layer and q in participants
         }
+
+        def gate_blocked_seats(q1, q2):
+            if use_rich_boundary:
+                return _formal_rich_blocked_seats(
+                    reg.zone_seat, participants, movable_before_out)
+            return {
+                seat for q, seat in reg.zone_seat.items()
+                if q not in (q1, q2) and q not in movable_before_out
+            }
+
         for q1, q2 in list_gate:
             indexed_domain = (
                 self._build_indexed_rich_gate_domain(q1, q2)
@@ -2486,11 +2653,10 @@ class ResidentPlacer(VertexMatchingPlacer):
                         col = base[2] + dc
                         if 0 <= col < slm.n_c:
                             sites.add((base[0], base[1], col))
-            # Other target-layer participants cannot vacate before the out
-            # phase.  Potential RETURN atoms can, and are checked against the
-            # actual decision bits in ``score_plan`` below.
-            blocked = {seat for q, seat in reg.zone_seat.items()
-                       if q not in (q1, q2) and q not in movable_before_out}
+            # The formal rich solver jointly replays every target participant,
+            # so another gate's source seat belongs in its complete domain.
+            # Legacy per-column decoding retains its conservative filter.
+            blocked = gate_blocked_seats(q1, q2)
             opts = build_opts(sites, blocked)
             if not opts and not committed_sites:
                 opts = build_opts(
@@ -2527,9 +2693,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                 for q in released:
                     target_pins.pop(q, None)
                 static_ghosts = static_ghost_rows()
-                blocked = {seat for q, seat in reg.zone_seat.items()
-                           if q not in (q1, q2)
-                           and q not in movable_before_out}
+                blocked = gate_blocked_seats(q1, q2)
                 opts = build_opts(
                     set(self._all_zone_sites()), blocked, complete=True)
                 opts = self._filter_menu_ghosts(
@@ -5058,14 +5222,6 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.transition_cache.move_to_end(state_key)
         while len(self.transition_cache) > self.transition_cache_limit:
             self.transition_cache.popitem(last=False)
-        if native_rich_result is not None:
-            placed = [
-                native_candidates[column][option_index]
-                for column, option_index in enumerate(
-                    native_rich_result.gate_option_indices)
-            ]
-        else:
-            placed = decode(best_chrom)
         bits = best_chrom[n_gates:]
         returners = ({q for q, bit in zip(eligible, bits) if bit}
                      | selected_cycles)
@@ -5090,11 +5246,23 @@ class ResidentPlacer(VertexMatchingPlacer):
                 None if selected is None else selected[0])
         vacated = {q for q, value in decisions.items()
                    if value[0] in ("RETURN", "RESEAT")}
-        decoded_placements = [
-            self._mk_placement(c[2], c[3], c[0]) for c in placed]
-        placements = self._repair_placements(
-            deepcopy(decoded_placements), list_gate, vacated=vacated)
-        placement_repaired = placements != decoded_placements
+        if native_rich_result is not None:
+            # The native winner has already been scored with its exact oriented
+            # endpoints and production parking replay.  Project those endpoints
+            # verbatim.  The legacy repair treats other target participants as
+            # stationary and would undo a valid ordered source-seat handoff.
+            decoded_placements = _rich_result_placements(
+                native_rich_problem, native_rich_result,
+                self.boundary_site_locations)
+            placements = deepcopy(decoded_placements)
+            placement_repaired = False
+        else:
+            placed = decode(best_chrom)
+            decoded_placements = [
+                self._mk_placement(c[2], c[3], c[0]) for c in placed]
+            placements = self._repair_placements(
+                deepcopy(decoded_placements), list_gate, vacated=vacated)
+            placement_repaired = placements != decoded_placements
         selected_gate_seats = {
             int(q): tuple(seat)
             for placement in placements
@@ -5167,16 +5335,21 @@ class ResidentPlacer(VertexMatchingPlacer):
             if len(native_batches) != 2:
                 raise RuntimeError(
                     "native winner did not return exactly two physical phases")
-
-            def owner_batches(batches, owners):
-                return tuple(tuple(sorted(int(owners[index])
-                                          for index in batch))
-                             for batch in batches)
-
-            native_back_batches = owner_batches(
-                native_batches[0], back_owners)
-            native_out_batches = owner_batches(
-                native_batches[1], out_owners)
+            native_back_owner_order, native_out_owner_order = \
+                _native_rich_phase_owner_orders(
+                    native_rich_problem, native_rich_result)
+            if sorted(native_back_owner_order) != sorted(back_owners):
+                raise RuntimeError(
+                    "native source-back owners differ from production router")
+            if sorted(native_out_owner_order) != sorted(out_owners):
+                raise RuntimeError(
+                    "native target-out owners differ from production router")
+            native_back_batches = _phase_batches_by_owner(
+                native_batches[0], native_back_owner_order,
+                phase="source-back")
+            native_out_batches = _phase_batches_by_owner(
+                native_batches[1], native_out_owner_order,
+                phase="target-out")
             if native_back_batches != production_candidate.source_back_batches:
                 raise RuntimeError(
                     "native source-back batches differ from production router")

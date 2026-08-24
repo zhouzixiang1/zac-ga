@@ -14,6 +14,7 @@
 #include <optional>
 #include <queue>
 #include <set>
+#include <string>
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
@@ -245,6 +246,8 @@ struct Evaluated {
   std::size_t return_assignment_evaluated{};
   std::size_t current_ghost_rejections{};
   std::size_t pre_score_reseats{};
+  bool forecast_feasible{true};
+  std::string forecast_error;
 };
 
 // Exact current-boundary replay for one chromosome.  ``current_candidates``
@@ -344,8 +347,14 @@ std::int64_t objective_bucket(double value, double quantum) {
 }
 
 bool evaluated_less(const Evaluated& first, const Evaluated& second) {
-  if (first.fitness.feasible != second.fitness.feasible) {
-    return first.fitness.feasible;
+  const auto first_feasible = first.fitness.feasible &&
+                              first.forecast_feasible &&
+                              std::isfinite(first.search_nll);
+  const auto second_feasible = second.fitness.feasible &&
+                               second.forecast_feasible &&
+                               std::isfinite(second.search_nll);
+  if (first_feasible != second_feasible) {
+    return first_feasible;
   }
   return std::make_tuple(
              objective_bucket(first.search_nll, 1e-12),
@@ -780,6 +789,15 @@ class RichSolver {
     const auto final_value = guarded_final_value_.has_value()
                                  ? *guarded_final_value_
                                  : evaluate_normalized(winner, false);
+    if (final_value.fitness.feasible &&
+        (!final_value.forecast_feasible ||
+         !std::isfinite(final_value.search_nll))) {
+      auto details = final_value.forecast_error;
+      if (details.empty()) details = final_value.fitness.error;
+      throw std::runtime_error(
+          "rich search has no feasible candidate" +
+          (details.empty() ? std::string{} : std::string(": ") + details));
+    }
     auto final_geometry = build_geometry(
         final_value.decoded, final_value.assignments, final_value.reseats);
     const auto recorded_winner = score_geometry(
@@ -960,6 +978,7 @@ class RichSolver {
       const std::vector<std::int64_t>& raw_winner) {
     if (!forecast_gate_guard_active()) return raw_winner;
     auto provisional = normalize(raw_winner);
+    const auto fallback = provisional;
     std::map<std::vector<std::int64_t>, std::vector<Evaluated>> guard_values;
     const auto values_for = [&](const std::vector<std::int64_t>& raw)
         -> std::vector<Evaluated>& {
@@ -1051,10 +1070,13 @@ class RichSolver {
     std::vector<Evaluated> cohort;
     for (const auto& chromosome : guard_chromosomes) {
       for (const auto& value : values_for(chromosome)) {
-        if (value.fitness.feasible) cohort.push_back(value);
+        if (value.fitness.feasible && value.forecast_feasible &&
+            std::isfinite(value.search_nll)) {
+          cohort.push_back(value);
+        }
       }
     }
-    if (cohort.empty()) return provisional;
+    if (cohort.empty()) return fallback;
     current_gate_guard_cohort_size_ = cohort.size();
 
     const auto* anchor = &*std::min_element(
@@ -1753,6 +1775,7 @@ class RichSolver {
     result.coherence_nll = coherence_nll;
     result.negative_log_fidelity =
         result.transfer_nll + result.coherence_nll;
+    result.candidate_idle_time_us = std::move(candidate_idle);
     return result;
   }
 
@@ -1869,15 +1892,171 @@ class RichSolver {
     for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
       accumulated_idle[atom] += result.fitness.candidate_idle_time_us[atom];
     }
-    const auto advance_idle = [&](const FitnessResult& score) {
+    const auto advance_idle_into = [&](std::vector<double>& idle,
+                                       const FitnessResult& score) {
       if (!score.feasible) return false;
       if (score.candidate_idle_time_us.size() != problem_.n_atoms) {
         throw std::logic_error("forecast fitness lacks per-atom idle delta");
       }
       for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
-        accumulated_idle[atom] += score.candidate_idle_time_us[atom];
+        idle[atom] += score.candidate_idle_time_us[atom];
       }
       return true;
+    };
+    const auto advance_idle = [&](const FitnessResult& score) {
+      return advance_idle_into(accumulated_idle, score);
+    };
+    const auto reject_forecast = [&](std::string error) {
+      result.forecast_feasible = false;
+      result.forecast_error = std::move(error);
+      result.forecast_nll = std::numeric_limits<double>::infinity();
+      result.search_nll = std::numeric_limits<double>::infinity();
+      std::fill(result.forecast_by_depth.begin(),
+                result.forecast_by_depth.end(), 0.0);
+      result.forecast_by_category.fill(0.0);
+    };
+
+    // Select storage endpoints one atom at a time because every later choice
+    // must see the sites already occupied by earlier atoms.  The exact batch
+    // replay remains the preferred physical schedule.  If that joint replay
+    // is more conservative than the already witnessed safe singleton order,
+    // retain the witnessed order and its real transfer/coherence cost instead
+    // of replacing a physically executable forecast by infinity.
+    const auto relocate_to_storage = [&] (
+        const std::vector<std::int64_t>& atoms) -> std::optional<double> {
+      if (atoms.empty()) return 0.0;
+      const auto before = positions;
+      const auto idle_before = accumulated_idle;
+      auto singleton_idle = accumulated_idle;
+      double singleton_nll = 0.0;
+      for (const auto atom : atoms) {
+        const auto moved = forecast_move_to_storage(
+            atom, positions, singleton_idle);
+        if (!moved.has_value()) {
+          positions = before;
+          accumulated_idle = idle_before;
+          return std::nullopt;
+        }
+        singleton_nll += finite_nll(moved->second);
+        if (!advance_idle_into(singleton_idle, moved->second)) {
+          throw std::logic_error(
+              "ghost-safe forecast singleton unexpectedly became infeasible");
+        }
+      }
+      const auto batched = score_forecast_relocation_batch(
+          before, positions, atoms, idle_before);
+      if (batched.feasible) {
+        accumulated_idle = idle_before;
+        advance_idle(batched);
+        return finite_nll(batched);
+      }
+      accumulated_idle = std::move(singleton_idle);
+      return singleton_nll;
+    };
+
+    // A future parallel front can contain a source/target precedence cycle
+    // even though every requested endpoint is legal (the QFT-style swap is
+    // the minimal example).  First use the strict phase replay.  When it
+    // proves infeasible, park a bounded number of participants at real vacant
+    // storage sites.  After every parking move retry the complete remaining
+    // phase, so an executable ordered/batched solution always wins over the
+    // fallback.  Every fallback leg is scored at the idle state at which it is
+    // actually executed; there is no ghost proxy and no zero-cost transition.
+    const auto score_reentry = [&] (
+        const std::vector<std::pair<std::int64_t, Point>>& targets
+        ) -> std::optional<double> {
+      const auto positions_before = positions;
+      const auto idle_before = accumulated_idle;
+      const auto remaining_phase = [&]() {
+        std::vector<Leg> legs;
+        std::vector<std::int64_t> owners;
+        legs.reserve(targets.size());
+        owners.reserve(targets.size());
+        for (const auto& [atom, target] : targets) {
+          const auto index = static_cast<std::size_t>(atom);
+          const auto distance = point_distance(positions[index], target);
+          if (distance <= 1e-9) continue;
+          legs.push_back({distance, positions[index], target});
+          owners.push_back(atom);
+        }
+        return score_forecast_phase(
+            legs, owners, positions, accumulated_idle);
+      };
+      const auto commit_targets = [&]() {
+        for (const auto& [atom, target] : targets) {
+          positions[static_cast<std::size_t>(atom)] = target;
+        }
+      };
+
+      auto strict = remaining_phase();
+      if (strict.feasible) {
+        advance_idle(strict);
+        commit_targets();
+        return finite_nll(strict);
+      }
+
+      std::vector<unsigned char> parked(problem_.n_atoms, 0U);
+      double recovery_nll = 0.0;
+      std::size_t parking_moves = 0;
+      while (parking_moves < targets.size()) {
+        bool moved = false;
+        for (const auto& [atom, target] : targets) {
+          const auto index = static_cast<std::size_t>(atom);
+          if (same_point(positions[index], target) || parked[index] != 0U) {
+            continue;
+          }
+          const auto parked_move = forecast_move_to_storage(
+              atom, positions, accumulated_idle);
+          if (!parked_move.has_value()) continue;
+          recovery_nll += finite_nll(parked_move->second);
+          advance_idle(parked_move->second);
+          parked[index] = 1U;
+          ++parking_moves;
+          moved = true;
+          break;
+        }
+        if (!moved) break;
+
+        strict = remaining_phase();
+        if (strict.feasible) {
+          recovery_nll += finite_nll(strict);
+          advance_idle(strict);
+          commit_targets();
+          return recovery_nll;
+        }
+      }
+
+      // The bounded parking pass normally makes the residual phase replayable.
+      // Keep a final bounded singleton replay for geometries where conservative
+      // combined endpoint precedence still rejects an actually safe order.
+      for (std::size_t step = 0; step < targets.size(); ++step) {
+        bool moved = false;
+        for (const auto& [atom, target] : targets) {
+          const auto index = static_cast<std::size_t>(atom);
+          if (same_point(positions[index], target)) continue;
+          const auto single = score_forecast_single_leg(
+              atom, positions[index], target, positions, accumulated_idle);
+          if (!single.feasible) continue;
+          recovery_nll += finite_nll(single);
+          advance_idle(single);
+          positions[index] = target;
+          moved = true;
+          break;
+        }
+        if (!moved) break;
+      }
+      const auto complete = std::all_of(
+          targets.begin(), targets.end(), [&](const auto& value) {
+            return same_point(
+                positions[static_cast<std::size_t>(value.first)],
+                value.second);
+          });
+      if (!complete) {
+        positions = positions_before;
+        accumulated_idle = idle_before;
+        return std::nullopt;
+      }
+      return recovery_nll;
     };
     for (const auto& assignment : result.assignments) {
       positions[static_cast<std::size_t>(
@@ -2045,9 +2224,9 @@ class RichSolver {
           }
         }
         if (!selected.has_value()) {
-          result.forecast_nll = std::numeric_limits<double>::infinity();
-          result.search_nll = std::numeric_limits<double>::infinity();
-          remember();
+          reject_forecast(
+              "bounded physical forecast future layer has no available "
+              "entangling pair");
           return;
         }
         const auto pair_index = std::get<1>(*selected);
@@ -2090,55 +2269,39 @@ class RichSolver {
         }
       }
 
-      const auto before_blockers = positions;
-      double routing_nll = 0.0;
       std::vector<std::int64_t> blockers;
       for (std::size_t atom = 0; atom < blocker_mask.size(); ++atom) {
         if (blocker_mask[atom] != 0U) {
           blockers.push_back(static_cast<std::int64_t>(atom));
         }
       }
-      for (const auto blocker : blockers) {
-        const auto moved = forecast_move_to_storage(
-            blocker, positions, accumulated_idle);
-        if (!moved.has_value()) {
-          routing_nll = std::numeric_limits<double>::infinity();
-          break;
-        }
-        routing_nll += finite_nll(moved->second);
-      }
-      if (std::isfinite(routing_nll) && !blockers.empty()) {
-        const auto batched = score_forecast_relocation_batch(
-            before_blockers, positions, blockers, accumulated_idle);
-        if (batched.feasible) {
-          routing_nll = finite_nll(batched);
-          advance_idle(batched);
-        } else {
-          routing_nll = std::numeric_limits<double>::infinity();
-        }
+      const auto routing_nll = relocate_to_storage(blockers);
+      if (!routing_nll.has_value()) {
+        reject_forecast(
+            "bounded physical forecast blocker recovery exhausted safe "
+            "storage moves");
+        return;
       }
 
-      std::vector<Leg> out_legs;
-      std::vector<std::int64_t> out_owners;
+      std::vector<std::pair<std::int64_t, Point>> reentry_targets;
+      reentry_targets.reserve(2 * placements.size());
       for (const auto& placement : placements) {
         for (const auto& [atom, target] :
              {std::pair<std::int64_t, Point>{placement.q1, placement.target1},
               std::pair<std::int64_t, Point>{placement.q2, placement.target2}}) {
-          const auto& source = positions[static_cast<std::size_t>(atom)];
-          const auto distance = point_distance(source, target);
-          if (distance > 1e-9) {
-            out_legs.push_back({distance, source, target});
-            out_owners.push_back(atom);
-          }
+          reentry_targets.emplace_back(atom, target);
         }
       }
-      const auto out_score = score_forecast_phase(
-          out_legs, out_owners, positions, accumulated_idle);
-      const auto reentry_nll = finite_nll(out_score);
-      if (out_score.feasible) advance_idle(out_score);
-      for (const auto& placement : placements) {
-        positions[static_cast<std::size_t>(placement.q1)] = placement.target1;
-        positions[static_cast<std::size_t>(placement.q2)] = placement.target2;
+      std::sort(reentry_targets.begin(), reentry_targets.end(),
+                [](const auto& first, const auto& second) {
+                  return first.first < second.first;
+                });
+      const auto reentry_nll = score_reentry(reentry_targets);
+      if (!reentry_nll.has_value()) {
+        reject_forecast(
+            "bounded physical forecast reentry recovery exhausted safe "
+            "parking and singleton moves");
+        return;
       }
 
       std::int64_t idle_exposures = 0;
@@ -2163,9 +2326,7 @@ class RichSolver {
       }
 
       const auto& later_use = future_later_use_masks_[layer_index];
-      double terminal_nll = 0.0;
       std::vector<std::int64_t> terminal_atoms;
-      const auto before_terminal = positions;
       for (std::size_t atom = 0; atom < positions.size(); ++atom) {
         const auto atom_id = static_cast<std::int64_t>(atom);
         if (!is_zone_point(positions[atom]) ||
@@ -2173,29 +2334,20 @@ class RichSolver {
           continue;
         }
         terminal_atoms.push_back(atom_id);
-        const auto moved = forecast_move_to_storage(
-            atom_id, positions, accumulated_idle);
-        if (!moved.has_value()) {
-          terminal_nll = std::numeric_limits<double>::infinity();
-          break;
-        }
-        terminal_nll += finite_nll(moved->second);
       }
-      if (std::isfinite(terminal_nll) && !terminal_atoms.empty()) {
-        const auto batched = score_forecast_relocation_batch(
-            before_terminal, positions, terminal_atoms, accumulated_idle);
-        if (batched.feasible) {
-          terminal_nll = finite_nll(batched);
-          advance_idle(batched);
-        } else {
-          terminal_nll = std::numeric_limits<double>::infinity();
-        }
+      const auto terminal_nll =
+          relocate_to_storage(terminal_atoms);
+      if (!terminal_nll.has_value()) {
+        reject_forecast(
+            "bounded physical forecast terminal recovery exhausted safe "
+            "storage moves");
+        return;
       }
 
       add_weighted_forecast(result, layer.depth, 0, residency_nll);
-      add_weighted_forecast(result, layer.depth, 1, reentry_nll);
-      add_weighted_forecast(result, layer.depth, 2, terminal_nll);
-      add_weighted_forecast(result, layer.depth, 3, routing_nll);
+      add_weighted_forecast(result, layer.depth, 1, *reentry_nll);
+      add_weighted_forecast(result, layer.depth, 2, *terminal_nll);
+      add_weighted_forecast(result, layer.depth, 3, *routing_nll);
       ++stats_.forecast_terms_applied;
     }
     result.search_nll = result.fitness.negative_log_fidelity +

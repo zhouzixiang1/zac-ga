@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(zac_native VERSION 0.5.13 LANGUAGES CXX)
+project(zac_native VERSION 0.5.14 LANGUAGES CXX)
 
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
@@ -40,4 +40,14 @@ if(BUILD_TESTING)
   target_link_libraries(zac_rich_solver_tests PRIVATE zac_native_lib)
   target_compile_features(zac_rich_solver_tests PRIVATE cxx_std_17)
   add_test(NAME zac_rich_solver_tests COMMAND zac_rich_solver_tests)
+  # Release builds normally define NDEBUG, but these compact native tests use
+  # assert as their executable contract.  Explicitly undefine it so ctest
+  # cannot report a false green while skipping every assertion.
+  foreach(test_target IN ITEMS zac_native_tests zac_rich_solver_tests)
+    if(MSVC)
+      target_compile_options(${test_target} PRIVATE /UNDEBUG)
+    else()
+      target_compile_options(${test_target} PRIVATE -UNDEBUG)
+    endif()
+  endforeach()
 endif()

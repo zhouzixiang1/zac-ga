@@ -13,6 +13,7 @@ import random
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,11 @@ sys.path.insert(0, str(ROOT))
 from zac.ds.architecture import Architecture  # noqa: E402
 from zzx.algorithm_v2 import (decay_lookahead_spec,
                               maximum_lookahead_horizon)  # noqa: E402
+from zzx.boundary_problem import (  # noqa: E402
+    ArchitectureSnapshot as BoundaryArchitectureSnapshot,
+    Point as BoundaryPoint,
+    RichGateOption,
+)
 from zzx.native_backend import native_available  # noqa: E402
 from zzx.resident import ResidentRegistry  # noqa: E402
 from zzx import zplacer as zplacer_module  # noqa: E402
@@ -33,7 +39,7 @@ TIMING_KEYS = {
     "backend_calls", "backend_candidates", "cache",
 }
 NATIVE_WHEEL_SHA256 = (
-    "60893195432f3c83481d2a05ed0c8acf0158cf9b8db3f11969f2d31471816b5d")
+    "2b3daac0f2f2281129817f7f93100e745fc74e47913fe9482751fa6cfbc1d1fd")
 
 
 def architecture(*, frozen_physics=False):
@@ -262,6 +268,95 @@ class TestIndexedNativeGateDomain(unittest.TestCase):
         placer._prepare_boundary_architecture()
         return placer
 
+    def test_formal_complete_domain_allows_other_participant_source(self):
+        placer = self.make_placer()
+        all_sites = placer._all_zone_sites()
+        moving_participant_seat = all_sites[0]
+        stationary_nonparticipant_seat = all_sites[1]
+        placer.registry.enter_zone(2, moving_participant_seat)
+        placer.registry.enter_zone(4, stationary_nonparticipant_seat)
+        participants = {0, 1, 2, 3}
+        blocked = zplacer_module._formal_rich_blocked_seats(
+            placer.registry.zone_seat, participants,
+            movable_before_out=set())
+        self.assertNotIn(moving_participant_seat, blocked)
+        self.assertIn(stationary_nonparticipant_seat, blocked)
+
+        domain = placer._build_indexed_rich_gate_domain(0, 1)
+        complete = placer._indexed_rich_complete_opts(
+            domain, blocked, canonical=True)
+        selected_rows = [domain.by_site[tuple(option[0])]
+                         for option in complete]
+        self.assertTrue(any(
+            moving_participant_seat in row.seats
+            for row in selected_rows))
+        self.assertTrue(all(
+            stationary_nonparticipant_seat not in row.seats
+            for row in selected_rows))
+
+    def test_native_phase_batch_indices_use_cpp_geometry_owner_order(self):
+        coordinates = tuple(BoundaryPoint(float(index), 0.0)
+                            for index in range(9))
+        snapshot = BoundaryArchitectureSnapshot(
+            n_atoms=5, site_coordinates=coordinates)
+        gate_zero_unused = RichGateOption(
+            site_id=8, q1=0, q2=2, target1=None, target2=None,
+            target1_site_id=8, target2_site_id=7)
+        gate_zero_selected = RichGateOption(
+            site_id=0, q1=0, q2=2, target1=None, target2=None,
+            target1_site_id=0, target2_site_id=7)
+        gate_one_selected = RichGateOption(
+            site_id=8, q1=1, q2=4, target1=None, target2=None,
+            target1_site_id=8, target2_site_id=4)
+        problem = SimpleNamespace(
+            architecture=snapshot,
+            current_site_ids=(0, 1, 2, 3, 4),
+            current_points=(),
+            gate_domains=(
+                (gate_zero_unused, gate_zero_selected),
+                (gate_one_selected,),
+            ),
+        )
+        result = SimpleNamespace(
+            # Atom 4's zero-length RETURN is omitted by C++, then RETURN atom
+            # 3 precedes RESEAT atom 1 even if Python's decisions dict was
+            # populated in the interleaved eligible order (1, 3, 4).
+            return_assignments=((4, 4), (3, 5)),
+            reseat_assignments=((1, 6),),
+            gate_option_indices=(1, 0),
+        )
+        back_owners, out_owners = \
+            zplacer_module._native_rich_phase_owner_orders(problem, result)
+        self.assertEqual(back_owners, (3, 1))
+        self.assertEqual(out_owners, (2, 1))
+        self.assertEqual(
+            zplacer_module._phase_batches_by_owner(
+                ((0,), (1,)), back_owners, phase="source-back"),
+            ((3,), (1,)))
+        self.assertEqual(
+            zplacer_module._phase_batches_by_owner(
+                ((1,), (0,)), out_owners, phase="target-out"),
+            ((1,), (2,)))
+
+    def test_native_result_projects_registered_oriented_endpoints(self):
+        locations = tuple((0, 0, index) for index in range(4))
+        problem = SimpleNamespace(gate_domains=((RichGateOption(
+            site_id=0, q1=5, q2=3, target1=None, target2=None,
+            # Deliberately reverse the logical endpoints relative to the
+            # interaction-site convention.  This is the source-seat handoff
+            # orientation that must survive native selection unchanged.
+            target1_site_id=2, target2_site_id=0),),))
+        result = SimpleNamespace(gate_option_indices=(0,))
+        self.assertEqual(
+            zplacer_module._rich_result_placements(
+                problem, result, locations),
+            [{
+                "gate": (5, 3),
+                "site": locations[0],
+                "seats": (locations[2], locations[0]),
+            }],
+        )
+
     def test_random_domains_keep_options_ties_ghosts_and_dto_exact(self):
         rng = random.Random(20260824)
         placer = self.make_placer()
@@ -460,6 +555,31 @@ class TestNativeResidentIntegration(unittest.TestCase):
                 schedule, horizon=decay_lookahead_spec(0), seed=seed)
             self.assertNativeRunContract(
                 schedule, horizon=decay_lookahead_spec(8), seed=seed)
+
+    def test_joint_participant_source_seat_handoff_reaches_router_unchanged(self):
+        # At the L1 -> L2 boundary q3 takes q2's source seat after q2 leaves in
+        # the first out batch.  The rich solver scores this ordered handoff as
+        # [[2, 7], [3]].  A legacy post-selection repair used to relocate the
+        # second gate and make the production router deadlock on atom 5.
+        schedule = [
+            [[3, 4], [5, 0]],
+            [[7, 6], [2, 5]],
+            [[2, 7], [5, 3]],
+            [[2, 0], [5, 6]],
+            [[6, 2], [3, 0]],
+        ]
+        placer = run(
+            schedule, backend="native",
+            horizon=decay_lookahead_spec(0), seed=0)
+        source_boundary = placer.mapping[4]
+        target_gate_mapping = placer.mapping[5]
+        self.assertEqual(source_boundary[2], target_gate_mapping[3])
+        self.assertEqual(
+            placer.decision_log[1]["production_candidate"][
+                "target_out_batches"],
+            [[2, 7], [3]],
+        )
+        self.assertEqual(0, placer.decision_log[1].get("ghost_fix", 0))
 
     def test_native_always_return_cycles_a_resident_target_participant(self):
         placer = run(

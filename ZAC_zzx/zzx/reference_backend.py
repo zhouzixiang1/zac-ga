@@ -815,6 +815,8 @@ class _RichEvaluated:
     return_assignment_rank: int
     return_assignment_evaluated: int
     current_ghost_rejections: int
+    forecast_feasible: bool = True
+    forecast_error: str = ""
 
     @property
     def objective(self) -> tuple:
@@ -824,6 +826,8 @@ class _RichEvaluated:
             return int(floor(value / quantum + 0.5))
 
         return (
+            0 if (self.fitness.feasible and self.forecast_feasible
+                  and isfinite(self.search_nll)) else 1,
             bucket(self.search_nll, 1e-12),
             self.fitness.move_batches,
             bucket(self.fitness.move_time_us, 1e-6),
@@ -831,6 +835,10 @@ class _RichEvaluated:
             self.fitness.chromosome,
             self.assignment_key,
         )
+
+
+class _ForecastInfeasible(RuntimeError):
+    """A bounded rollout could not construct a ghost-safe physical schedule."""
 
 
 def _rich_points(problem: RichH0Problem) -> tuple[Point, ...]:
@@ -1410,6 +1418,7 @@ def _evaluate_native_future_rollout(
 
     def score_phase(legs: Sequence[Leg], owners: Sequence[int],
                     snapshot: Sequence[Point],
+                    idle_state: Sequence[float] | None = None,
                     idle_exposures: int = 0) -> FitnessResult:
         phases = ()
         if legs:
@@ -1423,7 +1432,8 @@ def _evaluate_native_future_rollout(
             BoundaryProblem(
                 architecture,
                 (candidate,),
-                prior_idle_time_us=tuple(accumulated_idle),
+                prior_idle_time_us=tuple(
+                    accumulated_idle if idle_state is None else idle_state),
             ),
             candidate,
             BoundaryConfig(
@@ -1431,18 +1441,25 @@ def _evaluate_native_future_rollout(
                 enforce_single_leg_ghost=config.enforce_single_leg_ghost),
         )
 
-    def advance_idle(score: FitnessResult) -> None:
+    def advance_idle_into(idle_state: list[float],
+                          score: FitnessResult) -> None:
         if not score.feasible:
             return
         if len(score.candidate_idle_time_us) != architecture.n_atoms:
             raise ValueError("forecast fitness lacks per-atom idle delta")
         for atom, delta in enumerate(score.candidate_idle_time_us):
-            accumulated_idle[atom] += delta
+            idle_state[atom] += delta
+
+    def advance_idle(score: FitnessResult) -> None:
+        advance_idle_into(accumulated_idle, score)
 
     def finite_nll(score: FitnessResult) -> float:
         return score.negative_log_fidelity if score.feasible else inf
 
-    def move_to_storage(atom: int) -> tuple[int, FitnessResult] | None:
+    def move_to_storage(
+            atom: int,
+            idle_state: Sequence[float] | None = None,
+    ) -> tuple[int, FitnessResult] | None:
         source = positions[atom]
         best = None
         tested = 0
@@ -1453,7 +1470,8 @@ def _evaluate_native_future_rollout(
             leg = Leg.between(source, target)
             if leg.distance_um <= EPS:
                 continue
-            score = score_phase((leg,), (atom,), positions)
+            score = score_phase(
+                (leg,), (atom,), positions, idle_state=idle_state)
             if not score.feasible:
                 continue
             tested += 1
@@ -1474,8 +1492,11 @@ def _evaluate_native_future_rollout(
         positions[atom] = coordinates[best[1]]
         return best[1], best[2]
 
-    def relocation_batch(before: Sequence[Point], atoms: set[int]
-                         ) -> FitnessResult:
+    def relocation_batch(
+            before: Sequence[Point],
+            atoms: Sequence[int] | set[int],
+            idle_state: Sequence[float] | None = None,
+    ) -> FitnessResult:
         legs = []
         owners = []
         for atom in sorted(atoms):
@@ -1484,7 +1505,131 @@ def _evaluate_native_future_rollout(
                 continue
             legs.append(leg)
             owners.append(atom)
-        return score_phase(legs, owners, before)
+        return score_phase(
+            legs, owners, before, idle_state=idle_state)
+
+    def relocate_to_storage(
+            atoms: Sequence[int] | set[int], context: str) -> float:
+        """Replay a real batch, or retain the witnessed singleton schedule.
+
+        Storage endpoints must be chosen sequentially so each later atom sees
+        sites already occupied by earlier atoms.  If the exact combined replay
+        rejects those endpoints, the preceding singleton moves are still a
+        physically executable schedule and their real transfer/coherence cost
+        and accumulated idle are the deterministic fallback.
+        """
+        ordered_atoms = tuple(sorted(atoms))
+        if not ordered_atoms:
+            return 0.0
+        before = tuple(positions)
+        idle_before = list(accumulated_idle)
+        singleton_idle = list(accumulated_idle)
+        singleton_nll = 0.0
+        for atom in ordered_atoms:
+            moved = move_to_storage(atom, singleton_idle)
+            if moved is None:
+                positions[:] = before
+                accumulated_idle[:] = idle_before
+                raise _ForecastInfeasible(
+                    f"bounded physical forecast {context} cannot find a "
+                    f"ghost-safe storage move for atom {atom}")
+            singleton_nll += finite_nll(moved[1])
+            advance_idle_into(singleton_idle, moved[1])
+        batched = relocation_batch(
+            before, ordered_atoms, idle_state=idle_before)
+        if batched.feasible:
+            accumulated_idle[:] = idle_before
+            advance_idle(batched)
+            return finite_nll(batched)
+        accumulated_idle[:] = singleton_idle
+        return singleton_nll
+
+    def score_reentry(targets: Sequence[tuple[int, Point]]) -> float:
+        """Strict replay with bounded, real parking/reentry recovery.
+
+        A future parallel front can have a source/target precedence cycle even
+        when all requested endpoints are legal.  We first try the whole phase,
+        then park participants at real vacant storage sites one by one and
+        retry it.  A final bounded singleton pass handles conservative batch
+        precedence.  Every leg is ghost-checked and scored at its actual idle
+        state; inability to construct a schedule is an explicit error rather
+        than an infinite or zero-cost forecast term.
+        """
+        ordered_targets = tuple(sorted(targets))
+        positions_before = tuple(positions)
+        idle_before = list(accumulated_idle)
+
+        def remaining_phase() -> FitnessResult:
+            legs = []
+            owners = []
+            for atom, target in ordered_targets:
+                leg = Leg.between(positions[atom], target)
+                if leg.distance_um <= EPS:
+                    continue
+                legs.append(leg)
+                owners.append(atom)
+            return score_phase(legs, owners, positions)
+
+        def commit_targets() -> None:
+            for atom, target in ordered_targets:
+                positions[atom] = target
+
+        strict = remaining_phase()
+        if strict.feasible:
+            advance_idle(strict)
+            commit_targets()
+            return finite_nll(strict)
+
+        parked: set[int] = set()
+        recovery_nll = 0.0
+        parking_moves = 0
+        while parking_moves < len(ordered_targets):
+            moved = False
+            for atom, target in ordered_targets:
+                if positions[atom] == target or atom in parked:
+                    continue
+                parked_move = move_to_storage(atom)
+                if parked_move is None:
+                    continue
+                recovery_nll += finite_nll(parked_move[1])
+                advance_idle(parked_move[1])
+                parked.add(atom)
+                parking_moves += 1
+                moved = True
+                break
+            if not moved:
+                break
+            strict = remaining_phase()
+            if strict.feasible:
+                recovery_nll += finite_nll(strict)
+                advance_idle(strict)
+                commit_targets()
+                return recovery_nll
+
+        for _step in range(len(ordered_targets)):
+            moved = False
+            for atom, target in ordered_targets:
+                if positions[atom] == target:
+                    continue
+                leg = Leg.between(positions[atom], target)
+                single = score_phase((leg,), (atom,), positions)
+                if not single.feasible:
+                    continue
+                recovery_nll += finite_nll(single)
+                advance_idle(single)
+                positions[atom] = target
+                moved = True
+                break
+            if not moved:
+                break
+        if any(positions[atom] != target
+               for atom, target in ordered_targets):
+            positions[:] = positions_before
+            accumulated_idle[:] = idle_before
+            raise _ForecastInfeasible(
+                "bounded physical forecast reentry recovery exhausted safe "
+                "parking and singleton moves")
+        return recovery_nll
 
     by_depth = [0.0] * (config.max_horizon + 1)
     breakdown = {
@@ -1551,7 +1696,9 @@ def _evaluate_native_future_rollout(
                     if selected is None or key < selected[0]:
                         selected = (key, pair_index, first, second)
             if selected is None:
-                return inf, tuple(by_depth), breakdown, applied, skipped
+                raise _ForecastInfeasible(
+                    "bounded physical forecast future layer has no available "
+                    "entangling pair")
             used_pairs.add(selected[1])
             placements.append((q1, q2, selected[2], selected[3]))
 
@@ -1572,36 +1719,13 @@ def _evaluate_native_future_rollout(
                     hit for hit in ghost_hit_atoms((leg,), ghosts)
                     if hit not in participants)
 
-        before_blockers = tuple(positions)
-        routing_nll = 0.0
-        for blocker in sorted(blockers):
-            moved = move_to_storage(blocker)
-            if moved is None:
-                routing_nll = inf
-                break
-            routing_nll += finite_nll(moved[1])
-        if isfinite(routing_nll) and blockers:
-            batched = relocation_batch(before_blockers, blockers)
-            if batched.feasible:
-                routing_nll = finite_nll(batched)
-                advance_idle(batched)
-            else:
-                routing_nll = inf
+        routing_nll = relocate_to_storage(blockers, "blocker")
 
-        out_legs = []
-        out_owners = []
+        reentry_targets = []
         for q1, q2, target1, target2 in placements:
             for atom, target in ((q1, target1), (q2, target2)):
-                leg = Leg.between(positions[atom], target)
-                if leg.distance_um > EPS:
-                    out_legs.append(leg)
-                    out_owners.append(atom)
-        reentry_score = score_phase(out_legs, out_owners, positions)
-        reentry_nll = finite_nll(reentry_score)
-        advance_idle(reentry_score)
-        for q1, q2, target1, target2 in placements:
-            positions[q1] = target1
-            positions[q2] = target2
+                reentry_targets.append((atom, target))
+        reentry_nll = score_reentry(reentry_targets)
 
         idle_exposures = sum(
             atom not in participants and point in zone_points
@@ -1622,25 +1746,11 @@ def _evaluate_native_future_rollout(
                 layer_index + 1:]
             for gate in later_gates for atom in gate
         }
-        before_terminal = tuple(positions)
         terminal_atoms = {
             atom for atom, point in enumerate(positions)
             if point in zone_points and atom not in later_use
         }
-        terminal_nll = 0.0
-        for atom in sorted(terminal_atoms):
-            moved = move_to_storage(atom)
-            if moved is None:
-                terminal_nll = inf
-                break
-            terminal_nll += finite_nll(moved[1])
-        if isfinite(terminal_nll) and terminal_atoms:
-            batched = relocation_batch(before_terminal, terminal_atoms)
-            if batched.feasible:
-                terminal_nll = finite_nll(batched)
-                advance_idle(batched)
-            else:
-                terminal_nll = inf
+        terminal_nll = relocate_to_storage(terminal_atoms, "terminal")
 
         add(depth, "residency", residency_nll)
         add(depth, "reentry", reentry_nll)
@@ -1770,22 +1880,37 @@ def _evaluate_rich_assignment_cohort(
             return_pairs = tuple(
                 (problem.eligible[index], site_id)
                 for index, site_id, _point in assignments)
-            if problem.future_layers:
-                forecast = _evaluate_native_future_rollout(
-                    problem, config, option_indices, assignments, reseats,
-                    fitness.candidate_idle_time_us)
-            else:
-                forecast = evaluate_decay_forecast(
-                    problem, config, chromosome, option_indices, return_pairs)
-            forecast_nll, by_depth, breakdown = forecast[:3]
-            search_nll = fitness.negative_log_fidelity + forecast_nll
+            try:
+                if problem.future_layers:
+                    forecast = _evaluate_native_future_rollout(
+                        problem, config, option_indices, assignments, reseats,
+                        fitness.candidate_idle_time_us)
+                else:
+                    forecast = evaluate_decay_forecast(
+                        problem, config, chromosome, option_indices,
+                        return_pairs)
+                forecast_nll, by_depth, breakdown = forecast[:3]
+                search_nll = fitness.negative_log_fidelity + forecast_nll
+                forecast_feasible, forecast_error = True, ""
+            except _ForecastInfeasible as error:
+                forecast_nll = search_nll = inf
+                by_depth = (0.0,) * (config.max_horizon + 1)
+                breakdown = {
+                    "residency": 0.0,
+                    "reentry": 0.0,
+                    "terminal": 0.0,
+                    "routing": 0.0,
+                }
+                forecast_feasible, forecast_error = False, str(error)
         else:
             forecast_nll, search_nll = 0.0, inf
             by_depth, breakdown = (), {}
+            forecast_feasible, forecast_error = True, ""
         evaluated.append(_RichEvaluated(
             fitness, option_indices, assignments, reseats, assignment_key,
             forecast_nll, search_nll, by_depth, breakdown, rank,
-            len(assignment_candidates), rejected))
+            len(assignment_candidates), rejected,
+            forecast_feasible, forecast_error))
     return tuple(evaluated)
 
 
@@ -1875,6 +2000,8 @@ def _guard_rich_forecast_gate_projection(
     if not active:
         return provisional, inactive
 
+    fallback = provisional
+
     gate_count = len(problem.gate_domains)
     cohort_cache: dict[tuple[int, ...], tuple[_RichEvaluated, ...]] = {}
 
@@ -1935,12 +2062,13 @@ def _guard_rich_forecast_gate_projection(
         value
         for chromosome in sorted(guard_chromosomes)
         for value in values_for(chromosome)
-        if value.fitness.feasible
+        if (value.fitness.feasible and value.forecast_feasible
+            and isfinite(value.search_nll))
     )
     if not cohort:
-        return provisional, {
+        return fallback, {
             **inactive,
-            "current_gate_anchor": tuple(projected),
+            "current_gate_anchor": fallback.fitness.chromosome,
             "current_gate_projection_source": projection_source,
             "current_gate_projection_evaluated": len(cohort_cache),
         }
@@ -2008,7 +2136,10 @@ def solve_rich_exact_reference(
         _rich_normalize(problem, chromosome) for chromosome in raw_values))
     evaluated = tuple(evaluate_rich_exact_candidate(
         problem, config, chromosome) for chromosome in chromosomes)
-    feasible = tuple(value for value in evaluated if value.fitness.feasible)
+    feasible = tuple(
+        value for value in evaluated
+        if (value.fitness.feasible and value.forecast_feasible
+            and isfinite(value.search_nll)))
     if not feasible:
         raise RuntimeError(f"boundary {problem.boundary_id!r} has no feasible candidate")
     winner = min(feasible, key=lambda value: value.objective)

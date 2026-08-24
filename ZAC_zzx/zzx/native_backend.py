@@ -609,7 +609,7 @@ class NativeResidentBackend:
         except Exception as exc:
             raise NativeBackendError(
                 f"native rich search failed for boundary "
-                f"{problem.boundary_id!r}") from exc
+                f"{problem.boundary_id!r}: {exc}") from exc
 
     def solve_rich_h0(
             self,

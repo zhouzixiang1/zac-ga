@@ -152,6 +152,41 @@ int main() {
          alternate_general.negative_log_fidelity);
   ++tests;
 
+  // A QFT-like future front can have a cyclic source/target precedence even
+  // though its endpoints are legal.  The bounded rollout must execute real
+  // parking/reentry legs with transfer and coherence cost, rather than turn
+  // the physically recoverable forecast into infinity.
+  ArchitectureSnapshot qft_interlock_architecture(
+      4,
+      {{0.0, 0.0}, {2.0, 0.0}, {0.0, 4.0}, {2.0, 4.0},
+       {-6.0, -6.0}, {6.0, -6.0}, {-6.0, 10.0}, {6.0, 10.0},
+       {0.0, -8.0}, {2.0, -8.0}},
+      {4, 5, 6, 7, 8, 9}, {{0, 1}, {2, 3}});
+  RichH0Problem qft_interlock;
+  qft_interlock.n_atoms = 4;
+  qft_interlock.current_points = {
+      {4.0, 3.0}, {0.0, 2.0}, {3.0, 4.0}, {0.0, 4.0}};
+  qft_interlock.future_layers = {{1, {{0, 1}, {2, 3}}}};
+  qft_interlock.prior_idle_time_us = {0.0, 0.0, 0.0, 0.0};
+  auto qft_interlock_config = exact_config();
+  qft_interlock_config.max_horizon = 1;
+  qft_interlock_config.alpha_lookahead = 1.0;
+  qft_interlock_config.decay_rho = 1.0;
+  qft_interlock_config.decay_epsilon = 0.0;
+  qft_interlock_config.forecast_gate_candidate_budget = 4;
+  const auto qft_recovered = solve_rich_h0(
+      qft_interlock_architecture, qft_interlock,
+      qft_interlock_config, rng_fixture());
+  assert(qft_recovered.winner.feasible);
+  assert(std::isfinite(qft_recovered.forecast_nll));
+  assert(std::isfinite(qft_recovered.forecast_reentry_nll));
+  assert(qft_recovered.forecast_reentry_nll > 0.0);
+  assert(std::abs(qft_recovered.forecast_reentry_nll -
+                  0.013098101931857835) < 1e-12);
+  assert(std::abs(qft_recovered.forecast_nll -
+                  0.021690818983655068) < 1e-12);
+  ++tests;
+
   auto problem = one_resident_problem();
   const auto direct = solve_rich_h0(
       small_architecture, problem, exact_config(), rng_fixture());
@@ -363,15 +398,16 @@ int main() {
   assert(indexed_forecast_value.gate_option_indices ==
          std::vector<std::size_t>({1}));
   const std::vector<std::pair<std::int64_t, std::int64_t>>
-      indexed_forecast_returns{{2, 5}, {3, 4}};
-  // K-best edge costs order the bounded assignments but never leak into the
-  // physical objective.  The swapped assignment avoids both RETURN-site
-  // marginal terms and is therefore the correct physical winner.
+      indexed_forecast_returns{{2, 4}, {3, 5}};
+  // The swapped assignment has a smaller raw forecast (0.14), but its current
+  // NLL, Move batches and Move time are all dominated by the nearest physical
+  // assignment.  The residency Pareto guard therefore retains the nearest
+  // assignment and its complete 0.21 forecast.
   assert(indexed_forecast_value.return_assignments ==
          indexed_forecast_returns);
-  assert(std::abs(indexed_forecast_value.forecast_nll - 0.14) < 1e-15);
+  assert(std::abs(indexed_forecast_value.forecast_nll - 0.21) < 1e-15);
   const std::vector<double> expected_forecast_by_depth{
-      0.0, 0.12, 0.0, 0.005, 0.015, 0.0, 0.0, 0.0, 0.0};
+      0.0, 0.12, 0.07, 0.005, 0.015, 0.0, 0.0, 0.0, 0.0};
   assert(indexed_forecast_value.forecast_by_depth.size() ==
          expected_forecast_by_depth.size());
   for (std::size_t depth = 0; depth < expected_forecast_by_depth.size();
@@ -385,8 +421,11 @@ int main() {
          1e-15);
   assert(std::abs(indexed_forecast_value.forecast_terminal_nll - 0.02) <
          1e-15);
-  assert(std::abs(indexed_forecast_value.forecast_routing_nll - 0.015) <
+  assert(std::abs(indexed_forecast_value.forecast_routing_nll - 0.085) <
          1e-15);
+  assert(indexed_forecast_value.current_gate_guard_branch ==
+         "residency-pareto-envelope");
+  assert(indexed_forecast_value.current_gate_guard_admitted_size == 2);
   assert(indexed_forecast_value.stats.forecast_terms_skipped_cutoff > 0);
   ++tests;
 
@@ -494,9 +533,11 @@ int main() {
          std::vector<std::int64_t>({0, 0}));
   assert(exact_current_prune.stats.unique_evaluations == 2);
   assert(exact_current_prune.stats.direct_lower_bound_prunes == 0);
-  // Only the incumbent reaches the forecast: option 1 passes the cheap bound
-  // but is rejected by its exact current-boundary physical score.
-  assert(exact_current_prune.stats.forecast_terms_applied == 1);
+  // Only the incumbent reaches the direct-search forecast; option 1 passes
+  // the cheap bound but is rejected by its exact current physical score.  The
+  // current-gate guard then replays the incumbent once for its independent
+  // cohort audit, so the public aggregate counter is two.
+  assert(exact_current_prune.stats.forecast_terms_applied == 2);
   ++tests;
 
   RichH0Problem exact_current_tie;
@@ -516,9 +557,11 @@ int main() {
       exact_current_config, rng_fixture());
   assert(exact_current_tied.winner.chromosome ==
          std::vector<std::int64_t>({0}));
-  // Equality is not pruned: both candidates receive their complete forecast
-  // and the canonical chromosome remains the tie-break winner.
-  assert(exact_current_tied.stats.forecast_terms_applied == 2);
+  // Equality is not pruned: both candidates receive their complete direct
+  // forecast and the canonical chromosome remains the tie-break winner.  The
+  // independent two-value gate-guard cohort replay raises the aggregate
+  // application counter from two to four.
+  assert(exact_current_tied.stats.forecast_terms_applied == 4);
   ++tests;
 
   // P1 gate projection: with no residency decision, decay lookahead may not
