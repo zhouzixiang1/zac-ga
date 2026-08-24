@@ -160,11 +160,19 @@ class UnifiedEvaluationGate:
     """One streaming normalisation/score pass shared by verifier and scorer."""
 
     def __init__(self, plan: ExperimentPlan, canonical: CanonicalCircuitManifest,
-                 method: str, *, write_artifacts: bool = True):
+                 method: str, *, write_artifacts: bool = True,
+                 raw_trace_name: str | None = None):
         self.plan = plan
         self.canonical = canonical
         self.method = method
         self.write_artifacts = write_artifacts
+        allowed_override = "trace.na.raw" if method == "M2" else None
+        if raw_trace_name is not None and raw_trace_name != allowed_override:
+            raise ValueError(
+                f"{method} cannot be evaluated from raw trace "
+                f"{raw_trace_name!r}; expected {allowed_override!r}"
+            )
+        self._raw_trace_name = raw_trace_name
         self._artifact: Path | None = None
         self._result: FidelityResult | None = None
         self._metrics: Mapping[str, Any] | None = None
@@ -174,6 +182,8 @@ class UnifiedEvaluationGate:
 
     @property
     def trace_name(self) -> str:
+        if self._raw_trace_name is not None:
+            return self._raw_trace_name
         return "trace.na" if self.method == "M2" else "trace.zair.json"
 
     @property
@@ -1747,8 +1757,17 @@ def command_verify_run(plan: ExperimentPlan, manifest_path: Path) -> Mapping[str
                 f"run provenance mismatch for {field}: "
                 f"{getattr(manifest, field)} != {expected}"
             )
+    raw_trace_name = None
+    if manifest.package_versions.get("baseline_replay_protocol") == \
+            "paper-native-baseline-raw-replay-v1":
+        if manifest.method == "M2":
+            raw_trace_name = "trace.na.raw"
+        elif manifest.method != "M1":
+            raise ValueError(
+                "baseline raw replay provenance is forbidden for M3/M4")
     gate = UnifiedEvaluationGate(
-        plan, canonical, manifest.method, write_artifacts=False)
+        plan, canonical, manifest.method, write_artifacts=False,
+        raw_trace_name=raw_trace_name)
     result, metrics = gate.evaluate(manifest_path.parent)
     if manifest.fidelity_ood != result.ood:
         raise ValueError(
@@ -1798,6 +1817,32 @@ def command_verify_run(plan: ExperimentPlan, manifest_path: Path) -> Mapping[str
         "score_matches_manifest": True,
         "fidelity_ood": result.ood,
     }
+
+
+def command_import_baseline_raw(
+        plan: ExperimentPlan, source_roots: Sequence[Path],
+        dataset_names: Sequence[str] | None, methods: Sequence[str], *,
+        audit_only: bool, output_root: Path | None = None,
+        m1_lineage_manifest: Path | None = None
+        ) -> Mapping[str, Any]:
+    """Audit or replay uniquely matched M1/M2 compiler-authored raw traces."""
+    from .baseline_raw_replay import (audit_baseline_raw_replay,
+                                      import_baseline_raw_replays)
+
+    selected_methods = (
+        ("M1", "M2") if list(methods) == ["all"] else tuple(methods))
+    if "M1" in selected_methods and m1_lineage_manifest is None:
+        from .baseline_raw_replay import default_m1_lineage_manifest
+        m1_lineage_manifest = default_m1_lineage_manifest(plan)
+    if audit_only:
+        return audit_baseline_raw_replay(
+            plan, source_roots, dataset_names=dataset_names,
+            methods=selected_methods,
+            m1_lineage_manifest=m1_lineage_manifest)
+    return import_baseline_raw_replays(
+        plan, source_roots, dataset_names=dataset_names,
+        methods=selected_methods, output_root=output_root,
+        m1_lineage_manifest=m1_lineage_manifest)
 
 
 def command_aggregate(plan: ExperimentPlan, dataset: str, phase: str,
@@ -1907,6 +1952,20 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--plan", required=True, type=Path)
     verify.add_argument("--manifest", required=True, type=Path)
 
+    replay = subparsers.add_parser("import-baseline-raw")
+    replay.add_argument("--plan", required=True, type=Path)
+    replay.add_argument("--source-roots", nargs="+", required=True, type=Path)
+    replay.add_argument("--datasets", nargs="+")
+    replay.add_argument(
+        "--methods", nargs="+", default=["all"],
+        choices=("all", "M1", "M2"))
+    replay.add_argument("--audit-only", action="store_true")
+    replay.add_argument("--output-root", type=Path)
+    replay.add_argument(
+        "--m1-lineage-manifest", type=Path,
+        help=("single-root M1 source-lineage manifest; defaults to the "
+              "registered tuning-quality-v1-51583a5 workspace manifest"))
+
     aggregate = subparsers.add_parser("aggregate")
     aggregate.add_argument("--plan", required=True, type=Path)
     aggregate.add_argument("--dataset", required=True)
@@ -1976,6 +2035,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 resume=args.resume, dry_run=args.dry_run)
         elif args.command == "verify-run":
             result = command_verify_run(plan, args.manifest)
+        elif args.command == "import-baseline-raw":
+            if "all" in args.methods and args.methods != ["all"]:
+                raise ValueError("--methods all cannot be combined with M1/M2")
+            result = command_import_baseline_raw(
+                plan, args.source_roots, args.datasets, args.methods,
+                audit_only=args.audit_only, output_root=args.output_root,
+                m1_lineage_manifest=args.m1_lineage_manifest)
         elif args.command == "aggregate":
             result = command_aggregate(
                 plan, args.dataset, args.phase, args.output,
@@ -1993,7 +2059,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "UnifiedEvaluationGate", "build_parser", "command_aggregate",
     "command_aggregate_ablation",
-    "command_canonicalize", "command_reproduce_baselines",
+    "command_canonicalize", "command_import_baseline_raw",
+    "command_reproduce_baselines",
     "command_run_ablation", "command_run_coverage", "command_run_large",
     "command_run_main", "command_run_timing",
     "command_verify_run", "main",
