@@ -788,6 +788,265 @@ def _score_rich_geometry(problem: RichH0Problem,
     )
 
 
+def _evaluate_native_future_rollout(
+        problem: RichH0Problem,
+        config: RichSearchConfig,
+        option_indices: Sequence[int],
+        assignments: Sequence[tuple[int, int, Point]],
+        reseats: Sequence[tuple[int, int, Point]],
+) -> tuple[float, tuple[float, ...], dict[str, float], int, int]:
+    """Independent physical oracle for ABI5 raw future-layer rollout."""
+    if problem.selected_horizon != config.max_horizon:
+        raise ValueError("problem/config horizon mismatch")
+    positions = list(_rich_points(problem))
+    for eligible_index, _site_id, point in (*assignments, *reseats):
+        positions[problem.eligible[eligible_index]] = point
+    for domain, option_index in zip(problem.gate_domains, option_indices):
+        option = domain[option_index]
+        target1, target2 = _gate_targets(problem, option)
+        positions[option.q1] = target1
+        positions[option.q2] = target2
+
+    architecture = problem.architecture
+    coordinates = architecture.site_coordinates
+    storage_ids = architecture.storage_site_ids
+    site_pairs = architecture.entangling_site_pairs
+    zone_points = {
+        coordinates[site_id] for pair in site_pairs for site_id in pair}
+    storage_order_cache: dict[Point, tuple[int, ...]] = {}
+
+    def storage_by_distance(source: Point) -> tuple[int, ...]:
+        cached = storage_order_cache.get(source)
+        if cached is None:
+            cached = tuple(sorted(
+                storage_ids,
+                key=lambda site_id: (
+                    dist((source.x, source.y),
+                         (coordinates[site_id].x, coordinates[site_id].y)),
+                    site_id),
+            ))
+            storage_order_cache[source] = cached
+        return cached
+
+    def occupied(point: Point, except_atom: int = -1) -> bool:
+        return any(atom != except_atom and value == point
+                   for atom, value in enumerate(positions))
+
+    def score_phase(legs: Sequence[Leg], owners: Sequence[int],
+                    snapshot: Sequence[Point],
+                    idle_exposures: int = 0) -> FitnessResult:
+        phases = ()
+        if legs:
+            phases = (MovementPhase(
+                tuple(legs),
+                tuple(Ghost(atom, point)
+                      for atom, point in enumerate(snapshot)),
+                tuple(owners)),)
+        candidate = CandidatePlan((), phases, idle_exposures)
+        return evaluate_candidate(
+            BoundaryProblem(architecture, (candidate,)), candidate,
+            BoundaryConfig(
+                exact_coloring_threshold=config.exact_coloring_threshold,
+                enforce_single_leg_ghost=config.enforce_single_leg_ghost),
+        )
+
+    def finite_nll(score: FitnessResult) -> float:
+        return score.negative_log_fidelity if score.feasible else inf
+
+    def move_to_storage(atom: int) -> tuple[int, FitnessResult] | None:
+        source = positions[atom]
+        best = None
+        tested = 0
+        for site_id in storage_by_distance(source):
+            target = coordinates[site_id]
+            if occupied(target, atom):
+                continue
+            leg = Leg.between(source, target)
+            if leg.distance_um <= EPS:
+                continue
+            score = score_phase((leg,), (atom,), positions)
+            if not score.feasible:
+                continue
+            tested += 1
+            key = (
+                score.negative_log_fidelity,
+                score.move_batches,
+                score.move_time_us,
+                score.total_distance_um,
+                site_id,
+            )
+            if best is None or key < best[0]:
+                best = (key, site_id, score)
+            if (best is not None and
+                    tested >= config.forecast_gate_candidate_budget):
+                break
+        if best is None:
+            return None
+        positions[atom] = coordinates[best[1]]
+        return best[1], best[2]
+
+    def relocation_batch(before: Sequence[Point], atoms: set[int]
+                         ) -> FitnessResult:
+        legs = []
+        owners = []
+        for atom in sorted(atoms):
+            leg = Leg.between(before[atom], positions[atom])
+            if leg.distance_um <= EPS:
+                continue
+            legs.append(leg)
+            owners.append(atom)
+        return score_phase(legs, owners, before)
+
+    by_depth = [0.0] * (config.max_horizon + 1)
+    breakdown = {
+        "residency": 0.0,
+        "reentry": 0.0,
+        "terminal": 0.0,
+        "routing": 0.0,
+    }
+    applied = skipped = 0
+
+    def add(depth: int, category: str, raw_nll: float) -> None:
+        decay = config.decay_rho ** (depth - 1)
+        if decay < config.decay_epsilon:
+            return
+        contribution = config.alpha_lookahead * decay * raw_nll
+        by_depth[depth] += contribution
+        breakdown[category] += contribution
+
+    for layer_index, (depth, gates) in enumerate(problem.future_layers):
+        decay = config.decay_rho ** (depth - 1)
+        if decay < config.decay_epsilon:
+            skipped += 1
+            continue
+        participants = {atom for gate in gates for atom in gate}
+        occupancy: dict[Point, list[int]] = {}
+        for atom, point in enumerate(positions):
+            occupancy.setdefault(point, []).append(atom)
+
+        def blocker_distance(target: Point) -> float:
+            total = 0.0
+            for atom in occupancy.get(target, ()):
+                if atom in participants:
+                    continue
+                ordered = storage_by_distance(positions[atom])
+                if not ordered:
+                    return inf
+                nearest = coordinates[ordered[0]]
+                total += dist(
+                    (positions[atom].x, positions[atom].y),
+                    (nearest.x, nearest.y))
+            return total
+
+        placements = []
+        used_pairs: set[int] = set()
+        for q1, q2 in gates:
+            selected = None
+            for pair_index, pair in enumerate(site_pairs):
+                if pair_index in used_pairs:
+                    continue
+                left, right = coordinates[pair[0]], coordinates[pair[1]]
+                for reversed_order in (False, True):
+                    first, second = ((right, left) if reversed_order
+                                     else (left, right))
+                    cost = (
+                        dist((positions[q1].x, positions[q1].y),
+                             (first.x, first.y))
+                        + dist((positions[q2].x, positions[q2].y),
+                               (second.x, second.y))
+                        + blocker_distance(first)
+                    )
+                    if first != second:
+                        cost += blocker_distance(second)
+                    key = (cost, pair_index, reversed_order)
+                    if selected is None or key < selected[0]:
+                        selected = (key, pair_index, first, second)
+            if selected is None:
+                return inf, tuple(by_depth), breakdown, applied, skipped
+            used_pairs.add(selected[1])
+            placements.append((q1, q2, selected[2], selected[3]))
+
+        blockers: set[int] = set()
+        for _q1, _q2, target1, target2 in placements:
+            for target in (target1, target2):
+                blockers.update(
+                    atom for atom in occupancy.get(target, ())
+                    if atom not in participants)
+        ghosts = tuple(Ghost(atom, point)
+                       for atom, point in enumerate(positions))
+        for q1, q2, target1, target2 in placements:
+            for atom, target in ((q1, target1), (q2, target2)):
+                leg = Leg.between(positions[atom], target)
+                if leg.distance_um <= EPS:
+                    continue
+                blockers.update(
+                    hit for hit in ghost_hit_atoms((leg,), ghosts)
+                    if hit not in participants)
+
+        before_blockers = tuple(positions)
+        routing_nll = 0.0
+        for blocker in sorted(blockers):
+            moved = move_to_storage(blocker)
+            if moved is None:
+                routing_nll = inf
+                break
+            routing_nll += finite_nll(moved[1])
+        if isfinite(routing_nll) and blockers:
+            batched = relocation_batch(before_blockers, blockers)
+            if batched.feasible:
+                routing_nll = finite_nll(batched)
+
+        out_legs = []
+        out_owners = []
+        for q1, q2, target1, target2 in placements:
+            for atom, target in ((q1, target1), (q2, target2)):
+                leg = Leg.between(positions[atom], target)
+                if leg.distance_um > EPS:
+                    out_legs.append(leg)
+                    out_owners.append(atom)
+        reentry_nll = finite_nll(
+            score_phase(out_legs, out_owners, positions))
+        for q1, q2, target1, target2 in placements:
+            positions[q1] = target1
+            positions[q2] = target2
+
+        idle_exposures = sum(
+            atom not in participants and point in zone_points
+            for atom, point in enumerate(positions))
+        residency_nll = finite_nll(
+            score_phase((), (), positions, idle_exposures))
+
+        later_use = {
+            atom
+            for _later_depth, later_gates in problem.future_layers[
+                layer_index + 1:]
+            for gate in later_gates for atom in gate
+        }
+        before_terminal = tuple(positions)
+        terminal_atoms = {
+            atom for atom, point in enumerate(positions)
+            if point in zone_points and atom not in later_use
+        }
+        terminal_nll = 0.0
+        for atom in sorted(terminal_atoms):
+            moved = move_to_storage(atom)
+            if moved is None:
+                terminal_nll = inf
+                break
+            terminal_nll += finite_nll(moved[1])
+        if isfinite(terminal_nll) and terminal_atoms:
+            batched = relocation_batch(before_terminal, terminal_atoms)
+            if batched.feasible:
+                terminal_nll = finite_nll(batched)
+
+        add(depth, "residency", residency_nll)
+        add(depth, "reentry", reentry_nll)
+        add(depth, "terminal", terminal_nll)
+        add(depth, "routing", routing_nll)
+        applied += 1
+    return sum(by_depth), tuple(by_depth), breakdown, applied, skipped
+
+
 def _rich_reseats(problem: RichH0Problem, config: RichSearchConfig,
                   chromosome: tuple[int, ...], option_indices: tuple[int, ...],
                   assignments: tuple[tuple[int, int, Point], ...],
@@ -904,8 +1163,12 @@ def evaluate_rich_exact_candidate(
             return_pairs = tuple(
                 (problem.eligible[index], site_id)
                 for index, site_id, _point in assignments)
-            forecast = evaluate_decay_forecast(
-                problem, config, chromosome, option_indices, return_pairs)
+            if problem.future_layers:
+                forecast = _evaluate_native_future_rollout(
+                    problem, config, option_indices, assignments, reseats)
+            else:
+                forecast = evaluate_decay_forecast(
+                    problem, config, chromosome, option_indices, return_pairs)
             forecast_nll, by_depth, breakdown = forecast[:3]
             search_nll = fitness.negative_log_fidelity + forecast_nll
         else:

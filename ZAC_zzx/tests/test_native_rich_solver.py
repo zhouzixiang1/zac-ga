@@ -567,13 +567,24 @@ class TestNativeRichSolver(unittest.TestCase):
         buffers = problem.flat_buffers()
         self.assertEqual(list(buffers["future_layer_depths"]), [1])
         self.assertEqual(list(buffers["future_gate_atoms"]), [2, 3])
+        config = RichSearchConfig(
+            operator_profile="exact", max_horizon=1,
+            alpha_lookahead=.2, decay_rho=.7)
+        state = random.Random(11).getstate()
         result = NativeResidentBackend(arch).solve_rich_boundary(
-            problem,
-            RichSearchConfig(
-                operator_profile="exact", max_horizon=1,
-                alpha_lookahead=.2, decay_rho=.7),
-            random.Random(11).getstate(),
-        )
+            problem, config, state)
+        reference = solve_rich_exact_reference(problem, config, state)
+        self.assertEqual(reference.winner, result.winner)
+        self.assertEqual(reference.gate_option_indices,
+                         result.gate_option_indices)
+        self.assertEqual(reference.return_assignments,
+                         result.return_assignments)
+        self.assertAlmostEqual(
+            reference.forecast_nll, result.forecast_nll, delta=1e-15)
+        self.assertEqual(reference.forecast_by_depth,
+                         result.forecast_by_depth)
+        self.assertEqual(reference.forecast_breakdown,
+                         result.forecast_breakdown)
         self.assertGreater(result.forecast_nll, 0.0)
         self.assertTrue(math.isfinite(result.forecast_nll))
         self.assertAlmostEqual(
