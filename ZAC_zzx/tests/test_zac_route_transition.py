@@ -16,7 +16,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from evaluation import normalize_zair, validate_trace_physics  # noqa: E402
+from evaluation import normalize_zair, score_trace, validate_trace_physics  # noqa: E402
 from streaming.zac_m1_transition import ZACM1TransitionKernel  # noqa: E402
 from streaming.zac_route_transition import ZACRouteTransitionDriver  # noqa: E402
 from zac.ds.architecture import Architecture  # noqa: E402
@@ -202,15 +202,51 @@ class TestZACRouteTransition(unittest.TestCase):
             driver.compiler.zzx_ghost_splits,
             batch.zzx_ghost_splits,
         )
+        self.assertEqual(
+            driver.scheduler.snapshot().to_dict(),
+            batch.zzx_scheduler_snapshot,
+        )
+        self.assertEqual(
+            driver.scheduler.timing_sha256,
+            batch.zzx_scheduler_timing_sha256,
+        )
 
+        events = tuple(normalize_zair(
+            {"instructions": streamed}, architecture=self.spec))
         validation = validate_trace_physics(
-            normalize_zair(
-                {"instructions": streamed},
-                architecture=self.spec,
-            ),
+            events,
             n_qubits=len(mappings[0]),
         )
         self.assertEqual(validation["ghost_hits"], 0)
+        score = score_trace(events, n_qubits=len(mappings[0]))
+        self.assertAlmostEqual(
+            driver.scheduler.trace_end_us, score.duration_us, places=7)
+        for actual, expected in zip(
+                driver.scheduler.idle_time_us, score.idle_time_us):
+            self.assertAlmostEqual(actual, expected, places=7)
+
+    def test_scheduler_snapshot_survives_stream_state_roundtrip(self):
+        mappings, schedule, gate_ids, one_qubit, initial_one_qubit = _fixture()
+        driver = ZACRouteTransitionDriver(
+            self.architecture, mappings[0],
+            initial_one_qubit_gates=initial_one_qubit)
+        for layer in range(2):
+            driver.route_layer(
+                layer,
+                mappings[2 * layer],
+                mappings[2 * layer + 1],
+                mappings[2 * layer + 2],
+                schedule[layer], gate_ids[layer], one_qubit[layer])
+        state = deepcopy(driver.state_dict())
+        restored = ZACRouteTransitionDriver.from_state(
+            self.architecture, mappings[0], state)
+        self.assertEqual(
+            restored.scheduler.snapshot(), driver.scheduler.snapshot())
+        for value in (driver, restored):
+            value.route_layer(
+                2, mappings[4], mappings[5], mappings[6],
+                schedule[2], gate_ids[2], one_qubit[2])
+        self.assertEqual(restored.state_dict(), driver.state_dict())
 
     def test_m1_kernel_mappings_route_dictionary_exact_to_batch(self):
         initial = [(0, 0, q) for q in range(8)]

@@ -33,6 +33,7 @@ from itertools import chain
 from typing import Any, Sequence
 
 from zzx.zac_zzx import ZAC_zzx
+from zzx.scheduler_ledger import PureSchedulerLedger
 
 
 Location = tuple[int, int, int]
@@ -214,6 +215,9 @@ class ZACRouteTransitionResult:
     ghost_splits: int
     active_instruction_count: int
     peak_active_instruction_count: int
+    scheduler_timing_count: int
+    scheduler_timing_sha256: str
+    scheduler_trace_end_us: float
 
 
 class ZACRouteTransitionDriver:
@@ -227,6 +231,7 @@ class ZACRouteTransitionDriver:
         initial_one_qubit_gates: Sequence[Sequence[Any]] = (),
         window_size: int = 1000,
         placer_kind: str = "resident",
+        coloring_exact_threshold: int = 24,
     ):
         self.architecture = architecture
         self.initial_mapping = _freeze_mapping(initial_mapping)
@@ -236,6 +241,10 @@ class ZACRouteTransitionDriver:
             raise ValueError("window_size must be positive")
         if placer_kind not in {"zac", "resident"}:
             raise ValueError("placer_kind must be exactly 'zac' or 'resident'")
+        if (not isinstance(coloring_exact_threshold, int)
+                or isinstance(coloring_exact_threshold, bool)
+                or coloring_exact_threshold < 0):
+            raise ValueError("coloring_exact_threshold must be non-negative")
         self.placer_kind = placer_kind
         self.n_qubits = len(self.initial_mapping)
         self.next_layer = 0
@@ -248,6 +257,7 @@ class ZACRouteTransitionDriver:
         compiler.placer_kind = placer_kind
         compiler.routing_strategy = (
             "greedy" if placer_kind == "zac" else "coloring")
+        compiler.zzx_exact_threshold = int(coloring_exact_threshold)
         compiler.dynamic_placement = True
         compiler.reuse = True
         compiler.use_window = True
@@ -278,7 +288,24 @@ class ZACRouteTransitionDriver:
         self.compiler = compiler
 
         self.initial_instructions = self.instructions.output_chunk(0)
+        self.scheduler = PureSchedulerLedger(
+            self.n_qubits,
+            n_aods=max(1, len(architecture.dict_AOD)),
+            n_rydberg_zones=max(1, len(architecture.entanglement_zone)),
+            one_qubit_duration_us=float(architecture.time_1qGate),
+            rydberg_duration_us=float(architecture.time_rydberg),
+            one_qubit_common_us=float(getattr(compiler, "common_1q", 0.0)),
+            keep_events=False,
+        )
+        self._consume_scheduler_range(0, len(self.instructions))
         self._prune()
+
+    def _consume_scheduler_range(self, start: int, stop: int) -> None:
+        for instruction_id in range(int(start), int(stop)):
+            instruction = self.instructions[instruction_id]
+            timing = self.scheduler.consume_zair_instruction(instruction)
+            if timing.instruction_id != instruction_id:
+                raise RuntimeError("scheduler/router native id drift")
 
     def _one_qubit_gates(
         self, gates: Sequence[Sequence[Any]],
@@ -329,7 +356,9 @@ class ZACRouteTransitionDriver:
         return active
 
     def _prune(self) -> None:
-        self.instructions.prune_to(self._active_dependency_ids())
+        active = self._active_dependency_ids()
+        self.instructions.prune_to(active)
+        self.scheduler.prune_instructions(active)
 
     def route_layer(
         self,
@@ -382,6 +411,7 @@ class ZACRouteTransitionDriver:
         for entry in new_logs:
             entry["layer"] = layer
 
+        self._consume_scheduler_range(instruction_start, len(self.instructions))
         chunk = self.instructions.output_chunk(instruction_start)
         route_log = tuple(deepcopy(entry) for entry in new_logs)
         # Logs are an output stream, not compiler state.  Keeping them inside the
@@ -399,6 +429,9 @@ class ZACRouteTransitionDriver:
             ghost_splits=int(getattr(compiler, "zzx_ghost_splits", 0)),
             active_instruction_count=self.instructions.active_count,
             peak_active_instruction_count=self.instructions.peak_active_count,
+            scheduler_timing_count=self.scheduler.timing_count,
+            scheduler_timing_sha256=self.scheduler.timing_sha256,
+            scheduler_trace_end_us=self.scheduler.trace_end_us,
         )
 
     # State-machine spelling consistent with the placement transition kernel.
@@ -410,9 +443,10 @@ class ZACRouteTransitionDriver:
         if compiler.zzx_route_log:
             raise ValueError("route log must be flushed before checkpointing")
         return {
-            "format": "formal-zac-route-state-v1",
+            "format": "formal-zac-route-state-v2",
             "placer_kind": self.placer_kind,
             "window_size": int(compiler.window_size),
+            "coloring_exact_threshold": int(compiler.zzx_exact_threshold),
             "initial_mapping": self.initial_mapping,
             "initial_instructions": deepcopy(self.initial_instructions),
             "initial_one_qubit_gates": deepcopy(
@@ -431,6 +465,7 @@ class ZACRouteTransitionDriver:
             },
             "runtime_us": float(compiler.result_json["runtime"]),
             "ghost_splits": int(getattr(compiler, "zzx_ghost_splits", 0)),
+            "scheduler": self.scheduler.snapshot().to_dict(),
         }
 
     @classmethod
@@ -441,7 +476,7 @@ class ZACRouteTransitionDriver:
         state: dict[str, Any],
     ) -> "ZACRouteTransitionDriver":
         """Restore global native ids and dependency ledgers without replay."""
-        if state.get("format") != "formal-zac-route-state-v1":
+        if state.get("format") != "formal-zac-route-state-v2":
             raise ValueError("unsupported formal ZAC route state")
         initial = _freeze_mapping(initial_mapping)
         if initial != _freeze_mapping(state["initial_mapping"]):
@@ -452,6 +487,8 @@ class ZACRouteTransitionDriver:
             initial_one_qubit_gates=state["initial_one_qubit_gates"],
             window_size=int(state["window_size"]),
             placer_kind=str(state["placer_kind"]),
+            coloring_exact_threshold=int(
+                state.get("coloring_exact_threshold", 24)),
         )
         driver.next_layer = int(state["next_layer"])
         if driver.next_layer < 0:
@@ -485,6 +522,13 @@ class ZACRouteTransitionDriver:
         compiler.result_json["runtime"] = float(state["runtime_us"])
         compiler.zzx_ghost_splits = int(state["ghost_splits"])
         compiler.zzx_route_log = []
+        driver.scheduler = PureSchedulerLedger.from_snapshot(
+            state["scheduler"],
+            one_qubit_duration_us=float(architecture.time_1qGate),
+            rydberg_duration_us=float(architecture.time_rydberg),
+            one_qubit_common_us=float(getattr(compiler, "common_1q", 0.0)),
+            keep_events=False,
+        )
 
         if len(compiler.qubit_dependency) != driver.n_qubits:
             raise ValueError("checkpoint qubit dependency width mismatch")
@@ -498,6 +542,12 @@ class ZACRouteTransitionDriver:
         if active != set(driver.instructions._records):
             raise ValueError(
                 "checkpoint instruction summaries do not equal active dependencies")
+        if active != set(driver.scheduler.instructions):
+            raise ValueError(
+                "checkpoint scheduler summaries do not equal active dependencies")
+        if driver.scheduler.next_instruction_id != len(driver.instructions):
+            raise ValueError(
+                "checkpoint scheduler/native next instruction ids differ")
         return driver
 
 

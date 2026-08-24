@@ -1,4 +1,4 @@
-"""Real-circuit Python-reference versus ABI5 exact-boundary benchmark.
+"""Real-circuit Python-reference versus ABI7/wire-v6 exact-boundary benchmark.
 
 This benchmark deliberately measures the existing :class:`ResidentPlacer`
 boundary implementation instead of a synthetic collection of candidate legs.
@@ -376,7 +376,7 @@ def assert_parity(reference: dict[str, Any], native: dict[str, Any]
         "unique_evaluations": True,
         # Python re-requests the already cached incumbent once after search on
         # boundaries without residency genes.  This advances no RNG and adds no
-        # unique fitness work; ABI5 returns the incumbent directly.
+        # unique fitness work; ABI7 returns the incumbent directly.
         "requested_evaluation_delta_reference_minus_native_by_layer":
             requested_evaluation_delta,
     }
@@ -446,7 +446,7 @@ def benchmark(*, qasm_path: Path = DEFAULT_QASM,
     if repeats <= 0:
         raise ValueError("repeats must be positive")
     if not native_available():
-        raise RuntimeError("ABI5 zac_native_core is not installed")
+        raise RuntimeError("ABI7/wire-v6 zac_native_core is not installed")
     native_build = build_info(
         require_registered_wheel=require_registered_wheel,
         expected_wheel_sha256=expected_wheel_sha256)
@@ -515,7 +515,7 @@ def benchmark(*, qasm_path: Path = DEFAULT_QASM,
     }
     return {
         "schema": 1,
-        "benchmark_id": "abi5-exact-real-boundary-ising-n42-v2",
+        "benchmark_id": "abi7-exact-real-boundary-ising-n42-v2",
         "claim_scope": "migration benchmark; not a formal quality result",
         "case": {
             "dataset": "zac18",
@@ -592,7 +592,7 @@ def _markdown(payload: dict[str, Any]) -> str:
     native = timing["summary"]["native"]
     primary = "complete_boundary_solve_ns"
     return "\n".join((
-        "# ABI5 exact real-boundary benchmark",
+        "# ABI7/wire-v6 exact real-boundary benchmark",
         "",
         f"- Case: ZAC18 `{case['circuit']}`; {case['qubits']} qubits, "
         f"{case['two_qubit_gates']} two-qubit gates, "
@@ -602,7 +602,7 @@ def _markdown(payload: dict[str, Any]) -> str:
         "- Unique fitness evaluations also match. Python records two extra "
         "cached incumbent requests; neither changes search work or RNG state.",
         f"- Complete boundary median: Python "
-        f"{reference[primary]['median'] / 1e6:.3f} ms, ABI5 C++ "
+        f"{reference[primary]['median'] / 1e6:.3f} ms, ABI7 C++ "
         f"{native[primary]['median'] / 1e6:.3f} ms.",
         f"- Complete boundary speedup: {speedup[primary]:.3f}x "
         f"(5x gate: {'PASS' if timing['meets_5x_complete_boundary_gate'] else 'FAIL'}).",

@@ -194,7 +194,7 @@ def register_native_wheel(wheel_path: str | Path) -> dict:
 class NativeResidentBackend:
     """One persistent architecture object and one native call per boundary."""
 
-    name = "cpp-native-v5"
+    name = "cpp-native-v7"
 
     def __init__(self, architecture, *, flat_buffers: bool = True,
                  require_registered_wheel: bool = False,
@@ -207,6 +207,7 @@ class NativeResidentBackend:
             require_registered_wheel=require_registered_wheel,
             expected_wheel_sha256=expected_wheel_sha256,
         )
+        self._formal_native = bool(require_registered_wheel)
         self._architecture_dto = architecture
         try:
             self._architecture = self._module.ArchitectureSnapshot(
@@ -245,6 +246,7 @@ class NativeResidentBackend:
                     self._architecture,
                     [candidate.to_wire() for candidate in selected],
                     config.to_wire(),
+                    problem.prior_idle_time_us,
                 )
                 self.last_evaluate_timing = {}
                 return tuple(FitnessResult.from_wire(value) for value in values)
@@ -253,7 +255,8 @@ class NativeResidentBackend:
             config_value = config.to_wire()
             marshal_in_stopped = perf_counter_ns()
             value = self._module.evaluate_many_flat(
-                self._architecture, flat.buffers(), config_value)
+                self._architecture, flat.buffers(), config_value,
+                problem.prior_idle_time_us)
             marshal_out_started = perf_counter_ns()
             evaluated = tuple(
                 FitnessResult.from_flat_row(candidate.chromosome, row)
@@ -291,6 +294,7 @@ class NativeResidentBackend:
                 self._architecture,
                 flat.buffers(),
                 config_value,
+                problem.prior_idle_time_us,
             )
             marshal_out_started = perf_counter_ns()
             evaluated = tuple(
@@ -335,6 +339,7 @@ class NativeResidentBackend:
                 self._architecture,
                 [candidate.to_wire() for candidate in selected],
                 config.to_wire(),
+                problem.prior_idle_time_us,
             )
             return tuple(FitnessResult.from_wire(value) for value in values)
         except Exception as exc:
@@ -353,7 +358,8 @@ class NativeResidentBackend:
         marshal_in_stopped = perf_counter_ns()
         try:
             value = self._module.solve_boundary(
-                self._architecture, candidate_values, config_value)
+                self._architecture, candidate_values, config_value,
+                problem.prior_idle_time_us)
             marshal_out_started = perf_counter_ns()
             evaluated = tuple(FitnessResult.from_wire(item)
                               for item in value["evaluated"])
@@ -394,6 +400,12 @@ class NativeResidentBackend:
         native-search failure is surfaced as a compiler error; there is no
         reference fallback on this path.
         """
+        if self._formal_native and not problem.exact_current_scheduler:
+            raise NativeBackendError(
+                "formal ABI7 rich boundary requires an exact scheduler snapshot")
+        if self._formal_native and not problem.enforce_frozen_physical_model:
+            raise NativeBackendError(
+                "formal ABI7 rich boundary requires the frozen physical model")
         if problem.architecture != self._architecture_dto:
             raise NativeBackendError(
                 "rich boundary architecture differs from backend snapshot")
@@ -439,6 +451,24 @@ class NativeResidentBackend:
                 problem.forecast_terms,
                 problem.future_layers,
                 problem.selected_horizon,
+                problem.prior_idle_time_us,
+                problem.scheduler_trace_end_us,
+                problem.scheduler_active_union_us,
+                problem.scheduler_aod_end_us,
+                problem.scheduler_one_qubit_end_us,
+                problem.scheduler_rydberg_end_us,
+                problem.scheduler_qubit_dependency_end_us,
+                problem.scheduler_back_dependency_end_us,
+                problem.scheduler_site_dependency_site_ids,
+                problem.scheduler_site_dependency_activation_finish_us,
+                problem.target_one_qubit_atoms,
+                problem.scheduler_one_qubit_duration_us,
+                problem.scheduler_rydberg_duration_us,
+                problem.scheduler_one_qubit_common_us,
+                problem.scheduler_transfer_duration_us,
+                problem.scheduler_accel_um_per_us2,
+                problem.coherence_t2_us,
+                problem.enforce_frozen_physical_model,
             )
             cached_exact = self._rich_exact_cache.get(exact_cache_key)
             if cached_exact is not None:
@@ -546,6 +576,24 @@ class NativeResidentBackend:
                     value["current_ghost_rejections"]),
                 future_ghost_cost=float(value["future_ghost_cost"]),
                 pre_score_reseats=int(value["pre_score_reseats"]),
+                current_gate_anchor=tuple(
+                    int(item) for item in value["current_gate_anchor"]),
+                current_gate_anchor_assignment_site_ids=tuple(
+                    int(item) for item in
+                    value["current_gate_anchor_assignment_site_ids"]),
+                current_gate_final_assignment_site_ids=tuple(
+                    int(item) for item in
+                    value["current_gate_final_assignment_site_ids"]),
+                current_gate_guard_branch=str(
+                    value["current_gate_guard_branch"]),
+                current_gate_guard_cohort_size=int(
+                    value["current_gate_guard_cohort_size"]),
+                current_gate_guard_admitted_size=int(
+                    value["current_gate_guard_admitted_size"]),
+                current_gate_projection_source=str(
+                    value["current_gate_projection_source"]),
+                current_gate_projection_evaluated=int(
+                    value["current_gate_projection_evaluated"]),
                 timing=timing,
             )
             if exact_cache_key is not None and result.search_mode in {

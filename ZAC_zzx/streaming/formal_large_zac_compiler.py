@@ -448,6 +448,9 @@ def compile_formal_large_zac(
                     initial_mapping,
                     initial_one_qubit_gates=placement.leading_one_qubit_gates,
                     placer_kind="zac" if method == "M1" else "resident",
+                    coloring_exact_threshold=int(
+                        24 if resolved is None else
+                        resolved.get("coloring_exact_threshold", 24)),
                 )
                 normalizer = IncrementalZairNormalizer(
                     architecture_spec, model=physical_model)

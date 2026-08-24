@@ -59,7 +59,8 @@ class TestResidentTransitionKernel(unittest.TestCase):
         cls.architecture = make_architecture()
 
     def assert_batch_stream_equal(self, schedule, *, horizon, seed=0,
-                                  ablation_policy="optimize"):
+                                  ablation_policy="optimize",
+                                  leading_one_qubit_gates=()):
         n_qubits = 1 + max(q for layer in schedule for gate in layer for q in gate)
         initial = [(0, q, 0) for q in range(n_qubits)]
 
@@ -68,7 +69,8 @@ class TestResidentTransitionKernel(unittest.TestCase):
             ablation_policy=ablation_policy)
         batch.run(
             self.architecture, [initial], schedule, True,
-            [set() for _ in schedule])
+            [set() for _ in schedule],
+            leading_one_qubit_gates=leading_one_qubit_gates)
 
         reads = []
 
@@ -82,7 +84,8 @@ class TestResidentTransitionKernel(unittest.TestCase):
             initial, horizon=horizon, seed=seed,
             ablation_policy=ablation_policy)
         kernel = ResidentTransitionKernel(
-            streamed, self.architecture, initial, provider)
+            streamed, self.architecture, initial, provider,
+            leading_one_qubit_gates=leading_one_qubit_gates)
 
         rebuilt = [list(kernel.initial_mapping),
                    list(kernel.initial_gate_mapping)]
@@ -108,6 +111,12 @@ class TestResidentTransitionKernel(unittest.TestCase):
         self.assertEqual(streamed.registry.storage_site,
                          batch.registry.storage_site)
         self.assertEqual(streamed.registry.zone_seat, batch.registry.zone_seat)
+        self.assertEqual(streamed.registry.resident_idle_exposures,
+                         batch.registry.resident_idle_exposures)
+        self.assertEqual(streamed.registry.resident_idle_time_us,
+                         batch.registry.resident_idle_time_us)
+        self.assertEqual(streamed.registry.coherence_idle_snapshot(),
+                         batch.registry.coherence_idle_snapshot())
         self.assertEqual(streamed.residency_commitments,
                          batch.residency_commitments)
         self.assertEqual(streamed.rng.getstate(), batch.rng.getstate())
@@ -125,6 +134,7 @@ class TestResidentTransitionKernel(unittest.TestCase):
             ],
             horizon=0,
             seed=7,
+            leading_one_qubit_gates=(("u1", 0), ("u2", 3)),
         )
 
     def test_lk_batch_and_stream_are_exactly_equal(self):
@@ -145,6 +155,44 @@ class TestResidentTransitionKernel(unittest.TestCase):
             [[[0, 1]], [[2, 3]], [[0, 2]]],
             horizon=2,
             ablation_policy="always_return",
+        )
+
+    def test_leading_one_qubit_then_initial_out_enter_first_prior(self):
+        schedule = [[[0, 1]], [[2, 3]]]
+        initial = [(0, q, 0) for q in range(4)]
+
+        def committed_prior(prefix=()):
+            value = make_placer(initial, horizon=0)
+            value._initialize_run_state(
+                self.architecture, [initial], schedule,
+                leading_one_qubit_gates=prefix)
+            placement = value._plan_round(0)
+            value._repair_ghosts(placement, {})
+            summary = value._record_initial_out_phase(placement)
+            value._commit_round(0, placement)
+            return summary, value.registry.coherence_idle_snapshot()
+
+        summary, prior = committed_prior()
+        leading_summary, leading_prior = committed_prior(
+            (("u1", 0), ("u2", 1)))
+
+        self.assertGreater(summary["move_time_us"], 30.0)
+        self.assertEqual(summary["movers"], 2)
+        self.assertEqual(leading_summary, summary)
+        # Layer-0 participants are busy during CZ, but still carry positive
+        # coherence idle from the real initial AOD out phase.
+        self.assertGreater(prior[0], 0.0)
+        self.assertGreater(prior[1], 0.0)
+        self.assertAlmostEqual(prior[2] - prior[0], 30.36, places=9)
+        self.assertAlmostEqual(prior[3] - prior[1], 30.36, places=9)
+        # The two globally serial 52-us prefix gates precede that same MOVE:
+        # each target is idle during the other gate, while all other atoms are
+        # idle during both.  Parent-layer 1Q gates are intentionally not part
+        # of this placement-ledger interface because they may overlap AOD work.
+        self.assertEqual(
+            tuple(round(after - before, 9)
+                  for before, after in zip(prior, leading_prior)),
+            (52.0, 52.0, 104.0, 104.0),
         )
 
     def test_empty_schedule_retains_only_initial_mapping(self):

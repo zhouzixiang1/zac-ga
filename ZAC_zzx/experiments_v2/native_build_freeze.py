@@ -1,4 +1,4 @@
-"""Fail-closed ABI5 build attestation and freeze protocol.
+"""Fail-closed ABI7/wire-v6 build attestation and freeze protocol.
 
 The native wheel is not reproducible byte-for-byte on every supported build
 host, so this module deliberately creates a *build attestation*, not a claim
@@ -34,10 +34,14 @@ DEFAULT_NATIVE_ROOT = PACKAGE_ROOT / "native"
 ATTESTATION_PROTOCOL = "native-build-attestation-v1"
 FREEZE_PROTOCOL = "native-build-freeze-v1"
 SOURCE_HASH_ALGORITHM = "tracked-tree-v1"
-NATIVE_ABI_VERSION = 5
+NATIVE_ABI_VERSION = 7
 RNG_VERSION = "python-random-mt19937-v1"
-RICH_BOUNDARY_WIRE_VERSION = 4
+RICH_BOUNDARY_WIRE_VERSION = 6
 FLAT_WIRE_VERSION = 1
+NATIVE_BACKEND = "cpp-native-v7"
+MICROBENCHMARK_PROTOCOL = "abi7-registered-native-microbenchmark-v1"
+REAL_BOUNDARY_BENCHMARK_ID = "abi7-exact-real-boundary-ising-n42-v2"
+FULL_PIPELINE_PROTOCOL = "resident-python-vs-abi7-medium-v2"
 
 MINIMUM_ONE_CALL_SPEEDUP = 5.0
 MINIMUM_FITNESS_SPEEDUP = 10.0
@@ -234,6 +238,7 @@ def _observe_registered_build(
     info = dict(_default_build_info(expected_wheel_sha256=wheel_sha256))
     checks = {
         "native_abi_version": NATIVE_ABI_VERSION,
+        "backend": NATIVE_BACKEND,
         "flat_wire_version": FLAT_WIRE_VERSION,
         "rich_boundary_wire_version": RICH_BOUNDARY_WIRE_VERSION,
         "rng_version": RNG_VERSION,
@@ -297,6 +302,7 @@ def _observe_registered_build(
             "sha256": wheel_sha256,
             "size_bytes": wheel_path.stat().st_size,
             "native_abi_version": NATIVE_ABI_VERSION,
+            "backend": NATIVE_BACKEND,
             "flat_wire_version": FLAT_WIRE_VERSION,
             "rich_boundary_wire_version": RICH_BOUNDARY_WIRE_VERSION,
             "rng_version": RNG_VERSION,
@@ -362,9 +368,15 @@ def _nll_error_below_tolerance(value: Any) -> bool:
 
 def _require_native_identity(value: Mapping[str, Any], expected: Mapping[str, Any],
                              label: str) -> None:
+    expected_wheel = expected["wheel"]
+    for key in ("native_abi_version", "backend", "flat_wire_version",
+                "rich_boundary_wire_version", "rng_version"):
+        if value.get(key) != expected_wheel[key]:
+            raise NativeBuildFreezeError(
+                f"{label} native identity {key} mismatch")
     observed_wheel = value.get("native_wheel_sha256")
     observed_extension = value.get("extension_sha256")
-    if observed_wheel != expected["wheel"]["sha256"]:
+    if observed_wheel != expected_wheel["sha256"]:
         raise NativeBuildFreezeError(f"{label} wheel SHA256 mismatch")
     if observed_extension != expected["loaded_extension"]["sha256"]:
         raise NativeBuildFreezeError(f"{label} extension SHA256 mismatch")
@@ -374,9 +386,9 @@ def _validate_micro_benchmark(path: Path,
                               native_build: Mapping[str, Any]) -> dict[str, Any]:
     value = _load_json(path, "native microbenchmark")
     if value.get("schema") != 2 or value.get("protocol") != (
-            "abi5-registered-native-microbenchmark-v1"):
+            MICROBENCHMARK_PROTOCOL):
         raise NativeBuildFreezeError(
-            "microbenchmark must use registered ABI5 schema 2")
+            "microbenchmark must use registered ABI7/wire-v6 schema 2")
     build = value.get("native_build")
     if not isinstance(build, Mapping):
         raise NativeBuildFreezeError("microbenchmark lacks native_build")
@@ -411,7 +423,7 @@ def _validate_micro_benchmark(path: Path,
 def _validate_real_boundary(path: Path,
                             native_build: Mapping[str, Any]) -> dict[str, Any]:
     value = _load_json(path, "real-boundary benchmark")
-    if value.get("benchmark_id") != "abi5-exact-real-boundary-ising-n42-v2":
+    if value.get("benchmark_id") != REAL_BOUNDARY_BENCHMARK_ID:
         raise NativeBuildFreezeError("unexpected real-boundary benchmark id")
     build = value.get("native_build")
     if not isinstance(build, Mapping):
@@ -456,8 +468,10 @@ def _validate_real_boundary(path: Path,
 def _validate_full_pipeline(path: Path,
                             native_build: Mapping[str, Any]) -> dict[str, Any]:
     value = _load_json(path, "full-pipeline benchmark")
-    if value.get("protocol") != "resident-python-vs-abi5-medium-v2":
+    if value.get("protocol") != FULL_PIPELINE_PROTOCOL:
         raise NativeBuildFreezeError("unexpected full-pipeline protocol")
+    if value.get("backend") != NATIVE_BACKEND:
+        raise NativeBuildFreezeError("unexpected full-pipeline backend")
     if value.get("wheel_sha256") != native_build["wheel"]["sha256"]:
         raise NativeBuildFreezeError("full-pipeline wheel SHA256 mismatch")
     if value.get("accepted") is not True:
@@ -583,7 +597,7 @@ def freeze_native_build(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Attest and freeze the registered ABI5 native build")
+        description="Attest and freeze the registered ABI7/wire-v6 native build")
     subparsers = parser.add_subparsers(dest="command", required=True)
     attest = subparsers.add_parser("attest")
     attest.add_argument("--repo-root", type=Path, default=DEFAULT_REPO_ROOT)

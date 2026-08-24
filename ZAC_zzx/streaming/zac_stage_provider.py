@@ -176,6 +176,15 @@ class LayerStoreZacStageProvider(SequentialZacStageProvider):
             raise ValueError(f"cannot locate physical ZAC stage {stage_index}")
         return int(row["layer"]), int(row["first_stage"])
 
+    def one_qubit_for_stage(
+            self, stage_index: int,
+    ) -> tuple[tuple[str, int], ...]:
+        stage = self.stage_record(int(stage_index))
+        return tuple(
+            (str(event.operation), int(event.qubits[0]))
+            for event in self.store.iter_zac_one_qubit_for_stage(stage)
+        )
+
     def _iter_from(
         self, start_stage: int, stage_count: int,
     ) -> Iterator[ZacStage]:

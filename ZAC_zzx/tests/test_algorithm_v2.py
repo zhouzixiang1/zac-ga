@@ -839,25 +839,34 @@ class TestResidentDecisionMechanics(unittest.TestCase):
 
     def test_incompatible_target_commitments_force_return_and_reentry(self):
         initial = [(0, i, 0) for i in range(6)]
-        schedule = [[[2, 3]], [[0, 1]], [[4, 5]]]
+        # Layer 0 leaves q0 and q1 on two different entanglement pairs; layer
+        # 1 then asks them to form one gate.  Promising both old seats is a
+        # physically incompatible commitment and must trigger two explicit
+        # RETURN -> re-entry cycles.
+        schedule = [[[0, 2], [1, 3]], [[0, 1]], [[4, 5]]]
         placer = ResidentPlacer(
             initial, seed=0, experiment_schema=2,
             method_id="ours_lk", objective="physical_log_fidelity",
             lookahead_horizon=2, engine="ga", fitness_cache=True,
             population_size=6, iterations=2,
             neighbors_per_solution=2, neighbor_sample_size=8)
-        placer.architecture = self.arch
-        placer.gate_scheduling = schedule
-        placer.registry = ResidentRegistry(self.arch, initial)
-        placer.registry.enter_zone(0, (1, 0, 0))
-        placer.registry.enter_zone(1, (2, 1, 1))
-        current = [placer.registry.current_pos(q) for q in range(len(initial))]
-        placer.mapping = [initial, current]
-        placer.nu = NextUse([])
-        placer.forecast = ForecastOracle(schedule, 2)
+        # Build the same fail-closed backend and exact scheduler state used by
+        # ``run`` before installing this deliberately synthetic mid-run
+        # residency state.  Directly populating the old handful of attributes
+        # bypassed the production scheduler and is no longer a valid private-
+        # method fixture.
+        placer._initialize_run_state(self.arch, [initial], schedule)
+        placement = placer._plan_round(0)
+        placer._repair_ghosts(placement, {})
+        placer._record_initial_out_phase(placement)
+        placer._commit_round(0, placement)
+        q0_seat = tuple(placer.registry.zone_seat[0])
+        q1_seat = tuple(placer.registry.zone_seat[1])
+        self.assertNotEqual(placer._norm_left(q0_seat),
+                            placer._norm_left(q1_seat))
         placer.residency_commitments = {
-            0: (1, (1, 0, 0)),
-            1: (1, (2, 1, 1)),
+            0: (1, q0_seat),
+            1: (1, q1_seat),
         }
 
         placer._ga_step_v2(0)

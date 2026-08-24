@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass
+import math
 from typing import Any, Iterator, Mapping, Sequence
 
 from zzx.algorithm_v2 import (
@@ -14,10 +15,12 @@ from zzx.algorithm_v2 import (
     validate_schema2_setting,
 )
 from zzx.resident import NextUse, ResidentRegistry
+from zzx.exact_current_reference import ExactCurrentReferenceScheduler
 from zzx.zplacer import ResidentPlacer
 
 from .qasm_sqlite import LayerStore, ZacStage
 from .resident_transition import (
+    ProviderOneQView,
     ProviderScheduleView,
     ResidentTransitionKernel,
 )
@@ -27,7 +30,7 @@ from .zac_stage_provider import LayerStoreZacStageProvider
 
 Location = tuple[int, int, int]
 FrozenMapping = tuple[Location, ...]
-PLACEMENT_STATE_FORMAT = "formal-zac-placement-state-v1"
+PLACEMENT_STATE_FORMAT = "formal-zac-placement-state-v2"
 
 
 def _freeze_mapping(mapping: Sequence[Sequence[int]]) -> FrozenMapping:
@@ -120,7 +123,8 @@ class FormalZacPlacementStream:
             placer = ResidentPlacer(
                 list(self.initial_mapping), **resolved)
             self._resident_kernel = ResidentTransitionKernel(
-                placer, architecture, self.initial_mapping, self.provider)
+                placer, architecture, self.initial_mapping, self.provider,
+                leading_one_qubit_gates=self.leading_one_qubit_gates)
             self.initial_gate_mapping = self._resident_kernel.initial_gate_mapping
 
     @property
@@ -255,6 +259,11 @@ class FormalZacPlacementStream:
         registry = placer.registry
         if registry is None:
             raise AssertionError("resident placer has no registry")
+        if placer.scheduler_reference is None:
+            raise AssertionError("resident placer has no scheduler reference")
+        if placer.current_scheduler_prefix is not None:
+            raise RuntimeError(
+                "cannot checkpoint inside an uncommitted scheduler boundary")
         cache_names = (
             "transition_cache", "phase_cost_cache",
             "return_candidate_cache", "rollout_pair_cache",
@@ -266,7 +275,7 @@ class FormalZacPlacementStream:
             for name in cache_names
         }
         return {
-            "format": "resident-transition-state-v1",
+            "format": "resident-transition-state-v2",
             "current_layer": kernel.current_layer,
             "finished": kernel.finished,
             "mapping": deepcopy(placer.mapping),
@@ -274,6 +283,12 @@ class FormalZacPlacementStream:
                 "homes": deepcopy(registry.homes),
                 "zone_seat": deepcopy(registry.zone_seat),
                 "storage_site": deepcopy(registry.storage_site),
+                "resident_idle_exposures": deepcopy(
+                    registry.resident_idle_exposures),
+                "resident_idle_time_us": deepcopy(
+                    registry.resident_idle_time_us),
+                "coherence_idle_time_us": list(
+                    registry.coherence_idle_snapshot()),
                 "theta": float(registry.theta),
                 "zone_sites": int(registry.zone_sites),
             },
@@ -292,6 +307,12 @@ class FormalZacPlacementStream:
             "decision_log": deepcopy(placer.decision_log[-1:]),
             "search_time": float(placer.search_time),
             "ghost_fixes": int(getattr(placer, "ghost_fixes", 0)),
+            "scheduler_reference": placer.scheduler_reference.state_dict(),
+            "expected_scheduler_prefix_sha256":
+                placer.expected_scheduler_prefix_sha256,
+            "expected_scheduler_prefix_idle_us": (
+                None if placer.expected_scheduler_prefix_idle_us is None
+                else list(placer.expected_scheduler_prefix_idle_us)),
         }
 
     @classmethod
@@ -393,12 +414,13 @@ class FormalZacPlacementStream:
         *,
         take_cache_ownership: bool = False,
     ) -> ResidentTransitionKernel:
-        if state.get("format") != "resident-transition-state-v1":
+        if state.get("format") != "resident-transition-state-v2":
             raise ValueError("unsupported resident transition state")
         kernel = ResidentTransitionKernel.__new__(ResidentTransitionKernel)
         kernel.placer = placer
         kernel.provider = self.provider
         kernel.schedule = ProviderScheduleView(self.provider)
+        kernel.one_qubit_schedule = ProviderOneQView(self.provider)
         kernel.layer_count = self.stage_count
         kernel.initial_mapping = self.initial_mapping
         kernel.current_layer = (
@@ -409,6 +431,7 @@ class FormalZacPlacementStream:
 
         placer.architecture = self.architecture
         placer.gate_scheduling = kernel.schedule
+        placer.one_qubit_gates_by_layer = kernel.one_qubit_schedule
         # Schema-2 resident placement never consults legacy adjacent reuse.
         placer.list_reuse_qubit = ()
         placer.mapping = deepcopy(state["mapping"])
@@ -425,12 +448,66 @@ class FormalZacPlacementStream:
             int(q): tuple(site)
             for q, site in registry_state["storage_site"].items()
         }
+        raw_exposures = registry_state.get("resident_idle_exposures", {
+            q: 0 for q in registry.zone_seat})
+        raw_rent_time = registry_state.get("resident_idle_time_us", {
+            q: 0.0 for q in registry.zone_seat})
+        registry.resident_idle_exposures = {
+            int(q): int(value) for q, value in raw_exposures.items()}
+        registry.resident_idle_time_us = {
+            int(q): float(value) for q, value in raw_rent_time.items()}
+        if (set(registry.resident_idle_exposures) != set(registry.zone_seat)
+                or set(registry.resident_idle_time_us) != set(registry.zone_seat)):
+            raise ValueError("checkpoint resident rent keys disagree with registry")
+        if (any(value < 0 for value in registry.resident_idle_exposures.values())
+                or any(not math.isfinite(value) or value < 0.0
+                       for value in registry.resident_idle_time_us.values())):
+            raise ValueError("checkpoint resident rent is invalid")
+        raw_coherence = registry_state.get(
+            "coherence_idle_time_us", [0.0] * len(self.initial_mapping))
+        registry.coherence_idle_time_us = [
+            float(value) for value in raw_coherence]
+        if (len(registry.coherence_idle_time_us) != len(self.initial_mapping)
+                or any(not math.isfinite(value) or value < 0.0
+                       for value in registry.coherence_idle_time_us)):
+            raise ValueError("checkpoint coherence idle prior is invalid")
         if registry.zone_sites != int(registry_state["zone_sites"]):
             raise ValueError("checkpoint resident architecture capacity mismatch")
         placer.registry = registry
         placer.nu = NextUse([])
         placer.forecast = ForecastOracle(
             self.provider, placer.lookahead_horizon)
+        placer.scheduler_reference = ExactCurrentReferenceScheduler.from_state(
+            self.architecture,
+            self.initial_mapping,
+            state["scheduler_reference"],
+        )
+        placer.current_scheduler_prefix = None
+        expected_scheduler_sha = state.get(
+            "expected_scheduler_prefix_sha256")
+        if expected_scheduler_sha is not None:
+            expected_scheduler_sha = str(expected_scheduler_sha)
+            if (len(expected_scheduler_sha) != 64
+                    or any(character not in "0123456789abcdef"
+                           for character in expected_scheduler_sha)):
+                raise ValueError(
+                    "checkpoint expected scheduler hash is invalid")
+        expected_scheduler_idle = state.get(
+            "expected_scheduler_prefix_idle_us")
+        if expected_scheduler_idle is not None:
+            expected_scheduler_idle = tuple(
+                float(value) for value in expected_scheduler_idle)
+            if (len(expected_scheduler_idle) != len(self.initial_mapping)
+                    or any(not math.isfinite(value) or value < 0.0
+                           for value in expected_scheduler_idle)):
+                raise ValueError(
+                    "checkpoint expected scheduler idle vector is invalid")
+        if ((expected_scheduler_sha is None)
+                != (expected_scheduler_idle is None)):
+            raise ValueError(
+                "checkpoint expected scheduler audit is partial")
+        placer.expected_scheduler_prefix_sha256 = expected_scheduler_sha
+        placer.expected_scheduler_prefix_idle_us = expected_scheduler_idle
         placer.rng.setstate(state["rng_state"])
         placer.safety_rng.setstate(state["safety_rng_state"])
         placer.residency_commitments = {

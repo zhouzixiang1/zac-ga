@@ -58,6 +58,69 @@ RichH0Problem parse_problem(const ArchitectureSnapshot& architecture,
                             const py::dict& buffers) {
   RichH0Problem problem;
   problem.n_atoms = architecture.n_atoms();
+  problem.prior_idle_time_us =
+      copy_buffer<double>(buffers, "prior_idle_time_us");
+  if (problem.prior_idle_time_us.empty()) {
+    // Non-formal/source compatibility only.  Registered ABI7 calls must send
+    // one accumulated coherence-idle value per atom.
+    problem.prior_idle_time_us.assign(problem.n_atoms, 0.0);
+  } else if (problem.prior_idle_time_us.size() != problem.n_atoms) {
+    throw std::invalid_argument(
+        "prior_idle_time_us must contain every atom or be empty");
+  }
+  for (const auto value : problem.prior_idle_time_us) {
+    if (!std::isfinite(value) || value < 0.0) {
+      throw std::invalid_argument(
+          "prior_idle_time_us must be finite and non-negative");
+    }
+  }
+  const auto scheduler_trace_end =
+      copy_buffer<double>(buffers, "scheduler_trace_end_us");
+  const auto scheduler_one_qubit_end =
+      copy_buffer<double>(buffers, "scheduler_one_qubit_end_us");
+  if (scheduler_trace_end.size() != 1 ||
+      scheduler_one_qubit_end.size() != 1) {
+    throw std::invalid_argument(
+        "scheduler scalar clocks must each contain one value");
+  }
+  problem.scheduler_trace_end_us = scheduler_trace_end[0];
+  problem.scheduler_active_union_us =
+      copy_buffer<double>(buffers, "scheduler_active_union_us");
+  problem.scheduler_aod_end_us =
+      copy_buffer<double>(buffers, "scheduler_aod_end_us");
+  problem.scheduler_one_qubit_end_us = scheduler_one_qubit_end[0];
+  problem.scheduler_rydberg_end_us =
+      copy_buffer<double>(buffers, "scheduler_rydberg_end_us");
+  problem.scheduler_qubit_dependency_end_us =
+      copy_buffer<double>(buffers, "scheduler_qubit_dependency_end_us");
+  problem.scheduler_back_dependency_end_us =
+      copy_buffer<double>(buffers, "scheduler_back_dependency_end_us");
+  problem.scheduler_site_dependency_site_ids = copy_buffer<std::int64_t>(
+      buffers, "scheduler_site_dependency_site_ids");
+  problem.scheduler_site_dependency_activation_finish_us = copy_buffer<double>(
+      buffers, "scheduler_site_dependency_activation_finish_us");
+  problem.target_one_qubit_atoms =
+      copy_buffer<std::int64_t>(buffers, "target_one_qubit_atoms");
+  const auto physical_constants =
+      copy_buffer<double>(buffers, "scheduler_physical_constants");
+  if (physical_constants.size() != 6) {
+    throw std::invalid_argument(
+        "scheduler_physical_constants must contain six values");
+  }
+  problem.scheduler_one_qubit_duration_us = physical_constants[0];
+  problem.scheduler_rydberg_duration_us = physical_constants[1];
+  problem.scheduler_one_qubit_common_us = physical_constants[2];
+  problem.scheduler_transfer_duration_us = physical_constants[3];
+  problem.scheduler_accel_um_per_us2 = physical_constants[4];
+  problem.coherence_t2_us = physical_constants[5];
+  const auto physical_contract =
+      copy_buffer<std::uint8_t>(buffers, "scheduler_physical_contract");
+  if (physical_contract.size() != 1 || physical_contract[0] > 1) {
+    throw std::invalid_argument("invalid scheduler physical contract flag");
+  }
+  problem.enforce_frozen_physical_model = physical_contract[0] != 0;
+  problem.exact_current_scheduler =
+      !problem.scheduler_active_union_us.empty();
   const auto geometry_mode = copy_buffer<std::uint8_t>(buffers, "geometry_mode");
   if (geometry_mode.size() != 1 || geometry_mode[0] > 1) {
     throw std::invalid_argument("invalid rich geometry mode");
@@ -70,6 +133,7 @@ RichH0Problem parse_problem(const ArchitectureSnapshot& architecture,
     if (!current_xy.empty() || current_site_ids.size() != problem.n_atoms) {
       throw std::invalid_argument("indexed current geometry has invalid shape");
     }
+    problem.current_site_ids = current_site_ids;
     for (const auto site_id : current_site_ids) {
       if (site_id < 0 || static_cast<std::size_t>(site_id) >=
                              architecture.site_coordinates().size()) {
@@ -123,6 +187,14 @@ RichH0Problem parse_problem(const ArchitectureSnapshot& architecture,
   for (const auto value : forced) {
     if (value > 1) throw std::invalid_argument("forced return mask is not boolean");
     problem.forced_return_mask.push_back(value != 0);
+  }
+  const auto recommended =
+      copy_buffer<std::uint8_t>(buffers, "recommended_return_mask");
+  for (const auto value : recommended) {
+    if (value > 1) {
+      throw std::invalid_argument("recommended return mask is not boolean");
+    }
+    problem.recommended_return_mask.push_back(value != 0);
   }
   const auto policy = copy_buffer<std::uint8_t>(buffers, "decision_policy");
   if (policy.size() != 1 || policy[0] > 3) {
@@ -195,6 +267,8 @@ RichH0Problem parse_problem(const ArchitectureSnapshot& architecture,
             static_cast<std::size_t>(first)];
         option.target2 = architecture.site_coordinates()[
             static_cast<std::size_t>(second)];
+        option.target1_site_id = first;
+        option.target2_site_id = second;
       } else {
         option.target1 = {gate_targets[option_index * 4],
                           gate_targets[option_index * 4 + 1]};
@@ -445,6 +519,7 @@ py::dict fitness_to_dict(const FitnessResult& result) {
   value["transfers"] = result.transfers;
   value["phase_batches"] = result.phase_batches;
   value["error"] = result.error.empty() ? py::none() : py::cast(result.error);
+  value["candidate_idle_time_us"] = result.candidate_idle_time_us;
   return value;
 }
 
@@ -543,6 +618,21 @@ void bind_rich_solver(py::module_& module) {
             result.current_ghost_rejections;
         value["future_ghost_cost"] = result.forecast_routing_nll;
         value["pre_score_reseats"] = result.pre_score_reseats;
+        value["current_gate_anchor"] = result.current_gate_anchor;
+        value["current_gate_anchor_assignment_site_ids"] =
+            result.current_gate_anchor_assignment_site_ids;
+        value["current_gate_final_assignment_site_ids"] =
+            result.current_gate_final_assignment_site_ids;
+        value["current_gate_guard_branch"] =
+            result.current_gate_guard_branch;
+        value["current_gate_guard_cohort_size"] =
+            result.current_gate_guard_cohort_size;
+        value["current_gate_guard_admitted_size"] =
+            result.current_gate_guard_admitted_size;
+        value["current_gate_projection_source"] =
+            result.current_gate_projection_source;
+        value["current_gate_projection_evaluated"] =
+            result.current_gate_projection_evaluated;
         py::dict timing;
         timing["normalize_ns"] = result.normalize_ns;
         timing["decode_ns"] = result.decode_ns;

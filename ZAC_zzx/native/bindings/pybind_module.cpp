@@ -228,6 +228,10 @@ BoundaryConfig parse_config(const py::dict& value) {
   config.max_horizon = py::cast<std::size_t>(value["max_horizon"]);
   config.enforce_single_leg_ghost =
       py::cast<bool>(value["enforce_single_leg_ghost"]);
+  config.production_parking_replay =
+      value.contains("production_parking_replay")
+          ? py::cast<bool>(value["production_parking_replay"])
+          : false;
   if (config.horizon_policy != "fixed" && config.horizon_policy != "dynamic") {
     throw std::invalid_argument("unknown horizon policy");
   }
@@ -249,6 +253,7 @@ py::dict result_to_dict(const FitnessResult& result) {
   value["transfers"] = result.transfers;
   value["phase_batches"] = result.phase_batches;
   value["error"] = result.error.empty() ? py::none() : py::cast(result.error);
+  value["candidate_idle_time_us"] = result.candidate_idle_time_us;
   return value;
 }
 
@@ -285,14 +290,14 @@ PYBIND11_MODULE(zac_native_core, module) {
   module.attr("NATIVE_ABI_VERSION") = kNativeAbiVersion;
   module.attr("FLAT_WIRE_VERSION") = 1;
   module.attr("RICH_H0_WIRE_VERSION") = 1;
-  module.attr("RICH_BOUNDARY_WIRE_VERSION") = 2;
+  module.attr("RICH_BOUNDARY_WIRE_VERSION") = 6;
   module.attr("RNG_VERSION") = "python-random-mt19937-v1";
   module.def("build_info", []() {
     py::dict value;
     value["native_abi_version"] = kNativeAbiVersion;
     value["flat_wire_version"] = 1;
     value["rich_h0_wire_version"] = 1;
-    value["rich_boundary_wire_version"] = 4;
+    value["rich_boundary_wire_version"] = 6;
     value["version"] = VERSION_INFO;
     value["compiler_id"] = ZAC_CXX_COMPILER_ID;
     value["compiler_version"] = ZAC_CXX_COMPILER_VERSION;
@@ -301,6 +306,7 @@ PYBIND11_MODULE(zac_native_core, module) {
     value["openmp"] = false;
     value["fast_math"] = false;
     value["rng_version"] = "python-random-mt19937-v1";
+    value["backend"] = "cpp-native-v7";
     return value;
   });
 
@@ -372,7 +378,8 @@ PYBIND11_MODULE(zac_native_core, module) {
 
   module.def("evaluate_many", [](const ArchitectureSnapshot& architecture,
                                   const py::list& values,
-                                  const py::dict& config_value) {
+                                  const py::dict& config_value,
+                                  const std::vector<double>& prior_idle_time_us) {
     const auto config = parse_config(config_value);
     const auto candidates = parse_candidates(values);
     py::list result;
@@ -381,17 +388,21 @@ PYBIND11_MODULE(zac_native_core, module) {
       std::vector<FitnessResult> evaluated;
       evaluated.reserve(candidates.size());
       for (const auto& candidate : candidates) {
-        evaluated.push_back(evaluate_candidate(architecture, candidate, config));
+        evaluated.push_back(evaluate_candidate(
+            architecture, candidate, config, prior_idle_time_us));
       }
       py::gil_scoped_acquire acquire;
       for (const auto& value : evaluated) result.append(result_to_dict(value));
     }
     return result;
-  }, py::arg("architecture"), py::arg("candidates"), py::arg("config"));
+  }, py::arg("architecture"), py::arg("candidates"), py::arg("config"),
+     py::arg("prior_idle_time_us") = std::vector<double>{});
 
   module.def("evaluate_many_flat", [](const ArchitectureSnapshot& architecture,
                                        const py::dict& buffers,
-                                       const py::dict& config_value) {
+                                       const py::dict& config_value,
+                                       const std::vector<double>&
+                                           prior_idle_time_us) {
     const auto parse_started = std::chrono::steady_clock::now();
     const auto config = parse_config(config_value);
     const auto candidates = parse_flat_candidates(buffers);
@@ -402,7 +413,8 @@ PYBIND11_MODULE(zac_native_core, module) {
       py::gil_scoped_release release;
       evaluated.reserve(candidates.size());
       for (const auto& candidate : candidates) {
-        evaluated.push_back(evaluate_candidate(architecture, candidate, config));
+        evaluated.push_back(evaluate_candidate(
+            architecture, candidate, config, prior_idle_time_us));
       }
     }
     const auto fitness_stopped = std::chrono::steady_clock::now();
@@ -419,11 +431,14 @@ PYBIND11_MODULE(zac_native_core, module) {
     value["native_serialize_ns"] = std::chrono::duration_cast<std::chrono::nanoseconds>(
         serialize_stopped - serialize_started).count();
     return value;
-  }, py::arg("architecture"), py::arg("buffers"), py::arg("config"));
+  }, py::arg("architecture"), py::arg("buffers"), py::arg("config"),
+     py::arg("prior_idle_time_us") = std::vector<double>{});
 
   module.def("solve_boundary", [](const ArchitectureSnapshot& architecture,
                                    const py::list& values,
-                                   const py::dict& config_value) {
+                                   const py::dict& config_value,
+                                   const std::vector<double>&
+                                       prior_idle_time_us) {
     const auto parse_started = std::chrono::steady_clock::now();
     const auto config = parse_config(config_value);
     auto candidates = parse_candidates(values);
@@ -439,7 +454,8 @@ PYBIND11_MODULE(zac_native_core, module) {
       py::gil_scoped_release release;
       evaluated.reserve(candidates.size());
       for (const auto& candidate : candidates) {
-        evaluated.push_back(evaluate_candidate(architecture, candidate, config));
+        evaluated.push_back(evaluate_candidate(
+            architecture, candidate, config, prior_idle_time_us));
       }
     }
     const auto fitness_stopped = std::chrono::steady_clock::now();
@@ -471,11 +487,14 @@ PYBIND11_MODULE(zac_native_core, module) {
     value["search_kernel_ns"] = std::chrono::duration_cast<std::chrono::nanoseconds>(
         selection_stopped - fitness_started).count();
     return value;
-  }, py::arg("architecture"), py::arg("candidates"), py::arg("config"));
+  }, py::arg("architecture"), py::arg("candidates"), py::arg("config"),
+     py::arg("prior_idle_time_us") = std::vector<double>{});
 
   module.def("solve_boundary_flat", [](const ArchitectureSnapshot& architecture,
                                         const py::dict& buffers,
-                                        const py::dict& config_value) {
+                                        const py::dict& config_value,
+                                        const std::vector<double>&
+                                            prior_idle_time_us) {
     const auto parse_started = std::chrono::steady_clock::now();
     const auto config = parse_config(config_value);
     const auto candidates = parse_flat_candidates(
@@ -487,7 +506,8 @@ PYBIND11_MODULE(zac_native_core, module) {
       py::gil_scoped_release release;
       evaluated.reserve(candidates.size());
       for (const auto& candidate : candidates) {
-        evaluated.push_back(evaluate_candidate(architecture, candidate, config));
+        evaluated.push_back(evaluate_candidate(
+            architecture, candidate, config, prior_idle_time_us));
       }
     }
     const auto fitness_stopped = std::chrono::steady_clock::now();
@@ -524,7 +544,8 @@ PYBIND11_MODULE(zac_native_core, module) {
     value["search_kernel_ns"] = std::chrono::duration_cast<std::chrono::nanoseconds>(
         selection_stopped - fitness_started).count();
     return value;
-  }, py::arg("architecture"), py::arg("buffers"), py::arg("config"));
+  }, py::arg("architecture"), py::arg("buffers"), py::arg("config"),
+     py::arg("prior_idle_time_us") = std::vector<double>{});
 
   bind_rich_solver(module);
 }

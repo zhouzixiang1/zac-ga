@@ -54,6 +54,29 @@ class ProviderScheduleView(Sequence[tuple[tuple[int, int], ...]]):
             yield self[layer]
 
 
+class ProviderOneQView(Sequence[tuple[tuple[str, int], ...]]):
+    """Bounded current-layer 1Q view aligned with the physical stage ring."""
+
+    def __init__(self, provider: ForecastLayerProvider):
+        self.provider = provider
+
+    def __len__(self) -> int:
+        return self.provider.layer_count
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        reader = getattr(self.provider, "one_qubit_for_stage", None)
+        if reader is None:
+            return ()
+        return tuple(
+            (str(gate[0]), int(gate[1])) for gate in reader(index))
+
+
 @dataclass(frozen=True)
 class ResidentBoundaryTransition:
     """Router-ready mappings committed at one resident boundary."""
@@ -76,7 +99,8 @@ class ResidentTransitionKernel:
 
     def __init__(self, placer: ResidentPlacer, architecture,
                  initial_mapping: Sequence[Sequence[int]],
-                 provider: ForecastLayerProvider):
+                 provider: ForecastLayerProvider, *,
+                 leading_one_qubit_gates=()):
         if placer.experiment_schema != 2:
             raise ValueError("resident streaming kernel requires experiment_schema=2")
         if placer.engine != "ga":
@@ -84,6 +108,7 @@ class ResidentTransitionKernel:
         self.placer = placer
         self.provider = provider
         self.schedule = ProviderScheduleView(provider)
+        self.one_qubit_schedule = ProviderOneQView(provider)
         self.layer_count = len(self.schedule)
         self.initial_mapping = _freeze_mapping(initial_mapping)
         self.current_layer: int | None = None
@@ -92,7 +117,9 @@ class ResidentTransitionKernel:
 
         n = placer._initialize_run_state(
             architecture, [list(initial_mapping)], self.schedule,
-            forecast_source=provider)
+            forecast_source=provider,
+            leading_one_qubit_gates=leading_one_qubit_gates,
+            one_qubit_gates_by_layer=self.one_qubit_schedule)
         if n != self.layer_count:
             raise AssertionError("resident schedule/provider layer-count mismatch")
         if n == 0:
@@ -101,6 +128,7 @@ class ResidentTransitionKernel:
 
         placement = placer._plan_round(0)
         placer._repair_ghosts(placement, {})
+        placer._record_initial_out_phase(placement)
         placer._commit_round(0, placement)
         self.current_layer = 0
         self.initial_gate_mapping = _freeze_mapping(placer.mapping[-1])
@@ -180,6 +208,7 @@ class ResidentTransitionKernel:
 
 
 __all__ = [
+    "ProviderOneQView",
     "ProviderScheduleView",
     "ResidentBoundaryTransition",
     "ResidentTransitionKernel",

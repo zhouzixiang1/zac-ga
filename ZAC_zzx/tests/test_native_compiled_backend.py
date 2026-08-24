@@ -58,7 +58,8 @@ class TestCompiledBackend(unittest.TestCase):
     def test_build_manifest_is_auditable(self):
         info = build_info()
         self.assertEqual(info["native_abi_version"], NATIVE_ABI_VERSION)
-        self.assertEqual(info["rich_boundary_wire_version"], 4)
+        self.assertEqual(info["rich_boundary_wire_version"], 6)
+        self.assertEqual(info["backend"], "cpp-native-v7")
         self.assertTrue(info["extension_sha256"])
         self.assertEqual(info["flat_wire_version"], 1)
         self.assertEqual(info["cxx_standard"], 17)
@@ -119,6 +120,33 @@ class TestCompiledBackend(unittest.TestCase):
         self.assertEqual(native.evaluations, 3)
         self.assertGreater(native.fitness_ns, 0)
         self.assertGreaterEqual(native.marshal_ns, native.native_parse_ns)
+
+    def test_prior_idle_two_phase_exact_nonlinear_parity(self):
+        phases = (
+            MovementPhase(
+                (Leg.between((0.0, 0.0), (2.0, 0.0)),), owners=(0,)),
+            MovementPhase(
+                (Leg.between((0.0, 1.0), (2.0, 1.0)),), owners=(1,)),
+        )
+        problem = BoundaryProblem(
+            self.architecture,
+            (CandidatePlan((0,), phases, 0),),
+            prior_idle_time_us=tuple(100.0 + atom * 17.0
+                                     for atom in range(8)),
+        )
+        reference = self.reference.evaluate_many(problem)[0]
+        native = self.native.evaluate_many(problem)[0]
+        self.assertFitnessEqual(reference, native)
+        phase_time = reference.move_time_us / 2.0
+        deltas = tuple(
+            2.0 * phase_time - 30.0 if atom in {0, 1}
+            else 2.0 * phase_time
+            for atom in range(8))
+        expected = sum(
+            math.log1p(-prior / 1.5e6)
+            - math.log1p(-(prior + delta) / 1.5e6)
+            for prior, delta in zip(problem.prior_idle_time_us, deltas))
+        self.assertAlmostEqual(reference.coherence_nll, expected, delta=1e-12)
 
     def test_malformed_flat_offsets_fail_closed(self):
         problem = BoundaryProblem(

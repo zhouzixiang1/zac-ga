@@ -21,6 +21,9 @@ struct RichGateOption {
   std::vector<Leg> legs;
   std::vector<std::int64_t> owners;
   std::vector<Ghost> seated_ghosts;
+  // Appended to preserve the source-fixture aggregate initializer layout.
+  std::int64_t target1_site_id{-1};
+  std::int64_t target2_site_id{-1};
 };
 
 struct RichReturnOption {
@@ -78,6 +81,30 @@ struct RichFutureLayer {
 struct RichH0Problem {
   std::size_t n_atoms{};
   std::vector<Point> current_points;
+  std::vector<std::int64_t> current_site_ids;
+  // ABI7: accumulated scorer coherence-idle time on entry to this boundary.
+  // The binding accepts an empty vector only for non-formal source fixtures.
+  std::vector<double> prior_idle_time_us;
+  // ABI7: compact absolute scheduler state after the fixed source
+  // out/CZ/parent-1Q prefix and before the candidate source-back phase.
+  bool exact_current_scheduler{false};
+  double scheduler_trace_end_us{};
+  std::vector<double> scheduler_active_union_us;
+  std::vector<double> scheduler_aod_end_us;
+  double scheduler_one_qubit_end_us{};
+  std::vector<double> scheduler_rydberg_end_us;
+  std::vector<double> scheduler_qubit_dependency_end_us;
+  std::vector<double> scheduler_back_dependency_end_us;
+  std::vector<std::int64_t> scheduler_site_dependency_site_ids;
+  std::vector<double> scheduler_site_dependency_activation_finish_us;
+  std::vector<std::int64_t> target_one_qubit_atoms;
+  double scheduler_one_qubit_duration_us{52.0};
+  double scheduler_rydberg_duration_us{0.36};
+  double scheduler_one_qubit_common_us{};
+  double scheduler_transfer_duration_us{15.0};
+  double scheduler_accel_um_per_us2{0.00275};
+  double coherence_t2_us{1.5e6};
+  bool enforce_frozen_physical_model{false};
   std::vector<std::int64_t> participants;
   std::vector<std::vector<RichGateOption>> gate_domains;
   std::vector<Ghost> static_ghosts;
@@ -85,12 +112,13 @@ struct RichH0Problem {
   std::size_t min_returns{};
   std::vector<std::size_t> eviction_order_indices;
   std::vector<bool> forced_return_mask;
+  std::vector<bool> recommended_return_mask;
   std::vector<std::vector<RichReturnOption>> return_domains;
   std::vector<std::int64_t> occupied_storage_site_ids;
   std::vector<std::int64_t> matched_gate_genes;
   RichDecisionPolicy decision_policy{RichDecisionPolicy::kOptimize};
   std::vector<RichForecastTerm> forecast_terms;
-  // ABI5 formal path: raw bounded 2Q layers are rolled out and physically
+  // ABI7 formal path: raw bounded 2Q layers are rolled out and physically
   // scored inside C++.  ``forecast_terms`` remains only for legacy regression
   // fixtures and must not be mixed with this representation.
   std::vector<RichFutureLayer> future_layers;
@@ -172,6 +200,14 @@ struct RichSolveResult {
   std::size_t return_assignment_evaluated{};
   std::size_t current_ghost_rejections{};
   std::size_t pre_score_reseats{};
+  std::vector<std::int64_t> current_gate_anchor;
+  std::vector<std::int64_t> current_gate_anchor_assignment_site_ids;
+  std::vector<std::int64_t> current_gate_final_assignment_site_ids;
+  std::string current_gate_guard_branch{"inactive"};
+  std::size_t current_gate_guard_cohort_size{};
+  std::size_t current_gate_guard_admitted_size{};
+  std::string current_gate_projection_source{"inactive"};
+  std::size_t current_gate_projection_evaluated{};
   std::int64_t normalize_ns{};
   std::int64_t decode_ns{};
   std::int64_t return_match_ns{};

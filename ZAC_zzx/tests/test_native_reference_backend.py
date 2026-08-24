@@ -26,7 +26,6 @@ from zzx.native_backend import (  # noqa: E402
     NativeBackendUnavailable,
     select_backend,
 )
-from zzx.algorithm_v2 import PhysicalIncrementalCost  # noqa: E402
 from zzx.reference_backend import (  # noqa: E402
     ReferenceResidentBackend,
     color_phase,
@@ -139,15 +138,11 @@ class TestReferenceGeometry(unittest.TestCase):
         self.assertFalse(result.feasible)
         self.assertTrue(math.isinf(result.negative_log_fidelity))
 
-    def test_reference_matches_current_physical_objective(self):
+    def test_reference_uses_exact_abi7_movement_objective(self):
         legacy_legs = (
             (2.0, 0.0, 0.0, 2.0, 0.0),
             (2.0, 0.0, 2.0, 2.0, 2.0),
         )
-        physical = PhysicalIncrementalCost(6)
-        phase_cost = physical.movement_phase(legacy_legs)
-        _, expected = physical.score((phase_cost,), idle_exposures=3,
-                                     chromosome=(4, 2))
         phase = MovementPhase(tuple(
             Leg(value[0], Point(value[1], value[2]), Point(value[3], value[4]))
             for value in legacy_legs), owners=(0, 1))
@@ -156,12 +151,49 @@ class TestReferenceGeometry(unittest.TestCase):
             (candidate((4, 2), idle=3, phases=(phase,)),),
         )
         actual = ReferenceResidentBackend().evaluate_many(problem)[0]
+        mover_idle = actual.move_time_us - 2 * 15.0
+        expected_coherence = (
+            -4 * math.log1p(-actual.move_time_us / 1.5e6)
+            -2 * math.log1p(-mover_idle / 1.5e6))
+        expected_nll = (
+            -actual.transfers * math.log(0.999)
+            -3 * math.log(0.9975)
+            + expected_coherence)
         self.assertAlmostEqual(actual.negative_log_fidelity,
-                               expected.negative_log_fidelity, delta=1e-12)
-        self.assertAlmostEqual(actual.move_time_us,
-                               expected.move_time_us, delta=1e-12)
-        self.assertEqual(actual.move_batches, expected.move_batches)
-        self.assertEqual(actual.transfers, expected.transfers)
+                               expected_nll, delta=1e-12)
+        self.assertAlmostEqual(actual.coherence_nll,
+                               expected_coherence, delta=1e-12)
+
+    def test_prior_idle_and_two_phases_use_one_exact_log_ratio(self):
+        architecture = ArchitectureSnapshot(2)
+        phases = (
+            MovementPhase(
+                (Leg.between((0.0, 0.0), (2.0, 0.0)),), owners=(0,)),
+            MovementPhase(
+                (Leg.between((0.0, 1.0), (2.0, 1.0)),), owners=(1,)),
+        )
+        value = candidate((0,), phases=phases)
+        problem = BoundaryProblem(
+            architecture, (value,), prior_idle_time_us=(100.0, 200.0))
+        actual = ReferenceResidentBackend().evaluate_many(problem)[0]
+        phase_time = actual.move_time_us / 2.0
+        delta = 2.0 * phase_time - 30.0
+        expected = sum(
+            math.log1p(-prior / 1.5e6)
+            - math.log1p(-(prior + delta) / 1.5e6)
+            for prior in (100.0, 200.0))
+        self.assertAlmostEqual(actual.coherence_nll, expected, delta=1e-12)
+        self.assertEqual(actual.candidate_idle_time_us, (delta, delta))
+
+    def test_prior_idle_vector_is_validated(self):
+        architecture = ArchitectureSnapshot(2)
+        value = candidate()
+        with self.assertRaisesRegex(ValueError, "every atom"):
+            BoundaryProblem(
+                architecture, (value,), prior_idle_time_us=(1.0,))
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            BoundaryProblem(
+                architecture, (value,), prior_idle_time_us=(-1.0, 0.0))
 
 
 class TestFailClosedSelection(unittest.TestCase):

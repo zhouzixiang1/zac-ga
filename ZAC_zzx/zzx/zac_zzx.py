@@ -25,6 +25,7 @@ from zac.zac import ZAC
 
 from zzx.algorithm_v2 import validate_schema2_setting
 from zzx.ghost import ghost_hits
+from zzx.scheduler_ledger import PureSchedulerLedger
 from zzx.zcost import compatible_2d, greedy_phase_batches, phase_batches
 from math import hypot
 
@@ -88,6 +89,45 @@ class ZAC_zzx(ZAC):
         """Reset the global 1Q resource before building a fresh native trace."""
         self._last_global_1q_instruction = None
         return super().write_initial_instruction()
+
+    def route_qubit(self):
+        """Run production routing and independently verify its full timeline.
+
+        M1/M2 baseline algorithms stay untouched.  Resident M3/M4 additionally
+        receive a bounded scheduler snapshot and a rolling per-instruction time
+        hash.  The independent replay is fail-closed and occurs after routing,
+        so it cannot influence batch construction or native output.
+        """
+        result = super().route_qubit()
+        if self.placer_kind != "resident":
+            return result
+        ledger = PureSchedulerLedger(
+            self.n_q,
+            n_aods=max(1, len(self.architecture.dict_AOD)),
+            n_rydberg_zones=max(
+                1, len(self.architecture.entanglement_zone)),
+            one_qubit_duration_us=float(self.architecture.time_1qGate),
+            rydberg_duration_us=float(self.architecture.time_rydberg),
+            one_qubit_common_us=float(getattr(self, "common_1q", 0.0)),
+            keep_events=False,
+        )
+        for instruction in self.result_json["instructions"]:
+            ledger.consume_zair_instruction(instruction)
+        active = {int(value) for value in self.qubit_dependency}
+        active.update(int(value) for value in self.site_dependency.values())
+        active.update(int(value) for value in self.aod_dependency)
+        active.update(int(value) for value in self.rydberg_dependency)
+        if self._last_global_1q_instruction is not None:
+            active.add(int(self._last_global_1q_instruction))
+        ledger.prune_instructions(active)
+        self.zzx_scheduler_snapshot = ledger.snapshot().to_dict()
+        self.zzx_scheduler_timing_sha256 = ledger.timing_sha256
+        self.zzx_scheduler_idle_time_us = ledger.idle_time_us
+        expected = getattr(self, "zzx_placement_scheduler_snapshot", None)
+        if expected is not None and self.zzx_scheduler_snapshot != expected:
+            raise RuntimeError(
+                "placement scheduler snapshot differs from final native route")
+        return result
 
     def write_1q_gate_instruction(self, inst_idx, result_gate, dependency,
                                   gate_mapping):
@@ -253,10 +293,19 @@ class ZAC_zzx(ZAC):
         placer = placer_cls(deepcopy(self.qubit_mapping[0]), **self.zzx_params)
         # 驻留模式中和复用机制（ResidentPlacer 内部还会再置空一次，双保险）：
         # 复用点名 + 两世界 filter_mapping 与驻留决策互斥——同时开会座位双订。
+        run_kwargs = {}
         if self.placer_kind == "resident":
             self.reuse_qubit = [set() for _ in self.gate_scheduling]
+            # The global prefix is serialized before the first AOD movement in
+            # the emitted trace.  Later parent-layer 1Q gates can overlap AOD
+            # work and therefore are not injected into the placement ledger.
+            run_kwargs["leading_one_qubit_gates"] = tuple(
+                getattr(self, "dict_g_1q_parent", {}).get(-1, ()))
+            run_kwargs["one_qubit_gates_by_layer"] = tuple(
+                tuple(gates) for gates in
+                getattr(self, "gate_1q_scheduling", ()))
         placer.run(self.architecture, self.qubit_mapping, self.gate_scheduling,
-                   self.dynamic_placement, self.reuse_qubit)
+                   self.dynamic_placement, self.reuse_qubit, **run_kwargs)
         self.qubit_mapping = placer.mapping       # 放置结果交回流水线
 
         elapsed_ns = time.perf_counter_ns() - t_p
@@ -271,6 +320,10 @@ class ZAC_zzx(ZAC):
             self.zzx_decision_log = list(placer.decision_log)
             self.zzx_backend_timing_log = deepcopy(
                 placer.backend_timing_log)
+            if placer.scheduler_reference is None:
+                raise RuntimeError("resident placement produced no scheduler state")
+            self.zzx_placement_scheduler_snapshot = (
+                placer.scheduler_reference.scheduler_snapshot.to_dict())
 
     # ------------------------------------------------------------ 路由接线
     def _expanded_batch_conflicts(self, members, owner, mapping_from,

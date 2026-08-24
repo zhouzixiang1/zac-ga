@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <deque>
 #include <limits>
 #include <map>
+#include <numeric>
+#include <optional>
 #include <queue>
 #include <set>
 #include <stdexcept>
@@ -299,6 +302,29 @@ FitnessResult infeasible(const CandidatePlan& candidate, std::string error) {
 }
 
 }  // namespace
+
+ExpandedBatchTiming expanded_batch_timing(
+    const std::vector<Leg>& legs,
+    const std::vector<std::size_t>& members) {
+  if (members.empty()) return {};
+  std::set<double> rows;
+  for (const auto member : members) {
+    if (member >= legs.size()) {
+      throw std::invalid_argument("expanded batch member is outside leg table");
+    }
+    rows.insert(legs[member].source.y);
+  }
+  const auto row_count = rows.size();
+  const auto parking_us =
+      std::sqrt(std::sqrt(2.0) / kAccelUmPerUs2);
+  ExpandedBatchTiming result;
+  result.duration_us = expanded_batch_time(legs, members);
+  result.activation_finish_offset_us =
+      static_cast<double>(row_count) * kTransferUs +
+      static_cast<double>(row_count - 1) * parking_us;
+  result.deactivation_offset_us = result.duration_us - kTransferUs;
+  return result;
+}
 
 ArchitectureSnapshot::ArchitectureSnapshot(
     std::size_t n_atoms, std::vector<Point> site_coordinates,
@@ -613,6 +639,7 @@ struct PhaseEvaluation {
   std::size_t batch_count{};
   double phase_time{};
   std::vector<std::vector<std::size_t>> batches;
+  std::vector<ExecutableBatch> executable_batches;
 };
 
 double single_batch_time(const Leg& leg) {
@@ -1223,10 +1250,387 @@ ReplayBatches replay_phase_batches(const MovementPhase& phase,
   }
 }
 
-PhaseEvaluation evaluate_phase(const MovementPhase& phase,
+struct GhostTracks {
+  std::pair<double, double> column;
+  std::pair<double, double> row;
+};
+
+bool same_point(const Point& first, const Point& second) {
+  return std::abs(first.x - second.x) < kEps &&
+         std::abs(first.y - second.y) < kEps;
+}
+
+std::optional<GhostTracks> first_ghost_tracks(
+    const std::vector<Leg>& legs,
+    const std::vector<std::int64_t>& owners,
+    const std::map<std::int64_t, Point>& positions) {
+  if (legs.empty() || positions.empty()) return std::nullopt;
+  std::set<std::int64_t> moving(owners.begin(), owners.end());
+  std::set<std::pair<double, double>> columns;
+  std::set<std::pair<double, double>> rows;
+  double x_min = std::numeric_limits<double>::infinity();
+  double x_max = -std::numeric_limits<double>::infinity();
+  double y_min = std::numeric_limits<double>::infinity();
+  double y_max = -std::numeric_limits<double>::infinity();
+  for (const auto& leg : legs) {
+    columns.emplace(leg.source.x, leg.target.x);
+    rows.emplace(leg.source.y, leg.target.y);
+    x_min = std::min({x_min, leg.source.x, leg.target.x});
+    x_max = std::max({x_max, leg.source.x, leg.target.x});
+    y_min = std::min({y_min, leg.source.y, leg.target.y});
+    y_max = std::max({y_max, leg.source.y, leg.target.y});
+  }
+  for (const auto& [atom, point] : positions) {
+    if (moving.count(atom) != 0U || point.x < x_min - kEps ||
+        point.x > x_max + kEps || point.y < y_min - kEps ||
+        point.y > y_max + kEps) {
+      continue;
+    }
+    for (const auto& column : columns) {
+      const auto x = cover(column.first, column.second, point.x);
+      if (!x.valid) continue;
+      for (const auto& row : rows) {
+        const auto y = cover(row.first, row.second, point.y);
+        if (!y.valid) continue;
+        if (x.always || y.always ||
+            std::abs(x.time - y.time) < kSTolerance) {
+          return GhostTracks{column, row};
+        }
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+std::set<std::size_t> expanded_batch_conflict_members(
+    const MovementPhase& phase,
+    const std::vector<std::size_t>& members,
+    const std::map<std::int64_t, Point>& replay_positions) {
+  std::map<std::int64_t, std::size_t> member_by_owner;
+  std::map<std::int64_t, Point> source_by_owner;
+  std::map<std::int64_t, Point> target_by_owner;
+  std::map<double, std::vector<std::int64_t>> rows;
+  for (const auto member : members) {
+    if (member >= phase.legs.size() || member >= phase.owners.size()) {
+      throw std::invalid_argument(
+          "expanded replay member is outside phase geometry");
+    }
+    const auto owner = phase.owners[member];
+    if (!member_by_owner.emplace(owner, member).second) {
+      throw std::invalid_argument("expanded replay repeats a phase owner");
+    }
+    source_by_owner.emplace(owner, phase.legs[member].source);
+    target_by_owner.emplace(owner, phase.legs[member].target);
+    rows[phase.legs[member].source.y].push_back(owner);
+  }
+  for (auto& [source_y, owners] : rows) {
+    (void)source_y;
+    std::sort(owners.begin(), owners.end());
+  }
+
+  std::map<std::int64_t, Point> physical = source_by_owner;
+  std::set<std::int64_t> held;
+  std::set<double> activated_columns;
+
+  const auto audit_move = [&](const std::map<std::int64_t, Point>& next)
+      -> std::set<std::size_t> {
+    std::vector<Leg> detail_legs;
+    std::vector<std::int64_t> detail_owners;
+    for (const auto owner : held) {
+      const auto current = physical.at(owner);
+      const auto target = next.at(owner);
+      if (same_point(current, target)) continue;
+      detail_legs.push_back(
+          Leg{point_distance(current, target), current, target});
+      detail_owners.push_back(owner);
+    }
+    for (std::size_t left = 0; left < detail_legs.size(); ++left) {
+      const auto& first = detail_legs[left];
+      const std::array<double, 4> first_vector{
+          first.source.x, first.target.x, first.source.y, first.target.y};
+      for (std::size_t right = left + 1; right < detail_legs.size(); ++right) {
+        const auto& second = detail_legs[right];
+        const std::array<double, 4> second_vector{
+            second.source.x, second.target.x,
+            second.source.y, second.target.y};
+        if (!compatible_2d(first_vector, second_vector)) {
+          return {member_by_owner.at(detail_owners[left]),
+                  member_by_owner.at(detail_owners[right])};
+        }
+      }
+    }
+    std::map<std::int64_t, Point> positions = replay_positions;
+    positions.insert(physical.begin(), physical.end());
+    for (const auto& [owner, point] : physical) positions[owner] = point;
+    const auto hit = first_ghost_tracks(
+        detail_legs, detail_owners, positions);
+    if (!hit.has_value()) return {};
+    std::set<std::size_t> bad;
+    for (std::size_t index = 0; index < detail_legs.size(); ++index) {
+      const auto& leg = detail_legs[index];
+      if (std::pair<double, double>{leg.source.x, leg.target.x} ==
+              hit->column ||
+          std::pair<double, double>{leg.source.y, leg.target.y} == hit->row) {
+        bad.insert(member_by_owner.at(detail_owners[index]));
+      }
+    }
+    if (bad.empty() && !detail_owners.empty()) {
+      bad.insert(member_by_owner.at(detail_owners.front()));
+    }
+    return bad;
+  };
+
+  std::size_t row_index = 0;
+  for (const auto& [source_y, row_owners] : rows) {
+    std::map<std::int64_t, Point> shifted = physical;
+    for (const auto owner : row_owners) {
+      const auto source_x = source_by_owner.at(owner).x;
+      if (activated_columns.count(source_x) == 0U) continue;
+      for (const auto held_owner : held) {
+        if (source_by_owner.at(held_owner).x == source_x) {
+          shifted[held_owner].x = source_x;
+        }
+      }
+    }
+    if (const auto bad = audit_move(shifted); !bad.empty()) return bad;
+    physical = std::move(shifted);
+    held.insert(row_owners.begin(), row_owners.end());
+    for (const auto owner : row_owners) {
+      activated_columns.insert(source_by_owner.at(owner).x);
+    }
+
+    if (row_index + 1 < rows.size()) {
+      std::set<double> parked_columns;
+      for (const auto owner : row_owners) {
+        parked_columns.insert(source_by_owner.at(owner).x);
+      }
+      std::map<std::int64_t, Point> parked = physical;
+      for (const auto owner : held) {
+        if (parked_columns.count(source_by_owner.at(owner).x) != 0U) {
+          parked[owner].x += 1.0;
+        }
+      }
+      for (const auto owner : row_owners) {
+        parked[owner].y = source_y + 1.0;
+      }
+      if (const auto bad = audit_move(parked); !bad.empty()) return bad;
+      physical = std::move(parked);
+    }
+    ++row_index;
+  }
+
+  std::map<std::int64_t, Point> target = physical;
+  for (const auto owner : held) target[owner] = target_by_owner.at(owner);
+  if (const auto bad = audit_move(target); !bad.empty()) return bad;
+  return {};
+}
+
+ExecutableBatch executable_batch(
+    const MovementPhase& phase, const std::vector<std::size_t>& members,
+    const std::vector<std::size_t>& canonical_to_original) {
+  ExecutableBatch result;
+  result.original_members.reserve(members.size());
+  result.legs.reserve(members.size());
+  result.owners.reserve(members.size());
+  for (const auto member : members) {
+    result.original_members.push_back(canonical_to_original.at(member));
+    result.legs.push_back(phase.legs.at(member));
+    result.owners.push_back(phase.owners.at(member));
+  }
+  return result;
+}
+
+struct ProductionReplay {
+  bool feasible{true};
+  std::vector<ExecutableBatch> batches;
+};
+
+ProductionReplay replay_production_phase_batches(
+    const MovementPhase& phase, std::size_t exact_threshold) {
+  if (phase.owners.size() != phase.legs.size()) {
+    throw std::invalid_argument(
+        "production replay requires one owner per movement leg");
+  }
+  // The production resident router canonicalizes movers by descending travel
+  // distance before graph construction/coloring.  Keep original indices only
+  // for the public batch audit payload consumed by Python.
+  std::vector<std::size_t> canonical_to_original(phase.legs.size());
+  std::iota(canonical_to_original.begin(), canonical_to_original.end(), 0U);
+  std::stable_sort(
+      canonical_to_original.begin(), canonical_to_original.end(),
+      [&](const auto first, const auto second) {
+        return phase.legs[first].distance_um > phase.legs[second].distance_um;
+      });
+  MovementPhase routed;
+  routed.batching = phase.batching;
+  routed.ghosts = phase.ghosts;
+  routed.legs.reserve(phase.legs.size());
+  routed.owners.reserve(phase.owners.size());
+  for (const auto original : canonical_to_original) {
+    routed.legs.push_back(phase.legs[original]);
+    routed.owners.push_back(phase.owners[original]);
+  }
+
+  std::map<std::int64_t, Point> positions;
+  for (const auto& ghost : routed.ghosts) {
+    if (!positions.emplace(ghost.atom, ghost.position).second) {
+      throw std::invalid_argument("production replay repeats a ghost atom");
+    }
+  }
+  for (std::size_t index = 0; index < routed.owners.size(); ++index) {
+    positions.emplace(routed.owners[index], routed.legs[index].source);
+  }
+
+  const auto audit_pass = [&](
+      const std::vector<std::vector<std::size_t>>& input,
+      std::map<std::int64_t, Point>& replay_positions,
+      std::vector<ExecutableBatch>& clean,
+      std::vector<std::size_t>& deferred) -> bool {
+    std::deque<std::vector<std::size_t>> queue;
+    for (const auto& batch : input) queue.push_back(batch);
+    while (!queue.empty()) {
+      auto pending = std::move(queue.front());
+      queue.pop_front();
+      while (true) {
+        std::vector<Leg> legs;
+        std::vector<std::int64_t> owners;
+        legs.reserve(pending.size());
+        owners.reserve(pending.size());
+        for (const auto member : pending) {
+          legs.push_back(routed.legs.at(member));
+          owners.push_back(routed.owners.at(member));
+        }
+        const auto hit = first_ghost_tracks(legs, owners, replay_positions);
+        if (!hit.has_value()) break;
+        if (pending.size() == 1) {
+          // The stationary blocker may itself move in an earlier clean batch.
+          // Production defers this singleton and retries against the updated
+          // position map before considering a waypoint/failure.
+          deferred.push_back(pending.front());
+          pending.clear();
+          break;
+        }
+        std::set<std::size_t> bad;
+        for (const auto member : pending) {
+          const auto& leg = routed.legs[member];
+          if (std::pair<double, double>{leg.source.x, leg.target.x} ==
+                  hit->column ||
+              std::pair<double, double>{leg.source.y, leg.target.y} == hit->row) {
+            bad.insert(member);
+          }
+        }
+        if (bad.empty()) bad.insert(pending.front());
+        deferred.insert(deferred.end(), bad.begin(), bad.end());
+        pending.erase(std::remove_if(
+            pending.begin(), pending.end(), [&](const auto member) {
+              return bad.count(member) != 0U;
+            }), pending.end());
+        if (pending.empty()) break;
+      }
+      if (pending.empty()) continue;
+
+      const auto expanded_bad = expanded_batch_conflict_members(
+          routed, pending, replay_positions);
+      if (!expanded_bad.empty()) {
+        if (pending.size() == 1) {
+          deferred.push_back(pending.front());
+          continue;
+        }
+        std::vector<std::size_t> keep;
+        std::vector<std::size_t> bad;
+        for (const auto member : pending) {
+          (expanded_bad.count(member) == 0U ? keep : bad).push_back(member);
+        }
+        if (!keep.empty() && !bad.empty()) {
+          queue.push_front(std::move(keep));
+          deferred.insert(deferred.end(), bad.begin(), bad.end());
+          continue;
+        }
+        std::map<double, std::vector<std::size_t>> row_groups;
+        for (const auto member : pending) {
+          row_groups[routed.legs[member].source.y].push_back(member);
+        }
+        if (row_groups.size() == 1) {
+          for (auto it = pending.rbegin(); it != pending.rend(); ++it) {
+            queue.push_front({*it});
+          }
+        } else {
+          for (auto it = row_groups.rbegin(); it != row_groups.rend(); ++it) {
+            queue.push_front(std::move(it->second));
+          }
+        }
+        continue;
+      }
+      clean.push_back(executable_batch(
+          routed, pending, canonical_to_original));
+      for (const auto member : pending) {
+        replay_positions[routed.owners[member]] = routed.legs[member].target;
+      }
+    }
+    return true;
+  };
+
+  ProductionReplay result;
+  auto initial = color_phase(routed, exact_threshold);
+  std::vector<std::size_t> deferred;
+  if (!audit_pass(initial, positions, result.batches, deferred)) {
+    result.feasible = false;
+    return result;
+  }
+  for (std::size_t round = 0; round < 3 && !deferred.empty(); ++round) {
+    std::sort(deferred.begin(), deferred.end());
+    deferred.erase(std::unique(deferred.begin(), deferred.end()), deferred.end());
+    std::vector<std::vector<std::size_t>> batches;
+    if (round == 2) {
+      for (const auto member : deferred) batches.push_back({member});
+    } else {
+      MovementPhase subset;
+      subset.batching = routed.batching;
+      for (const auto member : deferred) {
+        subset.legs.push_back(routed.legs[member]);
+      }
+      const auto local = color_phase(subset, exact_threshold);
+      for (const auto& batch : local) {
+        std::vector<std::size_t> translated;
+        for (const auto member : batch) translated.push_back(deferred[member]);
+        batches.push_back(std::move(translated));
+      }
+    }
+    deferred.clear();
+    if (!audit_pass(batches, positions, result.batches, deferred)) {
+      result.feasible = false;
+      return result;
+    }
+  }
+  if (!deferred.empty()) result.feasible = false;
+  return result;
+}
+
+PhaseEvaluation evaluate_phase(const ArchitectureSnapshot& architecture,
+                               const MovementPhase& phase,
                                std::size_t exact_threshold,
                                bool enforce_single_leg_ghost,
-                               bool record_batches) {
+                               bool record_batches,
+                               bool production_parking_replay) {
+  if (production_parking_replay && enforce_single_leg_ghost &&
+      !phase.owners.empty()) {
+    auto replay = replay_production_phase_batches(phase, exact_threshold);
+    PhaseEvaluation result;
+    result.feasible = replay.feasible;
+    if (!result.feasible) return result;
+    result.executable_batches = std::move(replay.batches);
+    result.batch_count = result.executable_batches.size();
+    for (const auto& batch : result.executable_batches) {
+      std::vector<std::size_t> local(batch.legs.size());
+      for (std::size_t index = 0; index < local.size(); ++index) {
+        local[index] = index;
+      }
+      result.phase_time += expanded_batch_time(batch.legs, local);
+      if (record_batches) result.batches.push_back(batch.original_members);
+    }
+    (void)architecture;
+    return result;
+  }
   if (exact_threshold == 0 && phase.legs.size() <= kFastPhaseLegs &&
       phase.ghosts.size() + phase.owners.size() <= kFastPhasePositions) {
     return evaluate_fast_phase(
@@ -1247,18 +1651,71 @@ PhaseEvaluation evaluate_phase(const MovementPhase& phase,
 }
 }  // namespace
 
+double linear_coherence_delta_nll(
+    const std::vector<double>& prior_idle_time_us,
+    const std::vector<double>& candidate_idle_time_us) {
+  if (prior_idle_time_us.size() != candidate_idle_time_us.size()) {
+    throw std::invalid_argument("coherence vectors differ in length");
+  }
+  double total = 0.0;
+  for (std::size_t atom = 0; atom < prior_idle_time_us.size(); ++atom) {
+    const auto prior = prior_idle_time_us[atom];
+    const auto delta = candidate_idle_time_us[atom];
+    if (!std::isfinite(prior) || prior < 0.0) {
+      throw std::invalid_argument(
+          "prior idle time must be finite and non-negative");
+    }
+    if (!std::isfinite(delta) || delta < -1e-12) {
+      throw std::invalid_argument(
+          "candidate idle-time delta must be finite and non-negative");
+    }
+    const auto after = prior + delta;
+    if (prior >= kT2Us || after >= kT2Us) {
+      return std::numeric_limits<double>::infinity();
+    }
+    total += std::log1p(-prior / kT2Us) -
+             std::log1p(-after / kT2Us);
+  }
+  return total;
+}
+
 namespace {
 FitnessResult evaluate_candidate_impl(
     const ArchitectureSnapshot& architecture, const CandidatePlan& candidate,
-    const BoundaryConfig& config, bool record_batches) {
+    const BoundaryConfig& config, bool record_batches,
+    const std::vector<double>& prior_idle_time_us) {
   if (candidate.idle_exposures < 0) {
     throw std::invalid_argument("idle_exposures must be non-negative");
   }
+  if (!prior_idle_time_us.empty() &&
+      prior_idle_time_us.size() != architecture.n_atoms()) {
+    throw std::invalid_argument(
+        "prior idle time must contain every atom or be empty");
+  }
+  const auto exact_owners = std::all_of(
+      candidate.phases.begin(), candidate.phases.end(), [](const auto& phase) {
+        return phase.legs.empty() || !phase.owners.empty();
+      });
+  if (!prior_idle_time_us.empty() && !exact_owners) {
+    throw std::invalid_argument(
+        "formal coherence accounting requires one owner per movement leg");
+  }
+  const auto prior_idle = prior_idle_time_us.empty()
+                              ? std::vector<double>(architecture.n_atoms(), 0.0)
+                              : prior_idle_time_us;
+  std::vector<double> candidate_idle(architecture.n_atoms(), 0.0);
   FitnessResult result;
   result.chromosome = candidate.chromosome;
   result.idle_exposures = candidate.idle_exposures;
-  result.coherence_nll = -static_cast<double>(candidate.idle_exposures) *
-                         std::log1p(-kRydbergUs / kT2Us);
+  // The target CZ/1Q durations are candidate-independent and are committed by
+  // the scheduler once.  Only location-dependent idle excitation and movement
+  // coherence belong in the boundary objective.  Owner-less legacy fixtures
+  // retain the pre-ABI7 aggregate approximation for source compatibility.
+  result.coherence_nll =
+      exact_owners
+          ? 0.0
+          : -static_cast<double>(candidate.idle_exposures) *
+                std::log1p(-kRydbergUs / kT2Us);
   std::size_t movers = 0;
   for (std::size_t phase_index = 0; phase_index < candidate.phases.size();
        ++phase_index) {
@@ -1284,17 +1741,69 @@ FitnessResult evaluate_candidate_impl(
       return infeasible(candidate, "phase has more movers than atoms");
     }
     auto evaluated = evaluate_phase(
-        phase, config.exact_coloring_threshold,
-        config.enforce_single_leg_ghost, record_batches);
+        architecture, phase, config.exact_coloring_threshold,
+        config.enforce_single_leg_ghost, record_batches,
+        config.production_parking_replay);
     if (!evaluated.feasible) {
       return infeasible(
           candidate, "phase " + std::to_string(phase_index) +
                          " has no ghost-safe straight-leg batch order");
     }
     const auto phase_time = evaluated.phase_time;
-    const auto phase_movers = phase.legs.size();
+    std::size_t phase_movers = phase.legs.size();
+    if (!evaluated.executable_batches.empty()) {
+      phase_movers = 0;
+      for (const auto& batch : evaluated.executable_batches) {
+        phase_movers += batch.owners.size();
+      }
+    }
     const auto mover_idle = std::max(0.0, phase_time - 2.0 * kTransferUs);
-    if (phase_time >= kT2Us || mover_idle >= kT2Us) {
+    double updated_coherence = result.coherence_nll;
+    if (exact_owners) {
+      std::vector<unsigned char> seen(architecture.n_atoms(), 0U);
+      for (const auto owner : phase.owners) {
+        if (owner < 0 ||
+            static_cast<std::size_t>(owner) >= architecture.n_atoms()) {
+          throw std::invalid_argument(
+              "movement owner is outside the architecture");
+        }
+        if (seen[static_cast<std::size_t>(owner)] != 0U) {
+          throw std::invalid_argument("a movement phase cannot repeat an owner");
+        }
+        seen[static_cast<std::size_t>(owner)] = 1U;
+      }
+      if (evaluated.executable_batches.empty()) {
+        for (auto& value : candidate_idle) value += phase_time;
+        for (const auto owner : phase.owners) {
+          candidate_idle[static_cast<std::size_t>(owner)] -=
+              2.0 * kTransferUs;
+        }
+      } else {
+        for (const auto& batch : evaluated.executable_batches) {
+          std::vector<std::size_t> local(batch.legs.size());
+          for (std::size_t index = 0; index < local.size(); ++index) {
+            local[index] = index;
+          }
+          const auto batch_time = expanded_batch_time(batch.legs, local);
+          for (auto& value : candidate_idle) value += batch_time;
+          for (const auto owner : batch.owners) {
+            candidate_idle[static_cast<std::size_t>(owner)] -=
+                2.0 * kTransferUs;
+          }
+        }
+      }
+      updated_coherence =
+          linear_coherence_delta_nll(prior_idle, candidate_idle);
+    } else if (phase_time >= kT2Us || mover_idle >= kT2Us) {
+      updated_coherence = std::numeric_limits<double>::infinity();
+    } else {
+      updated_coherence -=
+          static_cast<double>(architecture.n_atoms() - phase_movers) *
+          std::log1p(-phase_time / kT2Us);
+      updated_coherence -= static_cast<double>(phase_movers) *
+                           std::log1p(-mover_idle / kT2Us);
+    }
+    if (!std::isfinite(updated_coherence)) {
       result.feasible = false;
       result.error = "linear coherence model out of domain";
       result.negative_log_fidelity = std::numeric_limits<double>::infinity();
@@ -1303,29 +1812,47 @@ FitnessResult evaluate_candidate_impl(
       result.coherence_nll = result.negative_log_fidelity;
       result.move_batches += evaluated.batch_count;
       result.move_time_us += phase_time;
-      for (const auto& leg : phase.legs) {
-        result.total_distance_um += leg.distance_um;
+      if (evaluated.executable_batches.empty()) {
+        for (const auto& leg : phase.legs) {
+          result.total_distance_um += leg.distance_um;
+        }
+      } else {
+        for (const auto& batch : evaluated.executable_batches) {
+          for (const auto& leg : batch.legs) {
+            result.total_distance_um += leg.distance_um;
+          }
+        }
       }
       result.transfers = 2 * (movers + phase_movers);
+      if (exact_owners) result.candidate_idle_time_us = candidate_idle;
       if (record_batches) {
         result.phase_batches.push_back(std::move(evaluated.batches));
       }
+      result.executable_phase_batches.push_back(
+          std::move(evaluated.executable_batches));
       return result;
     }
-    result.coherence_nll -=
-        static_cast<double>(architecture.n_atoms() - phase_movers) *
-        std::log1p(-phase_time / kT2Us);
-    result.coherence_nll -= static_cast<double>(phase_movers) *
-                            std::log1p(-mover_idle / kT2Us);
+    result.coherence_nll = updated_coherence;
+    if (exact_owners) result.candidate_idle_time_us = candidate_idle;
     result.move_batches += evaluated.batch_count;
     result.move_time_us += phase_time;
-    for (const auto& leg : phase.legs) {
-      result.total_distance_um += leg.distance_um;
+    if (evaluated.executable_batches.empty()) {
+      for (const auto& leg : phase.legs) {
+        result.total_distance_um += leg.distance_um;
+      }
+    } else {
+      for (const auto& batch : evaluated.executable_batches) {
+        for (const auto& leg : batch.legs) {
+          result.total_distance_um += leg.distance_um;
+        }
+      }
     }
     movers += phase_movers;
     if (record_batches) {
       result.phase_batches.push_back(std::move(evaluated.batches));
     }
+    result.executable_phase_batches.push_back(
+        std::move(evaluated.executable_batches));
   }
   result.transfers = 2 * movers;
   result.transfer_nll = -static_cast<double>(result.transfers) *
@@ -1335,6 +1862,7 @@ FitnessResult evaluate_candidate_impl(
   result.negative_log_fidelity = result.transfer_nll +
                                  result.idle_excitation_nll +
                                  result.coherence_nll;
+  if (exact_owners) result.candidate_idle_time_us = candidate_idle;
   return result;
 }
 }  // namespace
@@ -1351,14 +1879,18 @@ std::vector<std::vector<std::size_t>> replay_phase_batches_strict(
 
 FitnessResult evaluate_candidate(const ArchitectureSnapshot& architecture,
                                  const CandidatePlan& candidate,
-                                 const BoundaryConfig& config) {
-  return evaluate_candidate_impl(architecture, candidate, config, true);
+                                 const BoundaryConfig& config,
+                                 const std::vector<double>& prior_idle_time_us) {
+  return evaluate_candidate_impl(
+      architecture, candidate, config, true, prior_idle_time_us);
 }
 
 FitnessResult evaluate_candidate_summary(
     const ArchitectureSnapshot& architecture, const CandidatePlan& candidate,
-    const BoundaryConfig& config) {
-  return evaluate_candidate_impl(architecture, candidate, config, false);
+    const BoundaryConfig& config,
+    const std::vector<double>& prior_idle_time_us) {
+  return evaluate_candidate_impl(
+      architecture, candidate, config, false, prior_idle_time_us);
 }
 
 bool objective_less(const FitnessResult& first,

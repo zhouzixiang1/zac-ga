@@ -5,9 +5,12 @@ they differ only in `method_id`, runner-owned `dir`, and `lookahead_horizon`.
 Both methods use the registered geometric-decay
 `physical_terminal_decay_v1` spec (`rho=0.6`, `epsilon=0.05`) and differ only in
 `max_horizon`: M3 is strict zero and M4 is bounded at eight (six offsets are
-effective under the default cutoff).  The current physical NLL is exact and
-undiscounted; only future residency/re-entry/terminal heuristics receive
-`alpha_lookahead*rho^(offset-1)`.  Both configs require the ABI5 native backend,
+effective under the default cutoff).  The current physical NLL is exact for
+the registered ASAP scheduler-ledger boundary; the final native trace is still
+reconciled by the independent scorer before formal use, and undiscounted; only
+future residency/re-entry/terminal heuristics receive
+`alpha_lookahead*rho^(offset-1)`.  Both configs require the ABI7/wire-v6
+`cpp-native-v7` backend,
 the registered wheel hash, and forbid a Python fallback.
 
 The four method configs currently contain the registered default candidate.

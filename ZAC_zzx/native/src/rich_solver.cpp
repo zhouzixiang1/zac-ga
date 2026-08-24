@@ -30,6 +30,7 @@ constexpr double kFExc = 0.9975;
 constexpr double kFTransfer = 0.999;
 constexpr double kTransferUs = 15.0;
 constexpr double kRydbergUs = 0.36;
+constexpr double kOneQUs = 52.0;
 constexpr double kAccelUmPerUs2 = 0.00275;
 constexpr double kT2Us = 1.5e6;
 
@@ -53,6 +54,63 @@ std::int64_t elapsed_ns(Clock::time_point started) {
 
 double point_distance(const Point& first, const Point& second) {
   return std::hypot(first.x - second.x, first.y - second.y);
+}
+
+ExpandedBatchTiming expanded_batch_timing_model(
+    const std::vector<Leg>& legs, double transfer_us, double accel_um_per_us2) {
+  if (legs.empty()) return {};
+  std::map<double, std::vector<const Leg*>> rows;
+  for (const auto& leg : legs) rows[leg.source.y].push_back(&leg);
+  const auto row_count = rows.size();
+  double duration = 0.0;
+  if (legs.size() == 1) {
+    duration = 2.0 * transfer_us +
+               std::sqrt(point_distance(legs.front().source,
+                                        legs.front().target) /
+                         accel_um_per_us2);
+  } else {
+    duration = static_cast<double>(row_count + 1) * transfer_us;
+    const auto parking_us =
+        std::sqrt(std::sqrt(2.0) / accel_um_per_us2);
+    if (row_count > 1) {
+      duration += static_cast<double>(row_count - 1) * parking_us;
+    }
+    std::vector<std::pair<double, double>> row_moves;
+    std::map<double, std::size_t> last_row_for_x;
+    std::map<double, double> target_x_for_source;
+    std::size_t row_index = 0;
+    for (const auto& [source_y, row_legs] : rows) {
+      row_moves.emplace_back(
+          source_y + (row_index + 1 < row_count ? 1.0 : 0.0),
+          row_legs.front()->target.y);
+      for (const auto* leg : row_legs) {
+        last_row_for_x[leg->source.x] = row_index;
+        target_x_for_source.emplace(leg->source.x, leg->target.x);
+      }
+      ++row_index;
+    }
+    double longest = 0.0;
+    for (const auto& [source_x, last_row] : last_row_for_x) {
+      const auto column_begin =
+          source_x + (last_row + 1 < row_count ? 1.0 : 0.0);
+      const auto column_end = target_x_for_source.at(source_x);
+      for (const auto& [row_begin, row_end] : row_moves) {
+        longest = std::max(
+            longest,
+            std::hypot(column_end - column_begin, row_end - row_begin));
+      }
+    }
+    duration += std::sqrt(longest / accel_um_per_us2);
+  }
+  const auto parking_us =
+      std::sqrt(std::sqrt(2.0) / accel_um_per_us2);
+  ExpandedBatchTiming result;
+  result.duration_us = duration;
+  result.activation_finish_offset_us =
+      static_cast<double>(row_count) * transfer_us +
+      static_cast<double>(row_count - 1) * parking_us;
+  result.deactivation_offset_us = duration - transfer_us;
+  return result;
 }
 
 bool same_point(const Point& first, const Point& second) {
@@ -217,18 +275,22 @@ std::uint64_t double_bits(double value) noexcept {
 }
 
 std::vector<std::uint64_t> forecast_state_key(
-    const std::vector<Point>& positions) {
+    const std::vector<Point>& positions,
+    const std::vector<double>& accumulated_idle) {
   std::vector<std::uint64_t> key;
-  key.reserve(positions.size() * 2);
+  key.reserve(positions.size() * 3);
   for (const auto& point : positions) {
     key.push_back(double_bits(point.x));
     key.push_back(double_bits(point.y));
   }
+  for (const auto value : accumulated_idle) key.push_back(double_bits(value));
   return key;
 }
 
 struct PlanGeometry {
   std::vector<Point> positions_t1;
+  std::vector<std::int64_t> site_ids_t1;
+  std::vector<std::int64_t> final_site_ids;
   std::vector<Leg> back_legs;
   std::vector<std::int64_t> back_owners;
   std::vector<Leg> out_legs;
@@ -297,6 +359,55 @@ bool evaluated_less(const Evaluated& first, const Evaluated& second) {
              objective_bucket(second.fitness.move_time_us, 1e-6),
              objective_bucket(second.fitness.total_distance_um, 1e-6),
              second.fitness.chromosome, second.assignment_key);
+}
+
+auto current_physical_key(const Evaluated& value) {
+  return std::make_tuple(
+      objective_bucket(value.fitness.negative_log_fidelity, 1e-12),
+      value.fitness.move_batches,
+      objective_bucket(value.fitness.move_time_us, 1e-6),
+      objective_bucket(value.fitness.total_distance_um, 1e-6),
+      value.fitness.chromosome, value.assignment_key);
+}
+
+bool current_physical_less(const Evaluated& first, const Evaluated& second) {
+  if (first.fitness.feasible != second.fitness.feasible) {
+    return first.fitness.feasible;
+  }
+  return current_physical_key(first) < current_physical_key(second);
+}
+
+bool same_current_primary_bucket(const Evaluated& first,
+                                 const Evaluated& second) {
+  return std::make_tuple(
+             objective_bucket(first.fitness.negative_log_fidelity, 1e-12),
+             first.fitness.move_batches,
+             objective_bucket(first.fitness.move_time_us, 1e-6),
+             objective_bucket(first.fitness.total_distance_um, 1e-6)) ==
+         std::make_tuple(
+             objective_bucket(second.fitness.negative_log_fidelity, 1e-12),
+             second.fitness.move_batches,
+             objective_bucket(second.fitness.move_time_us, 1e-6),
+             objective_bucket(second.fitness.total_distance_um, 1e-6));
+}
+
+bool current_primary_dominates(const Evaluated& first,
+                               const Evaluated& second) {
+  const auto first_nll =
+      objective_bucket(first.fitness.negative_log_fidelity, 1e-12);
+  const auto second_nll =
+      objective_bucket(second.fitness.negative_log_fidelity, 1e-12);
+  const auto first_time = objective_bucket(first.fitness.move_time_us, 1e-6);
+  const auto second_time = objective_bucket(second.fitness.move_time_us, 1e-6);
+  const auto weakly_better =
+      first_nll <= second_nll &&
+      first.fitness.move_batches <= second.fitness.move_batches &&
+      first_time <= second_time;
+  const auto strictly_better =
+      first_nll < second_nll ||
+      first.fitness.move_batches < second.fitness.move_batches ||
+      first_time < second_time;
+  return weakly_better && strictly_better;
 }
 
 struct AssignmentSolution {
@@ -498,6 +609,13 @@ class RichSolver {
              const RichSearchConfig& config, PythonRandomState rng_state)
       : architecture_(architecture), problem_(problem), config_(config),
         rng_(rng_state) {
+    if (problem_.prior_idle_time_us.empty()) {
+      problem_.prior_idle_time_us.assign(problem_.n_atoms, 0.0);
+    }
+    if (problem_.recommended_return_mask.empty()) {
+      problem_.recommended_return_mask.assign(
+          problem_.eligible.size(), false);
+    }
     validate();
     participant_mask_.assign(problem_.n_atoms, false);
     for (const auto atom : problem_.participants) {
@@ -658,7 +776,10 @@ class RichSolver {
       }
     }
     const auto selection_started = Clock::now();
-    const auto final_value = evaluate_normalized(winner, false);
+    winner = guard_forecast_gate_projection(winner);
+    const auto final_value = guarded_final_value_.has_value()
+                                 ? *guarded_final_value_
+                                 : evaluate_normalized(winner, false);
     auto final_geometry = build_geometry(
         final_value.decoded, final_value.assignments, final_value.reseats);
     const auto recorded_winner = score_geometry(
@@ -717,6 +838,17 @@ class RichSolver {
         final_value.return_assignment_evaluated;
     result.current_ghost_rejections = final_value.current_ghost_rejections;
     result.pre_score_reseats = final_value.pre_score_reseats;
+    result.current_gate_anchor = current_gate_anchor_;
+    result.current_gate_anchor_assignment_site_ids =
+        current_gate_anchor_assignment_site_ids_;
+    result.current_gate_final_assignment_site_ids =
+        current_gate_final_assignment_site_ids_;
+    result.current_gate_guard_branch = current_gate_guard_branch_;
+    result.current_gate_guard_cohort_size = current_gate_guard_cohort_size_;
+    result.current_gate_guard_admitted_size = current_gate_guard_admitted_size_;
+    result.current_gate_projection_source = current_gate_projection_source_;
+    result.current_gate_projection_evaluated =
+        current_gate_projection_evaluated_;
     result.normalize_ns = normalize_ns_;
     result.decode_ns = decode_ns_;
     result.return_match_ns = return_match_ns_;
@@ -728,13 +860,277 @@ class RichSolver {
   }
 
  private:
+  bool forecast_gate_guard_active() const noexcept {
+    // Keep H=0 byte-for-byte on the established path.  In particular, the
+    // short-circuit prevents an H=0 solve from consulting either future
+    // representation merely to decide whether the guard exists.
+    return config_.max_horizon != 0 && config_.alpha_lookahead > 0.0 &&
+           (!problem_.forecast_terms.empty() || !problem_.future_layers.empty());
+  }
+
+  void archive_complete_evaluation(const Evaluated& value) {
+    if (!forecast_gate_guard_active() || !value.fitness.feasible ||
+        !std::isfinite(value.search_nll)) {
+      return;
+    }
+    complete_evaluated_archive_[value.fitness.chromosome] = value;
+  }
+
+  bool same_residency_suffix(const std::vector<std::int64_t>& first,
+                             const std::vector<std::int64_t>& second) const {
+    const auto gate_count = problem_.gate_domains.size();
+    if (first.size() != second.size() || first.size() < gate_count) return false;
+    return std::equal(first.begin() + static_cast<std::ptrdiff_t>(gate_count),
+                      first.end(),
+                      second.begin() + static_cast<std::ptrdiff_t>(gate_count));
+  }
+
+  void complete_deferred_guard_suffix(
+      const std::vector<std::int64_t>& provisional_winner) {
+    if (!forecast_gate_guard_active() || partial_current_bounds_.empty()) return;
+    std::vector<std::vector<std::int64_t>> deferred;
+    deferred.reserve(partial_current_bounds_.size());
+    for (const auto& [chromosome, lower_bound] : partial_current_bounds_) {
+      (void)lower_bound;
+      if (same_residency_suffix(chromosome, provisional_winner)) {
+        deferred.push_back(chromosome);
+      }
+    }
+    std::sort(deferred.begin(), deferred.end());
+    for (const auto& chromosome : deferred) {
+      // The lazy pool already accounted the exact-current evaluation.  Rebuild
+      // that private state without changing public evaluation/cache/RNG
+      // counters, then complete the non-negative forecast exactly once.
+      const auto saved_stats = stats_;
+      auto prepared = prepare_current_normalized(chromosome, false);
+      stats_ = saved_stats;
+      Evaluated value;
+      if (prepared.complete) {
+        value = std::move(prepared.complete_value);
+        partial_current_bounds_.erase(chromosome);
+      } else {
+        value = complete_prepared_current(chromosome, std::move(prepared));
+      }
+      archive_complete_evaluation(value);
+    }
+  }
+
+  std::vector<Evaluated> evaluate_guard_assignment_cohort(
+      const std::vector<std::int64_t>& raw_chromosome) {
+    const auto chromosome = normalize(raw_chromosome);
+    Evaluated initial;
+    initial.search_nll = std::numeric_limits<double>::infinity();
+    initial.decoded = decode(chromosome);
+    if (!initial.decoded.feasible) {
+      initial.fitness = infeasible_fitness(
+          chromosome, initial.decoded.error);
+      return {std::move(initial)};
+    }
+    const auto gate_count = problem_.gate_domains.size();
+    std::vector<std::size_t> returners;
+    for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
+      if (chromosome[gate_count + index] != 0) returners.push_back(index);
+    }
+    std::vector<std::vector<ReturnAssignment>> assignments;
+    try {
+      assignments = match_returns(returners);
+    } catch (const std::exception& error) {
+      initial.fitness = infeasible_fitness(chromosome, error.what());
+      return {std::move(initial)};
+    }
+    if (assignments.empty()) {
+      initial.fitness = infeasible_fitness(
+          chromosome, "RETURN matching has no bounded injective assignment");
+      return {std::move(initial)};
+    }
+    stats_.return_assignment_evaluated += assignments.size();
+    std::vector<Evaluated> cohort;
+    cohort.reserve(assignments.size());
+    for (std::size_t rank = 0; rank < assignments.size(); ++rank) {
+      auto value = evaluate_assignment(
+          chromosome, initial.decoded, returners, assignments[rank], rank,
+          assignments.size(), false);
+      if (value.fitness.feasible) apply_forecast(value, chromosome);
+      cohort.push_back(std::move(value));
+    }
+    return cohort;
+  }
+
+  std::vector<std::int64_t> guard_forecast_gate_projection(
+      const std::vector<std::int64_t>& raw_winner) {
+    if (!forecast_gate_guard_active()) return raw_winner;
+    auto provisional = normalize(raw_winner);
+    std::map<std::vector<std::int64_t>, std::vector<Evaluated>> guard_values;
+    const auto values_for = [&](const std::vector<std::int64_t>& raw)
+        -> std::vector<Evaluated>& {
+      const auto chromosome = normalize(raw);
+      auto [iterator, inserted] = guard_values.try_emplace(chromosome);
+      if (inserted) {
+        iterator->second = evaluate_guard_assignment_cohort(chromosome);
+        ++current_gate_projection_evaluated_;
+      }
+      return iterator->second;
+    };
+    const auto current_min = [](std::vector<Evaluated>& values)
+        -> Evaluated* {
+      if (values.empty()) return nullptr;
+      return &*std::min_element(
+          values.begin(), values.end(), [](const auto& first,
+                                           const auto& second) {
+            return current_physical_less(first, second);
+          });
+    };
+
+    // The GA archive is not guaranteed to contain the current-myopic gate
+    // placement for the selected RETURN/STAY suffix.  Build that anchor
+    // deterministically before the forecast guard: one-gate layers enumerate
+    // the complete domain, while wider layers perform two full-domain
+    // coordinate sweeps.  Selection here uses current physics only; forecast
+    // remains solely the downstream tie/Pareto selector.
+    auto projected = provisional;
+    const auto gate_count = problem_.gate_domains.size();
+    if (gate_count != 0) {
+      current_gate_projection_source_ =
+          gate_count == 1 ? "single-gate-full-domain"
+                          : "coordinate-full-domain-2-sweep";
+      auto* projected_pointer = current_min(values_for(projected));
+      if (projected_pointer == nullptr ||
+          !projected_pointer->fitness.feasible) {
+        current_gate_guard_branch_ = "projection-infeasible-fallback";
+        return provisional;
+      }
+      auto projected_value = *projected_pointer;
+      const auto sweeps = gate_count == 1 ? std::size_t{1} : std::size_t{2};
+      for (std::size_t sweep = 0; sweep < sweeps; ++sweep) {
+        bool changed = false;
+        for (std::size_t gate = 0; gate < gate_count; ++gate) {
+          auto best = projected_value;
+          for (std::size_t option = 0;
+               option < problem_.gate_domains[gate].size(); ++option) {
+            auto trial = projected;
+            trial[gate] = static_cast<std::int64_t>(option);
+            trial = normalize(trial);
+            auto* value = current_min(values_for(trial));
+            if (value != nullptr && current_physical_less(*value, best)) {
+              best = *value;
+            }
+          }
+          if (best.fitness.chromosome != projected) {
+            projected = best.fitness.chromosome;
+            projected_value = std::move(best);
+            changed = true;
+          }
+        }
+        if (!changed) break;
+      }
+      provisional = projected;
+    } else {
+      current_gate_projection_source_ = "no-current-gates";
+    }
+    current_gate_anchor_ = provisional;
+
+    // RETURN/STAY remains the lookahead decision.  Complete only candidates
+    // with the selected normalized suffix, then audit gate placement under the
+    // exact executable current-boundary physics.
+    complete_deferred_guard_suffix(provisional);
+
+    std::set<std::vector<std::int64_t>> guard_chromosomes;
+    for (const auto& [chromosome, value] : complete_evaluated_archive_) {
+      (void)value;
+      if (same_residency_suffix(chromosome, provisional)) {
+        guard_chromosomes.insert(chromosome);
+      }
+    }
+    for (const auto& [chromosome, values] : guard_values) {
+      (void)values;
+      if (same_residency_suffix(chromosome, provisional)) {
+        guard_chromosomes.insert(chromosome);
+      }
+    }
+    guard_chromosomes.insert(provisional);
+    std::vector<Evaluated> cohort;
+    for (const auto& chromosome : guard_chromosomes) {
+      for (const auto& value : values_for(chromosome)) {
+        if (value.fitness.feasible) cohort.push_back(value);
+      }
+    }
+    if (cohort.empty()) return provisional;
+    current_gate_guard_cohort_size_ = cohort.size();
+
+    const auto* anchor = &*std::min_element(
+        cohort.begin(), cohort.end(), [](const auto& first, const auto& second) {
+          return current_physical_less(first, second);
+        });
+    current_gate_anchor_ = anchor->fitness.chromosome;
+    current_gate_anchor_assignment_site_ids_.clear();
+    for (const auto& assignment : anchor->assignments) {
+      current_gate_anchor_assignment_site_ids_.push_back(assignment.site_id);
+    }
+
+    std::vector<const Evaluated*> admitted;
+    admitted.reserve(cohort.size());
+    if (problem_.eligible.empty()) {
+      current_gate_guard_branch_ = "eligible-empty-exact-tie";
+      // With no residency bit to optimize, a decay forecast may only break an
+      // exact current-physics tie.  It cannot purchase current NLL, batch, or
+      // Move-time degradation, which is the wide-QFT drift guard.
+      for (const auto& value : cohort) {
+        if (same_current_primary_bucket(value, *anchor)) {
+          admitted.push_back(&value);
+        }
+      }
+    } else {
+      current_gate_guard_branch_ = "residency-pareto-envelope";
+      const auto transfer_limit =
+          anchor->fitness.transfers >
+                  std::numeric_limits<std::size_t>::max() - 2
+              ? std::numeric_limits<std::size_t>::max()
+              : anchor->fitness.transfers + 2;
+      // One additional moving atom contributes exactly one load+store pair.
+      // A Pareto tradeoff may spend at most that physical error budget; this
+      // prevents a tiny batch advantage from admitting arbitrarily worse
+      // coherence/Move time merely because the future forecast is favorable.
+      const auto current_nll_limit =
+          anchor->fitness.negative_log_fidelity - 2.0 * std::log(kFTransfer);
+      for (const auto& value : cohort) {
+        if (value.fitness.transfers > transfer_limit) continue;
+        if (value.fitness.negative_log_fidelity >
+            current_nll_limit + 1e-12) {
+          continue;
+        }
+        const auto dominated = std::any_of(
+            cohort.begin(), cohort.end(), [&](const auto& challenger) {
+              return &challenger != &value &&
+                     current_primary_dominates(challenger, value);
+            });
+        if (!dominated) admitted.push_back(&value);
+      }
+    }
+    const auto* selected = anchor;
+    current_gate_guard_admitted_size_ = admitted.size();
+    if (!admitted.empty()) {
+      selected = *std::min_element(
+          admitted.begin(), admitted.end(),
+          [](const auto* first, const auto* second) {
+            return evaluated_less(*first, *second);
+          });
+    }
+    guarded_final_value_ = *selected;
+    current_gate_final_assignment_site_ids_.clear();
+    for (const auto& assignment : selected->assignments) {
+      current_gate_final_assignment_site_ids_.push_back(assignment.site_id);
+    }
+    return selected->fitness.chromosome;
+  }
+
   void validate() const {
     if (problem_.n_atoms != architecture_.n_atoms() ||
         problem_.current_points.size() != problem_.n_atoms) {
       throw std::invalid_argument("rich atom count differs from architecture");
     }
     if (problem_.return_domains.size() != problem_.eligible.size() ||
-        problem_.forced_return_mask.size() != problem_.eligible.size()) {
+        problem_.forced_return_mask.size() != problem_.eligible.size() ||
+        problem_.recommended_return_mask.size() != problem_.eligible.size()) {
       throw std::invalid_argument("rich eligible arrays are not aligned");
     }
     if (problem_.eviction_order_indices.size() != problem_.eligible.size()) {
@@ -745,6 +1141,134 @@ class RichSolver {
     }
     if (problem_.min_returns > problem_.eligible.size()) {
       throw std::invalid_argument("min_returns exceeds eligible count");
+    }
+    if (problem_.exact_current_scheduler) {
+      const auto finite_non_negative = [](double value) {
+        return std::isfinite(value) && value >= 0.0;
+      };
+      const auto frozen_equal = [](double actual, double expected) {
+        return std::isfinite(actual) &&
+               std::abs(actual - expected) <= 1e-12;
+      };
+      if (!finite_non_negative(problem_.scheduler_one_qubit_duration_us) ||
+          !finite_non_negative(problem_.scheduler_rydberg_duration_us) ||
+          !finite_non_negative(problem_.scheduler_one_qubit_common_us) ||
+          !finite_non_negative(problem_.scheduler_transfer_duration_us) ||
+          !std::isfinite(problem_.scheduler_accel_um_per_us2) ||
+          problem_.scheduler_accel_um_per_us2 <= 0.0 ||
+          !std::isfinite(problem_.coherence_t2_us) ||
+          problem_.coherence_t2_us <= 0.0) {
+        throw std::invalid_argument(
+            "ABI7 exact scheduler physical constants are invalid");
+      }
+      if (problem_.enforce_frozen_physical_model &&
+          (!frozen_equal(problem_.scheduler_one_qubit_duration_us, kOneQUs) ||
+          !frozen_equal(problem_.scheduler_rydberg_duration_us, kRydbergUs) ||
+          !frozen_equal(problem_.scheduler_one_qubit_common_us, 0.0) ||
+          !frozen_equal(problem_.scheduler_transfer_duration_us, kTransferUs) ||
+          !frozen_equal(problem_.scheduler_accel_um_per_us2,
+                        kAccelUmPerUs2) ||
+          !frozen_equal(problem_.coherence_t2_us, kT2Us))) {
+        throw std::invalid_argument(
+            "ABI7 exact scheduler physical constants differ from the frozen model");
+      }
+      if (problem_.current_site_ids.size() != problem_.n_atoms ||
+          problem_.scheduler_active_union_us.size() != problem_.n_atoms ||
+          problem_.scheduler_qubit_dependency_end_us.size() != problem_.n_atoms ||
+          problem_.scheduler_back_dependency_end_us.size() != problem_.n_atoms ||
+          problem_.prior_idle_time_us.size() != problem_.n_atoms) {
+        throw std::invalid_argument(
+            "ABI7 exact scheduler atom vectors are not aligned");
+      }
+      // Current formal ZAC architectures own one AOD and one Rydberg zone.  The
+      // compact wire intentionally fails closed until zone ids are carried per
+      // gate option rather than silently guessing a multi-resource schedule.
+      if (problem_.scheduler_aod_end_us.size() != 1 ||
+          problem_.scheduler_rydberg_end_us.size() != 1) {
+        throw std::invalid_argument(
+            "ABI7 exact scheduler currently requires one AOD and one Rydberg zone");
+      }
+      if (!finite_non_negative(problem_.scheduler_trace_end_us) ||
+          !finite_non_negative(problem_.scheduler_one_qubit_end_us)) {
+        throw std::invalid_argument("ABI7 scheduler scalar clock is invalid");
+      }
+      for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+        const auto active = problem_.scheduler_active_union_us[atom];
+        const auto ordinary =
+            problem_.scheduler_qubit_dependency_end_us[atom];
+        const auto back = problem_.scheduler_back_dependency_end_us[atom];
+        if (!finite_non_negative(active) ||
+            active > problem_.scheduler_trace_end_us + 1e-7 ||
+            !finite_non_negative(ordinary) ||
+            !finite_non_negative(back) || back + 1e-7 < ordinary) {
+          throw std::invalid_argument("ABI7 scheduler atom clock is invalid");
+        }
+        const auto expected =
+            std::max(0.0, problem_.scheduler_trace_end_us - active);
+        if (std::abs(problem_.prior_idle_time_us[atom] - expected) > 1e-7) {
+          throw std::invalid_argument(
+              "ABI7 prior idle differs from absolute scheduler state");
+        }
+        const auto site_id = problem_.current_site_ids[atom];
+        if (site_id < 0 || static_cast<std::size_t>(site_id) >=
+                               architecture_.site_coordinates().size()) {
+          throw std::invalid_argument("ABI7 current site id is invalid");
+        }
+      }
+      for (const auto value : problem_.scheduler_aod_end_us) {
+        if (!finite_non_negative(value)) {
+          throw std::invalid_argument("ABI7 AOD clock is invalid");
+        }
+      }
+      for (const auto value : problem_.scheduler_rydberg_end_us) {
+        if (!finite_non_negative(value)) {
+          throw std::invalid_argument("ABI7 Rydberg clock is invalid");
+        }
+      }
+      if (problem_.scheduler_site_dependency_site_ids.size() !=
+          problem_.scheduler_site_dependency_activation_finish_us.size()) {
+        throw std::invalid_argument(
+            "ABI7 scheduler site dependency columns differ in length");
+      }
+      std::set<std::int64_t> dependency_sites;
+      for (std::size_t index = 0;
+           index < problem_.scheduler_site_dependency_site_ids.size(); ++index) {
+        const auto site_id =
+            problem_.scheduler_site_dependency_site_ids[index];
+        const auto activation =
+            problem_.scheduler_site_dependency_activation_finish_us[index];
+        if (site_id < 0 || static_cast<std::size_t>(site_id) >=
+                               architecture_.site_coordinates().size() ||
+            !dependency_sites.insert(site_id).second ||
+            !finite_non_negative(activation)) {
+          throw std::invalid_argument(
+              "ABI7 scheduler site dependency is invalid");
+        }
+      }
+      for (const auto atom : problem_.target_one_qubit_atoms) {
+        if (atom < 0 || static_cast<std::size_t>(atom) >= problem_.n_atoms) {
+          throw std::invalid_argument("ABI7 target 1Q atom is invalid");
+        }
+      }
+      for (const auto& domain : problem_.gate_domains) {
+        for (const auto& option : domain) {
+          if (option.target1_site_id < 0 || option.target2_site_id < 0) {
+            throw std::invalid_argument(
+                "ABI7 indexed gate option lacks target site ids");
+          }
+        }
+      }
+    } else if (!problem_.scheduler_active_union_us.empty() ||
+               !problem_.scheduler_aod_end_us.empty() ||
+               !problem_.scheduler_rydberg_end_us.empty() ||
+               !problem_.scheduler_qubit_dependency_end_us.empty() ||
+               !problem_.scheduler_back_dependency_end_us.empty() ||
+               !problem_.scheduler_site_dependency_site_ids.empty() ||
+               !problem_.scheduler_site_dependency_activation_finish_us.empty() ||
+               !problem_.target_one_qubit_atoms.empty() ||
+               problem_.scheduler_trace_end_us != 0.0 ||
+               problem_.scheduler_one_qubit_end_us != 0.0) {
+      throw std::invalid_argument("partial ABI7 scheduler snapshot is forbidden");
     }
     if (config_.population_size == 0 || config_.iterations == 0 ||
         config_.neighbors_per_solution == 0 ||
@@ -1163,7 +1687,9 @@ class RichSolver {
 
   FitnessResult score_forecast_phase(
       const std::vector<Leg>& legs, const std::vector<std::int64_t>& owners,
-      const std::vector<Point>& positions, std::int64_t idle_exposures = 0) const {
+      const std::vector<Point>& positions,
+      const std::vector<double>& accumulated_idle,
+      std::int64_t idle_exposures = 0) const {
     CandidatePlan candidate;
     candidate.idle_exposures = idle_exposures;
     if (!legs.empty()) {
@@ -1178,12 +1704,14 @@ class RichSolver {
     boundary_config.enforce_single_leg_ghost =
         config_.enforce_single_leg_ghost;
     return evaluate_candidate_summary(
-        architecture_, candidate, boundary_config);
+        architecture_, candidate, boundary_config,
+        accumulated_idle);
   }
 
   FitnessResult score_forecast_single_leg(
       std::int64_t owner, const Point& source, const Point& target,
-      const std::vector<Point>& positions) const {
+      const std::vector<Point>& positions,
+      const std::vector<double>& accumulated_idle) const {
     FitnessResult result;
     const auto distance = point_distance(source, target);
     for (std::size_t atom = 0; atom < positions.size(); ++atom) {
@@ -1203,8 +1731,11 @@ class RichSolver {
     }
     const auto phase_time =
         2.0 * kTransferUs + std::sqrt(distance / kAccelUmPerUs2);
-    const auto mover_idle = std::max(0.0, phase_time - 2.0 * kTransferUs);
-    if (phase_time >= kT2Us || mover_idle >= kT2Us) {
+    std::vector<double> candidate_idle(architecture_.n_atoms(), phase_time);
+    candidate_idle[static_cast<std::size_t>(owner)] -= 2.0 * kTransferUs;
+    const auto coherence_nll = linear_coherence_delta_nll(
+        accumulated_idle, candidate_idle);
+    if (!std::isfinite(coherence_nll)) {
       result.feasible = false;
       result.negative_log_fidelity =
           std::numeric_limits<double>::infinity();
@@ -1219,10 +1750,7 @@ class RichSolver {
     result.total_distance_um = distance;
     result.transfers = 2;
     result.transfer_nll = -2.0 * std::log(kFTransfer);
-    result.coherence_nll =
-        -static_cast<double>(architecture_.n_atoms() - 1) *
-            std::log1p(-phase_time / kT2Us) -
-        std::log1p(-mover_idle / kT2Us);
+    result.coherence_nll = coherence_nll;
     result.negative_log_fidelity =
         result.transfer_nll + result.coherence_nll;
     return result;
@@ -1243,7 +1771,8 @@ class RichSolver {
 
   std::optional<std::pair<std::int64_t, FitnessResult>>
   forecast_move_to_storage(std::int64_t atom,
-                           std::vector<Point>& positions) const {
+                           std::vector<Point>& positions,
+                           const std::vector<double>& accumulated_idle) const {
     const auto& source = positions[static_cast<std::size_t>(atom)];
     const auto storage_count = architecture_.storage_site_ids().size();
     std::size_t query_limit = std::min<std::size_t>(
@@ -1262,7 +1791,7 @@ class RichSolver {
         const auto distance = point_distance(source, target);
         if (distance <= 1e-9) continue;
         const auto score = score_forecast_single_leg(
-            atom, source, target, positions);
+            atom, source, target, positions, accumulated_idle);
         if (!score.feasible) continue;
         ++tested;
         if (!best.has_value() ||
@@ -1303,7 +1832,8 @@ class RichSolver {
 
   FitnessResult score_forecast_relocation_batch(
       const std::vector<Point>& before, const std::vector<Point>& after,
-      const std::vector<std::int64_t>& atoms) const {
+      const std::vector<std::int64_t>& atoms,
+      const std::vector<double>& accumulated_idle) const {
     std::vector<Leg> legs;
     std::vector<std::int64_t> owners;
     for (const auto atom : atoms) {
@@ -1313,7 +1843,7 @@ class RichSolver {
       legs.push_back({distance, before[index], after[index]});
       owners.push_back(atom);
     }
-    return score_forecast_phase(legs, owners, before);
+    return score_forecast_phase(legs, owners, before, accumulated_idle);
   }
 
   void add_weighted_forecast(Evaluated& result, std::size_t depth,
@@ -1332,6 +1862,23 @@ class RichSolver {
 
   void apply_native_rollout(Evaluated& result) {
     auto positions = problem_.current_points;
+    auto accumulated_idle = problem_.prior_idle_time_us;
+    if (result.fitness.candidate_idle_time_us.size() != problem_.n_atoms) {
+      throw std::logic_error("current ABI7 fitness lacks per-atom idle delta");
+    }
+    for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+      accumulated_idle[atom] += result.fitness.candidate_idle_time_us[atom];
+    }
+    const auto advance_idle = [&](const FitnessResult& score) {
+      if (!score.feasible) return false;
+      if (score.candidate_idle_time_us.size() != problem_.n_atoms) {
+        throw std::logic_error("forecast fitness lacks per-atom idle delta");
+      }
+      for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+        accumulated_idle[atom] += score.candidate_idle_time_us[atom];
+      }
+      return true;
+    };
     for (const auto& assignment : result.assignments) {
       positions[static_cast<std::size_t>(
           problem_.eligible[assignment.eligible_index])] = assignment.point;
@@ -1347,7 +1894,7 @@ class RichSolver {
       positions[static_cast<std::size_t>(option.q2)] = option.target2;
     }
 
-    const auto state_key = forecast_state_key(positions);
+    const auto state_key = forecast_state_key(positions, accumulated_idle);
     if (config_.fitness_cache) {
       const auto cached = forecast_state_cache_.find(state_key);
       if (cached != forecast_state_cache_.end()) {
@@ -1552,7 +2099,8 @@ class RichSolver {
         }
       }
       for (const auto blocker : blockers) {
-        const auto moved = forecast_move_to_storage(blocker, positions);
+        const auto moved = forecast_move_to_storage(
+            blocker, positions, accumulated_idle);
         if (!moved.has_value()) {
           routing_nll = std::numeric_limits<double>::infinity();
           break;
@@ -1561,8 +2109,13 @@ class RichSolver {
       }
       if (std::isfinite(routing_nll) && !blockers.empty()) {
         const auto batched = score_forecast_relocation_batch(
-            before_blockers, positions, blockers);
-        if (batched.feasible) routing_nll = finite_nll(batched);
+            before_blockers, positions, blockers, accumulated_idle);
+        if (batched.feasible) {
+          routing_nll = finite_nll(batched);
+          advance_idle(batched);
+        } else {
+          routing_nll = std::numeric_limits<double>::infinity();
+        }
       }
 
       std::vector<Leg> out_legs;
@@ -1580,8 +2133,9 @@ class RichSolver {
         }
       }
       const auto out_score = score_forecast_phase(
-          out_legs, out_owners, positions);
+          out_legs, out_owners, positions, accumulated_idle);
       const auto reentry_nll = finite_nll(out_score);
+      if (out_score.feasible) advance_idle(out_score);
       for (const auto& placement : placements) {
         positions[static_cast<std::size_t>(placement.q1)] = placement.target1;
         positions[static_cast<std::size_t>(placement.q2)] = placement.target2;
@@ -1594,9 +2148,19 @@ class RichSolver {
           ++idle_exposures;
         }
       }
-      const auto idle_score = score_forecast_phase(
-          {}, {}, positions, idle_exposures);
-      const auto residency_nll = finite_nll(idle_score);
+      std::vector<double> pulse_idle(problem_.n_atoms, kRydbergUs);
+      for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+        if (participant_mask[atom] != 0U) pulse_idle[atom] = 0.0;
+      }
+      const auto pulse_nll = linear_coherence_delta_nll(
+          accumulated_idle, pulse_idle);
+      auto residency_nll =
+          -static_cast<double>(idle_exposures) * std::log(kFExc) + pulse_nll;
+      if (std::isfinite(pulse_nll)) {
+        for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+          accumulated_idle[atom] += pulse_idle[atom];
+        }
+      }
 
       const auto& later_use = future_later_use_masks_[layer_index];
       double terminal_nll = 0.0;
@@ -1609,7 +2173,8 @@ class RichSolver {
           continue;
         }
         terminal_atoms.push_back(atom_id);
-        const auto moved = forecast_move_to_storage(atom_id, positions);
+        const auto moved = forecast_move_to_storage(
+            atom_id, positions, accumulated_idle);
         if (!moved.has_value()) {
           terminal_nll = std::numeric_limits<double>::infinity();
           break;
@@ -1618,8 +2183,13 @@ class RichSolver {
       }
       if (std::isfinite(terminal_nll) && !terminal_atoms.empty()) {
         const auto batched = score_forecast_relocation_batch(
-            before_terminal, positions, terminal_atoms);
-        if (batched.feasible) terminal_nll = finite_nll(batched);
+            before_terminal, positions, terminal_atoms, accumulated_idle);
+        if (batched.feasible) {
+          terminal_nll = finite_nll(batched);
+          advance_idle(batched);
+        } else {
+          terminal_nll = std::numeric_limits<double>::infinity();
+        }
       }
 
       add_weighted_forecast(result, layer.depth, 0, residency_nll);
@@ -1639,6 +2209,7 @@ class RichSolver {
       const std::vector<ReturnAssignment>& reseats) const {
     PlanGeometry geometry;
     geometry.positions_t1 = problem_.current_points;
+    geometry.site_ids_t1 = problem_.current_site_ids;
     geometry.back_legs.reserve(assignments.size() + reseats.size());
     geometry.back_owners.reserve(assignments.size() + reseats.size());
     geometry.out_legs.reserve(problem_.participants.size());
@@ -1654,6 +2225,9 @@ class RichSolver {
         geometry.back_owners.push_back(q);
       }
       geometry.positions_t1[q] = assignment.point;
+      if (!geometry.site_ids_t1.empty()) {
+        geometry.site_ids_t1[static_cast<std::size_t>(q)] = assignment.site_id;
+      }
     };
     for (const auto& assignment : assignments) append_back(assignment);
     for (const auto& reseat : reseats) append_back(reseat);
@@ -1732,6 +2306,17 @@ class RichSolver {
       geometry.ghosts_t0.push_back({atom_id, problem_.current_points[atom]});
       geometry.ghosts_t1.push_back({atom_id, geometry.positions_t1[atom]});
     }
+    geometry.final_site_ids = geometry.site_ids_t1;
+    if (!geometry.final_site_ids.empty()) {
+      for (std::size_t gate = 0; gate < gate_count; ++gate) {
+        const auto& option =
+            problem_.gate_domains[gate][decoded.option_indices[gate]];
+        geometry.final_site_ids[static_cast<std::size_t>(option.q1)] =
+            option.target1_site_id;
+        geometry.final_site_ids[static_cast<std::size_t>(option.q2)] =
+            option.target2_site_id;
+      }
+    }
     std::vector<bool> back_movers(problem_.n_atoms, false);
     std::vector<bool> out_movers(problem_.n_atoms, false);
     for (const auto owner : geometry.back_owners) {
@@ -1786,10 +2371,264 @@ class RichSolver {
     BoundaryConfig boundary_config;
     boundary_config.exact_coloring_threshold = config_.exact_coloring_threshold;
     boundary_config.enforce_single_leg_ghost = enforce_single_leg_ghost;
-    return (record_batches
-                ? evaluate_candidate(architecture_, candidate, boundary_config)
-                : evaluate_candidate_summary(
-                      architecture_, candidate, boundary_config));
+    if (problem_.exact_current_scheduler) {
+      boundary_config.production_parking_replay = true;
+      // Exact scheduling needs the executable membership/order of every AOD
+      // batch even for intermediate candidates.  Geometry and batching remain
+      // native; Python supplies only the compact absolute prefix state.
+      auto result = evaluate_candidate(
+          architecture_, candidate, boundary_config, {});
+      if (!result.feasible) return result;
+      const auto transfer_us = problem_.scheduler_transfer_duration_us;
+      const auto acceleration = problem_.scheduler_accel_um_per_us2;
+      const auto rydberg_us = problem_.scheduler_rydberg_duration_us;
+      const auto one_qubit_us = problem_.scheduler_one_qubit_duration_us;
+      const auto one_qubit_common_us =
+          problem_.scheduler_one_qubit_common_us;
+      const auto coherence_t2_us = problem_.coherence_t2_us;
+      result.move_time_us = 0.0;
+      for (const auto& phase_batches : result.executable_phase_batches) {
+        for (const auto& batch : phase_batches) {
+          result.move_time_us += expanded_batch_timing_model(
+              batch.legs, transfer_us, acceleration).duration_us;
+        }
+      }
+
+      auto active = problem_.scheduler_active_union_us;
+      auto qubit_dependency = problem_.scheduler_qubit_dependency_end_us;
+      auto current_site_ids = problem_.current_site_ids;
+      auto aod_end = problem_.scheduler_aod_end_us.front();
+      auto one_qubit_end = problem_.scheduler_one_qubit_end_us;
+      auto rydberg_end = problem_.scheduler_rydberg_end_us.front();
+      auto trace_end = problem_.scheduler_trace_end_us;
+      std::map<std::int64_t, double> site_dependency;
+      for (std::size_t index = 0;
+           index < problem_.scheduler_site_dependency_site_ids.size(); ++index) {
+        site_dependency.emplace(
+            problem_.scheduler_site_dependency_site_ids[index],
+            problem_.scheduler_site_dependency_activation_finish_us[index]);
+      }
+
+      const auto schedule_phase = [&] (
+          std::size_t phase_index,
+          const std::vector<std::int64_t>& target_site_ids,
+          bool source_back) {
+        if (phase_index >= candidate.phases.size() ||
+            phase_index >= result.executable_phase_batches.size()) {
+          throw std::logic_error(
+              "ABI7 candidate executable phase batches are incomplete");
+        }
+        const auto& phase = candidate.phases[phase_index];
+        if (target_site_ids.size() != problem_.n_atoms ||
+            phase.owners.size() != phase.legs.size()) {
+          throw std::logic_error("ABI7 candidate phase geometry is incomplete");
+        }
+        const auto site_id_for_point = [&](const Point& point) {
+          const auto& coordinates = architecture_.site_coordinates();
+          for (std::size_t site = 0; site < coordinates.size(); ++site) {
+            if (std::abs(coordinates[site].x - point.x) < 1e-9 &&
+                std::abs(coordinates[site].y - point.y) < 1e-9) {
+              return static_cast<std::int64_t>(site);
+            }
+          }
+          throw std::logic_error(
+              "ABI7 executable batch target is not a registered SLM site");
+        };
+        for (const auto& batch :
+             result.executable_phase_batches[phase_index]) {
+          if (batch.legs.size() != batch.owners.size()) {
+            throw std::logic_error(
+                "ABI7 executable batch owner geometry is incomplete");
+          }
+          const auto timing = expanded_batch_timing_model(
+              batch.legs, transfer_us, acceleration);
+          double begin = aod_end;
+          std::vector<std::int64_t> batch_target_sites;
+          batch_target_sites.reserve(batch.legs.size());
+          for (std::size_t member = 0; member < batch.legs.size(); ++member) {
+            const auto raw_owner = batch.owners[member];
+            if (raw_owner < 0 ||
+                static_cast<std::size_t>(raw_owner) >= problem_.n_atoms) {
+              throw std::logic_error("ABI7 phase owner is invalid");
+            }
+            const auto owner = static_cast<std::size_t>(raw_owner);
+            begin = std::max(
+                begin,
+                source_back
+                    ? problem_.scheduler_back_dependency_end_us[owner]
+                    : qubit_dependency[owner]);
+            const auto target_site = site_id_for_point(
+                batch.legs[member].target);
+            batch_target_sites.push_back(target_site);
+            const auto dependency = site_dependency.find(target_site);
+            if (dependency != site_dependency.end()) {
+              begin = std::max(
+                  begin,
+                  dependency->second - timing.deactivation_offset_us);
+            }
+          }
+          const auto end = begin + timing.duration_us;
+          const auto activation_finish =
+              begin + timing.activation_finish_offset_us;
+          for (std::size_t member = 0; member < batch.owners.size(); ++member) {
+            const auto owner = static_cast<std::size_t>(batch.owners[member]);
+            active[owner] += 2.0 * transfer_us;
+            qubit_dependency[owner] = end;
+            site_dependency[current_site_ids[owner]] = activation_finish;
+            current_site_ids[owner] = batch_target_sites[member];
+          }
+          aod_end = end;
+          trace_end = std::max(trace_end, end);
+        }
+      };
+
+      schedule_phase(0, geometry.site_ids_t1, true);
+      schedule_phase(1, geometry.final_site_ids, false);
+
+      if (!problem_.gate_domains.empty()) {
+        const auto before_gate_dependency = qubit_dependency;
+        std::vector<unsigned char> target_one_qubit(problem_.n_atoms, 0U);
+        for (const auto raw_atom : problem_.target_one_qubit_atoms) {
+          target_one_qubit[static_cast<std::size_t>(raw_atom)] = 1U;
+        }
+        double cz_begin = rydberg_end;
+        for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+          const auto participant = participant_mask_[atom];
+          const auto in_zone = is_zone_point(
+              architecture_.site_coordinates()[static_cast<std::size_t>(
+                  current_site_ids[atom])]);
+          // Router_mixin creates the CZ before the target parent-1Q block.  Its
+          // resident dependency patch binds idle zone atoms except those whose
+          // qubit ledger has already advanced to that later 1Q instruction.
+          if (participant ||
+              (in_zone && target_one_qubit[atom] == 0U)) {
+            cz_begin = std::max(cz_begin, before_gate_dependency[atom]);
+          }
+        }
+        const auto cz_end = cz_begin + rydberg_us;
+        for (const auto raw_atom : problem_.participants) {
+          active[static_cast<std::size_t>(raw_atom)] += rydberg_us;
+        }
+        rydberg_end = cz_end;
+        trace_end = std::max(trace_end, cz_end);
+
+        if (!problem_.target_one_qubit_atoms.empty()) {
+          double one_qubit_begin = one_qubit_end;
+          for (const auto raw_atom : problem_.target_one_qubit_atoms) {
+            const auto atom = static_cast<std::size_t>(raw_atom);
+            one_qubit_begin = std::max(
+                one_qubit_begin,
+                participant_mask_[atom] ? cz_end
+                                        : before_gate_dependency[atom]);
+          }
+          auto cursor = one_qubit_begin;
+          for (const auto raw_atom : problem_.target_one_qubit_atoms) {
+            const auto atom = static_cast<std::size_t>(raw_atom);
+            active[atom] += one_qubit_us;
+            cursor += one_qubit_us;
+          }
+          one_qubit_end = cursor + one_qubit_common_us;
+          trace_end = std::max(trace_end, one_qubit_end);
+        }
+
+        for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+          const auto in_zone = is_zone_point(
+              architecture_.site_coordinates()[static_cast<std::size_t>(
+                  current_site_ids[atom])]);
+          if (target_one_qubit[atom] != 0U) {
+            qubit_dependency[atom] = one_qubit_end;
+          } else if (participant_mask_[atom] || in_zone) {
+            qubit_dependency[atom] =
+                std::max(before_gate_dependency[atom], cz_end);
+          }
+        }
+      }
+
+      std::vector<double> idle_after(problem_.n_atoms, 0.0);
+      double coherence_nll = 0.0;
+      for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+        if (active[atom] > trace_end + 1e-7) {
+          throw std::logic_error(
+              "ABI7 active union exceeds candidate trace makespan");
+        }
+        idle_after[atom] = std::max(0.0, trace_end - active[atom]);
+        const auto before = problem_.prior_idle_time_us[atom];
+        const auto after = idle_after[atom];
+        if (before >= coherence_t2_us || after >= coherence_t2_us) {
+          result.feasible = false;
+          result.negative_log_fidelity =
+              std::numeric_limits<double>::infinity();
+          result.transfer_nll = result.negative_log_fidelity;
+          result.idle_excitation_nll = result.negative_log_fidelity;
+          result.coherence_nll = result.negative_log_fidelity;
+          result.error = "linear coherence model out of domain";
+          return result;
+        }
+        coherence_nll += std::log1p(-before / coherence_t2_us) -
+                         std::log1p(-after / coherence_t2_us);
+      }
+      std::int64_t idle_exposures = 0;
+      for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+        if (!participant_mask_[atom] && is_zone_point(
+                architecture_.site_coordinates()[static_cast<std::size_t>(
+                    current_site_ids[atom])])) {
+          ++idle_exposures;
+        }
+      }
+      result.idle_exposures = idle_exposures;
+      result.transfer_nll =
+          -static_cast<double>(result.transfers) * std::log(kFTransfer);
+      result.idle_excitation_nll =
+          -static_cast<double>(idle_exposures) * std::log(kFExc);
+      result.coherence_nll = coherence_nll;
+      result.negative_log_fidelity = result.transfer_nll +
+                                     result.idle_excitation_nll +
+                                     result.coherence_nll;
+      result.candidate_idle_time_us.resize(problem_.n_atoms);
+      for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+        result.candidate_idle_time_us[atom] =
+            idle_after[atom] - problem_.prior_idle_time_us[atom];
+      }
+      return result;
+    }
+    std::vector<double> pulse_idle(problem_.n_atoms, 0.0);
+    if (!problem_.gate_domains.empty()) {
+      std::fill(pulse_idle.begin(), pulse_idle.end(), kRydbergUs);
+      for (const auto participant : problem_.participants) {
+        pulse_idle[static_cast<std::size_t>(participant)] = 0.0;
+      }
+    }
+    auto scoring_prior = problem_.prior_idle_time_us;
+    for (std::size_t atom = 0; atom < scoring_prior.size(); ++atom) {
+      scoring_prior[atom] += pulse_idle[atom];
+    }
+    auto result = (record_batches
+                       ? evaluate_candidate(
+                             architecture_, candidate, boundary_config,
+                             scoring_prior)
+                       : evaluate_candidate_summary(
+                             architecture_, candidate, boundary_config,
+                             scoring_prior));
+    const auto pulse_nll = linear_coherence_delta_nll(
+        problem_.prior_idle_time_us, pulse_idle);
+    if (result.feasible && std::isfinite(pulse_nll)) {
+      result.coherence_nll += pulse_nll;
+      result.negative_log_fidelity += pulse_nll;
+      if (result.candidate_idle_time_us.empty()) {
+        result.candidate_idle_time_us.assign(problem_.n_atoms, 0.0);
+      }
+      for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+        result.candidate_idle_time_us[atom] += pulse_idle[atom];
+      }
+    } else if (result.feasible) {
+      result.feasible = false;
+      result.negative_log_fidelity = std::numeric_limits<double>::infinity();
+      result.transfer_nll = result.negative_log_fidelity;
+      result.idle_excitation_nll = result.negative_log_fidelity;
+      result.coherence_nll = result.negative_log_fidelity;
+      result.error = "linear coherence model out of domain";
+    }
+    return result;
   }
 
   ReseatRepair derive_reseats(
@@ -1942,6 +2781,7 @@ class RichSolver {
     const auto cached = fitness_cache_.find(chromosome);
     if (config_.fitness_cache && cached != fitness_cache_.end()) {
       ++stats_.fitness_hits;
+      archive_complete_evaluation(cached->second);
       return cached->second;
     }
     const auto compact = partial_current_bounds_.find(chromosome);
@@ -1954,7 +2794,10 @@ class RichSolver {
       auto prepared = prepare_current_normalized(chromosome, stochastic);
       stats_ = saved_stats;
       ++stats_.fitness_hits;
-      return complete_prepared_current(chromosome, std::move(prepared));
+      auto completed =
+          complete_prepared_current(chromosome, std::move(prepared));
+      archive_complete_evaluation(completed);
+      return completed;
     }
     const bool new_key = evaluated_keys_.insert(chromosome).second;
     if (new_key) {
@@ -2074,6 +2917,7 @@ class RichSolver {
     }
     result.current_ghost_rejections = ghost_rejections;
     if (config_.fitness_cache) fitness_cache_[chromosome] = result;
+    archive_complete_evaluation(result);
     fitness_ns_ += elapsed_ns(started);
     return result;
   }
@@ -2216,6 +3060,7 @@ class RichSolver {
     result.current_ghost_rejections = prepared.ghost_rejections;
     if (config_.fitness_cache) fitness_cache_[chromosome] = result;
     partial_current_bounds_.erase(chromosome);
+    archive_complete_evaluation(result);
     fitness_ns_ += elapsed_ns(started);
     return result;
   }
@@ -2226,6 +3071,7 @@ class RichSolver {
       std::size_t return_count) const {
     std::size_t back_movers = 0;
     double back_longest = 0.0;
+    std::vector<unsigned char> back_mover_mask(problem_.n_atoms, 0U);
     for (const auto& assignment : assignments) {
       const auto atom = static_cast<std::size_t>(
           problem_.eligible[assignment.eligible_index]);
@@ -2233,11 +3079,13 @@ class RichSolver {
           problem_.current_points[atom], assignment.point);
       if (distance <= 1e-9) continue;
       ++back_movers;
+      back_mover_mask[atom] = 1U;
       back_longest = std::max(back_longest, distance);
     }
 
     std::size_t out_movers = 0;
     double out_longest = 0.0;
+    std::vector<unsigned char> out_mover_mask(problem_.n_atoms, 0U);
     for (std::size_t gate = 0; gate < problem_.gate_domains.size(); ++gate) {
       const auto& option =
           problem_.gate_domains[gate][decoded.option_indices[gate]];
@@ -2248,30 +3096,41 @@ class RichSolver {
             problem_.current_points[static_cast<std::size_t>(atom)], target);
         if (distance <= 1e-9) continue;
         ++out_movers;
+        out_mover_mask[static_cast<std::size_t>(atom)] = 1U;
         out_longest = std::max(out_longest, distance);
       }
     }
 
     const auto idle_exposures = problem_.eligible.size() - return_count;
-    double coherence_nll = -static_cast<double>(idle_exposures) *
-                           std::log1p(-kRydbergUs / kT2Us);
-    const auto add_phase = [&](std::size_t movers, double longest) {
+    std::vector<double> candidate_idle(problem_.n_atoms, 0.0);
+    const auto add_phase = [&](const auto& mover_mask, std::size_t movers,
+                               double longest) {
       if (movers == 0) return true;
       // Every legal phase must execute its longest individual trajectory.
       // Treating every leg as if it shared one batch is therefore an
       // admissible (optimistic) lower bound on the implemented phase time.
       const auto phase_time =
           2.0 * kTransferUs + std::sqrt(longest / kAccelUmPerUs2);
-      const auto mover_idle = std::max(0.0, phase_time - 2.0 * kTransferUs);
-      if (phase_time >= kT2Us || mover_idle >= kT2Us) return false;
-      coherence_nll -= static_cast<double>(problem_.n_atoms - movers) *
-                       std::log1p(-phase_time / kT2Us);
-      coherence_nll -= static_cast<double>(movers) *
-                       std::log1p(-mover_idle / kT2Us);
+      for (auto& value : candidate_idle) value += phase_time;
+      for (std::size_t atom = 0; atom < mover_mask.size(); ++atom) {
+        if (mover_mask[atom] != 0U) {
+          candidate_idle[atom] -= 2.0 * kTransferUs;
+        }
+      }
       return true;
     };
-    if (!add_phase(back_movers, back_longest) ||
-        !add_phase(out_movers, out_longest)) {
+    if (!add_phase(back_mover_mask, back_movers, back_longest) ||
+        !add_phase(out_mover_mask, out_movers, out_longest)) {
+      return std::numeric_limits<double>::infinity();
+    }
+    if (!problem_.gate_domains.empty()) {
+      for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+        if (!participant_mask_[atom]) candidate_idle[atom] += kRydbergUs;
+      }
+    }
+    const auto coherence_nll = linear_coherence_delta_nll(
+        problem_.prior_idle_time_us, candidate_idle);
+    if (!std::isfinite(coherence_nll)) {
       return std::numeric_limits<double>::infinity();
     }
     const auto transfers = 2 * (back_movers + out_movers);
@@ -2301,7 +3160,7 @@ class RichSolver {
 
       std::optional<double> lower_bound;
       const auto decoded = decode(chromosome);
-      if (decoded.feasible) {
+      if (decoded.feasible && !problem_.exact_current_scheduler) {
         const auto gate_count = problem_.gate_domains.size();
         std::vector<std::size_t> returners;
         for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
@@ -2648,6 +3507,22 @@ class RichSolver {
     std::fill(all_return.begin() + gate_count, all_return.end(), 1);
     raw.push_back(std::move(all_return));
     raw.push_back(greedy);
+    if (std::any_of(problem_.recommended_return_mask.begin(),
+                    problem_.recommended_return_mask.end(),
+                    [](const auto value) { return value; })) {
+      auto mixed = problem_.matched_gate_genes;
+      for (const auto recommended : problem_.recommended_return_mask) {
+        mixed.push_back(recommended ? 1 : 0);
+      }
+      raw.push_back(mixed);
+      for (std::size_t index = 0; index < eligible_count; ++index) {
+        if (!problem_.recommended_return_mask[index]) continue;
+        auto single = problem_.matched_gate_genes;
+        single.resize(gate_count + eligible_count, 0);
+        single[gate_count + index] = 1;
+        raw.push_back(std::move(single));
+      }
+    }
     if (cached_winner.has_value() &&
         config_.operator_profile == RichOperatorProfile::kTuned) {
       raw.insert(raw.begin(), *cached_winner);
@@ -2904,7 +3779,7 @@ class RichSolver {
   }
 
   const ArchitectureSnapshot& architecture_;
-  const RichH0Problem& problem_;
+  RichH0Problem problem_;
   const RichSearchConfig& config_;
   std::vector<std::vector<RichReturnOption>> return_domains_;
   std::unordered_set<std::int64_t> storage_site_ids_;
@@ -2921,6 +3796,16 @@ class RichSolver {
                      VectorHash<std::size_t>> return_cache_;
   std::unordered_map<std::vector<std::int64_t>, Evaluated,
                      VectorHash<std::int64_t>> fitness_cache_;
+  std::map<std::vector<std::int64_t>, Evaluated> complete_evaluated_archive_;
+  std::optional<Evaluated> guarded_final_value_;
+  std::vector<std::int64_t> current_gate_anchor_;
+  std::vector<std::int64_t> current_gate_anchor_assignment_site_ids_;
+  std::vector<std::int64_t> current_gate_final_assignment_site_ids_;
+  std::string current_gate_guard_branch_{"inactive"};
+  std::size_t current_gate_guard_cohort_size_{};
+  std::size_t current_gate_guard_admitted_size_{};
+  std::string current_gate_projection_source_{"inactive"};
+  std::size_t current_gate_projection_evaluated_{};
   std::unordered_map<std::vector<std::int64_t>, double,
                      VectorHash<std::int64_t>> partial_current_bounds_;
   std::unordered_map<std::vector<std::uint64_t>, ForecastReplay,

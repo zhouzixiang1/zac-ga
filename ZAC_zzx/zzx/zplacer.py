@@ -76,6 +76,7 @@ from zzx.algorithm_v2 import (AdaptiveHorizonDecision, CacheStats,
                               maximum_lookahead_horizon,
                               resident_decision_candidates)
 from zzx.native_backend import select_backend
+from zzx.exact_current_reference import ExactCurrentReferenceScheduler
 from zzx.zcost import batch_cost, compatible_2d, conflict_graph
 from zzx.ghost import (ghost_hits, hit_count, leg_hits, new_conflicts,
                        pair_edges)
@@ -568,6 +569,8 @@ class ResidentPlacer(VertexMatchingPlacer):
     门位（非参与者逐位拷贝 [2L]）；[2L+2]=边界态；每张映射单射。
     """
 
+    _ONE_QUBIT_DURATION_US = 52.0
+
     def __init__(self, mapping: list, l2: bool = False, seed: int = 0, **params):
         super().__init__(mapping, l2)
         self.rng = random.Random(seed)              # RNG 隔离（审计 MAJOR-6：模块级共享会毁 SA 确定性）
@@ -696,6 +699,14 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.decay_lookahead: bool = is_decay_lookahead(
             self.lookahead_horizon_config)
         self.fitness_cache: bool = params.get("fitness_cache", True)
+        # The candidate scorer and the final resident router must color the
+        # same conflict graph with the same exact-search cutoff.  The router's
+        # registered default is 24; a hidden native value of zero can change a
+        # winner's executable batch count before any ghost audit runs.
+        self.exact_coloring_threshold: int = int(
+            params.get("coloring_exact_threshold", 24))
+        if self.exact_coloring_threshold < 0:
+            raise ValueError("coloring_exact_threshold must be non-negative")
         # Formal ablation controls are injected by method_driver only after the
         # frozen main Schema-2 config has passed its strict validation.  They are
         # intentionally absent from the M3/M4 config contract.
@@ -747,8 +758,75 @@ class ResidentPlacer(VertexMatchingPlacer):
         # physical residency commitment, not merely a promise that a later
         # greedy placement may immediately undo with a zone-to-zone transfer.
         self.residency_commitments: dict[int, tuple[int, tuple]] = {}
+        self.scheduler_reference = None
+        self.current_scheduler_prefix = None
+        self.expected_scheduler_prefix_sha256 = None
+        self.expected_scheduler_prefix_idle_us = None
+        self.one_qubit_gates_by_layer = ()
 
     # ------------------------------------------------------------------ 轮循环
+    def _record_leading_one_qubit_gates(self, gates) -> dict:
+        """Commit the globally serial 1Q prefix before the initial AOD move.
+
+        Only the prefix attached to parent ``-1`` is accounted here: the
+        emitted native trace makes the initial AOD wait for that whole block.
+        Parent-layer 1Q gates are deliberately excluded because their real
+        schedule may overlap an AOD phase; treating them as serial boundary
+        intervals would overstate the serialized boundary-phase prior.
+        """
+        count = 0
+        n_qubits = len(self.mapping[0])
+        for gate in gates or ():
+            if not isinstance(gate, (tuple, list)) or len(gate) != 2:
+                raise ValueError(
+                    "leading one-qubit gate must be an (operation, qubit) pair")
+            q = int(gate[1])
+            if not 0 <= q < n_qubits:
+                raise ValueError(
+                    f"leading one-qubit gate references invalid qubit {q}")
+            self.registry.record_external_idle_interval(
+                self._ONE_QUBIT_DURATION_US, busy_atoms=(q,))
+            count += 1
+        return {
+            "gates": count,
+            "duration_us": count * self._ONE_QUBIT_DURATION_US,
+        }
+
+    def _record_initial_out_phase(self, placement: list) -> dict:
+        """Commit the real initial ``mapping[0] -> gate[0]`` AOD phase.
+
+        The initial movement is repaired before this call and is replayed by
+        the same batch-order oracle and expanded-AOD timing used for every
+        later committed out phase.  It must precede the first CZ pulse so the
+        stateful coherence prior contains the known leading-prefix and initial
+        movement history in the correct order.
+        """
+        positions = {
+            q: tuple(self.registry.current_pos(q))
+            for q in range(len(self.mapping[0]))}
+        legs, owners = [], []
+        for row in placement:
+            for q, seat in zip(row["gate"], row["seats"]):
+                p0 = self.architecture.exact_SLM_location_tuple(positions[q])
+                p1 = self.architecture.exact_SLM_location_tuple(seat)
+                distance = math.dist(p0, p1)
+                if distance > 1e-9:
+                    legs.append((distance, *p0, *p1))
+                    owners.append(int(q))
+        batches, _phase = _replay_phase_batches(
+            self.architecture, legs, owners, positions)
+        physical = PhysicalIncrementalCost(len(self.mapping[0]))
+        duration = sum(
+            physical._expanded_batch_time(legs, batch) for batch in batches)
+        self.registry.record_movement_phase(
+            duration, owners,
+            transfer_time_us=PhysicalIncrementalCost.T_TRANSFER_US)
+        return {
+            "move_time_us": float(duration),
+            "move_batches": len(batches),
+            "movers": len(owners),
+        }
+
     def _prepare_boundary_architecture(self):
         """Preload immutable storage geometry once for the native solver.
 
@@ -803,7 +881,9 @@ class ResidentPlacer(VertexMatchingPlacer):
         return self.boundary_architecture_snapshot
 
     def _initialize_run_state(self, architecture, qubit_mapping,
-                              gate_scheduling, *, forecast_source=None):
+                              gate_scheduling, *, forecast_source=None,
+                              leading_one_qubit_gates=(),
+                              one_qubit_gates_by_layer=()):
         """Initialize the state shared by batch and bounded-memory execution.
 
         ``gate_scheduling`` is the placement view used by the current physical
@@ -823,6 +903,17 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.mapping = [list(qubit_mapping[0])]
         self.registry = ResidentRegistry(architecture, qubit_mapping[0],
                                          self.theta_capacity)
+        self._record_leading_one_qubit_gates(leading_one_qubit_gates)
+        self.one_qubit_gates_by_layer = one_qubit_gates_by_layer or ()
+        self.scheduler_reference = ExactCurrentReferenceScheduler(
+            architecture,
+            qubit_mapping[0],
+            leading_one_qubit_gates=leading_one_qubit_gates,
+            coloring_exact_threshold=self.exact_coloring_threshold,
+        )
+        self.current_scheduler_prefix = None
+        self.expected_scheduler_prefix_sha256 = None
+        self.expected_scheduler_prefix_idle_us = None
         if self.experiment_schema == 2 and self.engine == "ga":
             snapshot = self._prepare_boundary_architecture()
             self.boundary_backend = select_backend(
@@ -855,8 +946,19 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.residency_commitments = {}
         return n
 
+    def _one_qubit_for_layer(self, layer: int) -> tuple[tuple[str, int], ...]:
+        source = self.one_qubit_gates_by_layer
+        if not source:
+            return ()
+        try:
+            gates = source[int(layer)]
+        except (IndexError, KeyError):
+            return ()
+        return tuple((str(gate[0]), int(gate[1])) for gate in gates)
+
     def _finish_terminal_boundary(self, layer: int):
         """Commit the exact terminal boundary shared by batch and Large paths."""
+        source_gate_mapping = deepcopy(self.mapping[-1])
         terminal_ablation_return = self.ablation_policy == "always_return"
         if terminal_ablation_return:
             # Keep the registry at its true pre-move positions until ghost
@@ -883,6 +985,39 @@ class ResidentPlacer(VertexMatchingPlacer):
                 elif kind == "RESEAT":
                     self.registry.reseat(q, loc)
         self._append_boundary(decisions)
+        if self.scheduler_reference is not None:
+            self.scheduler_reference.commit_source(
+                layer,
+                source_gate_mapping,
+                self.mapping[-1],
+                self.gate_scheduling[layer],
+                self._one_qubit_for_layer(layer),
+            )
+            if self.expected_scheduler_prefix_sha256 is not None:
+                if any(kind != "STAY" for kind, _location in decisions.values()):
+                    if self.ablation_policy != "always_return":
+                        raise RuntimeError(
+                            "formal terminal boundary changed a previously "
+                            "audited no-back candidate")
+                else:
+                    snapshot = self.scheduler_reference.scheduler_snapshot
+                    if snapshot.timing_sha256 != \
+                            self.expected_scheduler_prefix_sha256:
+                        raise RuntimeError(
+                            "terminal production scheduler hash differs from "
+                            "the prior native-winner candidate audit")
+                    expected_idle = self.expected_scheduler_prefix_idle_us
+                    if (expected_idle is None
+                            or len(expected_idle) != len(snapshot.idle_time_us)
+                            or any(not math.isclose(
+                                actual, expected, rel_tol=0.0, abs_tol=1e-9)
+                                for actual, expected in zip(
+                                    snapshot.idle_time_us, expected_idle))):
+                        raise RuntimeError(
+                            "terminal production idle vector differs from the "
+                            "prior native-winner candidate audit")
+                self.expected_scheduler_prefix_sha256 = None
+                self.expected_scheduler_prefix_idle_us = None
         terminal_horizon = AdaptiveHorizonDecision.fixed(
             0, reason="terminal_boundary")
         self.backend_timing_log.append({
@@ -909,7 +1044,8 @@ class ResidentPlacer(VertexMatchingPlacer):
         })
 
     def run(self, architecture, qubit_mapping, gate_scheduling,
-            dynamic_placement, reuse_qubit):
+            dynamic_placement, reuse_qubit, *, leading_one_qubit_gates=(),
+            one_qubit_gates_by_layer=()):
         """轮循环总控：产出与 ZAC 同构的映射流（长度 2n+1）。
 
         映射流的下标约定（下游 route_qubit_mis 按 2L/2L+1 取用）：
@@ -923,7 +1059,9 @@ class ResidentPlacer(VertexMatchingPlacer):
         engine="ga" 时 ①② 合并成一步联合搜索（_ga_step）。
         """
         n = self._initialize_run_state(
-            architecture, qubit_mapping, gate_scheduling)
+            architecture, qubit_mapping, gate_scheduling,
+            leading_one_qubit_gates=leading_one_qubit_gates,
+            one_qubit_gates_by_layer=one_qubit_gates_by_layer)
 
         # Canonical optimisation can legitimately remove every two-qubit gate
         # (for example, ground_state_estimation_10).  Such a circuit has no
@@ -936,6 +1074,7 @@ class ResidentPlacer(VertexMatchingPlacer):
 
         placement = self._plan_round(0)
         self._repair_ghosts(placement, {})       # 第 0 轮入场也过鬼点防线
+        self._record_initial_out_phase(placement)
         self._commit_round(0, placement)
         for layer in range(n):
             if layer + 1 < n:
@@ -1750,6 +1889,13 @@ class ResidentPlacer(VertexMatchingPlacer):
     def _commit_round(self, layer: int, placement: list):
         """追加第 layer 轮门位映射（= 上一张映射 + 参与者落座）；登记簿入区。"""
         m = list(self.mapping[-1])
+        participants = {
+            int(q) for p in placement for q in p["gate"]}
+        # The pulse is committed before ``enter_zone`` resets participating
+        # residents' online rent.  Non-participants accrue both global
+        # coherence time and, when resident, one real idle-excitation exposure.
+        self.registry.record_rydberg_pulse(
+            participants, PhysicalIncrementalCost.T_RYDBERG_US)
         for p in placement:
             q1, q2 = p["gate"]
             s1, s2 = p["seats"]
@@ -2121,6 +2267,41 @@ class ResidentPlacer(VertexMatchingPlacer):
         next_layer = layer + 1
         list_gate = self.forecast.target_layer(layer)
         reg, arch = self.registry, self.architecture
+        source_gate_mapping = deepcopy(self.mapping[-1])
+        source_one_qubit = self._one_qubit_for_layer(layer)
+        if self.scheduler_reference is None:
+            raise RuntimeError("Schema-2 boundary lacks scheduler reference")
+        scheduler_prefix = self.scheduler_reference.prepare_source_prefix(
+            layer,
+            source_gate_mapping,
+            self.gate_scheduling[layer],
+            source_one_qubit,
+        )
+        if self.expected_scheduler_prefix_sha256 is not None:
+            if scheduler_prefix.scheduler.timing_sha256 != \
+                    self.expected_scheduler_prefix_sha256:
+                raise RuntimeError(
+                    "committed production scheduler prefix hash differs from "
+                    "the prior native-winner candidate audit")
+            expected_idle = self.expected_scheduler_prefix_idle_us
+            actual_idle = scheduler_prefix.scheduler.idle_time_us
+            if (expected_idle is None or len(expected_idle) != len(actual_idle)
+                    or any(not math.isclose(
+                        float(actual), float(expected), rel_tol=0.0,
+                        abs_tol=1e-9)
+                        for actual, expected in zip(actual_idle, expected_idle))):
+                raise RuntimeError(
+                    "committed production scheduler idle vector differs from "
+                    "the prior native-winner candidate audit")
+            self.expected_scheduler_prefix_sha256 = None
+            self.expected_scheduler_prefix_idle_us = None
+        self.current_scheduler_prefix = scheduler_prefix
+        scheduler_idle_prior = scheduler_prefix.scheduler.idle_time_us
+        # Immutable solve-time prior for the stateful-coherence native DTO.
+        # Keeping this snapshot here prevents later state commits from shifting
+        # it.  Its explicit tracked scope is leading 1Q + AOD movement + CZ;
+        # parent-layer 1Q timing remains a router-level overlap concern.
+        coherence_idle_prior = reg.coherence_idle_snapshot()
         participants = {q for gate in list_gate for q in gate}
         horizon_selection_started_ns = time.perf_counter_ns()
         if self.adaptive_lookahead:
@@ -2523,6 +2704,180 @@ class ResidentPlacer(VertexMatchingPlacer):
                     "avoidable_return_nll": avoided_move_nll,
                     "margin_nll": avoided_move_nll - idle_nll,
                     "forced_return": not admit,
+                })
+
+        # Formal decay rent-or-return audit.  This executes before chromosome
+        # normalization so its ghost-safe witness can enrich the bounded RETURN
+        # domain, but it never writes the native forced-return mask.
+        # M3 projects exactly the immediate target pulse from current state and
+        # never asks the oracle for a future use.  M4 returns atoms with no
+        # reuse in its registered window; visible reuses are admitted only
+        # while the *future incremental* STAY loss remains cheaper than a
+        # dedicated ghost-safe RETURN/re-entry round trip.  Historical rent is
+        # audit evidence only: it is sunk cost and must not be charged again.
+        rent_guard_details = []
+        rent_recommended_returns: set[int] = set()
+        rent_forced_returns: set[int] = set()
+        rent_guard_return_sites: dict[int, tuple] = {}
+
+        def cheapest_ghost_safe_return(q):
+            zone_location = tuple(reg.zone_seat[q])
+            source_xy = arch.exact_SLM_location_tuple(zone_location)
+            occupied = reg.occupied_storage()
+            nearest = tuple(arch.nearest_storage_site(*zone_location))
+            centers = (nearest, tuple(reg.homes[q]))
+            local = set()
+            for center in centers:
+                if center[0] in arch.storage_zone:
+                    local.update(_box_sites(
+                        arch, center, self.box_ratio, occupied))
+            ghosts = [
+                (atom, *arch.exact_SLM_location_tuple(reg.current_pos(atom)))
+                for atom in range(len(self.mapping[0])) if atom != q
+            ]
+
+            def key(site):
+                target_xy = arch.exact_SLM_location_tuple(site)
+                return (math.dist(source_xy, target_xy), tuple(site))
+
+            def first_safe(domain):
+                for site in sorted(domain, key=key):
+                    site = tuple(site)
+                    target_xy = arch.exact_SLM_location_tuple(site)
+                    distance = math.dist(source_xy, target_xy)
+                    leg = (distance, *source_xy, *target_xy)
+                    if distance > 1e-9 and not leg_hits(leg, ghosts):
+                        return site, leg
+                return None
+
+            selected = first_safe(local)
+            if selected is None:
+                # This path is rare (the local boxes normally contain dozens
+                # of sites) but keeps the hard ghost contract complete.
+                selected = first_safe(
+                    site for site in _all_storage_sites(arch)
+                    if tuple(site) not in occupied)
+            return selected
+
+        if self.decay_lookahead and self.ablation_policy == "optimize":
+            for q in eligible:
+                # The explicit branch is an H=0 information firewall: no
+                # visible-use lookup, future layer access or future-dependent
+                # return anchor is evaluated for M3.
+                visible = (None if active_horizon == 0 else visible_use(q))
+                history_exposures, history_time_us = reg.resident_rent(q)
+                if active_horizon == 0:
+                    future_pulses = 1
+                elif visible is None:
+                    # Every pulse in the bounded visible window is avoidable
+                    # when the atom has no registered reuse there.
+                    future_pulses = 1 + len(visible_forecast)
+                else:
+                    future_pulses = max(1, visible[0] - next_layer)
+                future_pulse_idle_us = (
+                    future_pulses * physical.T_RYDBERG_US)
+                # Rank the two alternatives against the exact ASAP scheduler
+                # prior used by the native candidate scorer.  Registry rent is
+                # retained only as historical audit evidence (sunk cost).
+                prior_idle_us = float(scheduler_idle_prior[q])
+
+                def conditional_coherence_nll(delta_us):
+                    delta_us = float(delta_us)
+                    after = prior_idle_us + delta_us
+                    if (delta_us < -1e-12
+                            or prior_idle_us >= physical.T2_US
+                            or after >= physical.T2_US):
+                        return float("inf")
+                    return (
+                        math.log1p(-prior_idle_us / physical.T2_US)
+                        - math.log1p(-after / physical.T2_US))
+
+                stay_excitation_nll = (
+                    -future_pulses * math.log(physical.F_EXC))
+                stay_coherence_nll = conditional_coherence_nll(
+                    future_pulse_idle_us)
+                stay_increment_nll = (
+                    stay_excitation_nll + stay_coherence_nll)
+
+                safe_return = cheapest_ghost_safe_return(q)
+                return_site = None
+                return_distance = None
+                return_nll = float("inf")
+                return_transfer_nll = float("inf")
+                return_coherence_nll = float("inf")
+                return_move_idle_us = None
+                if safe_return is not None:
+                    return_site, leg_out = safe_return
+                    return_distance = float(leg_out[0])
+                    leg_back = (
+                        leg_out[0], leg_out[3], leg_out[4],
+                        leg_out[1], leg_out[2])
+                    phases = (
+                        movement_phase([leg_out], owners=[q]),
+                        movement_phase([leg_back], owners=[q]),
+                    )
+                    movers = sum(phase.movers for phase in phases)
+                    return_move_idle_us = sum(
+                        max(0.0, phase.move_time_us
+                            - 2.0 * physical.T_TRANSFER_US)
+                        for phase in phases)
+                    return_transfer_nll = (
+                        -2 * movers * math.log(physical.F_TRANSFER))
+                    # Both alternatives wait through the same future pulses.
+                    # RETURN additionally pays the moving atom's exact
+                    # load-excluded AOD idle and its real transfer errors.
+                    return_coherence_nll = conditional_coherence_nll(
+                        future_pulse_idle_us + return_move_idle_us)
+                    return_nll = (
+                        return_transfer_nll + return_coherence_nll)
+                    rent_guard_return_sites[q] = tuple(return_site)
+
+                no_visible_reuse = active_horizon > 0 and visible is None
+                recommended = (
+                    safe_return is not None
+                    and math.isfinite(return_nll)
+                    and return_nll + 1e-12 < stay_increment_nll)
+                if recommended:
+                    rent_recommended_returns.add(q)
+                # This scalar round-trip audit is deliberately a soft hint.
+                # It cannot prove a joint gate/RETURN assignment under the
+                # exact scheduler and therefore must never populate the hard
+                # native forced mask.  The recommendation is injected as a
+                # deterministic candidate and accepted only if exact scoring
+                # selects it.
+                forced_return = False
+                rent_guard_details.append({
+                    "q": q,
+                    "mode": ("h0_current_only" if active_horizon == 0 else
+                             ("no_visible_reuse" if visible is None else
+                              "visible_break_even")),
+                    "next_use_layer": (None if visible is None else visible[0]),
+                    "history_idle_exposures": history_exposures,
+                    "history_idle_time_us": history_time_us,
+                    "coherence_prior_us": prior_idle_us,
+                    "future_idle_exposures": future_pulses,
+                    "future_pulse_idle_time_us": future_pulse_idle_us,
+                    "stay_excitation_nll": stay_excitation_nll,
+                    "stay_coherence_increment_nll": stay_coherence_nll,
+                    "stay_increment_nll": stay_increment_nll,
+                    "return_site": (None if return_site is None
+                                    else list(return_site)),
+                    "return_distance_um": return_distance,
+                    "return_move_idle_time_us": return_move_idle_us,
+                    "return_transfer_nll": return_transfer_nll,
+                    "return_coherence_increment_nll": return_coherence_nll,
+                    "return_round_trip_nll": return_nll,
+                    "margin_nll": return_nll - stay_increment_nll,
+                    "recommended_return": recommended,
+                    # The scalar witness is a soft recommendation only.  It
+                    # seeds an exact joint candidate but never constrains the
+                    # native STAY/RETURN or K-best site assignment.
+                    "forced_return": forced_return,
+                    "stay_admitted": not forced_return,
+                    "reason": ("no_ghost_safe_return" if safe_return is None
+                               else ("no_visible_reuse" if no_visible_reuse
+                                     else ("physical_break_even" if recommended
+                                           else "rent_below_return"))),
                 })
 
         def resolve_commitment_conflicts(bits):
@@ -3289,7 +3644,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             # constructing the same persistent snapshot only once.
             boundary_architecture = self._prepare_boundary_architecture()
         boundary_config = BoundaryConfig(
-            exact_coloring_threshold=0,
+            exact_coloring_threshold=self.exact_coloring_threshold,
             horizon_policy=("dynamic" if self.adaptive_lookahead else "fixed"),
             max_horizon=active_horizon,
             # Candidate ranking is based on the executable current transition.
@@ -3323,7 +3678,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                 return_assignment_k=self.return_assignment_k,
                 forecast_gate_candidate_budget=
                     self.forecast_gate_candidate_budget,
-                exact_coloring_threshold=0,
+                exact_coloring_threshold=self.exact_coloring_threshold,
                 enforce_single_leg_ghost=True,
                 fitness_cache=self.fitness_cache,
             )
@@ -3593,13 +3948,38 @@ class ResidentPlacer(VertexMatchingPlacer):
             active_horizon, self.ablation_policy,
             self.ablation_fitness_mode,
             tuple(tuple(reg.current_pos(q)) for q in range(len(self.mapping[0]))),
+            # ABI7 current fitness is a fork of this exact ASAP scheduler
+            # prefix.  Equal geometry/idle with different resource or
+            # dependency clocks is a different search state.
+            float(scheduler_prefix.scheduler.trace_end_us),
+            tuple(float(value) for value in scheduler_idle_prior),
+            tuple(float(value) for value in
+                  scheduler_prefix.scheduler.active_union_us),
+            tuple(float(value) for value in
+                  scheduler_prefix.scheduler.aod_end_us),
+            float(scheduler_prefix.scheduler.one_qubit_end_us),
+            tuple(float(value) for value in
+                  scheduler_prefix.scheduler.rydberg_end_us),
+            tuple(float(value) for value in
+                  scheduler_prefix.qubit_dependency_end_us),
+            tuple(float(value) for value in
+                  scheduler_prefix.back_dependency_end_us),
+            tuple((tuple(location), float(value)) for location, value in
+                  scheduler_prefix.site_dependency_activation_finish_us),
+            tuple(self._one_qubit_for_layer(next_layer)),
             tuple(list_gate), visible_window, tuple(gate_domains), tuple(eligible),
             min_returns, tuple(sorted(physical_forced_returns)),
+            tuple(sorted(rent_forced_returns)),
             tuple(sorted((q, use_layer, tuple(seat))
                          for q, (use_layer, seat)
                          in self.residency_commitments.items())),
         )
-        cached_winner = self.transition_cache.get(state_key)
+        # The LRU value is only an approximate native elite.  The exhaustive
+        # Python differential backend must enumerate independently and therefore
+        # never receives this search hint.
+        cached_winner = (
+            self.transition_cache.get(state_key)
+            if self.resident_backend_requested == "native" else None)
 
         # Physical greedy seed: first solve the ZAC-style global gate/site
         # matching, then start with every non-participant RETURNed so every
@@ -3741,6 +4121,10 @@ class ResidentPlacer(VertexMatchingPlacer):
                     selected.append(site)
                     site_reasons.setdefault(site, set()).add(reason)
 
+                if q in rent_guard_return_sites:
+                    # Keep the physical break-even witness inside the native
+                    # bounded domain as an audit-backed option, never a mask.
+                    select(rent_guard_return_sites[q], "rent_audit_safe")
                 for reason, _center in family_centers:
                     family = family_options.get(reason, ())
                     if family:
@@ -4118,7 +4502,10 @@ class ResidentPlacer(VertexMatchingPlacer):
                 forced_return_mask=tuple(
                     q in horizon_forced_returns
                     or q in physical_forced_returns
+                    or q in rent_forced_returns
                     for q in eligible),
+                recommended_return_mask=tuple(
+                    q in rent_recommended_returns for q in eligible),
                 return_domains=tuple(rich_return_domains),
                 matched_gate_genes=tuple(native_matched_genes),
                 decision_policy=self.ablation_policy,
@@ -4129,6 +4516,48 @@ class ResidentPlacer(VertexMatchingPlacer):
                 future_layers=native_future_layers,
                 boundary_id=f"{self.method_id}:L{layer}",
                 selected_horizon=active_horizon,
+                prior_idle_time_us=tuple(scheduler_idle_prior),
+                scheduler_trace_end_us=float(
+                    scheduler_prefix.scheduler.trace_end_us),
+                scheduler_active_union_us=tuple(
+                    float(value) for value in
+                    scheduler_prefix.scheduler.active_union_us),
+                scheduler_aod_end_us=tuple(
+                    float(value) for value in
+                    scheduler_prefix.scheduler.aod_end_us),
+                scheduler_one_qubit_end_us=float(
+                    scheduler_prefix.scheduler.one_qubit_end_us),
+                scheduler_rydberg_end_us=tuple(
+                    float(value) for value in
+                    scheduler_prefix.scheduler.rydberg_end_us),
+                scheduler_qubit_dependency_end_us=tuple(
+                    float(value) for value in
+                    scheduler_prefix.qubit_dependency_end_us),
+                scheduler_back_dependency_end_us=tuple(
+                    float(value) for value in
+                    scheduler_prefix.back_dependency_end_us),
+                scheduler_site_dependency_site_ids=tuple(
+                    self.boundary_site_id[tuple(location)]
+                    for location, _value in
+                    scheduler_prefix.site_dependency_activation_finish_us),
+                scheduler_site_dependency_activation_finish_us=tuple(
+                    float(value) for _location, value in
+                    scheduler_prefix.site_dependency_activation_finish_us),
+                target_one_qubit_atoms=tuple(
+                    int(gate[1])
+                    for gate in self._one_qubit_for_layer(next_layer)),
+                scheduler_one_qubit_duration_us=float(
+                    scheduler_prefix.scheduler.one_qubit_duration_us),
+                scheduler_rydberg_duration_us=float(
+                    scheduler_prefix.scheduler.rydberg_duration_us),
+                scheduler_one_qubit_common_us=float(
+                    scheduler_prefix.scheduler.one_qubit_common_us),
+                scheduler_transfer_duration_us=float(
+                    self.architecture.time_atom_transfer),
+                scheduler_accel_um_per_us2=float(
+                    physical.ACCEL_UM_PER_US2),
+                coherence_t2_us=float(physical.T2_US),
+                enforce_frozen_physical_model=bool(self.formal_native),
             )
 
         if use_rich_boundary:
@@ -4288,6 +4717,24 @@ class ResidentPlacer(VertexMatchingPlacer):
                     native_rich_result.future_ghost_cost),
                 "pre_score_reseats": int(
                     native_rich_result.pre_score_reseats),
+                "current_gate_anchor": list(
+                    native_rich_result.current_gate_anchor),
+                "current_gate_anchor_assignment_site_ids": list(
+                    native_rich_result.
+                    current_gate_anchor_assignment_site_ids),
+                "current_gate_final_assignment_site_ids": list(
+                    native_rich_result.
+                    current_gate_final_assignment_site_ids),
+                "current_gate_guard_branch": str(
+                    native_rich_result.current_gate_guard_branch),
+                "current_gate_guard_cohort_size": int(
+                    native_rich_result.current_gate_guard_cohort_size),
+                "current_gate_guard_admitted_size": int(
+                    native_rich_result.current_gate_guard_admitted_size),
+                "current_gate_projection_source": str(
+                    native_rich_result.current_gate_projection_source),
+                "current_gate_projection_evaluated": int(
+                    native_rich_result.current_gate_projection_evaluated),
             }
         seed_chromosomes = [
             list(native_rich_result.winner.chromosome)
@@ -4631,6 +5078,10 @@ class ResidentPlacer(VertexMatchingPlacer):
             else:
                 decisions[q] = ("STAY", reg.zone_seat[q])
         decisions.update({q: ("RETURN", sites[q]) for q in selected_cycles})
+        for detail in rent_guard_details:
+            selected = decisions.get(detail["q"])
+            detail["selected_decision"] = (
+                None if selected is None else selected[0])
         vacated = {q for q, value in decisions.items()
                    if value[0] in ("RETURN", "RESEAT")}
         decoded_placements = [
@@ -4662,6 +5113,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         # below, so the ledger never reports the stale pre-repair objective.
         pre_ghost_placements = deepcopy(placements)
         pre_ghost_decisions = dict(decisions)
+        production_candidate_audit = {}
         if native_rich_result is not None:
             # The native winner was already evaluated by the same two-phase,
             # batch-order replay contract.  Recheck independently in Python,
@@ -4690,14 +5142,111 @@ class ResidentPlacer(VertexMatchingPlacer):
                     if distance > 1e-9:
                         out_legs.append((distance, *p0, *p1))
                         out_owners.append(q)
-            try:
-                _replay_phase_batches(
-                    arch, back_legs, back_owners, positions_t0)
-                _replay_phase_batches(
-                    arch, out_legs, out_owners, positions_t1)
-            except ValueError as exc:
+            boundary_mapping = [tuple(positions_t1[q])
+                                for q in range(len(self.mapping[0]))]
+            target_gate_mapping = list(boundary_mapping)
+            for placement in placements:
+                for q, seat in zip(placement["gate"], placement["seats"]):
+                    target_gate_mapping[int(q)] = tuple(seat)
+            production_candidate = self.scheduler_reference.evaluate_candidate(
+                prefix=scheduler_prefix,
+                boundary_mapping=boundary_mapping,
+                source_gates=self.gate_scheduling[layer],
+                source_one_qubit_gates=source_one_qubit,
+                target_gate_mapping=target_gate_mapping,
+                target_gates=list_gate,
+                target_one_qubit_gates=self._one_qubit_for_layer(next_layer),
+            )
+            native_batches = native_rich_result.winner.phase_batches
+            if len(native_batches) != 2:
                 raise RuntimeError(
-                    "native winner failed independent batch-order replay") from exc
+                    "native winner did not return exactly two physical phases")
+
+            def owner_batches(batches, owners):
+                return tuple(tuple(sorted(int(owners[index])
+                                          for index in batch))
+                             for batch in batches)
+
+            native_back_batches = owner_batches(
+                native_batches[0], back_owners)
+            native_out_batches = owner_batches(
+                native_batches[1], out_owners)
+            if native_back_batches != production_candidate.source_back_batches:
+                raise RuntimeError(
+                    "native source-back batches differ from production router")
+            if native_out_batches != production_candidate.target_out_batches:
+                raise RuntimeError(
+                    "native target-out batches differ from production router")
+            production_move_time = (
+                production_candidate.source_back_time_us
+                + production_candidate.target_out_time_us)
+            if not math.isclose(
+                    native_rich_result.winner.move_time_us,
+                    production_move_time, rel_tol=0.0, abs_tol=1e-9):
+                raise RuntimeError(
+                    "native winner Move time differs from production router")
+            production_transfers = 2 * sum(
+                len(batch) for batch in
+                (*production_candidate.source_back_batches,
+                 *production_candidate.target_out_batches))
+            production_idle_exposures = sum(
+                q not in participants and reg._is_zone(target_gate_mapping[q])
+                for q in range(len(target_gate_mapping)))
+            expected_transfer_nll = -production_transfers * math.log(0.999)
+            expected_idle_nll = -production_idle_exposures * math.log(0.9975)
+            expected_current_nll = (
+                expected_transfer_nll + expected_idle_nll
+                + production_candidate.coherence_negative_log_fidelity)
+            winner = native_rich_result.winner
+            for label, actual, expected in (
+                    ("transfer NLL", winner.transfer_nll,
+                     expected_transfer_nll),
+                    ("idle-excitation NLL", winner.idle_excitation_nll,
+                     expected_idle_nll),
+                    ("coherence NLL", winner.coherence_nll,
+                     production_candidate.coherence_negative_log_fidelity),
+                    ("current NLL", winner.negative_log_fidelity,
+                     expected_current_nll)):
+                if not math.isclose(
+                        actual, expected, rel_tol=0.0, abs_tol=1e-12):
+                    raise RuntimeError(
+                        f"native winner {label} differs from production router")
+            reconstructed_idle = tuple(
+                before + delta for before, delta in zip(
+                    scheduler_idle_prior,
+                    native_rich_result.winner.candidate_idle_time_us))
+            if (len(reconstructed_idle) !=
+                    len(production_candidate.idle_after_us)
+                    or any(not math.isclose(
+                        actual, expected, rel_tol=0.0, abs_tol=1e-9)
+                        for actual, expected in zip(
+                            reconstructed_idle,
+                            production_candidate.idle_after_us))):
+                raise RuntimeError(
+                    "native winner absolute idle vector differs from "
+                    "production router")
+            self.expected_scheduler_prefix_sha256 = str(
+                production_candidate.scheduler_after.timing_sha256)
+            self.expected_scheduler_prefix_idle_us = tuple(
+                production_candidate.scheduler_after.idle_time_us)
+            production_candidate_audit = {
+                "scheduler_after_timing_sha256": str(
+                    production_candidate.scheduler_after.timing_sha256),
+                "scheduler_after_trace_end_us": float(
+                    production_candidate.scheduler_after.trace_end_us),
+                "scheduler_after_idle_us": list(
+                    production_candidate.scheduler_after.idle_time_us),
+                "source_back_batches": [list(batch) for batch in
+                                        native_back_batches],
+                "target_out_batches": [list(batch) for batch in
+                                       native_out_batches],
+                "move_time_us": float(production_move_time),
+                "current_negative_log_fidelity": float(expected_current_nll),
+                "zero_duration_shiftback_count": int(
+                    production_candidate.zero_duration_shiftback_count),
+                "zero_duration_shiftback_distance_um": float(
+                    production_candidate.zero_duration_shiftback_distance_um),
+            }
             commitment_repairs, commitment_ghost_fallback = {}, False
         else:
             commitment_repairs, commitment_ghost_fallback = \
@@ -4851,6 +5400,73 @@ class ResidentPlacer(VertexMatchingPlacer):
             setattr(self.cache_stats, field,
                     getattr(self.cache_stats, field) + getattr(step_cache, field))
 
+        def committed_phase_account():
+            """Reconstruct exact executable back/out phase time by owner.
+
+            This independent replay is intentionally outside the optimizer.
+            It updates historical physical state only after a winner has been
+            selected and therefore cannot perturb chromosome ranking or RNG.
+            """
+            if native_rich_result is not None:
+                return (
+                    (float(production_candidate.source_back_time_us),
+                     tuple(int(q) for q in back_owners)),
+                    (float(production_candidate.target_out_time_us),
+                     tuple(int(q) for q in out_owners)),
+                )
+            positions_t0 = {
+                q: tuple(reg.current_pos(q))
+                for q in range(len(self.mapping[0]))}
+            positions_t1 = dict(positions_t0)
+            back, legacy_back_owners = [], []
+            for q, (kind, location) in decisions.items():
+                if kind == "STAY":
+                    continue
+                p0 = arch.exact_SLM_location_tuple(positions_t0[q])
+                p1 = arch.exact_SLM_location_tuple(location)
+                distance = math.dist(p0, p1)
+                if distance > 1e-9:
+                    back.append((distance, *p0, *p1))
+                    legacy_back_owners.append(q)
+                positions_t1[q] = tuple(location)
+            out, legacy_out_owners = [], []
+            for placement in placements:
+                for q, seat in zip(placement["gate"], placement["seats"]):
+                    p0 = arch.exact_SLM_location_tuple(positions_t1[q])
+                    p1 = arch.exact_SLM_location_tuple(seat)
+                    distance = math.dist(p0, p1)
+                    if distance > 1e-9:
+                        out.append((distance, *p0, *p1))
+                        legacy_out_owners.append(q)
+
+            def account(legs, owners, positions):
+                batches, _phase = _replay_phase_batches(
+                    arch, legs, owners, positions)
+                duration = sum(
+                    physical._expanded_batch_time(legs, batch)
+                    for batch in batches)
+                return float(duration), tuple(int(q) for q in owners)
+
+            return (account(back, legacy_back_owners, positions_t0),
+                    account(out, legacy_out_owners, positions_t1))
+
+        committed_back, committed_out = committed_phase_account()
+        committed_move_time = committed_back[0] + committed_out[0]
+        if (self.decay_lookahead
+                and not math.isclose(
+                    committed_move_time, breakdown.move_time_us,
+                    rel_tol=0.0, abs_tol=1e-9)):
+            raise RuntimeError(
+                "committed phase replay disagrees with selected physical time: "
+                f"{committed_move_time!r} != {breakdown.move_time_us!r}")
+
+        # Commit in real temporal order.  A RETURNer is resident during the
+        # back phase but not during the following out phase; RESEAT preserves
+        # its rent.  The next CZ pulse is recorded inside ``_commit_round``.
+        reg.record_movement_phase(
+            committed_back[0], committed_back[1],
+            transfer_time_us=physical.T_TRANSFER_US)
+
         for q, (kind, loc) in decisions.items():
             if kind == "RETURN":
                 self.residency_commitments.pop(q, None)
@@ -4870,8 +5486,19 @@ class ResidentPlacer(VertexMatchingPlacer):
                 # by an earlier deeper window as a hidden future-information
                 # channel.  The atom may still physically stay, but uncommitted.
                 self.residency_commitments.pop(q, None)
+        reg.record_movement_phase(
+            committed_out[0], committed_out[1],
+            transfer_time_us=physical.T_TRANSFER_US)
         self._append_boundary(decisions)
         self._commit_round(next_layer, placements)
+        self.scheduler_reference.commit_source(
+            layer,
+            source_gate_mapping,
+            self.mapping[-2],
+            self.gate_scheduling[layer],
+            source_one_qubit,
+        )
+        self.current_scheduler_prefix = None
         for q in participants:
             commitment = self.residency_commitments.get(q)
             if commitment is not None and commitment[0] <= next_layer:
@@ -4922,6 +5549,25 @@ class ResidentPlacer(VertexMatchingPlacer):
                 self.boundary_backend, "name", self.resident_backend_requested),
             **step_backend,
         })
+        formal_decay_state_log = ({
+            "rent_guard_returns": len(rent_forced_returns),
+            "rent_recommended_returns": len(rent_recommended_returns),
+            "rent_guard": rent_guard_details,
+            "coherence_idle_prior_us": list(coherence_idle_prior),
+            "coherence_idle_after_us": list(
+                reg.coherence_idle_snapshot()),
+            "scheduler_absolute_idle_prior_us": list(
+                scheduler_idle_prior),
+            "scheduler_prefix_trace_end_us": float(
+                scheduler_prefix.scheduler.trace_end_us),
+            "scheduler_prefix_timing_sha256": str(
+                scheduler_prefix.scheduler.timing_sha256),
+            "resident_rent_after": [
+                {"q": q, "idle_exposures": exposures,
+                 "idle_time_us": idle_time}
+                for q, exposures, idle_time
+                in reg.resident_rent_snapshot()],
+        } if self.decay_lookahead else {})
         self.decision_log.append({
             "layer": layer,
             "engine": "ga-v2",
@@ -4940,6 +5586,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             "search_mode": search_mode,
             "rich_search": rich_search_stats,
             "return_assignments": selected_return_audit,
+            "production_candidate": production_candidate_audit,
             "lookahead_selection": lookahead_selection,
             "forecast_objective": selected_forecast_audit,
             "safe_current_objective": (
@@ -4964,6 +5611,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             "horizon_guard_returns": len(horizon_forced_returns),
             "physical_guard_returns": len(physical_forced_returns),
             "physical_guard": physical_guard_details,
+            **formal_decay_state_log,
             "committed_target_atoms": len(target_pins),
             "commitment_overrides": commitment_overrides,
             "commitment_ghost_fallback": commitment_ghost_fallback,

@@ -21,6 +21,7 @@ from .boundary_problem import (
     Ghost,
     Leg,
     MovementPhase,
+    Point,
     RichH0Problem,
     RichH0Result,
     RichSearchConfig,
@@ -33,6 +34,7 @@ F_EXC = 0.9975
 F_TRANSFER = 0.999
 T_TRANSFER_US = 15.0
 T_RYDBERG_US = 0.36
+T_ONE_Q_US = 52.0
 ACCEL_UM_PER_US2 = 0.00275
 T2_US = 1.5e6
 
@@ -356,23 +358,27 @@ def replay_phase_batches(
         batches[split_index:split_index] = [[index] for index in members]
 
 
-def _expanded_batch_time(legs: Sequence[Leg], members: Sequence[int]) -> float:
+def _expanded_batch_time(
+        legs: Sequence[Leg], members: Sequence[int], *,
+        transfer_us: float = T_TRANSFER_US,
+        acceleration: float = ACCEL_UM_PER_US2,
+) -> float:
     selected = [legs[index] for index in members]
     if not selected:
         return 0.0
     if len(selected) == 1:
-        return 2 * T_TRANSFER_US + sqrt(
+        return 2 * transfer_us + sqrt(
             dist((selected[0].source.x, selected[0].source.y),
                  (selected[0].target.x, selected[0].target.y))
-            / ACCEL_UM_PER_US2)
+            / acceleration)
     rows: dict[float, list[Leg]] = {}
     for leg in selected:
         rows.setdefault(leg.source.y, []).append(leg)
     ordered_rows = sorted(rows.items())
     row_count = len(ordered_rows)
-    duration = (row_count + 1) * T_TRANSFER_US
+    duration = (row_count + 1) * transfer_us
     if row_count > 1:
-        duration += (row_count - 1) * sqrt(sqrt(2.0) / ACCEL_UM_PER_US2)
+        duration += (row_count - 1) * sqrt(sqrt(2.0) / acceleration)
     row_moves = []
     last_row_for_x: dict[float, int] = {}
     target_x_for_source: dict[float, float] = {}
@@ -392,7 +398,234 @@ def _expanded_batch_time(legs: Sequence[Leg], members: Sequence[int]) -> float:
         dist((column_begin, row_begin), (column_end, row_end))
         for row_begin, row_end in row_moves
         for column_begin, column_end in column_moves)
-    return duration + sqrt(longest / ACCEL_UM_PER_US2)
+    return duration + sqrt(longest / acceleration)
+
+
+@dataclass(frozen=True, slots=True)
+class _ExecutableBatch:
+    original_members: tuple[int, ...]
+    legs: tuple[Leg, ...]
+    owners: tuple[int, ...]
+
+
+def _first_ghost_tracks(
+        legs: Sequence[Leg], owners: Sequence[int],
+        positions: dict[int, Point],
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    if not legs:
+        return None
+    moving = set(owners)
+    columns = sorted({(leg.source.x, leg.target.x) for leg in legs})
+    rows = sorted({(leg.source.y, leg.target.y) for leg in legs})
+    x_values = [value for pair in columns for value in pair]
+    y_values = [value for pair in rows for value in pair]
+    bounds = min(x_values), max(x_values), min(y_values), max(y_values)
+    for atom, point in sorted(positions.items()):
+        if atom in moving or not (
+                bounds[0] - EPS <= point.x <= bounds[1] + EPS
+                and bounds[2] - EPS <= point.y <= bounds[3] + EPS):
+            continue
+        for column in columns:
+            ok_x, sx = _cover(*column, point.x)
+            if not ok_x:
+                continue
+            for row in rows:
+                ok_y, sy = _cover(*row, point.y)
+                if (ok_y and (sx is None or sy is None
+                              or abs(sx - sy) < S_TOL)):
+                    return column, row
+    return None
+
+
+def _expanded_batch_conflict_members(
+        phase: MovementPhase, members: Sequence[int],
+        replay_positions: dict[int, Point],
+) -> set[int]:
+    member_by_owner = {phase.owners[index]: index for index in members}
+    if len(member_by_owner) != len(members):
+        raise ValueError("expanded replay repeats a phase owner")
+    source = {phase.owners[index]: phase.legs[index].source
+              for index in members}
+    target = {phase.owners[index]: phase.legs[index].target
+              for index in members}
+    rows: dict[float, list[int]] = {}
+    for owner in sorted(member_by_owner):
+        rows.setdefault(source[owner].y, []).append(owner)
+    physical = dict(source)
+    held: set[int] = set()
+    activated_columns: set[float] = set()
+
+    def audit_move(next_positions: dict[int, Point]) -> set[int]:
+        detail_owners = tuple(
+            owner for owner in sorted(held)
+            if physical[owner] != next_positions[owner])
+        detail_legs = tuple(Leg.between(
+            physical[owner], next_positions[owner])
+            for owner in detail_owners)
+        vectors = tuple((
+            leg.source.x, leg.target.x, leg.source.y, leg.target.y)
+            for leg in detail_legs)
+        for left in range(len(vectors)):
+            for right in range(left + 1, len(vectors)):
+                if not compatible_2d(vectors[left], vectors[right]):
+                    return {
+                        member_by_owner[detail_owners[left]],
+                        member_by_owner[detail_owners[right]],
+                    }
+        positions = dict(replay_positions)
+        positions.update(physical)
+        hit = _first_ghost_tracks(detail_legs, detail_owners, positions)
+        if hit is None:
+            return set()
+        column, row = hit
+        bad = {
+            member_by_owner[owner]
+            for owner, leg in zip(detail_owners, detail_legs)
+            if (leg.source.x, leg.target.x) == column
+            or (leg.source.y, leg.target.y) == row
+        }
+        return bad or ({member_by_owner[detail_owners[0]]}
+                       if detail_owners else set())
+
+    ordered_rows = sorted(rows.items())
+    for row_index, (source_y, row_owners) in enumerate(ordered_rows):
+        shifted = dict(physical)
+        for owner in row_owners:
+            source_x = source[owner].x
+            if source_x not in activated_columns:
+                continue
+            for held_owner in held:
+                if source[held_owner].x == source_x:
+                    shifted[held_owner] = Point(
+                        source_x, shifted[held_owner].y)
+        bad = audit_move(shifted)
+        if bad:
+            return bad
+        physical = shifted
+        held.update(row_owners)
+        activated_columns.update(source[owner].x for owner in row_owners)
+        if row_index + 1 < len(ordered_rows):
+            parked_columns = {source[owner].x for owner in row_owners}
+            parked = dict(physical)
+            for owner in held:
+                point = parked[owner]
+                parked[owner] = Point(
+                    point.x + (1.0 if source[owner].x in parked_columns else 0.0),
+                    source_y + 1.0 if owner in row_owners else point.y,
+                )
+            bad = audit_move(parked)
+            if bad:
+                return bad
+            physical = parked
+    final = dict(physical)
+    final.update({owner: target[owner] for owner in held})
+    return audit_move(final)
+
+
+def _production_replay_phase_batches(
+        phase: MovementPhase, exact_threshold: int,
+) -> tuple[_ExecutableBatch, ...]:
+    if len(phase.owners) != len(phase.legs):
+        raise ValueError("production replay requires one owner per movement leg")
+    canonical_to_original = tuple(sorted(
+        range(len(phase.legs)),
+        key=lambda index: phase.legs[index].distance_um,
+        reverse=True,
+    ))
+    routed = MovementPhase(
+        tuple(phase.legs[index] for index in canonical_to_original),
+        phase.ghosts,
+        tuple(phase.owners[index] for index in canonical_to_original),
+        phase.batching,
+    )
+    positions = {ghost.atom: ghost.position for ghost in routed.ghosts}
+    if len(positions) != len(routed.ghosts):
+        raise ValueError("production replay repeats a ghost atom")
+    positions.update({owner: routed.legs[index].source
+                      for index, owner in enumerate(routed.owners)})
+
+    def executable(members: Sequence[int]) -> _ExecutableBatch:
+        return _ExecutableBatch(
+            tuple(canonical_to_original[index] for index in members),
+            tuple(routed.legs[index] for index in members),
+            tuple(routed.owners[index] for index in members),
+        )
+
+    def audit_pass(input_batches, clean, deferred):
+        queue = [list(batch) for batch in input_batches]
+        while queue:
+            pending = queue.pop(0)
+            while True:
+                legs = tuple(routed.legs[index] for index in pending)
+                owners = tuple(routed.owners[index] for index in pending)
+                hit = _first_ghost_tracks(legs, owners, positions)
+                if hit is None:
+                    break
+                if len(pending) == 1:
+                    deferred.append(pending[0])
+                    pending = []
+                    break
+                column, row = hit
+                bad = {
+                    index for index in pending
+                    if (routed.legs[index].source.x,
+                        routed.legs[index].target.x) == column
+                    or (routed.legs[index].source.y,
+                        routed.legs[index].target.y) == row
+                } or {pending[0]}
+                deferred.extend(sorted(bad))
+                pending = [index for index in pending if index not in bad]
+                if not pending:
+                    break
+            if not pending:
+                continue
+            expanded_bad = _expanded_batch_conflict_members(
+                routed, pending, positions)
+            if expanded_bad:
+                if len(pending) == 1:
+                    deferred.append(pending[0])
+                    continue
+                keep = [index for index in pending
+                        if index not in expanded_bad]
+                bad = [index for index in pending
+                       if index in expanded_bad]
+                if keep and bad:
+                    queue.insert(0, keep)
+                    deferred.extend(bad)
+                    continue
+                row_groups: dict[float, list[int]] = {}
+                for index in pending:
+                    row_groups.setdefault(
+                        routed.legs[index].source.y, []).append(index)
+                groups = [row_groups[key] for key in sorted(row_groups)]
+                if len(groups) == 1:
+                    groups = [[index] for index in pending]
+                queue[0:0] = groups
+                continue
+            clean.append(executable(pending))
+            for index in pending:
+                positions[routed.owners[index]] = routed.legs[index].target
+
+    clean: list[_ExecutableBatch] = []
+    deferred: list[int] = []
+    audit_pass(color_phase(routed, exact_threshold), clean, deferred)
+    for round_index in range(3):
+        if not deferred:
+            break
+        subset = sorted(set(deferred))
+        if round_index == 2:
+            batches = [(index,) for index in subset]
+        else:
+            local_phase = MovementPhase(
+                tuple(routed.legs[index] for index in subset), (), ())
+            batches = tuple(tuple(subset[index] for index in batch)
+                            for batch in color_phase(
+                                local_phase, exact_threshold))
+        deferred = []
+        audit_pass(batches, clean, deferred)
+    if deferred:
+        raise ValueError("production route has unresolved ghost batches")
+    return tuple(clean)
 
 
 def _single_leg_violation(phase: MovementPhase) -> tuple[int, ...]:
@@ -404,29 +637,88 @@ def _single_leg_violation(phase: MovementPhase) -> tuple[int, ...]:
     return tuple(sorted(hits))
 
 
+def _linear_coherence_delta_nll(
+        prior_idle_time_us: Sequence[float],
+        candidate_idle_time_us: Sequence[float]) -> float:
+    """Return the exact incremental NLL of the final linear T2 model.
+
+    The final scorer evaluates one factor ``1 - t_q/T2`` per atom.  Movement
+    phases therefore accumulate into one ``dt_q`` before the log-ratio is
+    taken; summing an independent ``-log(1-dt_phase/T2)`` per phase is merely a
+    first-order approximation once an atom already has idle time.
+    """
+    if len(prior_idle_time_us) != len(candidate_idle_time_us):
+        raise ValueError("coherence vectors differ in length")
+    total = 0.0
+    for prior, delta in zip(prior_idle_time_us, candidate_idle_time_us):
+        after = prior + delta
+        if prior >= T2_US or after >= T2_US:
+            return inf
+        if delta < -1e-12:
+            raise ValueError("candidate idle-time delta must be non-negative")
+        total += log1p(-prior / T2_US) - log1p(-after / T2_US)
+    return total
+
+
 def evaluate_candidate(problem: BoundaryProblem, candidate: CandidatePlan,
                        config: BoundaryConfig | None = None) -> FitnessResult:
+    """Evaluate the candidate-dependent physical increment.
+
+    ABI7 uses the exact per-atom coherence log-ratio against the accumulated
+    boundary-entry idle times.  Target-CZ and already-scheduled 1Q durations are
+    omitted because they are identical for every chromosome at this boundary;
+    the scheduler commits those common terms once.  Location-dependent idle
+    excitation remains in ``idle_exposures``.
+
+    Owner-less phases are retained only for non-formal, empty-prior source
+    compatibility.  A formal ABI7 DTO supplies all prior times and one owner
+    per movement leg and fails closed otherwise.
+    """
     config = config or BoundaryConfig()
     phase_batches = []
     move_time = 0.0
     total_distance = 0.0
     movers = 0
-    coherence_nll = -candidate.idle_exposures * log1p(-T_RYDBERG_US / T2_US)
+    exact_owners = all(not phase.legs or bool(phase.owners)
+                       for phase in candidate.phases)
+    if problem.prior_idle_time_us and not exact_owners:
+        raise ValueError(
+            "formal coherence accounting requires one owner per movement leg")
+    prior_idle = (problem.prior_idle_time_us or
+                  (0.0,) * problem.architecture.n_atoms)
+    candidate_idle = [0.0] * problem.architecture.n_atoms
+    # Legacy owner-less fixtures retain their aggregate pre-ABI7 approximation.
+    coherence_nll = (
+        0.0 if exact_owners else
+        -candidate.idle_exposures * log1p(-T_RYDBERG_US / T2_US))
     for phase_index, phase in enumerate(candidate.phases):
         try:
-            batches = (replay_phase_batches(
-                phase, config.exact_coloring_threshold)
-                if config.enforce_single_leg_ghost else
-                color_phase(phase, config.exact_coloring_threshold))
+            if (exact_owners and config.enforce_single_leg_ghost
+                    and config.production_parking_replay):
+                executable_batches = _production_replay_phase_batches(
+                    phase, config.exact_coloring_threshold)
+                batches = tuple(batch.original_members
+                                for batch in executable_batches)
+            else:
+                batches = (replay_phase_batches(
+                    phase, config.exact_coloring_threshold)
+                    if config.enforce_single_leg_ghost else
+                    color_phase(phase, config.exact_coloring_threshold))
+                executable_batches = tuple(_ExecutableBatch(
+                    tuple(batch), tuple(phase.legs[index] for index in batch),
+                    tuple(phase.owners[index] for index in batch)
+                    if phase.owners else ()) for batch in batches)
         except ValueError as exc:
             return FitnessResult(
                 candidate.chromosome, False, inf, inf, inf, inf, 0, 0.0,
                 0.0, candidate.idle_exposures, 0, (),
                 f"phase {phase_index} {exc}")
         phase_batches.append(batches)
-        phase_time = sum(_expanded_batch_time(phase.legs, batch)
-                         for batch in batches)
-        phase_movers = len(phase.legs)
+        phase_time = sum(_expanded_batch_time(
+            batch.legs, range(len(batch.legs)))
+            for batch in executable_batches)
+        phase_movers = (sum(len(batch.owners) for batch in executable_batches)
+                        if exact_owners else len(phase.legs))
         if phase_movers > problem.architecture.n_atoms:
             return FitnessResult(
                 candidate.chromosome, False, inf, inf, inf, inf, 0, 0.0,
@@ -434,19 +726,43 @@ def evaluate_candidate(problem: BoundaryProblem, candidate: CandidatePlan,
                 f"phase {phase_index} has more movers than atoms")
         stationary_idle = phase_time
         mover_idle = max(0.0, phase_time - 2 * T_TRANSFER_US)
-        if stationary_idle >= T2_US or mover_idle >= T2_US:
+        if exact_owners:
+            if len(set(phase.owners)) != len(phase.owners):
+                raise ValueError("a movement phase cannot repeat an owner")
+            if any(owner < 0 or owner >= problem.architecture.n_atoms
+                   for owner in phase.owners):
+                raise ValueError("movement owner is outside the architecture")
+            for batch in executable_batches:
+                batch_time = _expanded_batch_time(
+                    batch.legs, range(len(batch.legs)))
+                for atom in range(problem.architecture.n_atoms):
+                    candidate_idle[atom] += batch_time
+                for owner in batch.owners:
+                    candidate_idle[owner] -= 2 * T_TRANSFER_US
+            updated_coherence = _linear_coherence_delta_nll(
+                prior_idle, candidate_idle)
+        else:
+            updated_coherence = (
+                inf if stationary_idle >= T2_US or mover_idle >= T2_US else
+                coherence_nll
+                - (problem.architecture.n_atoms - phase_movers) * log1p(
+                    -stationary_idle / T2_US)
+                - phase_movers * log1p(-mover_idle / T2_US))
+        if not isfinite(updated_coherence):
             return FitnessResult(
                 candidate.chromosome, False, inf, inf, inf, inf,
                 sum(len(value) for value in phase_batches),
                 move_time + phase_time,
-                total_distance + sum(leg.distance_um for leg in phase.legs),
+                total_distance + sum(
+                    leg.distance_um for batch in executable_batches
+                    for leg in batch.legs),
                 candidate.idle_exposures, 2 * (movers + phase_movers),
                 tuple(phase_batches), "linear coherence model out of domain")
-        coherence_nll -= (problem.architecture.n_atoms - phase_movers) * log1p(
-            -stationary_idle / T2_US)
-        coherence_nll -= phase_movers * log1p(-mover_idle / T2_US)
+        coherence_nll = updated_coherence
         move_time += phase_time
-        total_distance += sum(leg.distance_um for leg in phase.legs)
+        total_distance += sum(
+            leg.distance_um for batch in executable_batches
+            for leg in batch.legs)
         movers += phase_movers
     transfers = 2 * movers
     transfer_nll = -transfers * log(F_TRANSFER)
@@ -465,12 +781,15 @@ def evaluate_candidate(problem: BoundaryProblem, candidate: CandidatePlan,
         idle_exposures=candidate.idle_exposures,
         transfers=transfers,
         phase_batches=tuple(phase_batches),
+        candidate_idle_time_us=(tuple(candidate_idle) if exact_owners else ()),
     )
 
 
 @dataclass(frozen=True, slots=True)
 class _RichGeometry:
     positions_t1: tuple[Point, ...]
+    site_ids_t1: tuple[int, ...]
+    final_site_ids: tuple[int, ...]
     back_legs: tuple[Leg, ...]
     back_owners: tuple[int, ...]
     out_legs: tuple[Leg, ...]
@@ -701,6 +1020,7 @@ def _rich_geometry(problem: RichH0Problem,
                    reseats: Sequence[tuple[int, int, Point]]) -> _RichGeometry:
     current = _rich_points(problem)
     positions = list(current)
+    site_ids = list(problem.current_site_ids)
     back_legs: list[Leg] = []
     back_owners: list[int] = []
     for eligible_index, _site_id, target in (*assignments, *reseats):
@@ -711,6 +1031,8 @@ def _rich_geometry(problem: RichH0Problem,
             back_legs.append(leg)
             back_owners.append(atom)
         positions[atom] = target
+        if site_ids:
+            site_ids[atom] = int(_site_id)
 
     violations = 0
     blockers: set[int] = set()
@@ -738,6 +1060,15 @@ def _rich_geometry(problem: RichH0Problem,
             if leg.distance_um > EPS:
                 out_legs.append(leg)
                 out_owners.append(atom)
+    final_site_ids = list(site_ids)
+    if final_site_ids:
+        for domain, option_index in zip(problem.gate_domains, option_indices):
+            option = domain[option_index]
+            if (option.target1_site_id is None
+                    or option.target2_site_id is None):
+                raise ValueError("exact indexed geometry lacks target site ids")
+            final_site_ids[option.q1] = option.target1_site_id
+            final_site_ids[option.q2] = option.target2_site_id
     ghosts_t0 = tuple(Ghost(atom, point)
                       for atom, point in enumerate(current))
     ghosts_t1 = tuple(Ghost(atom, point)
@@ -759,9 +1090,183 @@ def _rich_geometry(problem: RichH0Problem,
         blockers.update(hits)
     violations += ghost_violations
     return _RichGeometry(
-        tuple(positions), tuple(back_legs), tuple(back_owners),
+        tuple(positions), tuple(site_ids), tuple(final_site_ids),
+        tuple(back_legs), tuple(back_owners),
         tuple(out_legs), tuple(out_owners), ghosts_t0, ghosts_t1,
         tuple(sorted(blockers)), violations, ghost_violations)
+
+
+def _score_exact_current_scheduler(
+        problem: RichH0Problem,
+        config: RichSearchConfig,
+        score: FitnessResult,
+        candidate: CandidatePlan,
+        geometry: _RichGeometry,
+) -> FitnessResult:
+    """Independent compact replay of the ABI7 current scheduler suffix.
+
+    This intentionally mirrors resource/dependency semantics instead of calling
+    the production router.  Tests compare both implementations to make the C++
+    hot path and final emitted trace fail independently.
+    """
+    if len(problem.scheduler_aod_end_us) != 1 or \
+            len(problem.scheduler_rydberg_end_us) != 1:
+        raise ValueError("ABI7 reference currently requires one AOD/Rydberg zone")
+    n_atoms = problem.architecture.n_atoms
+    active = list(problem.scheduler_active_union_us)
+    qubit_dependency = list(problem.scheduler_qubit_dependency_end_us)
+    current_site_ids = list(problem.current_site_ids)
+    aod_end = problem.scheduler_aod_end_us[0]
+    one_qubit_end = problem.scheduler_one_qubit_end_us
+    rydberg_end = problem.scheduler_rydberg_end_us[0]
+    trace_end = problem.scheduler_trace_end_us
+    site_dependency = dict(zip(
+        problem.scheduler_site_dependency_site_ids,
+        problem.scheduler_site_dependency_activation_finish_us))
+    site_id_by_point = {
+        point: site_id for site_id, point in enumerate(
+            problem.architecture.site_coordinates)}
+    transfer_us = problem.scheduler_transfer_duration_us
+    acceleration = problem.scheduler_accel_um_per_us2
+    rydberg_us = problem.scheduler_rydberg_duration_us
+    one_qubit_us = problem.scheduler_one_qubit_duration_us
+    one_qubit_common_us = problem.scheduler_one_qubit_common_us
+    coherence_t2_us = problem.coherence_t2_us
+    model_move_time_us = 0.0
+
+    def schedule_phase(phase_index: int, target_sites: Sequence[int],
+                       source_back: bool) -> None:
+        nonlocal aod_end, trace_end, model_move_time_us
+        phase = candidate.phases[phase_index]
+        if len(target_sites) != n_atoms or len(phase.owners) != len(phase.legs):
+            raise ValueError("ABI7 exact phase geometry is incomplete")
+        executable_batches = _production_replay_phase_batches(
+            phase, config.exact_coloring_threshold)
+        if tuple(batch.original_members for batch in executable_batches) != \
+                score.phase_batches[phase_index]:
+            raise ValueError("ABI7 executable batch audit payload drift")
+        for batch in executable_batches:
+            rows = {leg.source.y for leg in batch.legs}
+            duration = _expanded_batch_time(
+                batch.legs, range(len(batch.legs)),
+                transfer_us=transfer_us, acceleration=acceleration)
+            model_move_time_us += duration
+            activation_finish_offset = (
+                len(rows) * transfer_us
+                + max(0, len(rows) - 1)
+                * sqrt(sqrt(2.0) / acceleration))
+            deactivation_offset = duration - transfer_us
+            begin = aod_end
+            batch_target_sites = []
+            for owner, leg in zip(batch.owners, batch.legs):
+                begin = max(
+                    begin,
+                    (problem.scheduler_back_dependency_end_us[owner]
+                     if source_back else qubit_dependency[owner]))
+                try:
+                    target_site = site_id_by_point[leg.target]
+                except KeyError as exc:
+                    raise ValueError(
+                        "ABI7 executable batch target is not an SLM site") from exc
+                batch_target_sites.append(target_site)
+                prior_site = site_dependency.get(target_site)
+                if prior_site is not None:
+                    begin = max(begin, prior_site - deactivation_offset)
+            end = begin + duration
+            activation_finish = begin + activation_finish_offset
+            for owner, target_site in zip(
+                    batch.owners, batch_target_sites):
+                active[owner] += 2 * transfer_us
+                qubit_dependency[owner] = end
+                site_dependency[current_site_ids[owner]] = activation_finish
+                current_site_ids[owner] = target_site
+            aod_end = end
+            trace_end = max(trace_end, end)
+
+    schedule_phase(0, geometry.site_ids_t1, True)
+    schedule_phase(1, geometry.final_site_ids, False)
+
+    participants = set(problem.participants)
+    zone_sites = {
+        site for pair in problem.architecture.entangling_site_pairs
+        for site in pair
+    }
+    if problem.gate_domains:
+        before_gate_dependency = list(qubit_dependency)
+        target_one_qubit = set(problem.target_one_qubit_atoms)
+        cz_begin = rydberg_end
+        for atom in range(n_atoms):
+            in_zone = current_site_ids[atom] in zone_sites
+            if atom in participants or (
+                    in_zone and atom not in target_one_qubit):
+                cz_begin = max(cz_begin, before_gate_dependency[atom])
+        cz_end = cz_begin + rydberg_us
+        for atom in participants:
+            active[atom] += rydberg_us
+        rydberg_end = cz_end
+        trace_end = max(trace_end, cz_end)
+
+        if problem.target_one_qubit_atoms:
+            one_qubit_begin = one_qubit_end
+            for atom in problem.target_one_qubit_atoms:
+                one_qubit_begin = max(
+                    one_qubit_begin,
+                    cz_end if atom in participants
+                    else before_gate_dependency[atom])
+            cursor = one_qubit_begin
+            for atom in problem.target_one_qubit_atoms:
+                active[atom] += one_qubit_us
+                cursor += one_qubit_us
+            one_qubit_end = cursor + one_qubit_common_us
+            trace_end = max(trace_end, one_qubit_end)
+
+        for atom in range(n_atoms):
+            if atom in target_one_qubit:
+                qubit_dependency[atom] = one_qubit_end
+            elif atom in participants or current_site_ids[atom] in zone_sites:
+                qubit_dependency[atom] = max(
+                    before_gate_dependency[atom], cz_end)
+
+    idle_after = tuple(max(0.0, trace_end - value) for value in active)
+    coherence_nll = 0.0
+    for before, after in zip(problem.prior_idle_time_us, idle_after):
+        if before >= coherence_t2_us or after >= coherence_t2_us:
+            return FitnessResult(
+                chromosome=score.chromosome, feasible=False,
+                negative_log_fidelity=inf, transfer_nll=inf,
+                idle_excitation_nll=inf, coherence_nll=inf,
+                move_batches=score.move_batches,
+                move_time_us=model_move_time_us,
+                total_distance_um=score.total_distance_um,
+                idle_exposures=score.idle_exposures,
+                transfers=score.transfers,
+                phase_batches=score.phase_batches,
+                error="linear coherence model out of domain")
+        coherence_nll += (
+            log1p(-before / coherence_t2_us)
+            - log1p(-after / coherence_t2_us))
+    idle_exposures = sum(
+        atom not in participants and current_site_ids[atom] in zone_sites
+        for atom in range(n_atoms))
+    transfer_nll = -score.transfers * log(F_TRANSFER)
+    idle_nll = -idle_exposures * log(F_EXC)
+    return FitnessResult(
+        chromosome=score.chromosome,
+        feasible=True,
+        negative_log_fidelity=transfer_nll + idle_nll + coherence_nll,
+        transfer_nll=transfer_nll,
+        idle_excitation_nll=idle_nll,
+        coherence_nll=coherence_nll,
+        move_batches=score.move_batches,
+        move_time_us=model_move_time_us,
+        total_distance_um=score.total_distance_um,
+        idle_exposures=idle_exposures,
+        transfers=score.transfers,
+        phase_batches=score.phase_batches,
+        candidate_idle_time_us=tuple(
+            after - before for before, after in zip(
+                problem.prior_idle_time_us, idle_after)),
+    )
 
 
 def _score_rich_geometry(problem: RichH0Problem,
@@ -780,11 +1285,74 @@ def _score_rich_geometry(problem: RichH0Problem,
         ),
         idle_exposures=len(problem.eligible) - return_count,
     )
-    return evaluate_candidate(
-        BoundaryProblem(problem.architecture, (candidate,)), candidate,
+    if problem.exact_current_scheduler:
+        score = evaluate_candidate(
+            BoundaryProblem(problem.architecture, (candidate,)),
+            candidate,
+            BoundaryConfig(
+                exact_coloring_threshold=config.exact_coloring_threshold,
+                enforce_single_leg_ghost=enforce_ghost,
+                production_parking_replay=True),
+        )
+        if not score.feasible:
+            return score
+        try:
+            return _score_exact_current_scheduler(
+                problem, config, score, candidate, geometry)
+        except ValueError as exc:
+            # The production router would require an explicit two-leg waypoint.
+            # Until that payload is native-owned, treat this chromosome as
+            # infeasible exactly like the C++ compact replay; never abort the
+            # whole reference search because one repair candidate needs it.
+            return _infeasible_rich(chromosome, str(exc))
+    participant_set = set(problem.participants)
+    pulse_idle = tuple(
+        (0.0 if atom in participant_set else T_RYDBERG_US)
+        if problem.gate_domains else 0.0
+        for atom in range(problem.architecture.n_atoms))
+    prior_idle = (problem.prior_idle_time_us or
+                  (0.0,) * problem.architecture.n_atoms)
+    scoring_prior = tuple(
+        prior + pulse for prior, pulse in zip(prior_idle, pulse_idle))
+    score = evaluate_candidate(
+        BoundaryProblem(
+            problem.architecture,
+            (candidate,),
+            prior_idle_time_us=scoring_prior,
+        ),
+        candidate,
         BoundaryConfig(
             exact_coloring_threshold=config.exact_coloring_threshold,
             enforce_single_leg_ghost=enforce_ghost),
+    )
+    pulse_nll = _linear_coherence_delta_nll(prior_idle, pulse_idle)
+    if not score.feasible or not isfinite(pulse_nll):
+        if score.feasible:
+            return FitnessResult(
+                score.chromosome, False, inf, inf, inf, inf,
+                score.move_batches, score.move_time_us,
+                score.total_distance_um, score.idle_exposures,
+                score.transfers, score.phase_batches,
+                "linear coherence model out of domain")
+        return score
+    total_idle = tuple(
+        pulse + movement
+        for pulse, movement in zip(
+            pulse_idle, score.candidate_idle_time_us))
+    return FitnessResult(
+        chromosome=score.chromosome,
+        feasible=True,
+        negative_log_fidelity=score.negative_log_fidelity + pulse_nll,
+        transfer_nll=score.transfer_nll,
+        idle_excitation_nll=score.idle_excitation_nll,
+        coherence_nll=score.coherence_nll + pulse_nll,
+        move_batches=score.move_batches,
+        move_time_us=score.move_time_us,
+        total_distance_um=score.total_distance_um,
+        idle_exposures=score.idle_exposures,
+        transfers=score.transfers,
+        phase_batches=score.phase_batches,
+        candidate_idle_time_us=total_idle,
     )
 
 
@@ -794,11 +1362,19 @@ def _evaluate_native_future_rollout(
         option_indices: Sequence[int],
         assignments: Sequence[tuple[int, int, Point]],
         reseats: Sequence[tuple[int, int, Point]],
+        current_idle_delta_us: Sequence[float],
 ) -> tuple[float, tuple[float, ...], dict[str, float], int, int]:
-    """Independent physical oracle for ABI5 raw future-layer rollout."""
+    """Independent physical oracle for ABI7 raw future-layer rollout."""
     if problem.selected_horizon != config.max_horizon:
         raise ValueError("problem/config horizon mismatch")
     positions = list(_rich_points(problem))
+    if len(current_idle_delta_us) != problem.architecture.n_atoms:
+        raise ValueError("current ABI7 fitness lacks per-atom idle delta")
+    accumulated_idle = list(
+        problem.prior_idle_time_us or
+        (0.0,) * problem.architecture.n_atoms)
+    for atom, delta in enumerate(current_idle_delta_us):
+        accumulated_idle[atom] += delta
     for eligible_index, _site_id, point in (*assignments, *reseats):
         positions[problem.eligible[eligible_index]] = point
     for domain, option_index in zip(problem.gate_domains, option_indices):
@@ -844,11 +1420,24 @@ def _evaluate_native_future_rollout(
                 tuple(owners)),)
         candidate = CandidatePlan((), phases, idle_exposures)
         return evaluate_candidate(
-            BoundaryProblem(architecture, (candidate,)), candidate,
+            BoundaryProblem(
+                architecture,
+                (candidate,),
+                prior_idle_time_us=tuple(accumulated_idle),
+            ),
+            candidate,
             BoundaryConfig(
                 exact_coloring_threshold=config.exact_coloring_threshold,
                 enforce_single_leg_ghost=config.enforce_single_leg_ghost),
         )
+
+    def advance_idle(score: FitnessResult) -> None:
+        if not score.feasible:
+            return
+        if len(score.candidate_idle_time_us) != architecture.n_atoms:
+            raise ValueError("forecast fitness lacks per-atom idle delta")
+        for atom, delta in enumerate(score.candidate_idle_time_us):
+            accumulated_idle[atom] += delta
 
     def finite_nll(score: FitnessResult) -> float:
         return score.negative_log_fidelity if score.feasible else inf
@@ -995,6 +1584,9 @@ def _evaluate_native_future_rollout(
             batched = relocation_batch(before_blockers, blockers)
             if batched.feasible:
                 routing_nll = finite_nll(batched)
+                advance_idle(batched)
+            else:
+                routing_nll = inf
 
         out_legs = []
         out_owners = []
@@ -1004,8 +1596,9 @@ def _evaluate_native_future_rollout(
                 if leg.distance_um > EPS:
                     out_legs.append(leg)
                     out_owners.append(atom)
-        reentry_nll = finite_nll(
-            score_phase(out_legs, out_owners, positions))
+        reentry_score = score_phase(out_legs, out_owners, positions)
+        reentry_nll = finite_nll(reentry_score)
+        advance_idle(reentry_score)
         for q1, q2, target1, target2 in placements:
             positions[q1] = target1
             positions[q2] = target2
@@ -1013,8 +1606,15 @@ def _evaluate_native_future_rollout(
         idle_exposures = sum(
             atom not in participants and point in zone_points
             for atom, point in enumerate(positions))
-        residency_nll = finite_nll(
-            score_phase((), (), positions, idle_exposures))
+        pulse_idle = tuple(
+            0.0 if atom in participants else T_RYDBERG_US
+            for atom in range(architecture.n_atoms))
+        pulse_nll = _linear_coherence_delta_nll(
+            accumulated_idle, pulse_idle)
+        residency_nll = -idle_exposures * log(F_EXC) + pulse_nll
+        if isfinite(pulse_nll):
+            for atom, delta in enumerate(pulse_idle):
+                accumulated_idle[atom] += delta
 
         later_use = {
             atom
@@ -1038,6 +1638,9 @@ def _evaluate_native_future_rollout(
             batched = relocation_batch(before_terminal, terminal_atoms)
             if batched.feasible:
                 terminal_nll = finite_nll(batched)
+                advance_idle(batched)
+            else:
+                terminal_nll = inf
 
         add(depth, "residency", residency_nll)
         add(depth, "reentry", reentry_nll)
@@ -1165,7 +1768,8 @@ def evaluate_rich_exact_candidate(
                 for index, site_id, _point in assignments)
             if problem.future_layers:
                 forecast = _evaluate_native_future_rollout(
-                    problem, config, option_indices, assignments, reseats)
+                    problem, config, option_indices, assignments, reseats,
+                    fitness.candidate_idle_time_us)
             else:
                 forecast = evaluate_decay_forecast(
                     problem, config, chromosome, option_indices, return_pairs)
@@ -1252,6 +1856,14 @@ def solve_rich_exact_reference(
         current_ghost_rejections=winner.current_ghost_rejections,
         future_ghost_cost=winner.forecast_breakdown.get("routing", 0.0),
         pre_score_reseats=len(winner.reseats),
+        current_gate_anchor=(),
+        current_gate_anchor_assignment_site_ids=(),
+        current_gate_final_assignment_site_ids=(),
+        current_gate_guard_branch="reference-direct",
+        current_gate_guard_cohort_size=0,
+        current_gate_guard_admitted_size=0,
+        current_gate_projection_source="reference-direct",
+        current_gate_projection_evaluated=0,
         timing={},
     )
 

@@ -469,6 +469,18 @@ def _summarize_payload(
     if output.instruction_count != next_instruction_id:
         raise ValueError(
             "rolling output count differs from global native instruction id")
+    scheduler = route.get("scheduler")
+    if not isinstance(scheduler, MappingABC):
+        raise ValueError("route checkpoint lacks scheduler-ledger snapshot")
+    scheduler_count = int(scheduler["timing_count"])
+    scheduler_next_id = int(scheduler["next_instruction_id"])
+    scheduler_sha256 = str(scheduler["timing_sha256"])
+    if (scheduler_count != scheduler_next_id
+            or scheduler_count != next_instruction_id):
+        raise ValueError(
+            "scheduler/native/output instruction counts differ")
+    if _SHA256.fullmatch(scheduler_sha256) is None:
+        raise ValueError("route checkpoint scheduler timing hash is invalid")
     resident = placement.get("resident_state")
     cache_sizes, cache_stats = _cache_summary(resident)
     if resident is None:
@@ -477,6 +489,7 @@ def _summarize_payload(
         rng_sha256 = None
         safety_rng_sha256 = None
         commitment_count = 0
+        placement_scheduler_sha256 = None
     else:
         registry = resident["registry"]
         resident_atoms = len(registry["zone_seat"])
@@ -484,6 +497,15 @@ def _summarize_payload(
         rng_sha256 = state_hash(resident["rng_state"])
         safety_rng_sha256 = state_hash(resident["safety_rng_state"])
         commitment_count = len(resident["residency_commitments"])
+        placement_scheduler = resident["scheduler_reference"]["driver"][
+            "scheduler"]
+        placement_scheduler_sha256 = str(
+            placement_scheduler["timing_sha256"])
+        if (placement_scheduler_sha256 != scheduler_sha256
+                or int(placement_scheduler["timing_count"])
+                != scheduler_count):
+            raise ValueError(
+                "placement/router scheduler checkpoints differ")
 
     dependencies = route["dependencies"]
     global_1q = dependencies.get("global_1q")
@@ -523,6 +545,12 @@ def _summarize_payload(
         "ghost_splits": int(route["ghost_splits"]),
         "output_instruction_count": output.instruction_count,
         "rolling_output_sha256": output.hexdigest,
+        "scheduler_timing_count": scheduler_count,
+        "scheduler_timing_sha256": scheduler_sha256,
+        "placement_scheduler_timing_sha256": placement_scheduler_sha256,
+        "scheduler_trace_end_us": float(scheduler["trace_end_us"]),
+        "scheduler_active_union_sha256": _json_hash(
+            scheduler["active_union_us"]),
         "counters_sha256": state_hash(payload["counters"]),
     }
     if include_large_state_hashes:

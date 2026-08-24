@@ -86,6 +86,26 @@ class ResidentRegistry:
                 self.zone_seat[q] = tuple(loc)
             else:
                 self.storage_site[q] = tuple(loc)
+        # Two deliberately separate physical ledgers are kept here.
+        #
+        # ``resident_idle_*`` is the online rent paid since an atom's most
+        # recent CZ participation.  It is reset by ``enter_zone`` (which is
+        # called when that atom participates in a committed gate) and removed
+        # by RETURN.  The rent-or-return guard consumes only this past/current
+        # state; it is therefore a legal H=0 input.
+        #
+        # ``coherence_idle_time_us`` is the non-resetting per-atom idle-time
+        # ledger for events whose ordering is known at placement time: the
+        # leading global 1Q prefix, AOD phases, and CZ pulses.  It must not be
+        # confused with resident rent: storage atoms also accrue coherence
+        # during those events.  Parent-layer 1Q/AOD overlap remains owned by
+        # the router trace rather than being guessed here.
+        self.resident_idle_exposures: dict[int, int] = {
+            q: 0 for q in self.zone_seat}
+        self.resident_idle_time_us: dict[int, float] = {
+            q: 0.0 for q in self.zone_seat}
+        self.coherence_idle_time_us: list[float] = [
+            0.0 for _ in initial_mapping]
         self.theta = theta_capacity
         # 容量（座位数）：纠缠区两片镜像 SLM 的全部座位（一对门位占 2 座）
         self.zone_sites = sum(slm.n_r * slm.n_c
@@ -114,6 +134,98 @@ class ResidentRegistry:
         """第 3 层前瞻·拥挤梯度：占用 + 需求 - θ·容量（正值即超压程度）。"""
         return max(0.0, len(self.zone_seat) + demand_seats - self.theta * self.zone_sites)
 
+    # ---- 物理 idle 账本 ----
+    def resident_rent(self, q: int) -> tuple[int, float]:
+        """Return ``(idle exposures, idle us)`` since q's latest CZ gate."""
+        if q not in self.zone_seat:
+            return 0, 0.0
+        return (int(self.resident_idle_exposures.get(q, 0)),
+                float(self.resident_idle_time_us.get(q, 0.0)))
+
+    def resident_rent_snapshot(self) -> tuple[tuple[int, int, float], ...]:
+        """Stable atom-ordered snapshot for manifests/checkpoints."""
+        return tuple(
+            (int(q), *self.resident_rent(q))
+            for q in sorted(self.zone_seat))
+
+    def coherence_idle_snapshot(self) -> tuple[float, ...]:
+        """Stable per-atom prior consumed by the stateful-coherence backend."""
+        return tuple(float(value) for value in self.coherence_idle_time_us)
+
+    def record_movement_phase(self, move_time_us: float, movers=(),
+                              *, transfer_time_us: float = 15.0) -> None:
+        """Commit one executable AOD phase to both idle ledgers.
+
+        Every stationary atom waits for the complete phase.  A mover is busy
+        during load and store, so its coherence-idle contribution is the phase
+        duration minus two transfer intervals, matching the registered
+        serialized boundary-phase proxy.  Resident rent follows the same time accounting but
+        only for atoms that are still in the entangling zone at this phase.
+        """
+        duration = float(move_time_us)
+        transfer = float(transfer_time_us)
+        if duration < 0.0 or transfer < 0.0:
+            raise ValueError("movement/transfer duration must be non-negative")
+        mover_set = {int(q) for q in movers}
+        unknown = mover_set - set(range(len(self.coherence_idle_time_us)))
+        if unknown:
+            raise ValueError(f"unknown movement owners: {sorted(unknown)}")
+        for q in range(len(self.coherence_idle_time_us)):
+            idle = (max(0.0, duration - 2.0 * transfer)
+                    if q in mover_set else duration)
+            self.coherence_idle_time_us[q] += idle
+            if q in self.zone_seat:
+                self.resident_idle_time_us[q] = (
+                    self.resident_idle_time_us.get(q, 0.0) + idle)
+
+    def record_rydberg_pulse(self, participants, duration_us: float) -> None:
+        """Commit one CZ pulse; non-participants are physically idle.
+
+        A resident non-participant additionally receives one idle-excitation
+        exposure.  Participating residents are reset by the subsequent
+        ``enter_zone`` calls after the pulse has completed.
+        """
+        duration = float(duration_us)
+        if duration < 0.0:
+            raise ValueError("Rydberg duration must be non-negative")
+        participant_set = {int(q) for q in participants}
+        unknown = participant_set - set(range(len(self.coherence_idle_time_us)))
+        if unknown:
+            raise ValueError(f"unknown CZ participants: {sorted(unknown)}")
+        for q in range(len(self.coherence_idle_time_us)):
+            if q in participant_set:
+                continue
+            self.coherence_idle_time_us[q] += duration
+            if q in self.zone_seat:
+                self.resident_idle_exposures[q] = (
+                    self.resident_idle_exposures.get(q, 0) + 1)
+                self.resident_idle_time_us[q] = (
+                    self.resident_idle_time_us.get(q, 0.0) + duration)
+
+    def record_external_idle_interval(self, duration_us: float,
+                                      busy_atoms=()) -> None:
+        """Explicit hook for later 1Q/global-schedule integration.
+
+        This method records elapsed coherence and resident waiting time but no
+        Rydberg exposure.  The placement engine intentionally does not guess
+        where 1Q instructions occur; the event scheduler may call this hook
+        once that timing is available.
+        """
+        duration = float(duration_us)
+        if duration < 0.0:
+            raise ValueError("external idle duration must be non-negative")
+        busy = {int(q) for q in busy_atoms}
+        unknown = busy - set(range(len(self.coherence_idle_time_us)))
+        if unknown:
+            raise ValueError(f"unknown busy atoms: {sorted(unknown)}")
+        for q in range(len(self.coherence_idle_time_us)):
+            if q in busy:
+                continue
+            self.coherence_idle_time_us[q] += duration
+            if q in self.zone_seat:
+                self.resident_idle_time_us[q] = (
+                    self.resident_idle_time_us.get(q, 0.0) + duration)
+
     def anchor(self, q: int, after: int, next_use: NextUse):
         """下次使用锚点：搭档当前座位在存储区的投影（搭档在激发区 → 其最近存储位）。
 
@@ -135,13 +247,21 @@ class ResidentRegistry:
         """原子进入激发区（参与门后驻留在门位）。"""
         self.storage_site.pop(q, None)
         self.zone_seat[q] = tuple(seat)
+        # A committed CZ is the new origin of resident rent.  Global
+        # coherence is intentionally never reset here.
+        self.resident_idle_exposures[q] = 0
+        self.resident_idle_time_us[q] = 0.0
 
     def return_to_storage(self, q: int, site: tuple):
         self.zone_seat.pop(q, None)
         self.storage_site[q] = tuple(site)
+        self.resident_idle_exposures.pop(q, None)
+        self.resident_idle_time_us.pop(q, None)
 
     def reseat(self, q: int, new_seat: tuple):
         self.zone_seat[q] = tuple(new_seat)
+        self.resident_idle_exposures.setdefault(q, 0)
+        self.resident_idle_time_us.setdefault(q, 0.0)
 
 
 # ---------------------------------------------------------------------- 三方案箱匹配

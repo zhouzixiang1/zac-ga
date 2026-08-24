@@ -1,4 +1,4 @@
-"""Deterministic medium-boundary Python-reference vs ABI5 benchmark.
+"""Deterministic medium-boundary Python-reference vs ABI7/wire-v6 benchmark.
 
 This benchmark measures only ``ResidentPlacer.run`` after the architecture and
 placer objects exist.  It is a language-migration gate, not an ICCAD timing
@@ -172,7 +172,8 @@ def run_medium_benchmark(
             "parity": parity,
         }
     return {
-        "protocol": "resident-python-vs-abi5-medium-v2",
+        "protocol": "resident-python-vs-abi7-medium-v2",
+        "backend": "cpp-native-v7",
         "measurement": "ResidentPlacer.run only; preprocessed architecture",
         "operator_profile": "exact",
         "wheel_sha256": wheel_sha256,
@@ -201,7 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--architecture", type=Path,
-        default=PACKAGE_ROOT / "hardware_spec" / "toy_architecture.json")
+        default=PACKAGE_ROOT / "hardware_spec" / "full_architecture.json")
     parser.add_argument("--wheel-sha256", required=True)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--minimum-speedup", type=float, default=5.0)

@@ -521,6 +521,268 @@ int main() {
   assert(exact_current_tied.stats.forecast_terms_applied == 2);
   ++tests;
 
+  // P1 gate projection: with no residency decision, decay lookahead may not
+  // purchase worse executable current NLL/batches/Move time merely to improve
+  // a future gate-option term.  Option 1 wins the unguarded sum, but option 0
+  // is the strict current-physics anchor and must be projected back.
+  ArchitectureSnapshot gate_guard_architecture(
+      2, {{0.0, 0.0}, {1.0, 0.0}});
+  RichH0Problem strict_gate_guard;
+  strict_gate_guard.n_atoms = 2;
+  strict_gate_guard.current_points = {{0.0, 0.0}, {1.0, 0.0}};
+  strict_gate_guard.participants = {0, 1};
+  strict_gate_guard.gate_domains = {{
+      {60, 0, 1, {0.0, 0.0}, {1.0, 0.0}},
+      {61, 0, 1, {0.0, 1.0}, {1.0, 1.0}},
+  }};
+  strict_gate_guard.matched_gate_genes = {0};
+  strict_gate_guard.forecast_terms = {{
+      1, RichForecastKind::kGateOption,
+      RichForecastCategory::kRouting, 0, -1, 0, 0.10}};
+  auto gate_guard_config = exact_config();
+  gate_guard_config.max_horizon = 1;
+  gate_guard_config.alpha_lookahead = 1.0;
+  gate_guard_config.decay_rho = 1.0;
+  gate_guard_config.decay_epsilon = 0.0;
+  const auto strict_guarded = solve_rich_h0(
+      gate_guard_architecture, strict_gate_guard,
+      gate_guard_config, rng_fixture());
+  assert(strict_guarded.gate_option_indices ==
+         std::vector<std::size_t>({0}));
+  assert(strict_guarded.winner.chromosome ==
+         std::vector<std::int64_t>({0}));
+  assert(strict_guarded.winner.negative_log_fidelity == 0.0);
+  assert(strict_guarded.forecast_nll == 0.10);
+  assert(strict_guarded.winner.phase_batches.size() == 2);
+  ++tests;
+
+  // Exact current ties remain forecast-visible.  The strict eligible=0 guard
+  // is therefore a safety projection, not a blanket ban on gate lookahead.
+  auto tied_gate_guard = strict_gate_guard;
+  tied_gate_guard.gate_domains.front()[1].target1 = {0.0, 0.0};
+  tied_gate_guard.gate_domains.front()[1].target2 = {1.0, 0.0};
+  const auto tied_guarded = solve_rich_h0(
+      gate_guard_architecture, tied_gate_guard,
+      gate_guard_config, rng_fixture());
+  assert(tied_guarded.gate_option_indices ==
+         std::vector<std::size_t>({1}));
+  assert(tied_guarded.winner.chromosome ==
+         std::vector<std::int64_t>({1}));
+  assert(tied_guarded.winner.negative_log_fidelity == 0.0);
+  assert(tied_guarded.forecast_nll == 0.0);
+  ++tests;
+
+  // The gate guard fixes only the normalized residency suffix.  Here future
+  // terms intentionally select RETURN, while the projected gate changes from
+  // the forecast-attractive moving option back to the current-safe option.
+  ArchitectureSnapshot suffix_guard_architecture(
+      3, {{0.0, 0.0}, {1.0, 0.0}, {4.0, 4.0}, {4.0, 5.0}}, {3});
+  RichH0Problem suffix_guard;
+  suffix_guard.n_atoms = 3;
+  suffix_guard.current_points = {
+      {0.0, 0.0}, {1.0, 0.0}, {4.0, 4.0}};
+  suffix_guard.participants = {0, 1};
+  suffix_guard.gate_domains = {{
+      {70, 0, 1, {0.0, 0.0}, {1.0, 0.0}},
+      {71, 0, 1, {0.0, 1.0}, {1.0, 1.0}},
+  }};
+  suffix_guard.eligible = {2};
+  suffix_guard.eviction_order_indices = {0};
+  suffix_guard.forced_return_mask = {false};
+  suffix_guard.return_domains = {{{3, {4.0, 5.0}, 1.0}}};
+  suffix_guard.matched_gate_genes = {0};
+  suffix_guard.forecast_terms = {
+      {1, RichForecastKind::kGateOption,
+       RichForecastCategory::kRouting, 0, -1, 0, 0.10},
+      {1, RichForecastKind::kStay,
+       RichForecastCategory::kResidency, 0, -1, -1, 0.20},
+  };
+  const auto suffix_guarded = solve_rich_h0(
+      suffix_guard_architecture, suffix_guard,
+      gate_guard_config, rng_fixture());
+  assert(suffix_guarded.winner.chromosome ==
+         std::vector<std::int64_t>({0, 1}));
+  assert(suffix_guarded.gate_option_indices ==
+         std::vector<std::size_t>({0}));
+  const std::vector<std::pair<std::int64_t, std::int64_t>>
+      suffix_guard_return{{2, 3}};
+  assert(suffix_guarded.return_assignments == suffix_guard_return);
+  ++tests;
+
+  // A current Pareto tradeoff with exactly one extra moving atom (two
+  // transfers) remains admissible when residency exists.  The higher-transfer
+  // option has lower Move time, and forecast may legitimately choose it.
+  ArchitectureSnapshot transfer_envelope_architecture(
+      3, {{0.0, 0.0}, {100.0, 0.0}, {200.0, 200.0},
+          {200.0, 201.0}}, {3});
+  RichH0Problem transfer_envelope;
+  transfer_envelope.n_atoms = 3;
+  transfer_envelope.current_points = {
+      {0.0, 0.0}, {100.0, 0.0}, {200.0, 200.0}};
+  transfer_envelope.participants = {0, 1};
+  transfer_envelope.gate_domains = {{
+      {80, 0, 1, {0.0, 0.0}, {100.0, 10.0}},
+      {81, 0, 1, {0.0, 1.0}, {100.0, 1.0}},
+  }};
+  transfer_envelope.eligible = {2};
+  transfer_envelope.eviction_order_indices = {0};
+  transfer_envelope.forced_return_mask = {false};
+  transfer_envelope.return_domains = {{{3, {200.0, 201.0}, 1.0}}};
+  transfer_envelope.matched_gate_genes = {0};
+  transfer_envelope.decision_policy = RichDecisionPolicy::kAlwaysStay;
+  transfer_envelope.forecast_terms = {{
+      1, RichForecastKind::kGateOption,
+      RichForecastCategory::kRouting, 0, -1, 0, 0.10}};
+  const auto transfer_allowed = solve_rich_h0(
+      transfer_envelope_architecture, transfer_envelope,
+      gate_guard_config, rng_fixture());
+  assert(transfer_allowed.gate_option_indices ==
+         std::vector<std::size_t>({1}));
+  assert(transfer_allowed.winner.transfers == 4);
+  assert(transfer_allowed.winner.move_time_us <
+         30.0 + std::sqrt(10.0 / 0.00275));
+
+  auto transfer_uncached_config = gate_guard_config;
+  transfer_uncached_config.fitness_cache = false;
+  const auto transfer_allowed_uncached = solve_rich_h0(
+      transfer_envelope_architecture, transfer_envelope,
+      transfer_uncached_config, rng_fixture());
+  assert(transfer_allowed.winner.chromosome ==
+         transfer_allowed_uncached.winner.chromosome);
+  assert(transfer_allowed.gate_option_indices ==
+         transfer_allowed_uncached.gate_option_indices);
+  assert(transfer_allowed.rng_state.words ==
+             transfer_allowed_uncached.rng_state.words &&
+         transfer_allowed.rng_state.index ==
+             transfer_allowed_uncached.rng_state.index);
+  ++tests;
+
+  // Pareto status alone is insufficient: this template saves one batch but
+  // spends one extra load+store pair plus a very long trajectory.  Its current
+  // NLL exceeds the anchor by more than -2log(0.999), so the physical NLL
+  // envelope rejects it even though the transfer-count cap alone would admit.
+  ArchitectureSnapshot nll_envelope_architecture(
+      5, {{0.0, 0.0}, {0.0, 20.0}, {0.0, 10.0},
+          {0.0, 30.0}, {2000.0, 2000.0}, {2000.0, 2001.0}}, {5});
+  RichH0Problem nll_envelope;
+  nll_envelope.n_atoms = 5;
+  nll_envelope.current_points = {
+      {0.0, 0.0}, {0.0, 20.0}, {0.0, 10.0},
+      {0.0, 30.0}, {2000.0, 2000.0}};
+  nll_envelope.participants = {0, 1, 2, 3};
+  nll_envelope.gate_domains = {
+      {
+          {84, 0, 1, {10.0, 10.0}, {0.0, 20.0}},
+          {85, 0, 1, {1000.0, 0.0}, {1000.0, 20.0}},
+      },
+      {
+          {86, 2, 3, {10.0, 0.0}, {0.0, 30.0}},
+          {87, 2, 3, {1000.0, 10.0}, {0.0, 30.0}},
+      },
+  };
+  nll_envelope.eligible = {4};
+  nll_envelope.eviction_order_indices = {0};
+  nll_envelope.forced_return_mask = {false};
+  nll_envelope.return_domains = {{{5, {2000.0, 2001.0}, 1.0}}};
+  nll_envelope.matched_gate_genes = {0, 0};
+  nll_envelope.decision_policy = RichDecisionPolicy::kAlwaysStay;
+  nll_envelope.forecast_terms = {
+      {1, RichForecastKind::kGateOption,
+       RichForecastCategory::kRouting, 0, -1, 0, 0.05},
+      {1, RichForecastKind::kGateOption,
+       RichForecastCategory::kRouting, 1, -1, 0, 0.05},
+  };
+  const auto nll_capped = solve_rich_h0(
+      nll_envelope_architecture, nll_envelope,
+      gate_guard_config, rng_fixture());
+  assert(nll_capped.gate_option_indices ==
+         std::vector<std::size_t>({0, 0}));
+  assert(nll_capped.winner.transfers == 4);
+  assert(nll_capped.winner.move_batches == 2);
+  ++tests;
+
+  // Across a wide gate prefix, the all-short template is current-Pareto but
+  // adds two movers (four transfers) relative to the physical anchor.  The
+  // explicit +2-transfer envelope rejects it; mixed templates are dominated.
+  ArchitectureSnapshot transfer_cap_architecture(
+      5, {{0.0, 0.0}, {100.0, 0.0}, {0.0, 100.0},
+          {100.0, 100.0}, {200.0, 200.0}, {200.0, 201.0}}, {5});
+  RichH0Problem transfer_cap;
+  transfer_cap.n_atoms = 5;
+  transfer_cap.current_points = {
+      {0.0, 0.0}, {100.0, 0.0}, {0.0, 100.0},
+      {100.0, 100.0}, {200.0, 200.0}};
+  transfer_cap.participants = {0, 1, 2, 3};
+  transfer_cap.gate_domains = {
+      {
+          {90, 0, 1, {0.0, 0.0}, {100.0, 10.0}},
+          {91, 0, 1, {0.0, 1.0}, {100.0, 1.0}},
+      },
+      {
+          {92, 2, 3, {0.0, 100.0}, {100.0, 110.0}},
+          {93, 2, 3, {0.0, 101.0}, {100.0, 101.0}},
+      },
+  };
+  transfer_cap.eligible = {4};
+  transfer_cap.eviction_order_indices = {0};
+  transfer_cap.forced_return_mask = {false};
+  transfer_cap.return_domains = {{{5, {200.0, 201.0}, 1.0}}};
+  transfer_cap.matched_gate_genes = {0, 0};
+  transfer_cap.decision_policy = RichDecisionPolicy::kAlwaysStay;
+  transfer_cap.forecast_terms = {
+      {1, RichForecastKind::kGateOption,
+       RichForecastCategory::kRouting, 0, -1, 0, 0.05},
+      {1, RichForecastKind::kGateOption,
+       RichForecastCategory::kRouting, 1, -1, 0, 0.05},
+  };
+  const auto transfer_capped = solve_rich_h0(
+      transfer_cap_architecture, transfer_cap,
+      gate_guard_config, rng_fixture());
+  assert(transfer_capped.gate_option_indices ==
+         std::vector<std::size_t>({0, 0}));
+  assert(transfer_capped.winner.transfers == 4);
+  ++tests;
+
+  // A forecast-attractive gate with an exact current single-leg ghost hit is
+  // never archived or resurrected by the final projection.
+  ArchitectureSnapshot guard_ghost_architecture(
+      3, {{0.0, 0.0}, {1.0, 0.0}, {0.0, 0.5}});
+  RichH0Problem guard_ghost;
+  guard_ghost.n_atoms = 3;
+  guard_ghost.current_points = {
+      {0.0, 0.0}, {1.0, 0.0}, {0.0, 0.5}};
+  guard_ghost.participants = {0, 1};
+  guard_ghost.gate_domains = {{
+      {100, 0, 1, {0.0, 0.0}, {1.0, 0.0}},
+      {101, 0, 1, {0.0, 1.0}, {1.0, 0.0}},
+  }};
+  guard_ghost.matched_gate_genes = {0};
+  guard_ghost.forecast_terms = {{
+      1, RichForecastKind::kGateOption,
+      RichForecastCategory::kRouting, 0, -1, 0, 0.10}};
+  const auto guard_ghost_safe = solve_rich_h0(
+      guard_ghost_architecture, guard_ghost,
+      gate_guard_config, rng_fixture());
+  assert(guard_ghost_safe.winner.feasible);
+  assert(guard_ghost_safe.gate_option_indices ==
+         std::vector<std::size_t>({0}));
+  ++tests;
+
+  // H=0 clears the forecast contract before validation and therefore follows
+  // the original current-only solver without consuming RNG in the gate guard.
+  auto h0_gate_guard = strict_gate_guard;
+  h0_gate_guard.forecast_terms.clear();
+  auto h0_gate_config = gate_guard_config;
+  h0_gate_config.max_horizon = 0;
+  const auto h0_rng = rng_fixture();
+  const auto h0_gate_value = solve_rich_h0(
+      gate_guard_architecture, h0_gate_guard, h0_gate_config, h0_rng);
+  assert(h0_gate_value.gate_option_indices ==
+         std::vector<std::size_t>({0}));
+  assert(h0_gate_value.rng_state.words == h0_rng.words &&
+         h0_gate_value.rng_state.index == h0_rng.index);
+  ++tests;
+
   constexpr std::size_t kAtoms = 9;
   std::vector<Point> coordinates;
   for (std::size_t atom = 0; atom < kAtoms; ++atom) {

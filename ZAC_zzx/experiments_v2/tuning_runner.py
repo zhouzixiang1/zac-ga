@@ -932,7 +932,7 @@ def _tuning_receipt_projection(
             errors.append("independent verifier did not pass")
         if manifest.get("ghost_hits") != 0:
             errors.append("formal M3/M4 result does not have ghost_hits=0")
-        if backend not in {"native", "cpp-native-v1"}:
+        if backend not in {"native", "cpp-native-v7"}:
             errors.append(f"missing native backend evidence: {backend!r}")
         if fallback is not False:
             errors.append("native fallback evidence is absent or true")

@@ -1,4 +1,4 @@
-"""ABI5 one-call residency search differential and fail-closed tests."""
+"""ABI7 one-call residency search differential and fail-closed tests."""
 from __future__ import annotations
 
 import math
@@ -169,7 +169,7 @@ def tuned_search_problem():
     return arch, problem, config
 
 
-@unittest.skipUnless(native_available(), "ABI5 native extension is not installed")
+@unittest.skipUnless(native_available(), "ABI7 native extension is not installed")
 class TestNativeRichSolver(unittest.TestCase):
     def setUp(self):
         self.arch = architecture()
@@ -198,6 +198,14 @@ class TestNativeRichSolver(unittest.TestCase):
             self.assertEqual(expected, list(actual["values"]))
             self.assertEqual(rng.getstate(), actual["state"])
 
+    def test_formal_abi7_requires_exact_scheduler_snapshot(self):
+        self.backend._formal_native = True
+        with self.assertRaisesRegex(
+                NativeBackendError, "exact scheduler snapshot"):
+            self.backend.solve_rich_boundary(
+                toy_problem(), RichSearchConfig(operator_profile="exact"),
+                random.Random(0).getstate())
+
     def test_hand_current_physical_parity(self):
         config = RichSearchConfig(operator_profile="exact")
         result = self.backend.solve_rich_h0(
@@ -217,11 +225,15 @@ class TestNativeRichSolver(unittest.TestCase):
             ),
             idle_exposures=0,
         )
-        reference_problem = BoundaryProblem(self.arch, (candidate,))
+        # Atom 2 is not a target-CZ participant, so ABI7 merges its 0.36 us
+        # pulse idle with the movement before taking one linear-T2 log ratio.
+        reference_problem = BoundaryProblem(
+            self.arch, (candidate,), prior_idle_time_us=(0.0, 0.0, 0.36))
         reference = ReferenceResidentBackend().solve_boundary(
             reference_problem,
             BoundaryConfig(enforce_single_leg_ghost=False)).winner
-        self.assertAlmostEqual(reference.negative_log_fidelity,
+        pulse_nll = -math.log1p(-0.36 / 1.5e6)
+        self.assertAlmostEqual(reference.negative_log_fidelity + pulse_nll,
                                result.winner.negative_log_fidelity, delta=1e-15)
         self.assertEqual(reference.move_batches, result.winner.move_batches)
         self.assertAlmostEqual(reference.move_time_us,
@@ -237,6 +249,9 @@ class TestNativeRichSolver(unittest.TestCase):
         cases = []
         cases.append((self.arch, toy_problem(),
                       RichSearchConfig(operator_profile="exact")))
+        cases.append((self.arch, replace(
+            toy_problem(), prior_idle_time_us=(101.0, 202.0, 303.0)),
+            RichSearchConfig(operator_profile="exact")))
         ghost_arch, ghost_problem = ghost_sensitive_return_problem()
         cases.append((ghost_arch, ghost_problem, RichSearchConfig(
             operator_profile="exact", return_assignment_k=4)))
@@ -402,6 +417,50 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertEqual(2, h1.return_assignment_rank)
         self.assertEqual(0.0, h1.future_ghost_cost)
 
+    def test_m4_guard_pins_current_safe_k_best_assignment(self):
+        """A forecast-selected assignment cannot bypass the current guard."""
+        arch = ArchitectureSnapshot.from_coordinates(
+            3,
+            ((10, 10), (11, 10), (0, 0), (1, 0), (0, 10)),
+            (3, 4),
+        )
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(Point(10, 10), Point(11, 10), Point(0, 0)),
+            participants=(0, 1),
+            gate_domains=((RichGateOption(
+                10, 0, 1, Point(10, 10), Point(11, 10)),),),
+            static_ghosts=(),
+            eligible=(2,),
+            min_returns=1,
+            eviction_order_indices=(0,),
+            forced_return_mask=(True,),
+            return_domains=((
+                RichReturnOption(3, Point(1, 0), 1.0),
+                RichReturnOption(4, Point(0, 10), 10.0),
+            ),),
+            matched_gate_genes=(0,),
+            forecast_terms=(RichForecastTerm(
+                1, "return_site", "routing", 100.0,
+                index=0, selector=3),),
+            boundary_id="guard-pins-k-best-assignment",
+            selected_horizon=1,
+        )
+        result = NativeResidentBackend(arch).solve_rich_boundary(
+            problem,
+            RichSearchConfig(
+                operator_profile="exact", max_horizon=1,
+                alpha_lookahead=1.0, return_assignment_k=4),
+            random.Random(0).getstate(),
+        )
+        self.assertEqual(((2, 3),), result.return_assignments)
+        self.assertEqual((3,), result.current_gate_anchor_assignment_site_ids)
+        self.assertEqual((3,), result.current_gate_final_assignment_site_ids)
+        self.assertEqual(
+            "residency-pareto-envelope", result.current_gate_guard_branch)
+        self.assertGreaterEqual(result.current_gate_guard_cohort_size, 2)
+        self.assertEqual(1, result.current_gate_guard_admitted_size)
+
     def test_gate_target_blocker_is_reseated_before_candidate_scoring(self):
         arch = ArchitectureSnapshot.from_coordinates(
             3,
@@ -534,7 +593,7 @@ class TestNativeRichSolver(unittest.TestCase):
             delta=1e-15,
         )
 
-    def test_abi5_raw_future_layers_are_physically_rolled_out_in_cpp(self):
+    def test_abi7_raw_future_layers_are_physically_rolled_out_in_cpp(self):
         arch = ArchitectureSnapshot.from_coordinates(
             4,
             (
@@ -560,15 +619,16 @@ class TestNativeRichSolver(unittest.TestCase):
             forced_return_mask=(),
             return_domains=(),
             matched_gate_genes=(0,),
-            future_layers=((1, ((2, 3),)),),
+            future_layers=((1, ((2, 3),)), (2, ((0, 1),))),
             boundary_id="native-future-layer",
-            selected_horizon=1,
+            selected_horizon=2,
+            prior_idle_time_us=(101.0, 202.0, 303.0, 404.0),
         )
         buffers = problem.flat_buffers()
-        self.assertEqual(list(buffers["future_layer_depths"]), [1])
-        self.assertEqual(list(buffers["future_gate_atoms"]), [2, 3])
+        self.assertEqual(list(buffers["future_layer_depths"]), [1, 2])
+        self.assertEqual(list(buffers["future_gate_atoms"]), [2, 3, 0, 1])
         config = RichSearchConfig(
-            operator_profile="exact", max_horizon=1,
+            operator_profile="exact", max_horizon=2,
             alpha_lookahead=.2, decay_rho=.7)
         state = random.Random(11).getstate()
         result = NativeResidentBackend(arch).solve_rich_boundary(

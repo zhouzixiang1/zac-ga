@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from array import array
 from dataclasses import dataclass
-from math import dist, isfinite
+from math import dist, isclose, isfinite
 from typing import Iterable, Mapping, Sequence
 
 
-NATIVE_ABI_VERSION = 5
+NATIVE_ABI_VERSION = 7
 RNG_VERSION = "python-random-mt19937-v1"
 
 
@@ -189,6 +189,10 @@ class BoundaryProblem:
     boundary_id: str = ""
     effective_horizon: int = 0
     selected_horizon: int | None = None
+    # Per-atom coherence-idle time accumulated before this boundary.  An empty
+    # tuple is retained only for non-formal source compatibility and resolves
+    # to an all-zero vector.  ABI7 formal callers must send all atoms.
+    prior_idle_time_us: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         candidates = tuple(self.candidates)
@@ -205,9 +209,18 @@ class BoundaryProblem:
         keys = [candidate.chromosome for candidate in candidates]
         if len(set(keys)) != len(keys):
             raise ValueError("candidate chromosomes must be unique")
+        prior_idle = tuple(
+            _finite(value, "prior_idle_time_us")
+            for value in self.prior_idle_time_us)
+        if prior_idle and len(prior_idle) != self.architecture.n_atoms:
+            raise ValueError(
+                "prior_idle_time_us must contain every atom or be empty")
+        if any(value < 0.0 for value in prior_idle):
+            raise ValueError("prior_idle_time_us must be non-negative")
         object.__setattr__(self, "candidates", candidates)
         object.__setattr__(self, "effective_horizon", chosen_horizon)
         object.__setattr__(self, "selected_horizon", chosen_horizon)
+        object.__setattr__(self, "prior_idle_time_us", prior_idle)
 
     def select(self, chromosomes: Iterable[Sequence[int]] | None = None
                ) -> tuple[CandidatePlan, ...]:
@@ -334,6 +347,11 @@ class BoundaryConfig:
     # while a single-leg hit is rejected only by the shared hard-repair layer.
     # Standalone kernel callers keep the stricter default.
     enforce_single_leg_ghost: bool = True
+    # The public flat kernel retains its endpoint-precedence semantics.  Exact
+    # rich-boundary scoring opts into the production resident router's parking
+    # expansion/deferred replay explicitly so migration does not silently
+    # change legacy kernel callers.
+    production_parking_replay: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.seed, int) or isinstance(self.seed, bool):
@@ -347,6 +365,8 @@ class BoundaryConfig:
             raise ValueError("horizon_policy must be 'fixed' or 'dynamic'")
         if not isinstance(self.enforce_single_leg_ghost, bool):
             raise TypeError("enforce_single_leg_ghost must be a boolean")
+        if not isinstance(self.production_parking_replay, bool):
+            raise TypeError("production_parking_replay must be a boolean")
 
     def to_wire(self) -> dict:
         return {
@@ -356,6 +376,7 @@ class BoundaryConfig:
             "horizon_policy": self.horizon_policy,
             "max_horizon": self.max_horizon,
             "enforce_single_leg_ghost": self.enforce_single_leg_ghost,
+            "production_parking_replay": self.production_parking_replay,
         }
 
 
@@ -374,6 +395,9 @@ class FitnessResult:
     transfers: int
     phase_batches: tuple[tuple[tuple[int, ...], ...], ...] = ()
     error: str | None = None
+    # Internal ABI7 audit/state handoff.  It is intentionally not part of the
+    # lexicographic objective or the compact legacy flat row.
+    candidate_idle_time_us: tuple[float, ...] = ()
 
     @property
     def objective(self) -> tuple:
@@ -403,6 +427,9 @@ class FitnessResult:
                 tuple(tuple(int(i) for i in batch) for batch in phase)
                 for phase in value.get("phase_batches", ())),
             error=value.get("error"),
+            candidate_idle_time_us=tuple(
+                float(item)
+                for item in value.get("candidate_idle_time_us", ())),
         )
 
     @classmethod
@@ -690,6 +717,10 @@ class RichH0Problem:
     forced_return_mask: tuple[bool, ...]
     return_domains: tuple[tuple[RichReturnOption, ...], ...]
     matched_gate_genes: tuple[int, ...]
+    # Soft causal hint only.  The native solver injects the mixed mask and its
+    # single-bit variants as deterministic candidates, but the exact joint
+    # scheduler objective remains free to reject every recommendation.
+    recommended_return_mask: tuple[bool, ...] = ()
     decision_policy: str = "optimize"
     occupied_storage_site_ids: tuple[int, ...] = ()
     # Optional compact geometry wire.  When present, all current/target/RETURN
@@ -702,6 +733,37 @@ class RichH0Problem:
     future_layers: tuple[tuple[int, tuple[tuple[int, int], ...]], ...] = ()
     boundary_id: str = ""
     selected_horizon: int = 0
+    # Same ABI7 coherence state as BoundaryProblem.  Empty means all-zero only
+    # for legacy/source fixtures; registered formal DTOs must send n_atoms.
+    prior_idle_time_us: tuple[float, ...] = ()
+    # ABI7 exact-current scheduler prefix.  Python owns this absolute ASAP
+    # state; C++ forks it per chromosome and simulates source-back, target-out,
+    # target CZ and the target parent-1Q block.  Empty active_union retains the
+    # ABI7 compatibility scorer for non-formal fixtures only.
+    scheduler_trace_end_us: float = 0.0
+    scheduler_active_union_us: tuple[float, ...] = ()
+    scheduler_aod_end_us: tuple[float, ...] = ()
+    scheduler_one_qubit_end_us: float = 0.0
+    scheduler_rydberg_end_us: tuple[float, ...] = ()
+    scheduler_qubit_dependency_end_us: tuple[float, ...] = ()
+    # The resident router places every non-participant source-back mover behind
+    # the source layer's final gate instruction.  Keep that candidate-specific
+    # barrier separate from the ordinary qubit dependency: atoms that do not
+    # move back must retain their original dependency and may overlap it.
+    scheduler_back_dependency_end_us: tuple[float, ...] = ()
+    scheduler_site_dependency_site_ids: tuple[int, ...] = ()
+    scheduler_site_dependency_activation_finish_us: tuple[float, ...] = ()
+    target_one_qubit_atoms: tuple[int, ...] = ()
+    # Frozen physical constants consumed by the ABI7 exact-current scheduler.
+    # They are carried explicitly so a production architecture cannot silently
+    # drift away from the native constants used to rank candidates.
+    scheduler_one_qubit_duration_us: float = 52.0
+    scheduler_rydberg_duration_us: float = 0.36
+    scheduler_one_qubit_common_us: float = 0.0
+    scheduler_transfer_duration_us: float = 15.0
+    scheduler_accel_um_per_us2: float = 0.00275
+    coherence_t2_us: float = 1.5e6
+    enforce_frozen_physical_model: bool = False
 
     def __post_init__(self) -> None:
         points = tuple(self.current_points)
@@ -716,10 +778,64 @@ class RichH0Problem:
         eligible = tuple(int(q) for q in self.eligible)
         eviction = tuple(int(i) for i in self.eviction_order_indices)
         forced = tuple(bool(value) for value in self.forced_return_mask)
+        recommended = tuple(
+            bool(value) for value in self.recommended_return_mask)
+        if not recommended:
+            recommended = (False,) * len(eligible)
         return_domains = tuple(tuple(domain) for domain in self.return_domains)
         matched = tuple(int(value) for value in self.matched_gate_genes)
         occupied_storage = tuple(int(value)
                                  for value in self.occupied_storage_site_ids)
+        prior_idle = tuple(
+            _finite(value, "prior_idle_time_us")
+            for value in self.prior_idle_time_us)
+        scheduler_active = tuple(
+            _finite(value, "scheduler_active_union_us")
+            for value in self.scheduler_active_union_us)
+        scheduler_aod = tuple(
+            _finite(value, "scheduler_aod_end_us")
+            for value in self.scheduler_aod_end_us)
+        scheduler_rydberg = tuple(
+            _finite(value, "scheduler_rydberg_end_us")
+            for value in self.scheduler_rydberg_end_us)
+        scheduler_qubit = tuple(
+            _finite(value, "scheduler_qubit_dependency_end_us")
+            for value in self.scheduler_qubit_dependency_end_us)
+        scheduler_back = tuple(
+            _finite(value, "scheduler_back_dependency_end_us")
+            for value in self.scheduler_back_dependency_end_us)
+        scheduler_site_ids = tuple(
+            int(value) for value in self.scheduler_site_dependency_site_ids)
+        scheduler_site_activation = tuple(
+            _finite(value,
+                    "scheduler_site_dependency_activation_finish_us")
+            for value in
+            self.scheduler_site_dependency_activation_finish_us)
+        target_one_qubit_atoms = tuple(
+            int(value) for value in self.target_one_qubit_atoms)
+        scheduler_trace_end = _finite(
+            self.scheduler_trace_end_us, "scheduler_trace_end_us")
+        scheduler_one_qubit_end = _finite(
+            self.scheduler_one_qubit_end_us,
+            "scheduler_one_qubit_end_us")
+        one_qubit_duration = _finite(
+            self.scheduler_one_qubit_duration_us,
+            "scheduler_one_qubit_duration_us")
+        rydberg_duration = _finite(
+            self.scheduler_rydberg_duration_us,
+            "scheduler_rydberg_duration_us")
+        one_qubit_common = _finite(
+            self.scheduler_one_qubit_common_us,
+            "scheduler_one_qubit_common_us")
+        transfer_duration = _finite(
+            self.scheduler_transfer_duration_us,
+            "scheduler_transfer_duration_us")
+        acceleration = _finite(
+            self.scheduler_accel_um_per_us2,
+            "scheduler_accel_um_per_us2")
+        coherence_t2 = _finite(
+            self.coherence_t2_us, "coherence_t2_us")
+        exact_scheduler = bool(scheduler_active)
         indexed_geometry = bool(current_site_ids)
         if indexed_geometry:
             if len(current_site_ids) != self.architecture.n_atoms:
@@ -765,6 +881,9 @@ class RichH0Problem:
             raise ValueError("return_domains must align with eligible")
         if len(forced) != len(eligible):
             raise ValueError("forced_return_mask must align with eligible")
+        if len(recommended) != len(eligible):
+            raise ValueError(
+                "recommended_return_mask must align with eligible")
         if len(eviction) != len(eligible) or set(eviction) != set(range(len(eligible))):
             raise ValueError("eviction_order_indices must be a permutation")
         if len(matched) != len(gate_domains):
@@ -804,6 +923,90 @@ class RichH0Problem:
         if any(site not in set(self.architecture.storage_site_ids)
                for site in occupied_storage):
             raise ValueError("occupied storage id is not registered in architecture")
+        if prior_idle and len(prior_idle) != self.architecture.n_atoms:
+            raise ValueError(
+                "prior_idle_time_us must contain every atom or be empty")
+        if any(value < 0.0 for value in prior_idle):
+            raise ValueError("prior_idle_time_us must be non-negative")
+        scheduler_vectors = (
+            scheduler_aod, scheduler_rydberg, scheduler_qubit, scheduler_back,
+            scheduler_site_ids, scheduler_site_activation,
+        )
+        if exact_scheduler:
+            if (one_qubit_duration < 0.0 or rydberg_duration < 0.0
+                    or one_qubit_common < 0.0 or transfer_duration < 0.0
+                    or acceleration <= 0.0 or coherence_t2 <= 0.0):
+                raise ValueError(
+                    "ABI7 exact scheduler physical constants are invalid")
+            frozen_physics = (
+                ("1Q duration", one_qubit_duration, 52.0),
+                ("Rydberg duration", rydberg_duration, 0.36),
+                ("1Q common duration", one_qubit_common, 0.0),
+                ("transfer duration", transfer_duration, 15.0),
+                ("movement acceleration", acceleration, 0.00275),
+                ("coherence T2", coherence_t2, 1.5e6),
+            )
+            if self.enforce_frozen_physical_model:
+                for label, actual, expected in frozen_physics:
+                    if not isclose(
+                            actual, expected, rel_tol=0.0, abs_tol=1e-12):
+                        raise ValueError(
+                            f"ABI7 exact scheduler {label} differs from the "
+                            "frozen physical model")
+            if len(scheduler_active) != self.architecture.n_atoms:
+                raise ValueError(
+                    "scheduler_active_union_us must contain every atom")
+            if len(scheduler_qubit) != self.architecture.n_atoms:
+                raise ValueError(
+                    "scheduler qubit dependencies must contain every atom")
+            if len(scheduler_back) != self.architecture.n_atoms:
+                raise ValueError(
+                    "scheduler back dependencies must contain every atom")
+            if not scheduler_aod or not scheduler_rydberg:
+                raise ValueError(
+                    "exact scheduler requires AOD and Rydberg resource clocks")
+            if len(scheduler_site_ids) != len(scheduler_site_activation):
+                raise ValueError(
+                    "scheduler site dependency columns differ in length")
+            if len(set(scheduler_site_ids)) != len(scheduler_site_ids):
+                raise ValueError("scheduler site dependency ids repeat")
+            if any(site < 0 or site >= len(
+                    self.architecture.site_coordinates)
+                   for site in scheduler_site_ids):
+                raise ValueError("scheduler site dependency id is invalid")
+            if any(value < 0.0 or value > scheduler_trace_end + 1e-7
+                   for value in scheduler_active):
+                raise ValueError("scheduler active union exceeds trace end")
+            if any(value < 0.0 for vector in (
+                    scheduler_aod, scheduler_rydberg, scheduler_qubit,
+                    scheduler_back,
+                    scheduler_site_activation) for value in vector):
+                raise ValueError("scheduler resource time is negative")
+            if any(back + 1e-7 < ordinary for back, ordinary in zip(
+                    scheduler_back, scheduler_qubit)):
+                raise ValueError(
+                    "scheduler back dependency precedes ordinary dependency")
+            if scheduler_trace_end < 0.0 or scheduler_one_qubit_end < 0.0:
+                raise ValueError("scheduler scalar time is negative")
+            if len(prior_idle) != self.architecture.n_atoms:
+                raise ValueError(
+                    "exact scheduler requires absolute prior idle per atom")
+            for atom, (prior, active) in enumerate(zip(
+                    prior_idle, scheduler_active)):
+                expected = max(0.0, scheduler_trace_end - active)
+                if not isclose(
+                        prior, expected, rel_tol=0.0, abs_tol=1e-7):
+                    raise ValueError(
+                        "scheduler absolute idle/prior mismatch for atom "
+                        f"{atom}")
+        elif (any(scheduler_vectors) or target_one_qubit_atoms
+              or scheduler_trace_end != 0.0
+              or scheduler_one_qubit_end != 0.0):
+            raise ValueError(
+                "partial exact scheduler snapshot is not allowed")
+        if any(atom < 0 or atom >= self.architecture.n_atoms
+               for atom in target_one_qubit_atoms):
+            raise ValueError("target 1Q atom is outside architecture")
         object.__setattr__(self, "current_points", points)
         object.__setattr__(self, "participants", participants)
         object.__setattr__(self, "gate_domains", gate_domains)
@@ -811,16 +1014,53 @@ class RichH0Problem:
         object.__setattr__(self, "eligible", eligible)
         object.__setattr__(self, "eviction_order_indices", eviction)
         object.__setattr__(self, "forced_return_mask", forced)
+        object.__setattr__(self, "recommended_return_mask", recommended)
         object.__setattr__(self, "return_domains", return_domains)
         object.__setattr__(self, "matched_gate_genes", matched)
         object.__setattr__(self, "occupied_storage_site_ids", occupied_storage)
         object.__setattr__(self, "current_site_ids", current_site_ids)
         object.__setattr__(self, "forecast_terms", forecast_terms)
         object.__setattr__(self, "future_layers", future_layers)
+        object.__setattr__(self, "prior_idle_time_us", prior_idle)
+        object.__setattr__(self, "scheduler_trace_end_us", scheduler_trace_end)
+        object.__setattr__(self, "scheduler_active_union_us", scheduler_active)
+        object.__setattr__(self, "scheduler_aod_end_us", scheduler_aod)
+        object.__setattr__(
+            self, "scheduler_one_qubit_end_us", scheduler_one_qubit_end)
+        object.__setattr__(self, "scheduler_rydberg_end_us", scheduler_rydberg)
+        object.__setattr__(
+            self, "scheduler_qubit_dependency_end_us", scheduler_qubit)
+        object.__setattr__(
+            self, "scheduler_back_dependency_end_us", scheduler_back)
+        object.__setattr__(
+            self, "scheduler_site_dependency_site_ids", scheduler_site_ids)
+        object.__setattr__(
+            self, "scheduler_site_dependency_activation_finish_us",
+            scheduler_site_activation)
+        object.__setattr__(
+            self, "target_one_qubit_atoms", target_one_qubit_atoms)
+        object.__setattr__(
+            self, "scheduler_one_qubit_duration_us", one_qubit_duration)
+        object.__setattr__(
+            self, "scheduler_rydberg_duration_us", rydberg_duration)
+        object.__setattr__(
+            self, "scheduler_one_qubit_common_us", one_qubit_common)
+        object.__setattr__(
+            self, "scheduler_transfer_duration_us", transfer_duration)
+        object.__setattr__(
+            self, "scheduler_accel_um_per_us2", acceleration)
+        object.__setattr__(self, "coherence_t2_us", coherence_t2)
+        object.__setattr__(
+            self, "enforce_frozen_physical_model",
+            bool(self.enforce_frozen_physical_model))
 
     @property
     def indexed_geometry(self) -> bool:
         return bool(self.current_site_ids)
+
+    @property
+    def exact_current_scheduler(self) -> bool:
+        return bool(self.scheduler_active_union_us)
 
     def return_location(self, eligible_index: int, site_id: int):
         for option in self.return_domains[eligible_index]:
@@ -926,6 +1166,37 @@ class RichH0Problem:
             "geometry_mode": array("B", [1 if self.indexed_geometry else 0]),
             "current_xy": current_xy,
             "current_site_ids": array("q", self.current_site_ids),
+            "prior_idle_time_us": array("d", self.prior_idle_time_us),
+            "scheduler_trace_end_us": array(
+                "d", [self.scheduler_trace_end_us]),
+            "scheduler_active_union_us": array(
+                "d", self.scheduler_active_union_us),
+            "scheduler_aod_end_us": array(
+                "d", self.scheduler_aod_end_us),
+            "scheduler_one_qubit_end_us": array(
+                "d", [self.scheduler_one_qubit_end_us]),
+            "scheduler_rydberg_end_us": array(
+                "d", self.scheduler_rydberg_end_us),
+            "scheduler_qubit_dependency_end_us": array(
+                "d", self.scheduler_qubit_dependency_end_us),
+            "scheduler_back_dependency_end_us": array(
+                "d", self.scheduler_back_dependency_end_us),
+            "scheduler_site_dependency_site_ids": array(
+                "q", self.scheduler_site_dependency_site_ids),
+            "scheduler_site_dependency_activation_finish_us": array(
+                "d", self.scheduler_site_dependency_activation_finish_us),
+            "target_one_qubit_atoms": array(
+                "q", self.target_one_qubit_atoms),
+            "scheduler_physical_constants": array("d", [
+                self.scheduler_one_qubit_duration_us,
+                self.scheduler_rydberg_duration_us,
+                self.scheduler_one_qubit_common_us,
+                self.scheduler_transfer_duration_us,
+                self.scheduler_accel_um_per_us2,
+                self.coherence_t2_us,
+            ]),
+            "scheduler_physical_contract": array(
+                "B", [1 if self.enforce_frozen_physical_model else 0]),
             "participants": participant_values,
             "static_ghost_atoms": static_ghost_atoms,
             "static_ghost_xy": static_ghost_xy,
@@ -933,6 +1204,8 @@ class RichH0Problem:
             "min_returns": array("q", [self.min_returns]),
             "eviction_order_indices": array("q", self.eviction_order_indices),
             "forced_return_mask": array("B", self.forced_return_mask),
+            "recommended_return_mask": array(
+                "B", self.recommended_return_mask),
             "decision_policy": array("B", [policy_codes[self.decision_policy]]),
             "matched_gate_genes": array("q", self.matched_gate_genes),
             "gate_option_offsets": gate_option_offsets,
@@ -1008,6 +1281,14 @@ class RichH0Result:
     current_ghost_rejections: int
     future_ghost_cost: float
     pre_score_reseats: int
+    current_gate_anchor: tuple[int, ...]
+    current_gate_anchor_assignment_site_ids: tuple[int, ...]
+    current_gate_final_assignment_site_ids: tuple[int, ...]
+    current_gate_guard_branch: str
+    current_gate_guard_cohort_size: int
+    current_gate_guard_admitted_size: int
+    current_gate_projection_source: str
+    current_gate_projection_evaluated: int
     timing: Mapping[str, int]
 
     @property

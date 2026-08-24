@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -39,7 +40,7 @@ class TestFormalZacPlacementStream(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         spec = json.loads(
-            (ROOT / "hardware_spec/toy_architecture.json").read_text())
+            (ROOT / "hardware_spec/full_architecture.json").read_text())
         cls.architecture = Architecture(spec)
         cls.architecture.preprocessing()
         cls.initial = [(0, q, 0) for q in range(6)]
@@ -101,7 +102,15 @@ cz q[0],q[5];
                     [(('u1', 0), ('u2', 3)), (('u3', 4),)],
                 )
 
-    def test_m3_and_m4_stream_match_batch_placer(self):
+    @patch("zzx.native_backend._runtime_metadata")
+    def test_m3_and_m4_stream_match_batch_placer(self, runtime_metadata):
+        runtime_metadata.side_effect = lambda _module, **kwargs: {
+            "extension_path": "development-test-extension",
+            "extension_sha256": "0" * 64,
+            "wheel_registration_path": "development-test-registration",
+            "native_wheel_sha256": kwargs.get("expected_wheel_sha256"),
+            "wheel_registered": True,
+        }
         for method, filename in (("M3", "ours_nl_v2.json"),
                                  ("M4", "ours_lk_v2.json")):
             with self.subTest(method=method), tempfile.TemporaryDirectory() as directory:
@@ -111,9 +120,18 @@ cz q[0],q[5];
                                 for stage in stages]
                     params = setting(filename)
                     batch = ResidentPlacer(deepcopy(self.initial), **params)
+                    leading = tuple(
+                        (event.operation, event.qubits[0])
+                        for event in store.iter_zac_leading_one_qubit())
+                    one_qubit_by_layer = tuple(tuple(
+                        (event.operation, event.qubits[0])
+                        for event in store.iter_zac_one_qubit_for_stage(stage))
+                        for stage in stages)
                     batch.run(
                         self.architecture, [deepcopy(self.initial)], schedule,
-                        True, [set() for _ in schedule])
+                        True, [set() for _ in schedule],
+                        leading_one_qubit_gates=leading,
+                        one_qubit_gates_by_layer=one_qubit_by_layer)
 
                     stream = FormalZacPlacementStream(
                         method=method,
