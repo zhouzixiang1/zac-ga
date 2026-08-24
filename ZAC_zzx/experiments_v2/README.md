@@ -2,7 +2,7 @@
 
 本目录比较四种实际编译方法：M1 原始 ZAC、M2 ICCAD/QMAP 3.2
 routing-aware A*、M3 无前瞻遗传驻留、M4 几何衰减多层前瞻遗传驻留。
-本轮只处理 ZAC18、QMAP154 和 Runtime，不运行 Large、不做图。
+本轮只处理 ZAC18、QMAP154，不运行 Large、不做图。
 
 历史工作簿和旧 688 次结果已在 `legacy_pilot_inventory.json` 中标记为
 `legacy/pilot`，只用于回归和故障定位，不能进入新主表。
@@ -11,7 +11,8 @@ routing-aware A*、M3 无前瞻遗传驻留、M4 几何衰减多层前瞻遗传�
 
 - M1/M2 实际运行论文原始方法；统一评分器会审计 ghost，但不会给基线增加论文
   中没有的 ghost repair。
-- M3/M4 共用同一 resident engine。M3 的 `max_horizon=0`，不能读取未来层；
+- M3/M4 的完整决策内核统一为 C++17 resident engine；Python 只保留 QASM、
+  编译状态、原生调用、最终路由和独立验证。M3 的 `max_horizon=0`，不能读取未来层；
   M4 最多看 8 层，未来物理增量按
   `alpha_lookahead * rho ** (depth - 1)` 衰减，裸衰减低于 0.05 时停止。
 - 每个候选在排序前完成实际 RETURN 子集的 K-best 位置匹配、确定性 RESEAT、
@@ -72,9 +73,10 @@ receipt 绑定的 manifest 和 SHA256，不扫描旧目录推断成功。
 - 四方法逐层放置时间 warm-up 后各重复 3 次，报告中位数和 IQR；
 - 所有 success 必须账本一致；M3/M4 还必须 `ghost_hits=0` 且无 fallback。
 
-最终只交付三张表：`ZAC18`、`QMAP154`、`Runtime`。每行一个电路，方法按
-M1/M2/M3/M4 横向分组。同步输出 `zac18.csv`、`qmap154.csv`、
-`runtime_vs_iccad.csv`、`experiment_summary.md` 和 `final_manifest.json`。
+最终工作簿只交付两张表：`ZAC18`、`QMAP154`。每行一个电路，方法按
+M1/M2/M3/M4 横向分组；逐层放置时间直接保留在各方法列中。同步输出
+`zac18.csv`、`qmap154.csv`、`experiment_summary.md` 和
+`final_manifest.json`。
 
 统一评分器在 log 域计算 ZAC 物理保真度，并由事件重放器统一计算 Move 批次
 和 Move 时间。线性退相干模型 OOD 时不伪造数值，统一切换到指数敏感性结果

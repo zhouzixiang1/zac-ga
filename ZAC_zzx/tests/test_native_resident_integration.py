@@ -30,7 +30,7 @@ TIMING_KEYS = {
     "backend_calls", "backend_candidates", "cache",
 }
 NATIVE_WHEEL_SHA256 = (
-    "8dba163638890bc3f9ee2f524750056d6ba1fc0b33b15a5027046fc00bbc4ce7")
+    "9ac5932b595de8e2a0de4558b6181b7a7aff29e80ede39ba27cb03a963521181")
 
 
 def architecture():
@@ -137,6 +137,17 @@ class TestNativeResidentIntegration(unittest.TestCase):
         self.assertTrue(all(
             row["forecast_objective"]["configured_depth"] == configured
             for row in first_run.decision_log[:-1]))
+        self.assertTrue(all(
+            row["rich_search"]["forecast_terms"] == 0
+            for row in first_run.decision_log[:-1]))
+        self.assertTrue(all(
+            row["rich_search"]["native_future_layers"] == 0
+            for row in first_run.decision_log[:-1]
+            if configured == 0))
+        if configured > 0:
+            self.assertTrue(any(
+                row["rich_search"]["native_future_layers"] > 0
+                for row in first_run.decision_log[:-1]))
 
     def test_real_toy_nl_and_bounded_decay_lk(self):
         schedule = [

@@ -1,6 +1,7 @@
-"""ABI3 one-call residency search differential and fail-closed tests."""
+"""ABI4 one-call residency search differential and fail-closed tests."""
 from __future__ import annotations
 
+import math
 import random
 import unittest
 from dataclasses import replace
@@ -168,7 +169,7 @@ def tuned_search_problem():
     return arch, problem, config
 
 
-@unittest.skipUnless(native_available(), "ABI3 native extension is not installed")
+@unittest.skipUnless(native_available(), "ABI4 native extension is not installed")
 class TestNativeRichSolver(unittest.TestCase):
     def setUp(self):
         self.arch = architecture()
@@ -532,6 +533,55 @@ class TestNativeRichSolver(unittest.TestCase):
             result.winner.negative_log_fidelity + result.forecast_nll,
             delta=1e-15,
         )
+
+    def test_abi4_raw_future_layers_are_physically_rolled_out_in_cpp(self):
+        arch = ArchitectureSnapshot.from_coordinates(
+            4,
+            (
+                (0, 0), (1, 0), (4, 0), (5, 0),
+                (0, 10), (1, 10), (4, 10), (5, 10),
+            ),
+            (4, 5, 6, 7),
+        )
+        arch = replace(
+            arch, entangling_site_pairs=((0, 1), (2, 3)))
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(),
+            current_site_ids=(0, 1, 6, 7),
+            participants=(0, 1),
+            gate_domains=((RichGateOption(
+                0, 0, 1, None, None,
+                target1_site_id=0, target2_site_id=1),),),
+            static_ghosts=(),
+            eligible=(),
+            min_returns=0,
+            eviction_order_indices=(),
+            forced_return_mask=(),
+            return_domains=(),
+            matched_gate_genes=(0,),
+            future_layers=((1, ((2, 3),)),),
+            boundary_id="native-future-layer",
+            selected_horizon=1,
+        )
+        buffers = problem.flat_buffers()
+        self.assertEqual(list(buffers["future_layer_depths"]), [1])
+        self.assertEqual(list(buffers["future_gate_atoms"]), [2, 3])
+        result = NativeResidentBackend(arch).solve_rich_boundary(
+            problem,
+            RichSearchConfig(
+                operator_profile="exact", max_horizon=1,
+                alpha_lookahead=.2, decay_rho=.7),
+            random.Random(11).getstate(),
+        )
+        self.assertGreater(result.forecast_nll, 0.0)
+        self.assertTrue(math.isfinite(result.forecast_nll))
+        self.assertAlmostEqual(
+            result.search_negative_log_fidelity,
+            result.winner.negative_log_fidelity + result.forecast_nll,
+            delta=1e-12,
+        )
+        self.assertGreater(result.forecast_terms_applied, 0)
 
     def test_strict_h0_rejects_future_and_horizon_mismatch(self):
         term = RichForecastTerm(1, "constant", "terminal", 1.0)

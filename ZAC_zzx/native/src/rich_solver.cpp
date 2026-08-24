@@ -466,6 +466,14 @@ class RichSolver {
     }
     storage_site_ids_.insert(architecture_.storage_site_ids().begin(),
                              architecture_.storage_site_ids().end());
+    for (const auto& pair : architecture_.entangling_site_pairs()) {
+      const auto& first = architecture_.site_coordinates()[
+          static_cast<std::size_t>(pair[0])];
+      const auto& second = architecture_.site_coordinates()[
+          static_cast<std::size_t>(pair[1])];
+      zone_points_.insert({first.x, first.y});
+      zone_points_.insert({second.x, second.y});
+    }
     return_domains_ = problem_.return_domains;
     for (auto& domain : return_domains_) {
       std::sort(domain.begin(), domain.end(), [](const auto& first,
@@ -752,6 +760,34 @@ class RichSolver {
         throw std::invalid_argument("forecast RETURN selector is invalid");
       }
     }
+    if (!problem_.forecast_terms.empty() && !problem_.future_layers.empty()) {
+      throw std::invalid_argument(
+          "precomputed forecast terms and native future layers are exclusive");
+    }
+    if (!problem_.future_layers.empty() &&
+        architecture_.entangling_site_pairs().empty()) {
+      throw std::invalid_argument(
+          "native future rollout requires entangling site pairs");
+    }
+    std::size_t previous_depth = 0;
+    for (const auto& layer : problem_.future_layers) {
+      if (layer.depth == 0 || layer.depth > config_.max_horizon ||
+          layer.depth <= previous_depth) {
+        throw std::invalid_argument(
+            "native future layer exceeds bounded sorted horizon");
+      }
+      previous_depth = layer.depth;
+      std::set<std::int64_t> atoms;
+      for (const auto& gate : layer.gates) {
+        if (gate.first < 0 || gate.second < 0 || gate.first == gate.second ||
+            static_cast<std::size_t>(gate.first) >= problem_.n_atoms ||
+            static_cast<std::size_t>(gate.second) >= problem_.n_atoms ||
+            !atoms.insert(gate.first).second ||
+            !atoms.insert(gate.second).second) {
+          throw std::invalid_argument("invalid atom-disjoint future 2Q layer");
+        }
+      }
+    }
     std::set<std::size_t> eviction;
     for (const auto index : problem_.eviction_order_indices) {
       if (index >= problem_.eligible.size() || !eviction.insert(index).second) {
@@ -975,9 +1011,15 @@ class RichSolver {
     result.forecast_by_depth.assign(config_.max_horizon + 1, 0.0);
     result.forecast_by_category.fill(0.0);
     result.forecast_nll = 0.0;
-    if (config_.max_horizon == 0 || problem_.forecast_terms.empty() ||
+    if (config_.max_horizon == 0 ||
+        (problem_.forecast_terms.empty() && problem_.future_layers.empty()) ||
         config_.alpha_lookahead == 0.0) {
       result.search_nll = result.fitness.negative_log_fidelity;
+      forecast_ns_ += elapsed_ns(started);
+      return;
+    }
+    if (!problem_.future_layers.empty()) {
+      apply_native_rollout(result);
       forecast_ns_ += elapsed_ns(started);
       return;
     }
@@ -1037,6 +1079,348 @@ class RichSolver {
     result.search_nll = result.fitness.negative_log_fidelity +
                         result.forecast_nll;
     forecast_ns_ += elapsed_ns(started);
+  }
+
+  std::vector<Ghost> forecast_ghosts(
+      const std::vector<Point>& positions) const {
+    std::vector<Ghost> ghosts;
+    ghosts.reserve(positions.size());
+    for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+      ghosts.push_back({static_cast<std::int64_t>(atom), positions[atom]});
+    }
+    return ghosts;
+  }
+
+  FitnessResult score_forecast_phase(
+      const std::vector<Leg>& legs, const std::vector<std::int64_t>& owners,
+      const std::vector<Point>& positions, std::int64_t idle_exposures = 0) const {
+    CandidatePlan candidate;
+    candidate.idle_exposures = idle_exposures;
+    if (!legs.empty()) {
+      MovementPhase phase;
+      phase.legs = legs;
+      phase.owners = owners;
+      phase.ghosts = forecast_ghosts(positions);
+      candidate.phases.push_back(std::move(phase));
+    }
+    BoundaryConfig boundary_config;
+    boundary_config.exact_coloring_threshold = config_.exact_coloring_threshold;
+    boundary_config.enforce_single_leg_ghost =
+        config_.enforce_single_leg_ghost;
+    return evaluate_candidate_summary(
+        architecture_, candidate, boundary_config);
+  }
+
+  bool is_zone_point(const Point& point) const {
+    return zone_points_.count({point.x, point.y}) != 0U;
+  }
+
+  bool point_occupied(const std::vector<Point>& positions, const Point& point,
+                      std::int64_t except_atom = -1) const {
+    for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+      if (static_cast<std::int64_t>(atom) == except_atom) continue;
+      if (same_point(positions[atom], point)) return true;
+    }
+    return false;
+  }
+
+  std::optional<std::pair<std::int64_t, FitnessResult>>
+  forecast_move_to_storage(std::int64_t atom,
+                           std::vector<Point>& positions) const {
+    std::vector<std::pair<double, std::int64_t>> choices;
+    const auto& source = positions[static_cast<std::size_t>(atom)];
+    for (const auto site_id : architecture_.storage_site_ids()) {
+      const auto& target = architecture_.site_coordinates()[
+          static_cast<std::size_t>(site_id)];
+      if (point_occupied(positions, target, atom)) continue;
+      choices.emplace_back(point_distance(source, target), site_id);
+    }
+    std::sort(choices.begin(), choices.end());
+    std::optional<std::pair<std::int64_t, FitnessResult>> best;
+    std::size_t tested = 0;
+    for (const auto& [distance, site_id] : choices) {
+      if (distance <= 1e-9) continue;
+      const auto& target = architecture_.site_coordinates()[
+          static_cast<std::size_t>(site_id)];
+      std::vector<Leg> legs;
+      if (distance > 1e-9) legs.push_back({distance, source, target});
+      const auto score = score_forecast_phase(
+          legs, legs.empty() ? std::vector<std::int64_t>{}
+                             : std::vector<std::int64_t>{atom},
+          positions);
+      if (!score.feasible) continue;
+      ++tested;
+      if (!best.has_value() ||
+          std::tie(score.negative_log_fidelity, score.move_batches,
+                   score.move_time_us, score.total_distance_um, site_id) <
+              std::tie(best->second.negative_log_fidelity,
+                       best->second.move_batches, best->second.move_time_us,
+                       best->second.total_distance_um, best->first)) {
+        best = std::make_pair(site_id, score);
+      }
+      // The list is distance ordered.  Eight executable alternatives are
+      // enough to avoid turning a future parking search into another GA.
+      if (best.has_value() && tested >= 8U) break;
+    }
+    if (best.has_value()) {
+      positions[static_cast<std::size_t>(atom)] =
+          architecture_.site_coordinates()[
+              static_cast<std::size_t>(best->first)];
+    }
+    return best;
+  }
+
+  static double finite_nll(const FitnessResult& score) {
+    return score.feasible ? score.negative_log_fidelity
+                          : std::numeric_limits<double>::infinity();
+  }
+
+  FitnessResult score_forecast_relocation_batch(
+      const std::vector<Point>& before, const std::vector<Point>& after,
+      const std::set<std::int64_t>& atoms) const {
+    std::vector<Leg> legs;
+    std::vector<std::int64_t> owners;
+    for (const auto atom : atoms) {
+      const auto index = static_cast<std::size_t>(atom);
+      const auto distance = point_distance(before[index], after[index]);
+      if (distance <= 1e-9) continue;
+      legs.push_back({distance, before[index], after[index]});
+      owners.push_back(atom);
+    }
+    return score_forecast_phase(legs, owners, before);
+  }
+
+  void add_weighted_forecast(Evaluated& result, std::size_t depth,
+                             std::size_t category, double raw_nll) {
+    const auto decay = std::pow(
+        config_.decay_rho, static_cast<double>(depth - 1));
+    if (decay < config_.decay_epsilon) {
+      ++stats_.forecast_terms_skipped_cutoff;
+      return;
+    }
+    const auto contribution = config_.alpha_lookahead * decay * raw_nll;
+    result.forecast_nll += contribution;
+    result.forecast_by_depth[depth] += contribution;
+    result.forecast_by_category[category] += contribution;
+  }
+
+  void apply_native_rollout(Evaluated& result) {
+    auto positions = problem_.current_points;
+    for (const auto& assignment : result.assignments) {
+      positions[static_cast<std::size_t>(
+          problem_.eligible[assignment.eligible_index])] = assignment.point;
+    }
+    for (const auto& reseat : result.reseats) {
+      positions[static_cast<std::size_t>(
+          problem_.eligible[reseat.eligible_index])] = reseat.point;
+    }
+    for (std::size_t gate = 0; gate < problem_.gate_domains.size(); ++gate) {
+      const auto& option = problem_.gate_domains[gate][
+          result.decoded.option_indices[gate]];
+      positions[static_cast<std::size_t>(option.q1)] = option.target1;
+      positions[static_cast<std::size_t>(option.q2)] = option.target2;
+    }
+
+    const auto& site_pairs = architecture_.entangling_site_pairs();
+    for (std::size_t layer_index = 0;
+         layer_index < problem_.future_layers.size(); ++layer_index) {
+      const auto& layer = problem_.future_layers[layer_index];
+      const auto decay = std::pow(
+          config_.decay_rho, static_cast<double>(layer.depth - 1));
+      if (decay < config_.decay_epsilon) {
+        ++stats_.forecast_terms_skipped_cutoff;
+        continue;
+      }
+      std::set<std::int64_t> participants;
+      for (const auto& gate : layer.gates) {
+        participants.insert(gate.first);
+        participants.insert(gate.second);
+      }
+
+      struct FuturePlacement {
+        std::int64_t q1{};
+        std::int64_t q2{};
+        Point target1;
+        Point target2;
+      };
+      std::vector<FuturePlacement> placements;
+      std::set<std::size_t> used_pairs;
+      for (const auto& gate : layer.gates) {
+        std::optional<std::tuple<double, std::size_t, bool>> selected;
+        for (std::size_t pair_index = 0; pair_index < site_pairs.size();
+             ++pair_index) {
+          if (used_pairs.count(pair_index) != 0U) continue;
+          const auto& pair = site_pairs[pair_index];
+          const auto& left = architecture_.site_coordinates()[
+              static_cast<std::size_t>(pair[0])];
+          const auto& right = architecture_.site_coordinates()[
+              static_cast<std::size_t>(pair[1])];
+          for (const auto reversed : {false, true}) {
+            const auto& first = reversed ? right : left;
+            const auto& second = reversed ? left : right;
+            auto cost = point_distance(
+                            positions[static_cast<std::size_t>(gate.first)],
+                            first) +
+                        point_distance(
+                            positions[static_cast<std::size_t>(gate.second)],
+                            second);
+            for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+              const auto atom_id = static_cast<std::int64_t>(atom);
+              if (participants.count(atom_id) != 0U) continue;
+              if (same_point(positions[atom], first) ||
+                  same_point(positions[atom], second)) {
+                // This is only a deterministic placement ordering key.  The
+                // selected blocker is physically moved and scored below.
+                auto nearest_storage = std::numeric_limits<double>::infinity();
+                for (const auto site_id : architecture_.storage_site_ids()) {
+                  nearest_storage = std::min(
+                      nearest_storage,
+                      point_distance(
+                          positions[atom],
+                          architecture_.site_coordinates()[
+                              static_cast<std::size_t>(site_id)]));
+                }
+                cost += nearest_storage;
+              }
+            }
+            const auto key = std::make_tuple(cost, pair_index, reversed);
+            if (!selected.has_value() || key < *selected) selected = key;
+          }
+        }
+        if (!selected.has_value()) {
+          result.forecast_nll = std::numeric_limits<double>::infinity();
+          result.search_nll = std::numeric_limits<double>::infinity();
+          return;
+        }
+        const auto pair_index = std::get<1>(*selected);
+        const auto reversed = std::get<2>(*selected);
+        used_pairs.insert(pair_index);
+        const auto& pair = site_pairs[pair_index];
+        const auto& left = architecture_.site_coordinates()[
+            static_cast<std::size_t>(pair[0])];
+        const auto& right = architecture_.site_coordinates()[
+            static_cast<std::size_t>(pair[1])];
+        placements.push_back({gate.first, gate.second,
+                              reversed ? right : left,
+                              reversed ? left : right});
+      }
+
+      std::set<std::int64_t> blockers;
+      for (const auto& placement : placements) {
+        for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+          const auto atom_id = static_cast<std::int64_t>(atom);
+          if (participants.count(atom_id) != 0U) continue;
+          if (same_point(positions[atom], placement.target1) ||
+              same_point(positions[atom], placement.target2)) {
+            blockers.insert(atom_id);
+          }
+        }
+      }
+      // A stationary atom intersected by any individual AOD leg is a real
+      // future ghost.  Deterministically park it before the gate phase.
+      for (const auto& placement : placements) {
+        for (const auto& [atom, target] :
+             {std::pair<std::int64_t, Point>{placement.q1, placement.target1},
+              std::pair<std::int64_t, Point>{placement.q2, placement.target2}}) {
+          const auto& source = positions[static_cast<std::size_t>(atom)];
+          const auto distance = point_distance(source, target);
+          if (distance <= 1e-9) continue;
+          const auto hits = ghost_hit_atoms(
+              {{distance, source, target}}, forecast_ghosts(positions));
+          for (const auto hit : hits) {
+            if (participants.count(hit) == 0U) blockers.insert(hit);
+          }
+        }
+      }
+
+      const auto before_blockers = positions;
+      double routing_nll = 0.0;
+      for (const auto blocker : blockers) {
+        const auto moved = forecast_move_to_storage(blocker, positions);
+        if (!moved.has_value()) {
+          routing_nll = std::numeric_limits<double>::infinity();
+          break;
+        }
+        routing_nll += finite_nll(moved->second);
+      }
+      if (std::isfinite(routing_nll) && !blockers.empty()) {
+        const auto batched = score_forecast_relocation_batch(
+            before_blockers, positions, blockers);
+        if (batched.feasible) routing_nll = finite_nll(batched);
+      }
+
+      std::vector<Leg> out_legs;
+      std::vector<std::int64_t> out_owners;
+      for (const auto& placement : placements) {
+        for (const auto& [atom, target] :
+             {std::pair<std::int64_t, Point>{placement.q1, placement.target1},
+              std::pair<std::int64_t, Point>{placement.q2, placement.target2}}) {
+          const auto& source = positions[static_cast<std::size_t>(atom)];
+          const auto distance = point_distance(source, target);
+          if (distance > 1e-9) {
+            out_legs.push_back({distance, source, target});
+            out_owners.push_back(atom);
+          }
+        }
+      }
+      const auto out_score = score_forecast_phase(
+          out_legs, out_owners, positions);
+      const auto reentry_nll = finite_nll(out_score);
+      for (const auto& placement : placements) {
+        positions[static_cast<std::size_t>(placement.q1)] = placement.target1;
+        positions[static_cast<std::size_t>(placement.q2)] = placement.target2;
+      }
+
+      std::int64_t idle_exposures = 0;
+      for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+        if (participants.count(static_cast<std::int64_t>(atom)) == 0U &&
+            is_zone_point(positions[atom])) {
+          ++idle_exposures;
+        }
+      }
+      const auto idle_score = score_forecast_phase(
+          {}, {}, positions, idle_exposures);
+      const auto residency_nll = finite_nll(idle_score);
+
+      std::set<std::int64_t> later_use;
+      for (std::size_t later = layer_index + 1;
+           later < problem_.future_layers.size(); ++later) {
+        for (const auto& gate : problem_.future_layers[later].gates) {
+          later_use.insert(gate.first);
+          later_use.insert(gate.second);
+        }
+      }
+      double terminal_nll = 0.0;
+      std::set<std::int64_t> terminal_atoms;
+      const auto before_terminal = positions;
+      for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+        const auto atom_id = static_cast<std::int64_t>(atom);
+        if (!is_zone_point(positions[atom]) ||
+            later_use.count(atom_id) != 0U) {
+          continue;
+        }
+        terminal_atoms.insert(atom_id);
+        const auto moved = forecast_move_to_storage(atom_id, positions);
+        if (!moved.has_value()) {
+          terminal_nll = std::numeric_limits<double>::infinity();
+          break;
+        }
+        terminal_nll += finite_nll(moved->second);
+      }
+      if (std::isfinite(terminal_nll) && !terminal_atoms.empty()) {
+        const auto batched = score_forecast_relocation_batch(
+            before_terminal, positions, terminal_atoms);
+        if (batched.feasible) terminal_nll = finite_nll(batched);
+      }
+
+      add_weighted_forecast(result, layer.depth, 0, residency_nll);
+      add_weighted_forecast(result, layer.depth, 1, reentry_nll);
+      add_weighted_forecast(result, layer.depth, 2, terminal_nll);
+      add_weighted_forecast(result, layer.depth, 3, routing_nll);
+      ++stats_.forecast_terms_applied;
+    }
+    result.search_nll = result.fitness.negative_log_fidelity +
+                        result.forecast_nll;
   }
 
   PlanGeometry build_geometry(
@@ -1921,6 +2305,7 @@ class RichSolver {
   const RichSearchConfig& config_;
   std::vector<std::vector<RichReturnOption>> return_domains_;
   std::unordered_set<std::int64_t> storage_site_ids_;
+  std::set<std::pair<double, double>> zone_points_;
   std::vector<bool> participant_mask_;
   PythonRandom rng_;
   RichSearchStats stats_;

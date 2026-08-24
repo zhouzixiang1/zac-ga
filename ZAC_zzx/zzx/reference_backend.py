@@ -44,7 +44,7 @@ def evaluate_decay_forecast(
         gate_option_indices: Sequence[int],
         return_assignments: Sequence[tuple[int, int]],
 ) -> tuple[float, tuple[float, ...], dict[str, float], int, int]:
-    """Independent Python oracle for the ABI3 bounded-decay term table."""
+    """Independent Python oracle for the legacy bounded-decay term table."""
     if problem.selected_horizon != config.max_horizon:
         raise ValueError("problem/config horizon mismatch")
     gate_count = len(problem.gate_domains)

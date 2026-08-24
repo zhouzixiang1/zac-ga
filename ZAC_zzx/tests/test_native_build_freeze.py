@@ -60,7 +60,7 @@ class NativeBuildFreezeTests(unittest.TestCase):
         self.extension = self.artifacts / "zac_native_core.so"
         self.extension.parent.mkdir(parents=True)
         self.extension.write_bytes(b"registered-extension-bytes")
-        self.wheel = self.artifacts / "zac_native-0.3.0-test.whl"
+        self.wheel = self.artifacts / "zac_native-0.4.0-test.whl"
         self.member = "zac_native_core.so"
         with ZipFile(self.wheel, "w") as archive:
             archive.writestr(self.member, self.extension.read_bytes())
@@ -73,9 +73,9 @@ class NativeBuildFreezeTests(unittest.TestCase):
             "extension_sha256": _sha256(self.extension),
         }), encoding="utf-8")
         self.build_info = {
-            "native_abi_version": 3,
+            "native_abi_version": 4,
             "flat_wire_version": 1,
-            "rich_boundary_wire_version": 2,
+            "rich_boundary_wire_version": 3,
             "rng_version": "python-random-mt19937-v1",
             "cxx_standard": 17,
             "build_type": "Release",
@@ -115,7 +115,7 @@ class NativeBuildFreezeTests(unittest.TestCase):
         micro = self.artifacts / "micro.json"
         micro.write_text(json.dumps({
             "schema": 2,
-            "protocol": "abi3-registered-native-microbenchmark-v1",
+            "protocol": "abi4-registered-native-microbenchmark-v1",
             "native_build": native_build,
             "one_call": {"speedup": 5.1},
             "fitness_core": {"speedup": 10.1},
@@ -131,7 +131,7 @@ class NativeBuildFreezeTests(unittest.TestCase):
         }]
         real = self.artifacts / "real.json"
         real.write_text(json.dumps({
-            "benchmark_id": "abi3-exact-real-boundary-ising-n42-v2",
+            "benchmark_id": "abi4-exact-real-boundary-ising-n42-v2",
             "native_build": native_build,
             "parity": {"all_passed": True, "repetitions": repetitions},
             "timing": {
@@ -146,7 +146,7 @@ class NativeBuildFreezeTests(unittest.TestCase):
         }
         pipeline = self.artifacts / "pipeline.json"
         pipeline.write_text(json.dumps({
-            "protocol": "resident-python-vs-abi3-medium-v2",
+            "protocol": "resident-python-vs-abi4-medium-v2",
             "wheel_sha256": wheel_sha,
             "accepted": True,
             "horizons": {

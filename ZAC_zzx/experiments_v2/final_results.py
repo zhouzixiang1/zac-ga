@@ -1,4 +1,4 @@
-"""Fail-closed tables for the final three-sheet results workbook.
+"""Fail-closed tables for the final two-sheet results workbook.
 
 This module deliberately stops at a renderer-independent workbook contract.
 It never creates an XLSX file: the final workbook is authored and visually
@@ -35,10 +35,10 @@ from zzx.algorithm_v2 import (
 )
 
 
-FINAL_RESULTS_CONTRACT_ID = "native-ga-v1-three-sheet-results-v1"
+FINAL_RESULTS_CONTRACT_ID = "native-ga-v1-two-sheet-results-v1"
 METHODS = ("M1", "M2", "M3", "M4")
 DATASET_SHEETS = {"zac18": "ZAC18", "qmap154": "QMAP154"}
-SHEET_NAMES = ("ZAC18", "QMAP154", "Runtime")
+SHEET_NAMES = ("ZAC18", "QMAP154")
 QUALITY_NUMERATOR = {"M1": 1, "M2": 1, "M3": 5, "M4": 5}
 TIMING_REPETITIONS = 5
 OVERALL_LABEL = "整体汇总"
@@ -563,7 +563,7 @@ def aggregate_final_results(
         timing_manifests: Iterable[ManifestInput], *,
         expected_experiment_ids: Mapping[str, str],
         frozen_suites: Mapping[str, Sequence[str]]) -> dict[str, Any]:
-    """Validate exact formal cohorts and produce all three sheet row sets."""
+    """Validate exact formal cohorts and produce the two dataset row sets."""
     suites = _validate_frozen_inputs(expected_experiment_ids, frozen_suites)
     quality = _load_explicit(quality_manifests, label="quality")
     timing = _load_explicit(timing_manifests, label="timing")
@@ -587,9 +587,14 @@ def aggregate_final_results(
     }
     for dataset, sheet in DATASET_SHEETS.items():
         dataset_quality_rows: list[dict[str, Any]] = []
-        dataset_runtime_rows: list[dict[str, Any]] = []
         for circuit in suites[dataset]:
             row: dict[str, Any] = {"circuit": circuit}
+            method_timing_runs = {
+                method: timing_groups[(dataset, circuit, method)]
+                for method in METHODS
+            }
+            timing_comparable, _timing_reason = _ledger_comparability(
+                method_timing_runs)
             for method in METHODS:
                 quality_runs = quality_groups[(dataset, circuit, method)]
                 successful_quality = _successes(quality_runs)
@@ -608,54 +613,22 @@ def aggregate_final_results(
                         run.move_time_us for run in strict_quality),
                     f"{method}__transition_decision_s":
                         (timing_summary["transition_decision_s_median"]
-                         if timing_complete else None),
+                         if timing_complete and timing_comparable else None),
                     f"{method}__valid_over_N":
                         f"{len(successful_quality)}/{QUALITY_NUMERATOR[method]}",
                 })
             rows[sheet].append(row)
             dataset_quality_rows.append(row)
 
-            method_timing_runs = {
-                method: timing_groups[(dataset, circuit, method)]
-                for method in METHODS
-            }
-            summaries = {
-                method: _timing_summary(method_timing_runs[method])
-                for method in METHODS
-            }
-            comparable, reason = _ledger_comparability(method_timing_runs)
-            runtime_row: dict[str, Any] = {
-                "dataset": dataset, "circuit": circuit,
-                "layer_ledger_comparable": comparable,
-                "layer_ledger_reason": reason,
-            }
-            for method in METHODS:
-                for key, value in summaries[method].items():
-                    if key not in {"valid", "N"}:
-                        runtime_row[f"{method}__{key}"] = value
-            baseline = summaries["M2"]["transition_decision_s_median"]
-            for method in ("M3", "M4"):
-                ours = summaries[method]["transition_decision_s_median"]
-                runtime_row[f"{method}__speedup_vs_M2"] = (
-                    float(baseline) / float(ours)
-                    if comparable and baseline is not None and ours not in (None, 0)
-                    else None)
-            rows["Runtime"].append(runtime_row)
-            dataset_runtime_rows.append(runtime_row)
-
         rows[sheet].append(_overall_quality_row(
             dataset_quality_rows, quality_groups=quality_groups,
             dataset=dataset, circuits=suites[dataset]))
-        rows["Runtime"].append(_overall_runtime_row(
-            dataset_runtime_rows, dataset=dataset,
-            circuit_count=len(suites[dataset])))
 
     quality_columns = _quality_columns()
-    runtime_columns = _runtime_columns()
     workbook_contract = {
         "experiment_schema": SCHEMA_VERSION,
         "contract_id": FINAL_RESULTS_CONTRACT_ID,
-        "exact_sheet_count": 3,
+        "exact_sheet_count": 2,
         "sheet_names": list(SHEET_NAMES),
         "charts": False,
         "notes": {
@@ -685,16 +658,6 @@ def aggregate_final_results(
                 "header_rows": 2,
                 "frozen_row_order": [*suites["qmap154"], OVERALL_LABEL],
                 "columns": quality_columns,
-            },
-            {
-                "name": "Runtime", "source_csv": "runtime_vs_iccad.csv",
-                "header_rows": 2,
-                "frozen_row_order": [
-                    f"{dataset}/{circuit}"
-                    for dataset in DATASET_SHEETS
-                    for circuit in (*suites[dataset], OVERALL_LABEL)
-                ],
-                "columns": runtime_columns,
             },
         ],
     }
@@ -732,10 +695,10 @@ def write_final_results(result: Mapping[str, Any],
     if not isinstance(contract, Mapping) or not isinstance(rows, Mapping):
         raise ValueError("final results lack rows or workbook contract")
     if tuple(contract.get("sheet_names", ())) != SHEET_NAMES:
-        raise ValueError("workbook must contain exactly ZAC18, QMAP154, Runtime")
+        raise ValueError("workbook must contain exactly ZAC18 and QMAP154")
     sheets = contract.get("sheets")
-    if not isinstance(sheets, list) or len(sheets) != 3:
-        raise ValueError("workbook contract must describe exactly three sheets")
+    if not isinstance(sheets, list) or len(sheets) != 2:
+        raise ValueError("workbook contract must describe exactly two sheets")
 
     destination = Path(output_directory)
     destination.mkdir(parents=True, exist_ok=True)

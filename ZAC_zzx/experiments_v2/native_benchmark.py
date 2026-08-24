@@ -1,4 +1,4 @@
-"""Deterministic medium-boundary Python-reference vs ABI3 benchmark.
+"""Deterministic medium-boundary Python-reference vs ABI4 benchmark.
 
 This benchmark measures only ``ResidentPlacer.run`` after the architecture and
 placer objects exist.  It is a language-migration gate, not an ICCAD timing
@@ -172,7 +172,7 @@ def run_medium_benchmark(
             "parity": parity,
         }
     return {
-        "protocol": "resident-python-vs-abi3-medium-v2",
+        "protocol": "resident-python-vs-abi4-medium-v2",
         "measurement": "ResidentPlacer.run only; preprocessed architecture",
         "operator_profile": "exact",
         "wheel_sha256": wheel_sha256,

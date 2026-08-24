@@ -14,7 +14,7 @@ from math import dist, isfinite
 from typing import Iterable, Mapping, Sequence
 
 
-NATIVE_ABI_VERSION = 3
+NATIVE_ABI_VERSION = 4
 RNG_VERSION = "python-random-mt19937-v1"
 
 
@@ -135,6 +135,7 @@ class ArchitectureSnapshot:
     n_atoms: int
     site_coordinates: tuple[Point, ...] = ()
     storage_site_ids: tuple[int, ...] = ()
+    entangling_site_pairs: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
         if (not isinstance(self.n_atoms, int) or isinstance(self.n_atoms, bool)
@@ -148,6 +149,21 @@ class ArchitectureSnapshot:
                for value in storage_ids):
             raise ValueError("storage site id is outside site_coordinates")
         object.__setattr__(self, "storage_site_ids", storage_ids)
+        entangling_pairs = tuple(
+            (int(pair[0]), int(pair[1]))
+            for pair in self.entangling_site_pairs)
+        if len(set(entangling_pairs)) != len(entangling_pairs):
+            raise ValueError("entangling_site_pairs must be unique")
+        for first, second in entangling_pairs:
+            if (first == second or first < 0 or second < 0
+                    or first >= len(self.site_coordinates)
+                    or second >= len(self.site_coordinates)):
+                raise ValueError(
+                    "entangling site pair is outside site_coordinates")
+            if first in storage_ids or second in storage_ids:
+                raise ValueError(
+                    "entangling site pair cannot contain a storage site")
+        object.__setattr__(self, "entangling_site_pairs", entangling_pairs)
 
     @classmethod
     def from_coordinates(cls, n_atoms: int,
@@ -161,6 +177,8 @@ class ArchitectureSnapshot:
             "n_atoms": self.n_atoms,
             "site_coordinates": [point.to_wire() for point in self.site_coordinates],
             "storage_site_ids": list(self.storage_site_ids),
+            "entangling_site_pairs": [list(pair)
+                                       for pair in self.entangling_site_pairs],
         }
 
 
@@ -673,6 +691,9 @@ class RichH0Problem:
     # doubles or leg rows cross the Python boundary.
     current_site_ids: tuple[int, ...] = ()
     forecast_terms: tuple[RichForecastTerm, ...] = ()
+    # ``(depth, gates)`` rows are intentionally raw: Python exposes only the
+    # bounded atom ledger; C++ owns placement, RETURN, ghost replay and decay.
+    future_layers: tuple[tuple[int, tuple[tuple[int, int], ...]], ...] = ()
     boundary_id: str = ""
     selected_horizon: int = 0
 
@@ -680,6 +701,9 @@ class RichH0Problem:
         points = tuple(self.current_points)
         current_site_ids = tuple(int(value) for value in self.current_site_ids)
         forecast_terms = tuple(self.forecast_terms)
+        future_layers = tuple(
+            (int(depth), tuple((int(q1), int(q2)) for q1, q2 in gates))
+            for depth, gates in self.future_layers)
         participants = tuple(int(q) for q in self.participants)
         gate_domains = tuple(tuple(domain) for domain in self.gate_domains)
         ghosts = tuple(self.static_ghosts)
@@ -744,8 +768,25 @@ class RichH0Problem:
             raise ValueError("selected_horizon must be in [0, 8]")
         if any(term.depth > self.selected_horizon for term in forecast_terms):
             raise ValueError("forecast term exceeds selected_horizon")
-        if self.selected_horizon == 0 and forecast_terms:
-            raise ValueError("strict H=0 problem cannot contain forecast terms")
+        if forecast_terms and future_layers:
+            raise ValueError(
+                "precomputed forecast_terms and native future_layers are exclusive")
+        depths = tuple(depth for depth, _gates in future_layers)
+        if depths != tuple(sorted(set(depths))):
+            raise ValueError("future layer depths must be unique and sorted")
+        for depth, gates in future_layers:
+            if depth <= 0 or depth > self.selected_horizon:
+                raise ValueError("future layer exceeds selected_horizon")
+            atoms = tuple(q for gate in gates for q in gate)
+            if len(set(atoms)) != len(atoms):
+                raise ValueError("future 2Q layer is not atom-disjoint")
+            if any(q < 0 or q >= self.architecture.n_atoms for q in atoms):
+                raise ValueError("future gate atom is outside architecture")
+        if self.selected_horizon == 0 and (forecast_terms or future_layers):
+            raise ValueError("strict H=0 problem cannot contain future data")
+        if future_layers and not self.architecture.entangling_site_pairs:
+            raise ValueError(
+                "native future rollout requires entangling_site_pairs")
         if self.decision_policy not in {
                 "optimize", "always_stay", "always_return", "adjacent_only"}:
             raise ValueError("unknown rich decision_policy")
@@ -766,6 +807,7 @@ class RichH0Problem:
         object.__setattr__(self, "occupied_storage_site_ids", occupied_storage)
         object.__setattr__(self, "current_site_ids", current_site_ids)
         object.__setattr__(self, "forecast_terms", forecast_terms)
+        object.__setattr__(self, "future_layers", future_layers)
 
     @property
     def indexed_geometry(self) -> bool:
@@ -863,6 +905,14 @@ class RichH0Problem:
             "terminal": 2,
             "routing": 3,
         }
+        future_layer_depths = array("q")
+        future_layer_gate_offsets = array("q", [0])
+        future_gate_atoms = array("q")
+        for depth, gates in self.future_layers:
+            future_layer_depths.append(depth)
+            for q1, q2 in gates:
+                future_gate_atoms.extend((q1, q2))
+            future_layer_gate_offsets.append(len(future_gate_atoms) // 2)
         return {
             "geometry_mode": array("B", [1 if self.indexed_geometry else 0]),
             "current_xy": current_xy,
@@ -911,6 +961,9 @@ class RichH0Problem:
                 "q", (term.selector for term in self.forecast_terms)),
             "forecast_nll": array(
                 "d", (term.nll for term in self.forecast_terms)),
+            "future_layer_depths": future_layer_depths,
+            "future_layer_gate_offsets": future_layer_gate_offsets,
+            "future_gate_atoms": future_gate_atoms,
         }
 
 
@@ -959,6 +1012,6 @@ class RichH0Result:
         )
 
 
-# The ABI3 generic name; old imports remain source-compatible for strict M3.
+# The generic name remains source-compatible for strict M3 fixtures.
 RichBoundaryProblem = RichH0Problem
 RichBoundaryResult = RichH0Result

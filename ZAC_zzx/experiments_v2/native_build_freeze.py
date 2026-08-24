@@ -1,4 +1,4 @@
-"""Fail-closed ABI3 build attestation and freeze protocol.
+"""Fail-closed ABI4 build attestation and freeze protocol.
 
 The native wheel is not reproducible byte-for-byte on every supported build
 host, so this module deliberately creates a *build attestation*, not a claim
@@ -34,9 +34,9 @@ DEFAULT_NATIVE_ROOT = PACKAGE_ROOT / "native"
 ATTESTATION_PROTOCOL = "native-build-attestation-v1"
 FREEZE_PROTOCOL = "native-build-freeze-v1"
 SOURCE_HASH_ALGORITHM = "tracked-tree-v1"
-NATIVE_ABI_VERSION = 3
+NATIVE_ABI_VERSION = 4
 RNG_VERSION = "python-random-mt19937-v1"
-RICH_BOUNDARY_WIRE_VERSION = 2
+RICH_BOUNDARY_WIRE_VERSION = 3
 FLAT_WIRE_VERSION = 1
 
 MINIMUM_ONE_CALL_SPEEDUP = 5.0
@@ -374,9 +374,9 @@ def _validate_micro_benchmark(path: Path,
                               native_build: Mapping[str, Any]) -> dict[str, Any]:
     value = _load_json(path, "native microbenchmark")
     if value.get("schema") != 2 or value.get("protocol") != (
-            "abi3-registered-native-microbenchmark-v1"):
+            "abi4-registered-native-microbenchmark-v1"):
         raise NativeBuildFreezeError(
-            "microbenchmark must use registered ABI3 schema 2")
+            "microbenchmark must use registered ABI4 schema 2")
     build = value.get("native_build")
     if not isinstance(build, Mapping):
         raise NativeBuildFreezeError("microbenchmark lacks native_build")
@@ -411,7 +411,7 @@ def _validate_micro_benchmark(path: Path,
 def _validate_real_boundary(path: Path,
                             native_build: Mapping[str, Any]) -> dict[str, Any]:
     value = _load_json(path, "real-boundary benchmark")
-    if value.get("benchmark_id") != "abi3-exact-real-boundary-ising-n42-v2":
+    if value.get("benchmark_id") != "abi4-exact-real-boundary-ising-n42-v2":
         raise NativeBuildFreezeError("unexpected real-boundary benchmark id")
     build = value.get("native_build")
     if not isinstance(build, Mapping):
@@ -456,7 +456,7 @@ def _validate_real_boundary(path: Path,
 def _validate_full_pipeline(path: Path,
                             native_build: Mapping[str, Any]) -> dict[str, Any]:
     value = _load_json(path, "full-pipeline benchmark")
-    if value.get("protocol") != "resident-python-vs-abi3-medium-v2":
+    if value.get("protocol") != "resident-python-vs-abi4-medium-v2":
         raise NativeBuildFreezeError("unexpected full-pipeline protocol")
     if value.get("wheel_sha256") != native_build["wheel"]["sha256"]:
         raise NativeBuildFreezeError("full-pipeline wheel SHA256 mismatch")
@@ -583,7 +583,7 @@ def freeze_native_build(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Attest and freeze the registered ABI3 native build")
+        description="Attest and freeze the registered ABI4 native build")
     subparsers = parser.add_subparsers(dest="command", required=True)
     attest = subparsers.add_parser("attest")
     attest.add_argument("--repo-root", type=Path, default=DEFAULT_REPO_ROOT)

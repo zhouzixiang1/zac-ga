@@ -15,18 +15,18 @@ const outputPath = path.resolve(outputPathArg);
 const qaDirectory = path.resolve(qaDirectoryArg);
 const contractDirectory = path.dirname(contractPath);
 const contract = JSON.parse(await fs.readFile(contractPath, "utf8"));
-const requiredSheets = ["ZAC18", "QMAP154", "Runtime"];
+const requiredSheets = ["ZAC18", "QMAP154"];
 
 if (
   contract.experiment_schema !== 2 ||
-  contract.contract_id !== "native-ga-v1-three-sheet-results-v1" ||
-  contract.exact_sheet_count !== 3 ||
+  contract.contract_id !== "native-ga-v1-two-sheet-results-v1" ||
+  contract.exact_sheet_count !== 2 ||
   JSON.stringify(contract.sheet_names) !== JSON.stringify(requiredSheets) ||
   contract.charts !== false ||
   !Array.isArray(contract.sheets) ||
-  contract.sheets.length !== 3
+  contract.sheets.length !== 2
 ) {
-  throw new Error("invalid final three-sheet workbook contract");
+  throw new Error("invalid final two-sheet workbook contract");
 }
 
 function columnName(index) {
@@ -126,11 +126,7 @@ for (let sheetIndex = 0; sheetIndex < contract.sheets.length; sheetIndex += 1) {
   const dataRows = csvValues.slice(1).map((row) =>
     spec.columns.map((column, columnIndex) => asTypedValue(row[columnIndex], column)),
   );
-  if (spec.name === "Runtime") {
-    validateFrozenOrder(spec, dataRows, (row) => `${row[0]}/${row[1]}`);
-  } else {
-    validateFrozenOrder(spec, dataRows, (row) => row[0]);
-  }
+  validateFrozenOrder(spec, dataRows, (row) => row[0]);
 
   const sheet = workbook.worksheets.add(spec.name);
   sheet.showGridLines = false;
@@ -209,8 +205,7 @@ for (let sheetIndex = 0; sheetIndex < contract.sheets.length; sheetIndex += 1) {
     body.format.rowHeight = 20;
     const overallRows = [];
     for (let rowIndex = 0; rowIndex < dataRows.length; rowIndex += 1) {
-      const circuitIndex = spec.name === "Runtime" ? 1 : 0;
-      if (dataRows[rowIndex][circuitIndex] === "整体汇总") {
+      if (dataRows[rowIndex][0] === "整体汇总") {
         overallRows.push(rowIndex + 3);
       }
     }
@@ -247,7 +242,7 @@ for (let sheetIndex = 0; sheetIndex < contract.sheets.length; sheetIndex += 1) {
     sheet.getRange(`${letter}1:${letter}${lastRow}`).format.columnWidth = width;
   }
   sheet.freezePanes.freezeRows(2);
-  sheet.freezePanes.freezeColumns(spec.name === "Runtime" ? 2 : 1);
+  sheet.freezePanes.freezeColumns(1);
 
   const keyRange = `A1:${lastColumn}${Math.min(lastRow, 24)}`;
   const inspection = await workbook.inspect({

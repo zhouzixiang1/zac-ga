@@ -70,6 +70,11 @@ struct RichForecastTerm {
   double nll{};
 };
 
+struct RichFutureLayer {
+  std::size_t depth{};
+  std::vector<std::pair<std::int64_t, std::int64_t>> gates;
+};
+
 struct RichH0Problem {
   std::size_t n_atoms{};
   std::vector<Point> current_points;
@@ -85,6 +90,10 @@ struct RichH0Problem {
   std::vector<std::int64_t> matched_gate_genes;
   RichDecisionPolicy decision_policy{RichDecisionPolicy::kOptimize};
   std::vector<RichForecastTerm> forecast_terms;
+  // ABI4 formal path: raw bounded 2Q layers are rolled out and physically
+  // scored inside C++.  ``forecast_terms`` remains only for legacy regression
+  // fixtures and must not be mixed with this representation.
+  std::vector<RichFutureLayer> future_layers;
 };
 
 struct RichSearchConfig {

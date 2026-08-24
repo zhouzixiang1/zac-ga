@@ -292,7 +292,7 @@ PYBIND11_MODULE(zac_native_core, module) {
     value["native_abi_version"] = kNativeAbiVersion;
     value["flat_wire_version"] = 1;
     value["rich_h0_wire_version"] = 1;
-    value["rich_boundary_wire_version"] = 2;
+    value["rich_boundary_wire_version"] = 3;
     value["version"] = VERSION_INFO;
     value["compiler_id"] = ZAC_CXX_COMPILER_ID;
     value["compiler_version"] = ZAC_CXX_COMPILER_VERSION;
@@ -307,7 +307,9 @@ PYBIND11_MODULE(zac_native_core, module) {
   py::class_<ArchitectureSnapshot>(module, "ArchitectureSnapshot")
       .def(py::init([](std::size_t n_atoms,
                        const std::vector<std::vector<double>>& coordinates,
-                       const std::vector<std::int64_t>& storage_site_ids) {
+                       const std::vector<std::int64_t>& storage_site_ids,
+                       const std::vector<std::array<std::int64_t, 2>>&
+                           entangling_site_pairs) {
         std::vector<Point> points;
         points.reserve(coordinates.size());
         for (const auto& coordinate : coordinates) {
@@ -317,9 +319,12 @@ PYBIND11_MODULE(zac_native_core, module) {
           points.push_back({coordinate[0], coordinate[1]});
         }
         return ArchitectureSnapshot(
-            n_atoms, std::move(points), storage_site_ids);
+            n_atoms, std::move(points), storage_site_ids,
+            entangling_site_pairs);
       }), py::arg("n_atoms"), py::arg("site_coordinates"),
-          py::arg("storage_site_ids") = std::vector<std::int64_t>{})
+          py::arg("storage_site_ids") = std::vector<std::int64_t>{},
+          py::arg("entangling_site_pairs") =
+              std::vector<std::array<std::int64_t, 2>>{})
       .def_property_readonly("n_atoms", &ArchitectureSnapshot::n_atoms)
       .def_property_readonly(
           "site_coordinates", [](const ArchitectureSnapshot& architecture) {
@@ -330,7 +335,10 @@ PYBIND11_MODULE(zac_native_core, module) {
             return result;
           })
       .def_property_readonly(
-          "storage_site_ids", &ArchitectureSnapshot::storage_site_ids);
+          "storage_site_ids", &ArchitectureSnapshot::storage_site_ids)
+      .def_property_readonly(
+          "entangling_site_pairs",
+          &ArchitectureSnapshot::entangling_site_pairs);
 
   module.def("compatible_2d", &compatible_2d, py::arg("first"), py::arg("second"));
   module.def("ghost_hits", [](const py::list& legs, const py::list& ghosts) {

@@ -7,7 +7,7 @@
 
 namespace zac_native {
 
-inline constexpr int kNativeAbiVersion = 3;
+inline constexpr int kNativeAbiVersion = 4;
 
 struct Point {
   double x{};
@@ -66,7 +66,9 @@ struct FitnessResult {
 class ArchitectureSnapshot {
  public:
   ArchitectureSnapshot(std::size_t n_atoms, std::vector<Point> site_coordinates,
-                       std::vector<std::int64_t> storage_site_ids = {});
+                       std::vector<std::int64_t> storage_site_ids = {},
+                       std::vector<std::array<std::int64_t, 2>>
+                           entangling_site_pairs = {});
 
   std::size_t n_atoms() const noexcept { return n_atoms_; }
   const std::vector<Point>& site_coordinates() const noexcept {
@@ -75,11 +77,16 @@ class ArchitectureSnapshot {
   const std::vector<std::int64_t>& storage_site_ids() const noexcept {
     return storage_site_ids_;
   }
+  const std::vector<std::array<std::int64_t, 2>>&
+  entangling_site_pairs() const noexcept {
+    return entangling_site_pairs_;
+  }
 
  private:
   std::size_t n_atoms_;
   std::vector<Point> site_coordinates_;
   std::vector<std::int64_t> storage_site_ids_;
+  std::vector<std::array<std::int64_t, 2>> entangling_site_pairs_;
 };
 
 }  // namespace zac_native

@@ -195,20 +195,20 @@ class TestSchema2Contract(unittest.TestCase):
             "elite_count": 2,
             "early_stop_patience": 3,
             "max_unique_evaluations": 321,
-            "operator_profile": "exact",
+            "operator_profile": "tuned",
         })
         compiler = ZAC_zzx()
         compiler.parse_setting({**setting, "name": "native-knob-consumption"})
         self.assertEqual(compiler.zzx_params["elite_count"], 2)
         self.assertEqual(compiler.zzx_params["early_stop_patience"], 3)
         self.assertEqual(compiler.zzx_params["max_unique_evaluations"], 321)
-        self.assertEqual(compiler.zzx_params["operator_profile"], "exact")
+        self.assertEqual(compiler.zzx_params["operator_profile"], "tuned")
         placer = ResidentPlacer([(0, 0, 0), (0, 1, 0)],
                                 **compiler.zzx_params)
         self.assertEqual(placer.elite_count, 2)
         self.assertEqual(placer.early_stop_patience, 3)
         self.assertEqual(placer.max_unique_evaluations, 321)
-        self.assertEqual(placer.operator_profile, "exact")
+        self.assertEqual(placer.operator_profile, "tuned")
 
     def test_registered_pair_differs_only_in_horizon_identity_and_output(self):
         nl = load_setting("ours_nl_v2.json")

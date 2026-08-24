@@ -256,21 +256,29 @@ int main() {
   assert(indexed_forecast_value.gate_option_indices ==
          std::vector<std::size_t>({1}));
   const std::vector<std::pair<std::int64_t, std::int64_t>>
-      indexed_forecast_returns{{2, 4}, {3, 5}};
+      indexed_forecast_returns{{2, 5}, {3, 4}};
+  // K-best edge costs order the bounded assignments but never leak into the
+  // physical objective.  The swapped assignment avoids both RETURN-site
+  // marginal terms and is therefore the correct physical winner.
   assert(indexed_forecast_value.return_assignments ==
          indexed_forecast_returns);
-  assert(std::abs(indexed_forecast_value.forecast_nll - 0.21) < 1e-15);
+  assert(std::abs(indexed_forecast_value.forecast_nll - 0.14) < 1e-15);
   const std::vector<double> expected_forecast_by_depth{
-      0.0, 0.12, 0.07, 0.005, 0.015, 0.0, 0.0, 0.0, 0.0};
-  assert(indexed_forecast_value.forecast_by_depth ==
-         expected_forecast_by_depth);
+      0.0, 0.12, 0.0, 0.005, 0.015, 0.0, 0.0, 0.0, 0.0};
+  assert(indexed_forecast_value.forecast_by_depth.size() ==
+         expected_forecast_by_depth.size());
+  for (std::size_t depth = 0; depth < expected_forecast_by_depth.size();
+       ++depth) {
+    assert(std::abs(indexed_forecast_value.forecast_by_depth[depth] -
+                    expected_forecast_by_depth[depth]) < 1e-15);
+  }
   assert(std::abs(indexed_forecast_value.forecast_residency_nll - 0.005) <
          1e-15);
   assert(std::abs(indexed_forecast_value.forecast_reentry_nll - 0.10) <
          1e-15);
   assert(std::abs(indexed_forecast_value.forecast_terminal_nll - 0.02) <
          1e-15);
-  assert(std::abs(indexed_forecast_value.forecast_routing_nll - 0.085) <
+  assert(std::abs(indexed_forecast_value.forecast_routing_nll - 0.015) <
          1e-15);
   assert(indexed_forecast_value.stats.forecast_terms_skipped_cutoff > 0);
   ++tests;

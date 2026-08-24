@@ -7,7 +7,7 @@ Both methods use the registered geometric-decay
 `max_horizon`: M3 is strict zero and M4 is bounded at eight (six offsets are
 effective under the default cutoff).  The current physical NLL is exact and
 undiscounted; only future residency/re-entry/terminal heuristics receive
-`alpha_lookahead*rho^(offset-1)`.  Both configs require the ABI3 native backend,
+`alpha_lookahead*rho^(offset-1)`.  Both configs require the ABI4 native backend,
 the registered wheel hash, and forbid a Python fallback.
 
 The four method configs currently contain the registered default candidate.

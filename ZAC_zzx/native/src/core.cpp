@@ -301,9 +301,11 @@ FitnessResult infeasible(const CandidatePlan& candidate, std::string error) {
 
 ArchitectureSnapshot::ArchitectureSnapshot(
     std::size_t n_atoms, std::vector<Point> site_coordinates,
-    std::vector<std::int64_t> storage_site_ids)
+    std::vector<std::int64_t> storage_site_ids,
+    std::vector<std::array<std::int64_t, 2>> entangling_site_pairs)
     : n_atoms_(n_atoms), site_coordinates_(std::move(site_coordinates)),
-      storage_site_ids_(std::move(storage_site_ids)) {
+      storage_site_ids_(std::move(storage_site_ids)),
+      entangling_site_pairs_(std::move(entangling_site_pairs)) {
   if (n_atoms_ == 0) {
     throw std::invalid_argument("n_atoms must be positive");
   }
@@ -319,6 +321,24 @@ ArchitectureSnapshot::ArchitectureSnapshot(
     }
     if (!seen_storage.insert(site_id).second) {
       throw std::invalid_argument("storage site ids must be unique");
+    }
+  }
+  std::set<std::array<std::int64_t, 2>> seen_pairs;
+  std::set<std::int64_t> storage(storage_site_ids_.begin(),
+                                 storage_site_ids_.end());
+  for (const auto& pair : entangling_site_pairs_) {
+    if (pair[0] < 0 || pair[1] < 0 || pair[0] == pair[1] ||
+        static_cast<std::size_t>(pair[0]) >= site_coordinates_.size() ||
+        static_cast<std::size_t>(pair[1]) >= site_coordinates_.size()) {
+      throw std::invalid_argument(
+          "entangling site pair is outside site coordinates");
+    }
+    if (storage.count(pair[0]) != 0U || storage.count(pair[1]) != 0U) {
+      throw std::invalid_argument(
+          "entangling site pair cannot contain a storage site");
+    }
+    if (!seen_pairs.insert(pair).second) {
+      throw std::invalid_argument("entangling site pairs must be unique");
     }
   }
 }

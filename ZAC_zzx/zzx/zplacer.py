@@ -554,7 +554,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         super().__init__(mapping, l2)
         self.rng = random.Random(seed)              # RNG 隔离（审计 MAJOR-6：模块级共享会毁 SA 确定性）
         # Independent current-transition stream retained for legacy adaptive
-        # H=0/1/2 regression.  Formal decay uses the ABI3 one-call solver.
+        # H=0/1/2 regression.  Formal decay uses the ABI4 one-call solver.
         self.safety_rng = random.Random(seed)
         self.theta_capacity: float = params.get("theta_capacity", 0.9)
         self.box_ratio: int = params.get("box_ratio", 3)
@@ -764,13 +764,21 @@ class ResidentPlacer(VertexMatchingPlacer):
         )
         self.boundary_site_locations = site_locations
         self.boundary_site_id = site_id
-        # Backwards-compatible name: site ids are global ABI3 ids, so native
+        # Backwards-compatible name: site ids are global ABI4 ids, so native
         # RETURN assignments are decoded through the complete location table.
         self.boundary_storage_locations = site_locations
         self.boundary_storage_site_id = storage_site_id
+        entangling_site_pairs = tuple(
+            (
+                site_id[tuple(site)],
+                site_id[(int(site[0]) + 1, int(site[1]), int(site[2]))],
+            )
+            for site in sorted(self._all_zone_sites())
+        )
         self.boundary_architecture_snapshot = BoundaryArchitectureSnapshot(
             len(self.mapping[0]), coordinates,
-            tuple(storage_site_id[location] for location in storage_locations))
+            tuple(storage_site_id[location] for location in storage_locations),
+            entangling_site_pairs)
         return self.boundary_architecture_snapshot
 
     def _initialize_run_state(self, architecture, qubit_mapping,
@@ -3389,7 +3397,12 @@ class ResidentPlacer(VertexMatchingPlacer):
                 for _absolute, gates, offset, _weight in visible_forecast
             }
             predicted_corridor_legs = []
-            if active_horizon:
+            # ABI4 consumes raw bounded 2Q layers and performs the physical
+            # rollout inside C++.  The legacy Python marginal-term builder is
+            # retained below only as a regression oracle for old fixtures; it
+            # is never executed by formal M3/M4.
+            native_future_rollout = True
+            if active_horizon and not native_future_rollout:
                 for _absolute, gates, _offset, _weight in visible_forecast:
                     for q1, q2 in gates:
                         location1 = tuple(reg.current_pos(q1))
@@ -3568,7 +3581,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             future_rollout_failed = 0
             future_rollout_skipped_budget = 0
             future_rollout_unavailable = False
-            if active_horizon:
+            if active_horizon and not native_future_rollout:
                 # Establish one physically replayable reference placement
                 # before forming per-gene marginal terms.  The distance-only
                 # Hungarian incumbent is a useful first try, but it is not a
@@ -3826,6 +3839,13 @@ class ResidentPlacer(VertexMatchingPlacer):
                     return_option_reasons[(q, site)] = reasons
                 rich_return_domains.append(tuple(domain))
             rich_forecast_terms = tuple(terms)
+            native_future_layers = tuple(
+                (
+                    int(offset),
+                    tuple((int(q1), int(q2)) for q1, q2 in gates),
+                )
+                for _absolute, gates, offset, _weight in visible_forecast
+            )
             native_rich_problem = RichH0Problem(
                 architecture=boundary_architecture,
                 current_points=(),
@@ -3853,6 +3873,7 @@ class ResidentPlacer(VertexMatchingPlacer):
                     self.boundary_storage_site_id[tuple(site)]
                     for site in occupied_storage)),
                 forecast_terms=rich_forecast_terms,
+                future_layers=native_future_layers,
                 boundary_id=f"{self.method_id}:L{layer}",
                 selected_horizon=active_horizon,
             )
@@ -3913,18 +3934,32 @@ class ResidentPlacer(VertexMatchingPlacer):
                     if bit}:
                 raise RuntimeError(
                     "native rich RETURN assignments disagree with winner bits")
-            from zzx.reference_backend import evaluate_decay_forecast
-            reference_forecast = evaluate_decay_forecast(
-                native_rich_problem, rich_config,
-                native_rich_result.winner.chromosome,
-                native_rich_result.gate_option_indices,
-                native_rich_result.return_assignments)
-            native_reference_forecast = reference_forecast
-            if not math.isclose(
-                    reference_forecast[0], native_rich_result.forecast_nll,
-                    rel_tol=0.0, abs_tol=1e-12):
-                raise RuntimeError(
-                    "native decay forecast differs from Python oracle")
+            if native_rich_problem.future_layers:
+                # The formal ABI4 forecast is deliberately native-owned.  Its
+                # independent contract is raw layer isolation plus final trace
+                # verification; reconstructing it in Python would restore the
+                # exact performance bottleneck this interface removes.
+                native_reference_forecast = (
+                    native_rich_result.forecast_nll,
+                    native_rich_result.forecast_by_depth,
+                    native_rich_result.forecast_breakdown,
+                    native_rich_result.forecast_terms_applied,
+                    native_rich_result.forecast_terms_skipped_cutoff,
+                )
+            else:
+                from zzx.reference_backend import evaluate_decay_forecast
+                reference_forecast = evaluate_decay_forecast(
+                    native_rich_problem, rich_config,
+                    native_rich_result.winner.chromosome,
+                    native_rich_result.gate_option_indices,
+                    native_rich_result.return_assignments)
+                native_reference_forecast = reference_forecast
+                if not math.isclose(
+                        reference_forecast[0],
+                        native_rich_result.forecast_nll,
+                        rel_tol=0.0, abs_tol=1e-12):
+                    raise RuntimeError(
+                        "native decay forecast differs from Python oracle")
             expected_search_nll = (
                 native_rich_result.winner.negative_log_fidelity
                 + native_rich_result.forecast_nll)
@@ -3972,6 +4007,8 @@ class ResidentPlacer(VertexMatchingPlacer):
                 "operator_stats": dict(
                     getattr(native_rich_result, "operator_stats", {}) or {}),
                 "forecast_terms": len(rich_forecast_terms),
+                "native_future_layers": len(
+                    native_rich_problem.future_layers),
                 "forecast_terms_applied": int(
                     native_rich_result.forecast_terms_applied),
                 "forecast_terms_skipped_cutoff": int(

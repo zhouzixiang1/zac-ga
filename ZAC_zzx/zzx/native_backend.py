@@ -177,7 +177,7 @@ def register_native_wheel(wheel_path: str | Path) -> dict:
 class NativeResidentBackend:
     """One persistent architecture object and one native call per boundary."""
 
-    name = "cpp-native-v3"
+    name = "cpp-native-v4"
 
     def __init__(self, architecture, *, flat_buffers: bool = True,
                  require_registered_wheel: bool = False,
@@ -196,6 +196,7 @@ class NativeResidentBackend:
                 architecture.n_atoms,
                 [point.to_wire() for point in architecture.site_coordinates],
                 list(architecture.storage_site_ids),
+                [list(pair) for pair in architecture.entangling_site_pairs],
             )
         except Exception as exc:
             raise NativeBackendError("failed to construct native architecture") from exc
@@ -382,9 +383,10 @@ class NativeResidentBackend:
         if problem.selected_horizon != config.max_horizon:
             raise NativeBackendError(
                 "problem selected_horizon differs from decay config")
-        if config.max_horizon == 0 and problem.forecast_terms:
+        if config.max_horizon == 0 and (
+                problem.forecast_terms or problem.future_layers):
             raise NativeBackendError(
-                "strict M3 boundary cannot contain future terms")
+                "strict M3 boundary cannot contain future data")
         marshal_started = perf_counter_ns()
         exact_cache_key = None
         direct_space = 1
@@ -418,6 +420,7 @@ class NativeResidentBackend:
                 problem.decision_policy,
                 problem.occupied_storage_site_ids,
                 problem.forecast_terms,
+                problem.future_layers,
                 problem.selected_horizon,
             )
             cached_exact = self._rich_exact_cache.get(exact_cache_key)

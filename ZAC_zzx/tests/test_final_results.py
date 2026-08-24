@@ -1,4 +1,4 @@
-"""Final three-sheet result contract tests."""
+"""Final two-sheet result contract tests."""
 
 from __future__ import annotations
 
@@ -309,7 +309,6 @@ def _write_minimal_workbook(path: Path) -> None:
  <sheets>
   <sheet name="ZAC18" sheetId="1" r:id="rId1"/>
   <sheet name="QMAP154" sheetId="2" r:id="rId2"/>
-  <sheet name="Runtime" sheetId="3" r:id="rId3"/>
  </sheets>
 </workbook>"""
     with ZipFile(path, "w", ZIP_DEFLATED) as archive:
@@ -317,18 +316,14 @@ def _write_minimal_workbook(path: Path) -> None:
 
 
 class TestFinalResults(unittest.TestCase):
-    def test_exact_three_sheet_rows_and_medians(self):
+    def test_exact_two_sheet_rows_and_medians(self):
         fixture = FinalFixture()
         result = fixture.aggregate()
         self.assertEqual(tuple(result["rows"]), SHEET_NAMES)
         self.assertEqual(
             result["workbook_contract"]["sheet_names"], list(SHEET_NAMES))
         self.assertFalse(result["workbook_contract"]["charts"])
-        runtime_contract = result["workbook_contract"]["sheets"][2]
-        self.assertEqual(runtime_contract["frozen_row_order"], [
-            "zac18/zac_toy", f"zac18/{OVERALL_LABEL}",
-            "qmap154/qmap_toy", f"qmap154/{OVERALL_LABEL}",
-        ])
+        self.assertEqual(len(result["workbook_contract"]["sheets"]), 2)
 
         zac = result["rows"]["ZAC18"][0]
         self.assertEqual(zac["circuit"], "zac_toy")
@@ -345,30 +340,7 @@ class TestFinalResults(unittest.TestCase):
         self.assertAlmostEqual(zac_overall["M3__fidelity"], math.exp(-0.80))
         self.assertEqual(zac_overall["M3__valid_over_N"], "5/5")
 
-        runtime = result["rows"]["Runtime"][0]
-        self.assertEqual((runtime["dataset"], runtime["circuit"]),
-                         ("zac18", "zac_toy"))
-        self.assertEqual(runtime["M2__transition_decision_s_median"], 4.0)
-        self.assertEqual(runtime["M2__transition_decision_s_q1"], 3.0)
-        self.assertEqual(runtime["M2__transition_decision_s_q3"], 5.0)
-        self.assertEqual(runtime["M2__transition_decision_s_iqr"], 2.0)
-        self.assertEqual(runtime["M2__full_compile_s_median"], 14.0)
-        self.assertAlmostEqual(runtime["M3__speedup_vs_M2"], 4.0 / 3.0)
-        self.assertAlmostEqual(runtime["M4__speedup_vs_M2"], 4.0 / 2.5)
-        self.assertTrue(runtime["layer_ledger_comparable"])
-        self.assertEqual(runtime["layer_ledger_reason"], "comparable")
-
-        runtime_overall = result["rows"]["Runtime"][1]
-        self.assertEqual((runtime_overall["dataset"], runtime_overall["circuit"]),
-                         ("zac18", OVERALL_LABEL))
-        self.assertAlmostEqual(runtime_overall["M4__speedup_vs_M2"], 4.0 / 2.5)
-        self.assertEqual(runtime_overall["M4__valid_over_N"], "5/5")
-        self.assertTrue(runtime_overall["layer_ledger_comparable"])
-        self.assertIsNone(runtime_overall["M4__transition_decision_s_q1"])
-        self.assertIsNone(runtime_overall["M4__transition_decision_s_q3"])
-        self.assertIsNone(runtime_overall["M4__transition_decision_s_iqr"])
-
-    def test_failure_is_reported_but_disables_strict_speed_ratio(self):
+    def test_timing_failure_blanks_dataset_stage_time(self):
         fixture = FinalFixture()
         timing = copy.deepcopy(fixture.timing)
         target = next(run for run in timing
@@ -377,15 +349,9 @@ class TestFinalResults(unittest.TestCase):
         target.status = RunStatus.TIMEOUT.value
         target.verifier_ok = None
         result = fixture.aggregate(timing=timing)
-        runtime = result["rows"]["Runtime"][0]
-        self.assertEqual(runtime["M4__valid_over_N"], "4/5")
-        self.assertFalse(runtime["layer_ledger_comparable"])
-        self.assertIn("M4", runtime["layer_ledger_reason"])
-        self.assertIsNone(runtime["M3__speedup_vs_M2"])
-        self.assertIsNone(runtime["M4__speedup_vs_M2"])
-        overall = result["rows"]["Runtime"][1]
-        self.assertIsNone(overall["M4__transition_decision_s_median"])
-        self.assertEqual(overall["M4__valid_over_N"], "4/5")
+        row = result["rows"]["ZAC18"][0]
+        self.assertIsNone(row["M3__transition_decision_s"])
+        self.assertIsNone(row["M4__transition_decision_s"])
 
     def test_qmap_internal_layer_order_drift_blanks_speedup_despite_same_input(self):
         fixture = FinalFixture()
@@ -405,13 +371,9 @@ class TestFinalResults(unittest.TestCase):
             run.observed_transition_layer_ledger_sha256 = _digest(
                 "qmap-observed-different-layer-order")
         result = fixture.aggregate(timing=timing)
-        runtime = result["rows"]["Runtime"][0]
-        self.assertFalse(runtime["layer_ledger_comparable"])
-        self.assertEqual(
-            runtime["layer_ledger_reason"],
-            "observed_transition_layer_ledger_sha256_mismatch")
-        self.assertIsNone(runtime["M3__speedup_vs_M2"])
-        self.assertIsNone(runtime["M4__speedup_vs_M2"])
+        row = result["rows"]["ZAC18"][0]
+        for method in ("M1", "M2", "M3", "M4"):
+            self.assertIsNone(row[f"{method}__transition_decision_s"])
 
     def test_incomplete_quality_seed_set_blanks_metrics_instead_of_hiding_failure(self):
         fixture = FinalFixture()
@@ -457,8 +419,7 @@ class TestFinalResults(unittest.TestCase):
             paths = write_final_results(result, directory)
             self.assertEqual(
                 {path.name for path in paths.values()},
-                {"zac18.csv", "qmap154.csv", "runtime_vs_iccad.csv",
-                 "workbook_contract.json"})
+                {"zac18.csv", "qmap154.csv", "workbook_contract.json"})
             self.assertFalse(any(Path(directory).glob("*.xlsx")))
             with open(paths["ZAC18"], encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
@@ -467,7 +428,7 @@ class TestFinalResults(unittest.TestCase):
             self.assertEqual(rows[1]["circuit"], OVERALL_LABEL)
             with open(paths["workbook_contract"], encoding="utf-8") as handle:
                 contract = json.load(handle)
-            self.assertEqual(contract["exact_sheet_count"], 3)
+            self.assertEqual(contract["exact_sheet_count"], 2)
             self.assertEqual(contract["sheet_names"], list(SHEET_NAMES))
 
     def test_rejects_legacy_schema_path(self):
@@ -765,7 +726,7 @@ class TestFinalResults(unittest.TestCase):
             self, run_mock):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("zac18.csv", "qmap154.csv", "runtime_vs_iccad.csv"):
+            for name in ("zac18.csv", "qmap154.csv"):
                 (root / name).write_text("circuit,M1\ntoy,1\n", encoding="utf-8")
             provenance = {
                 "provenance_schema": 1,
@@ -790,16 +751,15 @@ class TestFinalResults(unittest.TestCase):
             provenance_path = root / "aggregation_provenance.json"
             provenance_path.write_text(json.dumps(provenance), encoding="utf-8")
             contract = {
-                "contract_id": "native-ga-v1-three-sheet-results-v1",
-                "sheet_names": ["ZAC18", "QMAP154", "Runtime"],
-                "exact_sheet_count": 3,
+                "contract_id": "native-ga-v1-two-sheet-results-v1",
+                "sheet_names": ["ZAC18", "QMAP154"],
+                "exact_sheet_count": 2,
                 "charts": False,
                 "aggregation_provenance": provenance,
                 "aggregation_provenance_file": provenance_path.name,
                 "sheets": [
                     {"name": "ZAC18", "source_csv": "zac18.csv"},
                     {"name": "QMAP154", "source_csv": "qmap154.csv"},
-                    {"name": "Runtime", "source_csv": "runtime_vs_iccad.csv"},
                 ],
             }
             contract_path = root / "workbook_contract.json"
@@ -816,7 +776,7 @@ class TestFinalResults(unittest.TestCase):
                 qa.mkdir()
                 _write_minimal_workbook(xlsx)
                 sheets = []
-                for name in ("ZAC18", "QMAP154", "Runtime"):
+                for name in ("ZAC18", "QMAP154"):
                     preview = qa / f"{name}.png"
                     preview.write_bytes(f"preview-{name}".encode())
                     sheets.append({"name": name, "preview": preview.name})

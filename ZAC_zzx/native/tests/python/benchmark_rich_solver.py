@@ -204,7 +204,7 @@ def main():
     native_build = build_info(require_registered_wheel=True)
     payload = {
         "schema": 2,
-        "protocol": "abi3-registered-native-microbenchmark-v1",
+        "protocol": "abi4-registered-native-microbenchmark-v1",
         "native_build": native_build,
         "one_call": one_call_benchmark(args.repeats),
         "fitness_core": core_fitness_benchmark(backend),

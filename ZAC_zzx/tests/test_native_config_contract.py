@@ -82,6 +82,8 @@ class NativeConfigContractTests(unittest.TestCase):
                 encoding="utf-8"))["zac_setting"][0]
         validate_schema2_setting(legacy)
         partial = {**legacy, "backend": "native", "native_fail_closed": True}
+        partial.pop("algorithm_revision")
+        partial.pop("tuning_protocol_id")
         with self.assertRaisesRegex(ValueError, "正式 native.*缺少"):
             validate_schema2_setting(partial)
 

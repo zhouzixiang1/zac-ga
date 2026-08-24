@@ -321,6 +321,34 @@ RichH0Problem parse_problem(const ArchitectureSnapshot& architecture,
         forecast_nll[index],
     });
   }
+  const auto future_depths =
+      copy_buffer<std::int64_t>(buffers, "future_layer_depths");
+  const auto future_offsets =
+      copy_buffer<std::int64_t>(buffers, "future_layer_gate_offsets");
+  const auto future_atoms =
+      copy_buffer<std::int64_t>(buffers, "future_gate_atoms");
+  if (future_atoms.size() % 2 != 0) {
+    throw std::invalid_argument("future gate atom column has odd length");
+  }
+  offsets(future_offsets, future_depths.size(), future_atoms.size() / 2,
+          "future_layer_gate_offsets");
+  for (std::size_t layer = 0; layer < future_depths.size(); ++layer) {
+    if (future_depths[layer] <= 0) {
+      throw std::invalid_argument("future layer depth must be positive");
+    }
+    RichFutureLayer future;
+    future.depth = static_cast<std::size_t>(future_depths[layer]);
+    const auto begin = index_of(future_offsets[layer], future_atoms.size() / 2,
+                                "future layer offsets");
+    const auto end = index_of(future_offsets[layer + 1],
+                              future_atoms.size() / 2,
+                              "future layer offsets");
+    for (auto gate = begin; gate < end; ++gate) {
+      future.gates.emplace_back(future_atoms[gate * 2],
+                                future_atoms[gate * 2 + 1]);
+    }
+    problem.future_layers.push_back(std::move(future));
+  }
   return problem;
 }
 
