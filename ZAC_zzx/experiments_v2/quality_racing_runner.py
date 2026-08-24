@@ -411,16 +411,42 @@ def _strongest_original_scores(
 
 
 def run_baselines(plan: ExperimentPlan, root: Path, *, resume: bool = True,
-                  dry_run: bool = False) -> Mapping[str, Any]:
+                  dry_run: bool = False,
+                  workers: int = 1) -> Mapping[str, Any]:
     _load_workspace(plan, root)
-    registry = _canonical_registry(plan)
-    outputs = []
-    for circuit in DEVELOPMENT_CIRCUITS + VALIDATION_CIRCUITS:
-        for method in ("M1", "M2"):
-            outputs.append(_run_one(
-                plan, root, registry, stage="baselines", method=method,
-                candidate=None, circuit=circuit, seed=0,
-                resume=resume, dry_run=dry_run))
+    workers = _validated_workers(workers)
+    tasks = [
+        {
+            "plan_path": str(plan.path),
+            "root": str(root),
+            "stage": "baselines",
+            "method": method,
+            "candidate": None,
+            "circuit": circuit,
+            "seed": 0,
+            "resume": bool(resume),
+            "dry_run": bool(dry_run),
+        }
+        for circuit in DEVELOPMENT_CIRCUITS + VALIDATION_CIRCUITS
+        for method in ("M1", "M2")
+    ]
+    if workers == 1:
+        registry = _canonical_registry(plan)
+        outputs = [
+            _run_one(
+                plan, root, registry, stage="baselines",
+                method=str(task["method"]), candidate=None,
+                circuit=str(task["circuit"]), seed=0,
+                resume=resume, dry_run=dry_run)
+            for task in tasks
+        ]
+    else:
+        _record_parallel_execution(root, workers)
+        context = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=workers,
+                                 mp_context=context) as pool:
+            outputs = list(pool.map(
+                _run_one_process, tasks, chunksize=1))
     return {"protocol_id": PROTOCOL_ID, "stage": "baselines",
             "planned": 60, "outputs": outputs}
 

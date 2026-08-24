@@ -44,7 +44,8 @@ def main(argv: list[str] | None = None) -> int:
         result = prepare_workspace(plan, root)
     elif args.command == "baselines":
         result = run_baselines(
-            plan, root, resume=resume, dry_run=args.dry_run)
+            plan, root, resume=resume, dry_run=args.dry_run,
+            workers=args.workers)
     elif args.command == "profiles":
         result = run_profiles(
             plan, root, resume=resume, dry_run=args.dry_run,
