@@ -451,6 +451,139 @@ def run_baselines(plan: ExperimentPlan, root: Path, *, resume: bool = True,
             "planned": 60, "outputs": outputs}
 
 
+def _source_attempt_manifest(source_root: Path,
+                             receipt: Mapping[str, Any]) -> Path:
+    """Resolve a moved attempt only through its ``attempts/`` suffix.
+
+    Quality-racing workspaces may be recoverably archived after a protocol
+    revision.  Their sealed receipts retain the former absolute path, so an
+    importer must not trust that path directly.  Re-rooting the immutable
+    suffix both supports archival moves and prevents a receipt from selecting
+    an unrelated manifest outside the explicitly supplied source workspace.
+    """
+    recorded = Path(str(receipt["attempt_manifest"]))
+    try:
+        marker = recorded.parts.index("attempts")
+    except ValueError as error:
+        raise ValueError(
+            "source baseline receipt lacks an attempts/ manifest suffix"
+        ) from error
+    manifest = (source_root / Path(*recorded.parts[marker:])).resolve()
+    attempts_root = (source_root / "attempts").resolve()
+    if not manifest.is_relative_to(attempts_root):
+        raise ValueError("source baseline manifest escapes source attempts")
+    return manifest
+
+
+def import_baselines(plan: ExperimentPlan, root: Path, source_root: Path
+                     ) -> Mapping[str, Any]:
+    """Reuse actual paper-original M1/M2 attempts after immutable revalidation.
+
+    This is deliberately separate from normal resume: only the 60 registered
+    baseline identities are accepted, and every source manifest must match the
+    current canonical input, method config, architecture, and scoring model.
+    M3/M4 attempts are never imported.  The new receipt records the archived
+    source and continues to hash the original immutable manifest.
+    """
+    _load_workspace(plan, root)
+    source_root = source_root.resolve()
+    if source_root == root.resolve():
+        raise ValueError("source and destination quality workspaces are equal")
+    source_split = json.loads((
+        source_root / "protocol" / "split_manifest.json"
+    ).read_text(encoding="utf-8"))
+    if source_split != split_manifest():
+        raise ValueError("source baseline split differs from current protocol")
+
+    registry = _canonical_registry(plan)
+    outputs = []
+    status_counts: dict[str, int] = {}
+    for circuit in DEVELOPMENT_CIRCUITS + VALIDATION_CIRCUITS:
+        dataset, canonical = registry[circuit]
+        canonical_circuit = Path(canonical.canonical_path).stem
+        for method in ("M1", "M2"):
+            identity = {
+                "stage": "baselines", "dataset": dataset.name,
+                "circuit": canonical_circuit, "circuit_key": circuit,
+                "method": method, "candidate_id": "paper-original",
+                "seed": 0,
+            }
+            source_receipt_path = _receipt_path(
+                source_root, "baselines", method, "paper-original",
+                dataset.name, circuit, 0)
+            source_receipt = json.loads(
+                source_receipt_path.read_text(encoding="utf-8"))
+            _validate_sealed(source_receipt)
+            if source_receipt.get("identity") != identity:
+                raise ValueError(
+                    f"source baseline identity drift: {source_receipt_path}")
+            manifest_path = _source_attempt_manifest(
+                source_root, source_receipt)
+            if (not manifest_path.is_file() or
+                    sha256_file(manifest_path) !=
+                    source_receipt.get("attempt_manifest_sha256")):
+                raise ValueError(
+                    f"source baseline manifest drift: {manifest_path}")
+            manifest = load_run_manifest(manifest_path)
+            for key in ("dataset", "circuit", "method", "seed"):
+                if getattr(manifest, key) != identity[key]:
+                    raise ValueError(
+                        f"source baseline manifest {key} drift: "
+                        f"{manifest_path}")
+            current_hashes = {
+                "input_sha256": sha256_file(Path(canonical.canonical_path)),
+                "config_sha256": sha256_file(
+                    plan.methods[method].config_path),
+                "architecture_sha256": sha256_file(plan.architecture_path),
+                "model_sha256": sha256_file(plan.model_path),
+            }
+            for field, expected in current_hashes.items():
+                if getattr(manifest, field) != expected:
+                    raise ValueError(
+                        f"source baseline immutable {field} drift: "
+                        f"{manifest_path}")
+            if manifest.status != source_receipt.get("status"):
+                raise ValueError(
+                    f"source baseline status drift: {source_receipt_path}")
+
+            destination = _receipt_path(
+                root, "baselines", method, "paper-original", dataset.name,
+                circuit, 0)
+            payload = _seal({
+                "experiment_schema": 2,
+                "protocol_id": PROTOCOL_ID,
+                "identity": identity,
+                "config": str(plan.methods[method].config_path),
+                "config_sha256": current_hashes["config_sha256"],
+                "status": manifest.status,
+                "attempt_manifest": str(manifest_path),
+                "attempt_manifest_sha256": sha256_file(manifest_path),
+                "reuse": {
+                    "kind": "immutable-paper-original-attempt",
+                    "source_root": str(source_root),
+                    "source_receipt": str(source_receipt_path),
+                    "source_receipt_sha256": sha256_file(
+                        source_receipt_path),
+                    "verified_hashes": current_hashes,
+                },
+            })
+            _write_same_or_fail(destination, payload)
+            _validate_attempt_receipt(destination, identity)
+            outputs.append(payload)
+            status_counts[manifest.status] = (
+                status_counts.get(manifest.status, 0) + 1)
+    return {
+        "protocol_id": PROTOCOL_ID,
+        "stage": "baselines",
+        "mode": "immutable-reuse",
+        "planned": 60,
+        "imported": len(outputs),
+        "status_counts": status_counts,
+        "source_root": str(source_root),
+        "outputs": outputs,
+    }
+
+
 def _baseline_manifests(plan: ExperimentPlan, root: Path, circuit: str
                         ) -> tuple[RunManifest, RunManifest]:
     """Load both original baselines while requiring one valid comparator.
@@ -938,7 +1071,8 @@ def load_plan_and_root(plan_path: Path, root: Path | None = None
 
 __all__ = [
     "STAGES", "default_root", "load_plan_and_root", "prepare_workspace",
-    "run_baselines", "run_decisions", "run_lookahead", "run_profiles",
+    "import_baselines", "run_baselines", "run_decisions", "run_lookahead",
+    "run_profiles",
     "run_shared_forward_check", "run_validation", "selected_config_payloads",
     "selected_independent", "validate_quality_selection_for_plan",
     "write_selection_artifacts",

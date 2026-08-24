@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from .quality_racing_runner import (
+    import_baselines,
     load_plan_and_root,
     prepare_workspace,
     run_baselines,
@@ -33,6 +34,8 @@ def _parser() -> argparse.ArgumentParser:
             "prepare", "baselines", "profiles", "decisions", "lookahead",
             "validation", "shared-forward-check", "freeze-selection"):
         sub.add_parser(command)
+    reuse = sub.add_parser("import-baselines")
+    reuse.add_argument("--source-root", type=Path, required=True)
     return parser
 
 
@@ -46,6 +49,10 @@ def main(argv: list[str] | None = None) -> int:
         result = run_baselines(
             plan, root, resume=resume, dry_run=args.dry_run,
             workers=args.workers)
+    elif args.command == "import-baselines":
+        if args.dry_run:
+            raise ValueError("import-baselines does not support --dry-run")
+        result = import_baselines(plan, root, args.source_root)
     elif args.command == "profiles":
         result = run_profiles(
             plan, root, resume=resume, dry_run=args.dry_run,

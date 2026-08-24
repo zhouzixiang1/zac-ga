@@ -29,6 +29,7 @@ from experiments_v2.plan import _validate_pair_payloads
 from experiments_v2.plan import load_experiment_plan
 from experiments_v2.quality_racing_runner import (
     _record_parallel_execution,
+    _source_attempt_manifest,
     _strongest_original_scores,
     _valid_original_baselines,
     prepare_workspace, run_baselines, run_profiles,
@@ -65,6 +66,21 @@ def trial(candidate: str, method: str, circuit: str, seed: int, *,
 
 
 class QualityRacingTests(unittest.TestCase):
+    def test_archived_baseline_manifest_is_rerooted_through_attempts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory).resolve()
+            expected = source / "attempts" / "baselines" / "manifest.json"
+            receipt = {
+                "attempt_manifest":
+                    "/former/workspace/attempts/baselines/manifest.json",
+            }
+            self.assertEqual(
+                expected, _source_attempt_manifest(source, receipt))
+            with self.assertRaisesRegex(ValueError, "lacks an attempts"):
+                _source_attempt_manifest(source, {
+                    "attempt_manifest": "/former/workspace/manifest.json",
+                })
+
     def test_parallel_quality_amendment_is_fail_closed_and_excludes_timing(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
