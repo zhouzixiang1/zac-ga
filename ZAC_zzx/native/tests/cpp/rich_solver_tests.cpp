@@ -1,5 +1,7 @@
 #include "zac_native/rich_solver.hpp"
 
+#include "zac_native/core.hpp"
+
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -38,12 +40,117 @@ RichH0Problem one_resident_problem() {
   problem.matched_gate_genes = {0};
   return problem;
 }
+
+FitnessResult score_general_single_leg(
+    const ArchitectureSnapshot& architecture, std::int64_t owner,
+    const Point& source, const Point& target,
+    const std::vector<Point>& positions) {
+  MovementPhase phase;
+  phase.legs = {{std::hypot(source.x - target.x, source.y - target.y),
+                 source, target}};
+  phase.owners = {owner};
+  for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+    phase.ghosts.push_back(
+        {static_cast<std::int64_t>(atom), positions[atom]});
+  }
+  CandidatePlan candidate;
+  candidate.phases = {std::move(phase)};
+  BoundaryConfig config;
+  config.enforce_single_leg_ghost = true;
+  return evaluate_candidate_summary(architecture, candidate, config);
+}
+
+RichSolveResult solve_single_blocker_forecast(
+    const ArchitectureSnapshot& architecture,
+    const std::vector<Point>& current_points) {
+  RichH0Problem problem;
+  problem.n_atoms = current_points.size();
+  problem.current_points = current_points;
+  problem.future_layers = {{1, {{0, 1}}}};
+  auto config = exact_config();
+  config.max_horizon = 1;
+  config.alpha_lookahead = 1.0;
+  config.decay_rho = 1.0;
+  config.decay_epsilon = 0.0;
+  config.forecast_gate_candidate_budget = 1;
+  config.enforce_single_leg_ghost = true;
+  return solve_rich_h0(architecture, problem, config, rng_fixture());
+}
 }  // namespace
 
 int main() {
   std::size_t tests = 0;
   ArchitectureSnapshot small_architecture(
       3, {{0.0, 0.0}, {1.0, 0.0}, {2.0, 2.0}, {2.0, 3.0}}, {3});
+
+  // The public rich solve has exactly one future blocker relocation.  Its
+  // routing category is therefore the allocation-free single-leg scorer,
+  // subsequently replayed by the generic physical phase.  The generic result
+  // is the differential oracle for all physical fields; the public result
+  // exposes their aggregate NLL without adding a production test hook.
+  ArchitectureSnapshot safe_single_leg_architecture(
+      3,
+      {{0.0, 0.0}, {1.0, 0.0}, {0.0, 4.0}, {5.0, 0.0},
+       {8.0, 8.0}},
+      {2, 3, 4}, {{0, 1}});
+  const Point single_leg_source{0.0, 0.0};
+  const Point safe_single_leg_target{0.0, 4.0};
+  const std::vector<Point> safe_positions{
+      {-10.0, -10.0}, {10.0, 10.0}, single_leg_source};
+  const auto safe_general = score_general_single_leg(
+      safe_single_leg_architecture, 2, single_leg_source,
+      safe_single_leg_target, safe_positions);
+  const auto safe_forecast = solve_single_blocker_forecast(
+      safe_single_leg_architecture, safe_positions);
+  const auto safe_expected_time =
+      30.0 + std::sqrt(4.0 / 0.00275);
+  const auto safe_expected_transfer_nll = -2.0 * std::log(0.999);
+  const auto safe_expected_coherence_nll =
+      -2.0 * std::log1p(-safe_expected_time / 1.5e6) -
+      std::log1p(-(safe_expected_time - 30.0) / 1.5e6);
+  assert(safe_general.feasible);
+  assert(safe_general.move_batches == 1);
+  assert(safe_general.move_time_us == safe_expected_time);
+  assert(safe_general.total_distance_um == 4.0);
+  assert(safe_general.transfers == 2);
+  assert(safe_general.transfer_nll == safe_expected_transfer_nll);
+  assert(safe_general.idle_excitation_nll == 0.0);
+  assert(safe_general.coherence_nll == safe_expected_coherence_nll);
+  assert(safe_general.negative_log_fidelity ==
+         safe_general.transfer_nll + safe_general.coherence_nll);
+  assert(safe_forecast.winner.feasible);
+  assert(safe_forecast.forecast_routing_nll ==
+         safe_general.negative_log_fidelity);
+  ++tests;
+
+  // The nearest storage leg is hit at equal x/y trajectory time.  The fast
+  // scorer must reject it, continue to the next safe storage site, and produce
+  // the exact same routing NLL as a generic one-leg physical phase there.
+  const std::vector<Point> blocked_positions{
+      {0.0, 2.0}, {10.0, 10.0}, single_leg_source};
+  const auto blocked_general = score_general_single_leg(
+      safe_single_leg_architecture, 2, single_leg_source,
+      safe_single_leg_target, blocked_positions);
+  const Point alternate_target{5.0, 0.0};
+  const auto alternate_general = score_general_single_leg(
+      safe_single_leg_architecture, 2, single_leg_source,
+      alternate_target, blocked_positions);
+  const auto ghost_avoiding_forecast = solve_single_blocker_forecast(
+      safe_single_leg_architecture, blocked_positions);
+  assert(!blocked_general.feasible);
+  assert(std::isinf(blocked_general.negative_log_fidelity));
+  assert(alternate_general.feasible);
+  assert(alternate_general.move_batches == 1);
+  assert(alternate_general.move_time_us ==
+         30.0 + std::sqrt(5.0 / 0.00275));
+  assert(alternate_general.total_distance_um == 5.0);
+  assert(alternate_general.transfers == 2);
+  assert(alternate_general.negative_log_fidelity >
+         safe_general.negative_log_fidelity);
+  assert(ghost_avoiding_forecast.winner.feasible);
+  assert(ghost_avoiding_forecast.forecast_routing_nll ==
+         alternate_general.negative_log_fidelity);
+  ++tests;
 
   auto problem = one_resident_problem();
   const auto direct = solve_rich_h0(
@@ -326,6 +433,94 @@ int main() {
   assert(pruned.stats.direct_lower_bound_prunes == 2);
   ++tests;
 
+  RichH0Problem ordered_prune_problem;
+  ordered_prune_problem.n_atoms = 2;
+  ordered_prune_problem.current_points = {{0.0, 0.0}, {1.0, 0.0}};
+  ordered_prune_problem.participants = {0, 1};
+  ordered_prune_problem.gate_domains = {{
+      {30, 0, 1, {100.0, 100.0}, {101.0, 100.0}},
+      {31, 0, 1, {0.0, 0.0}, {1.0, 0.0}},
+      {32, 0, 1, {200.0, 200.0}, {201.0, 200.0}},
+  }};
+  ordered_prune_problem.matched_gate_genes = {0};
+  const auto ordered_rng = rng_fixture();
+  const auto ordered_prune = solve_rich_h0(
+      enum_architecture, ordered_prune_problem, pruned_config, ordered_rng);
+  assert(ordered_prune.search_mode == "enumerate");
+  assert(ordered_prune.winner.chromosome ==
+         std::vector<std::int64_t>({1}));
+  assert(ordered_prune.stats.unique_evaluations == 3);
+  assert(ordered_prune.stats.deterministic_unique_evaluations == 3);
+  assert(ordered_prune.stats.direct_lower_bound_prunes == 2);
+  assert(ordered_prune.rng_state.words == ordered_rng.words &&
+         ordered_prune.rng_state.index == ordered_rng.index);
+  ++tests;
+
+  ArchitectureSnapshot exact_current_architecture(
+      3, {{0.0, 0.0}, {1.0, 0.0}, {2.0, 0.0},
+          {3.0, 0.0}, {2.0, 2.0}}, {4});
+  RichH0Problem exact_current_problem;
+  exact_current_problem.n_atoms = 3;
+  exact_current_problem.current_points = {
+      {0.0, 0.0}, {1.0, 0.0}, {2.0, 0.0}};
+  exact_current_problem.participants = {0, 1};
+  exact_current_problem.gate_domains = {{
+      {40, 0, 1, {0.0, 0.0}, {1.0, 0.0}},
+      // Its optimistic bound contains only the q1 move.  Exact current
+      // replay must first RESEAT atom 2 away from q1's target, making this
+      // chromosome strictly worse than the incumbent before any forecast.
+      {41, 0, 1, {0.0, 0.0}, {2.0, 0.0}},
+  }};
+  exact_current_problem.eligible = {2};
+  exact_current_problem.eviction_order_indices = {0};
+  exact_current_problem.forced_return_mask = {false};
+  exact_current_problem.return_domains = {{{4, {2.0, 2.0}, 1.0}}};
+  exact_current_problem.matched_gate_genes = {0};
+  exact_current_problem.decision_policy = RichDecisionPolicy::kAlwaysStay;
+  exact_current_problem.forecast_terms = {{
+      1, RichForecastKind::kGateOption,
+      RichForecastCategory::kRouting, 0, -1, 0, 0.0022}};
+  auto exact_current_config = exact_config();
+  exact_current_config.direct_enumeration_limit = 512;
+  exact_current_config.max_horizon = 1;
+  exact_current_config.alpha_lookahead = 1.0;
+  exact_current_config.decay_rho = 1.0;
+  exact_current_config.decay_epsilon = 0.0;
+  const auto exact_current_prune = solve_rich_h0(
+      exact_current_architecture, exact_current_problem,
+      exact_current_config, rng_fixture());
+  assert(exact_current_prune.search_mode == "enumerate");
+  assert(exact_current_prune.winner.chromosome ==
+         std::vector<std::int64_t>({0, 0}));
+  assert(exact_current_prune.stats.unique_evaluations == 2);
+  assert(exact_current_prune.stats.direct_lower_bound_prunes == 0);
+  // Only the incumbent reaches the forecast: option 1 passes the cheap bound
+  // but is rejected by its exact current-boundary physical score.
+  assert(exact_current_prune.stats.forecast_terms_applied == 1);
+  ++tests;
+
+  RichH0Problem exact_current_tie;
+  exact_current_tie.n_atoms = 2;
+  exact_current_tie.current_points = {{0.0, 0.0}, {1.0, 0.0}};
+  exact_current_tie.participants = {0, 1};
+  exact_current_tie.gate_domains = {{
+      {50, 0, 1, {0.0, 0.0}, {1.0, 0.0}},
+      {51, 0, 1, {0.0, 0.0}, {1.0, 0.0}},
+  }};
+  exact_current_tie.matched_gate_genes = {0};
+  exact_current_tie.forecast_terms = {{
+      1, RichForecastKind::kConstant,
+      RichForecastCategory::kRouting, -1, -1, -1, 0.0}};
+  const auto exact_current_tied = solve_rich_h0(
+      enum_architecture, exact_current_tie,
+      exact_current_config, rng_fixture());
+  assert(exact_current_tied.winner.chromosome ==
+         std::vector<std::int64_t>({0}));
+  // Equality is not pruned: both candidates receive their complete forecast
+  // and the canonical chromosome remains the tie-break winner.
+  assert(exact_current_tied.stats.forecast_terms_applied == 2);
+  ++tests;
+
   constexpr std::size_t kAtoms = 9;
   std::vector<Point> coordinates;
   for (std::size_t atom = 0; atom < kAtoms; ++atom) {
@@ -357,16 +552,34 @@ int main() {
         static_cast<std::int64_t>(9 + index), coordinates[9 + index], 1.0}});
   }
   ga.matched_gate_genes = {0, 0};
+  // All ten options of each gate share identical current geometry.  Their
+  // future costs differ, so the GA lazy top-k path must forecast every exact
+  // current-NLL tie before it can rank the neighbor/generation pool.
+  for (std::size_t gate = 0; gate < ga.gate_domains.size(); ++gate) {
+    for (std::size_t option = 0; option < ga.gate_domains[gate].size();
+         ++option) {
+      ga.forecast_terms.push_back({
+          1, RichForecastKind::kGateOption,
+          RichForecastCategory::kRouting,
+          static_cast<std::int64_t>(gate), -1,
+          static_cast<std::int64_t>(option),
+          static_cast<double>(9 - option) * 1e-4});
+    }
+  }
   auto tuned_config = exact_config();
   tuned_config.operator_profile = RichOperatorProfile::kTuned;
   tuned_config.population_size = 6;
-  tuned_config.iterations = 1;
+  tuned_config.iterations = 3;
   tuned_config.neighbor_sample_size = 16;
   tuned_config.neighbors_per_solution = 2;
   tuned_config.early_stop_patience = 2;
   tuned_config.max_unique_evaluations = 256;
   tuned_config.crossover_rate = 0.5;
   tuned_config.local_polish_sweeps = 2;
+  tuned_config.max_horizon = 1;
+  tuned_config.alpha_lookahead = 1.0;
+  tuned_config.decay_rho = 1.0;
+  tuned_config.decay_epsilon = 0.0;
   std::vector<std::int64_t> cached(7, 1);
   const auto tuned = solve_rich_h0(
       ga_architecture, ga, tuned_config, rng_fixture(), cached);
@@ -408,6 +621,33 @@ int main() {
   assert(tuned.reseat_assignments == uncached.reseat_assignments);
   assert(tuned.rng_state.words == uncached.rng_state.words &&
          tuned.rng_state.index == uncached.rng_state.index);
+  // The cache-off execution retains the old complete-score path.  Matching
+  // search counters and final RNG state across multiple GA pools is a public
+  // differential check that lazy top-k retained every generation's ranking.
+  assert(tuned.stats.evaluations == uncached.stats.evaluations);
+  assert(tuned.stats.unique_evaluations ==
+         uncached.stats.unique_evaluations);
+  assert(tuned.stats.deterministic_unique_evaluations ==
+         uncached.stats.deterministic_unique_evaluations);
+  assert(tuned.stats.stochastic_unique_evaluations ==
+         uncached.stats.stochastic_unique_evaluations);
+  assert(tuned.stats.generations == uncached.stats.generations);
+  assert(tuned.stats.early_stopped == uncached.stats.early_stopped);
+  assert(tuned.stats.early_stop_reason == uncached.stats.early_stop_reason);
+  assert(tuned.stats.gate_mutations == uncached.stats.gate_mutations);
+  assert(tuned.stats.residency_mutations ==
+         uncached.stats.residency_mutations);
+  assert(tuned.stats.high_cost_gate_reselections ==
+         uncached.stats.high_cost_gate_reselections);
+  assert(tuned.stats.conflict_cluster_swaps ==
+         uncached.stats.conflict_cluster_swaps);
+  assert(tuned.stats.marginal_return_flips ==
+         uncached.stats.marginal_return_flips);
+  assert(tuned.stats.crossovers == uncached.stats.crossovers);
+  assert(tuned.stats.local_polish_evaluations ==
+         uncached.stats.local_polish_evaluations);
+  assert(tuned.stats.forecast_terms_applied <
+         uncached.stats.forecast_terms_applied);
   ++tests;
 
   std::cout << "rich_solver_tests: " << tests << " sections ok\n";

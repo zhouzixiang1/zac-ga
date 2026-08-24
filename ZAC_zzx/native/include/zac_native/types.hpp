@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -65,6 +66,12 @@ struct FitnessResult {
   std::string error;
 };
 
+struct RankedEntanglingOption {
+  double movement_cost{};
+  std::size_t pair_index{};
+  bool reversed{};
+};
+
 class ArchitectureSnapshot {
  public:
   ArchitectureSnapshot(std::size_t n_atoms, std::vector<Point> site_coordinates,
@@ -85,14 +92,29 @@ class ArchitectureSnapshot {
   }
   const std::vector<std::int64_t>& storage_site_ids_by_distance(
       const Point& source) const;
+  const std::vector<std::int64_t>& nearest_storage_site_ids(
+      const Point& source, std::size_t limit) const;
+  const std::vector<RankedEntanglingOption>& ranked_entangling_options(
+      const Point& first, const Point& second) const;
+  const std::vector<double>& entangling_endpoint_distances(
+      const Point& source) const;
 
  private:
   std::size_t n_atoms_;
   std::vector<Point> site_coordinates_;
   std::vector<std::int64_t> storage_site_ids_;
+  std::vector<std::int64_t> storage_site_ids_by_x_;
   std::vector<std::array<std::int64_t, 2>> entangling_site_pairs_;
   mutable std::map<std::pair<double, double>, std::vector<std::int64_t>>
       storage_distance_cache_;
+  mutable std::map<std::tuple<double, double, std::size_t>,
+                   std::vector<std::int64_t>>
+      nearest_storage_cache_;
+  mutable std::map<std::tuple<double, double, double, double>,
+                   std::vector<RankedEntanglingOption>>
+      entangling_rank_cache_;
+  mutable std::map<std::pair<double, double>, std::vector<double>>
+      entangling_endpoint_distance_cache_;
 };
 
 }  // namespace zac_native

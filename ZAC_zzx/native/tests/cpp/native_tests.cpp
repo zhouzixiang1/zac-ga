@@ -59,6 +59,23 @@ int main() {
                    score.coherence_nll)) < 1e-15);
   ++tests;
 
+  ArchitectureSnapshot nearest_architecture(
+      2,
+      {{0.0, 0.0}, {4.0, 0.0}, {1.0, 0.0}, {0.0, 2.0}, {3.0, 0.0},
+       {-1.0, 0.0}},
+      {1, 2, 3, 4, 5});
+  const auto& all_nearest =
+      nearest_architecture.storage_site_ids_by_distance({0.0, 0.0});
+  const auto& first_three =
+      nearest_architecture.nearest_storage_site_ids({0.0, 0.0}, 3);
+  assert(first_three == std::vector<std::int64_t>(
+                            all_nearest.begin(), all_nearest.begin() + 3));
+  assert(nearest_architecture.nearest_storage_site_ids({0.0, 0.0}, 3) ==
+         first_three);
+  assert(nearest_architecture.nearest_storage_site_ids({0.0, 0.0}, 99) ==
+         all_nearest);
+  ++tests;
+
   candidate.phases[0].ghosts = {{9, {1.0, 0.0}}};
   BoundaryConfig ghost_config;
   ghost_config.enforce_single_leg_ghost = true;

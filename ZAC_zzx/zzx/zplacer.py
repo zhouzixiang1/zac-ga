@@ -113,6 +113,24 @@ class _BackendMovementPhase:
         return self.physical.movers
 
 
+@dataclass(frozen=True)
+class _IndexedRichGateRow:
+    """One native-rich gate option with its geometry computed exactly once."""
+
+    option: tuple
+    seats: tuple
+    rich_option: RichGateOption
+
+
+@dataclass(frozen=True)
+class _IndexedRichGateDomain:
+    """Reusable views of one gate's complete native-rich placement domain."""
+
+    by_site: dict
+    weight_order: tuple[_IndexedRichGateRow, ...]
+    canonical_order: tuple[_IndexedRichGateRow, ...]
+
+
 def _replay_phase_batches(architecture, legs, owners, positions,
                           *, batching="phase", native_replay=False,
                           retain_boundary_ghosts=True):
@@ -711,6 +729,9 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.boundary_site_id: dict[tuple[int, int, int], int] = {}
         self.boundary_storage_locations: tuple[tuple[int, int, int], ...] = ()
         self.boundary_storage_site_id: dict[tuple[int, int, int], int] = {}
+        self._zone_site_cache: tuple[tuple[int, int, int], ...] | None = None
+        self._rich_gate_option_cache: dict[tuple, RichGateOption] = {}
+        self._rich_gate_option_cache_limit = 131_072
         self.boundary_backend_metrics = {
             "marshal_ns": 0,
             "search_kernel_ns": 0,
@@ -793,6 +814,8 @@ class ResidentPlacer(VertexMatchingPlacer):
         """
         self.architecture = architecture
         self.gate_scheduling = gate_scheduling
+        self._zone_site_cache = None
+        self._rich_gate_option_cache.clear()
         n = len(gate_scheduling)
         # Neutralise the legacy adjacent-layer reuse mechanism.  The resident
         # registry is the sole source of cross-layer reuse for M3/M4.
@@ -1028,15 +1051,18 @@ class ResidentPlacer(VertexMatchingPlacer):
         return placement
 
     # ------------------------------------------------------------------ 菜单助手
-    def _all_zone_sites(self) -> list:
+    def _all_zone_sites(self) -> tuple[tuple[int, int, int], ...]:
         """全区左 SLM 工位全集（菜单的终极兜底搜索域）。"""
+        if self._zone_site_cache is not None:
+            return self._zone_site_cache
         out = []
         for zone in self.architecture.entanglement_zone:
             left = self.architecture.dict_SLM[zone[0]]
             for r in range(left.n_r):
                 for c in range(left.n_c):
                     out.append((zone[0], r, c))
-        return out
+        self._zone_site_cache = tuple(out)
+        return self._zone_site_cache
 
     def _pair_seats(self, q1: int, q2: int, site: tuple) -> tuple:
         """工位 → 座位对朝向。驻留者优先保座：配对恰含其当前座位时它不动、
@@ -1066,6 +1092,134 @@ class ResidentPlacer(VertexMatchingPlacer):
         if p1[0] == p2[0] and p1[1] == p2[1]:     # 同 SLM 同行并排走只记最远腿
             return max(math.sqrt(d1) * r1, math.sqrt(d2) * r2)
         return math.sqrt(d1) * r1 + math.sqrt(d2) * r2
+
+    def _site_weight_from_seats(self, q1: int, q2: int, p1: tuple,
+                                p2: tuple, s1: tuple, s2: tuple) -> float:
+        """Evaluate the unchanged ZAC edge weight for precomputed endpoints."""
+        reg = self.registry
+        d1 = self.architecture.distance(p1[0], p1[1], p1[2], s1[0], s1[1], s1[2])
+        d2 = self.architecture.distance(p2[0], p2[1], p2[2], s2[0], s2[1], s2[2])
+        r1 = self.w_resident if reg.is_resident(q1) else 1.0
+        r2 = self.w_resident if reg.is_resident(q2) else 1.0
+        if p1[0] == p2[0] and p1[1] == p2[1]:     # 同 SLM 同行并排走只记最远腿
+            return max(math.sqrt(d1) * r1, math.sqrt(d2) * r2)
+        return math.sqrt(d1) * r1 + math.sqrt(d2) * r2
+
+    def _cached_rich_gate_option(self, q1: int, q2: int, site: tuple,
+                                 target1: tuple,
+                                 target2: tuple) -> RichGateOption:
+        """Return the immutable indexed DTO used by the native rich solver."""
+        site_id = self.boundary_site_id[tuple(site)]
+        target1_site_id = self.boundary_site_id[tuple(target1)]
+        target2_site_id = self.boundary_site_id[tuple(target2)]
+        option_key = (
+            int(q1), int(q2), site_id, target1_site_id, target2_site_id)
+        rich_option = self._rich_gate_option_cache.get(option_key)
+        if rich_option is not None:
+            return rich_option
+        if len(self._rich_gate_option_cache) >= \
+                self._rich_gate_option_cache_limit:
+            # Object identity is not part of the DTO contract.  A bounded
+            # construction cache prevents high-qubit suites from retaining
+            # every logical-pair/site combination ever observed.
+            self._rich_gate_option_cache.clear()
+        rich_option = RichGateOption(
+            site_id=site_id,
+            q1=int(q1),
+            q2=int(q2),
+            target1=None,
+            target2=None,
+            target1_site_id=target1_site_id,
+            target2_site_id=target2_site_id,
+        )
+        self._rich_gate_option_cache[option_key] = rich_option
+        return rich_option
+
+    def _build_indexed_rich_gate_domain(
+            self, q1: int, q2: int) -> _IndexedRichGateDomain:
+        """Build every native-rich gate row in one geometry traversal.
+
+        ``weight_order`` reproduces the stable ordering of
+        ``_build_opts(set(_all_zone_sites()), ...)``.  ``canonical_order``
+        reproduces the later ``(weight, site)`` complete-domain ordering while
+        re-sorting only equal-weight groups.  Both views share the exact same
+        option, endpoint and DTO objects.
+        """
+        if self.boundary_architecture_snapshot is None:
+            # Checkpoint restore rebuilds dynamic resident/RNG/cache state but
+            # deliberately does not serialize immutable architecture indexes.
+            # The indexed-domain fast path runs before the later backend
+            # fallback, so recreate those ids lazily on the first resumed
+            # boundary.  Ordinary batch execution already prepared the same
+            # snapshot in ``_initialize_run_state`` and pays no extra work.
+            self._prepare_boundary_architecture()
+        reg = self.registry
+        p1, p2 = reg.current_pos(q1), reg.current_pos(q2)
+        rows = []
+        # The legacy complete-domain path receives a set.  Iterating the same
+        # set here preserves its stable-sort tie order byte for byte.
+        for site in set(self._all_zone_sites()):
+            site = tuple(site)
+            target1, target2 = self._pair_seats(q1, q2, site)
+            weight = self._site_weight_from_seats(
+                q1, q2, p1, p2, target1, target2)
+            option = (site, weight, q1, q2)
+            rows.append(_IndexedRichGateRow(
+                option=option,
+                seats=(target1, target2),
+                rich_option=self._cached_rich_gate_option(
+                    q1, q2, site, target1, target2),
+            ))
+        weight_order = tuple(sorted(
+            rows, key=lambda row: row.option[1]))
+        canonical = []
+        start = 0
+        while start < len(weight_order):
+            stop = start + 1
+            weight = weight_order[start].option[1]
+            while (stop < len(weight_order)
+                   and weight_order[stop].option[1] == weight):
+                stop += 1
+            canonical.extend(sorted(
+                weight_order[start:stop],
+                key=lambda row: row.option[0]))
+            start = stop
+        return _IndexedRichGateDomain(
+            by_site={row.option[0]: row for row in rows},
+            weight_order=weight_order,
+            canonical_order=tuple(canonical),
+        )
+
+    def _use_indexed_native_gate_domains(self, use_rich_boundary: bool) -> bool:
+        """Keep reference and legacy construction untouched by the fast path."""
+        return bool(
+            use_rich_boundary
+            and self.resident_backend_requested == "native")
+
+    @staticmethod
+    def _indexed_rich_rows_unblocked(rows, blocked):
+        if not blocked:
+            return list(rows)
+        return [
+            row for row in rows
+            if row.seats[0] not in blocked and row.seats[1] not in blocked
+        ]
+
+    def _indexed_rich_local_opts(self, domain: _IndexedRichGateDomain,
+                                 sites, blocked) -> list:
+        """Reproduce ``_build_opts`` local-set ordering without geometry work."""
+        rows = self._indexed_rich_rows_unblocked(
+            (domain.by_site[tuple(site)] for site in sites), blocked)
+        rows.sort(key=lambda row: row.option[1])
+        return [row.option for row in rows]
+
+    def _indexed_rich_complete_opts(self, domain: _IndexedRichGateDomain,
+                                    blocked, *, canonical=False) -> list:
+        """Return a filtered full-domain view in either legacy exact order."""
+        rows = (domain.canonical_order if canonical
+                else domain.weight_order)
+        return [row.option for row in
+                self._indexed_rich_rows_unblocked(rows, blocked)]
 
     def _build_opts(self, set_sites: set, q1: int, q2: int, blocked,
                     pin_base=None) -> list:
@@ -1119,8 +1273,36 @@ class ResidentPlacer(VertexMatchingPlacer):
                     set_sites.add((near[0], r, c))
         return set_sites
 
-    def _match_gates(self, candidates: list, list_gate: list) -> list:
+    def _match_gates(self, candidates: list, list_gate: list, *,
+                     return_sites=False) -> list:
         """最小权完美匹配选门位；病态层退化为逐门贪心顺延（不崩整个编译）。"""
+
+        def finish(sites):
+            if return_sites:
+                return [tuple(site) for site in sites]
+            return [
+                self._mk_placement(
+                    candidates[column][0][2], candidates[column][0][3], site)
+                for column, site in enumerate(sites)
+            ]
+
+        if len(candidates) == 1:
+            # A one-column bipartite matching is exactly its minimum-cost edge.
+            # ``_build_opts`` emits unique sites and orders them by weight; the
+            # explicit indexed minimum below also preserves scipy's first-row
+            # tie-break and its zero-edge promotion to the smallest positive
+            # float.  Long serial circuits otherwise paid sparse-matrix and
+            # csgraph setup tens of thousands of times for this trivial case.
+            opts = candidates[0]
+            if len({option[0] for option in opts}) == len(opts):
+                _index, chosen = min(
+                    enumerate(opts),
+                    key=lambda row: (
+                        max(float(row[1][1]), np.nextafter(0.0, 1.0)),
+                        row[0],
+                    ),
+                )
+                return finish((chosen[0],))
         site_to_row: dict = {}
         rows_list: list = []
         rows, cols, data = [], [], []
@@ -1162,14 +1344,11 @@ class ResidentPlacer(VertexMatchingPlacer):
             # scipy 的"full"只保证小侧全覆盖：钉扎菜单太窄时 sites < gates，
             # 可能有门未被匹配——验证全覆盖，否则落入贪心兜底
             if len(chosen) == n_cols:
-                return [self._mk_placement(opts[0][2], opts[0][3], chosen[col])
-                        for col, opts in enumerate(candidates)]
+                return finish(tuple(chosen[col] for col in range(n_cols)))
         except ValueError:
             pass
         chosen = greedy()
-        return [self._mk_placement(candidates[col][0][2], candidates[col][0][3],
-                                   chosen[col])
-                for col in range(len(candidates))]
+        return finish(tuple(chosen[col] for col in range(len(candidates))))
 
     def _mk_placement(self, q1: int, q2: int, site: tuple) -> dict:
         """由门 + 选定工位落座位对（驻留者保座 + 列序朝向，与权重/缓存同一规则）。"""
@@ -1239,7 +1418,8 @@ class ResidentPlacer(VertexMatchingPlacer):
         return [(q, *arch.exact_SLM_location_tuple(self.registry.current_pos(q)))
                 for q in range(len(self.mapping[0])) if q not in participants]
 
-    def _filter_menu_ghosts(self, opts, q1, q2, ghosts, keep):
+    def _filter_menu_ghosts(self, opts, q1, q2, ghosts, keep,
+                            indexed_domain=None):
         """防线①：剔除"自己的入区腿就撞鬼"的选项。
 
         keep = 菜单必须保住的最少选项数（GA 食堂顺延的鸽笼不变式）；
@@ -1250,7 +1430,10 @@ class ResidentPlacer(VertexMatchingPlacer):
         reg, arch = self.registry, self.architecture
         scored = []
         for o in opts:
-            s1, s2 = self._pair_seats(q1, q2, o[0])
+            if indexed_domain is None:
+                s1, s2 = self._pair_seats(q1, q2, o[0])
+            else:
+                s1, s2 = indexed_domain.by_site[tuple(o[0])].seats
             legs = []
             for q, s in ((q1, s1), (q2, s2)):
                 p0 = arch.exact_SLM_location_tuple(reg.current_pos(q))
@@ -2068,11 +2251,34 @@ class ResidentPlacer(VertexMatchingPlacer):
 
         # ---- Gate menus and immutable leg cache ---------------------------------
         candidates, gate_cache = [], []
+        indexed_native_rich = self._use_indexed_native_gate_domains(
+            use_rich_boundary)
+        indexed_native_domains = []
+        indexed_native_dto_domains = []
+        indexed_native_gene_by_site = []
         target_pins = {
             q: seat for q, (use_layer, seat) in self.residency_commitments.items()
             if use_layer == next_layer and q in participants
         }
         for q1, q2 in list_gate:
+            indexed_domain = (
+                self._build_indexed_rich_gate_domain(q1, q2)
+                if indexed_native_rich else None)
+
+            def build_opts(site_domain, current_blocked, *, complete=False,
+                           canonical=False):
+                if indexed_domain is None:
+                    values = self._build_opts(
+                        site_domain, q1, q2, current_blocked)
+                    return (sorted(values, key=lambda row: (row[1], row[0]))
+                            if canonical else values)
+                if complete:
+                    return self._indexed_rich_complete_opts(
+                        indexed_domain, current_blocked,
+                        canonical=canonical)
+                return self._indexed_rich_local_opts(
+                    indexed_domain, site_domain, current_blocked)
+
             resident_seats = [reg.zone_seat[q] for q in (q1, q2)
                               if reg.is_resident(q)]
             committed_sites = {
@@ -2104,23 +2310,30 @@ class ResidentPlacer(VertexMatchingPlacer):
             # actual decision bits in ``score_plan`` below.
             blocked = {seat for q, seat in reg.zone_seat.items()
                        if q not in (q1, q2) and q not in movable_before_out}
-            opts = self._build_opts(sites, q1, q2, blocked)
+            opts = build_opts(sites, blocked)
             if not opts and not committed_sites:
-                opts = self._build_opts(set(self._all_zone_sites()),
-                                        q1, q2, blocked)
+                opts = build_opts(
+                    set(self._all_zone_sites()), blocked, complete=True)
             if not committed_sites and len(opts) < len(list_gate):
                 seen = {o[0] for o in opts}
                 for site in sorted(set(self._all_zone_sites()) - seen,
-                                   key=lambda s: self._site_weight(q1, q2, s)):
+                                   key=lambda s: (
+                                       indexed_domain.by_site[tuple(s)].option[1]
+                                       if indexed_domain is not None else
+                                       self._site_weight(q1, q2, s))):
                     pair = (site, (site[0] + 1, site[1], site[2]))
                     if pair[0] in blocked or pair[1] in blocked:
                         continue
-                    opts.append((site, self._site_weight(q1, q2, site), q1, q2))
+                    opts.append(
+                        indexed_domain.by_site[tuple(site)].option
+                        if indexed_domain is not None else
+                        (site, self._site_weight(q1, q2, site), q1, q2))
                     if len(opts) >= len(list_gate):
                         break
                 opts.sort(key=lambda o: (o[1], o[0]))
             opts = self._filter_menu_ghosts(
-                opts, q1, q2, static_ghosts, max(1, len(list_gate)))
+                opts, q1, q2, static_ghosts, max(1, len(list_gate)),
+                indexed_domain=indexed_domain)
             if not opts and committed_sites:
                 # The earlier STAY remains honoured until this target boundary,
                 # but its pin cannot be executed ghost-safely.  Release the
@@ -2136,20 +2349,22 @@ class ResidentPlacer(VertexMatchingPlacer):
                 blocked = {seat for q, seat in reg.zone_seat.items()
                            if q not in (q1, q2)
                            and q not in movable_before_out}
-                opts = self._build_opts(
-                    set(self._all_zone_sites()), q1, q2, blocked)
+                opts = build_opts(
+                    set(self._all_zone_sites()), blocked, complete=True)
                 opts = self._filter_menu_ghosts(
                     opts, q1, q2, static_ghosts,
-                    max(1, len(list_gate)))
+                    max(1, len(list_gate)),
+                    indexed_domain=indexed_domain)
             elif not opts:
                 # A local expansion is only a speed path.  Preserve the hard
                 # feasibility contract by retrying the complete gate domain
                 # before declaring the physical layer impossible.
-                opts = self._build_opts(
-                    set(self._all_zone_sites()), q1, q2, blocked)
+                opts = build_opts(
+                    set(self._all_zone_sites()), blocked, complete=True)
                 opts = self._filter_menu_ghosts(
                     opts, q1, q2, static_ghosts,
-                    max(1, len(list_gate)))
+                    max(1, len(list_gate)),
+                    indexed_domain=indexed_domain)
             if use_rich_boundary:
                 # Candidate-level deterministic gate repair must see the same
                 # complete zone domain as the final Python safety net.  A seat
@@ -2158,34 +2373,56 @@ class ResidentPlacer(VertexMatchingPlacer):
                 # impossible.  Exact ghost replay may therefore override a
                 # stale commitment by selecting another executable gate site.
                 seen = {tuple(option[0]) for option in opts}
-                complete = self._build_opts(
-                    set(self._all_zone_sites()), q1, q2, blocked)
-                for option in sorted(
-                        complete, key=lambda row: (row[1], row[0])):
+                complete = build_opts(
+                    set(self._all_zone_sites()), blocked,
+                    complete=True, canonical=True)
+                for option in complete:
                     if tuple(option[0]) not in seen:
                         opts.append(option)
                         seen.add(tuple(option[0]))
             if not opts:
                 raise RuntimeError(f"layer {next_layer} 门 ({q1},{q2}) 无合法门位")
             candidates.append(opts)
-            cached_sites = {}
-            for site, _, _, _ in opts:
-                s1, s2 = self._pair_seats(q1, q2, site)
-                legs, owners, seated = [], [], []
-                for q, target in ((q1, s1), (q2, s2)):
-                    source_xy = arch.exact_SLM_location_tuple(reg.current_pos(q))
-                    target_xy = arch.exact_SLM_location_tuple(target)
-                    distance = math.dist(source_xy, target_xy)
-                    if distance > 1e-9:
-                        legs.append((distance, *source_xy, *target_xy))
-                        owners.append(q)
-                    else:
-                        seated.append((q, *target_xy))
-                cached_sites[site] = {
-                    "legs": tuple(legs), "owners": tuple(owners),
-                    "seated": tuple(seated),
-                }
-            gate_cache.append(cached_sites)
+            if indexed_domain is not None:
+                indexed_native_domains.append(indexed_domain)
+                indexed_native_dto_domains.append(tuple(
+                    indexed_domain.by_site[tuple(option[0])].rich_option
+                    for option in opts))
+                indexed_native_gene_by_site.append({
+                    tuple(option[0]): index
+                    for index, option in enumerate(opts)
+                })
+            if use_rich_boundary:
+                # The rich solver consumes indexed gate endpoints
+                # directly from ``RichGateOption`` below.  It never calls the
+                # legacy Python ``decode`` closure, so eagerly materialising a
+                # dictionary of Python legs for every option duplicated the
+                # entire complete-zone domain at every boundary.  Long QMAP
+                # circuits execute tens of thousands of boundaries; keeping a
+                # placeholder here preserves column indexing while avoiding
+                # millions of unused tuples, dictionaries and ``math.dist``
+                # calls.  ``decode`` fails closed if this contract ever drifts.
+                gate_cache.append(None)
+            else:
+                cached_sites = {}
+                for site, _, _, _ in opts:
+                    s1, s2 = self._pair_seats(q1, q2, site)
+                    legs, owners, seated = [], [], []
+                    for q, target in ((q1, s1), (q2, s2)):
+                        source_xy = arch.exact_SLM_location_tuple(
+                            reg.current_pos(q))
+                        target_xy = arch.exact_SLM_location_tuple(target)
+                        distance = math.dist(source_xy, target_xy)
+                        if distance > 1e-9:
+                            legs.append((distance, *source_xy, *target_xy))
+                            owners.append(q)
+                        else:
+                            seated.append((q, *target_xy))
+                    cached_sites[site] = {
+                        "legs": tuple(legs), "owners": tuple(owners),
+                        "seated": tuple(seated),
+                    }
+                gate_cache.append(cached_sites)
 
         # Every non-participating resident is a real decision, including dead ones.
         # Immediate target participants are searched separately below as bounded
@@ -2363,6 +2600,9 @@ class ResidentPlacer(VertexMatchingPlacer):
         decode_cache = {}
 
         def decode(chrom):
+            if use_rich_boundary:
+                raise RuntimeError(
+                    "rich-solver-owned boundary entered legacy Python decode")
             gate_key = tuple(chrom[:n_gates])
             if self.fitness_cache and gate_key in decode_cache:
                 step_cache.decode_hits += 1
@@ -3367,7 +3607,12 @@ class ResidentPlacer(VertexMatchingPlacer):
         # inside the same joint chromosome space, not an external baseline
         # fallback.  Subsequent coordinate sweeps restore STAY whenever the
         # complete registered physical objective prefers residency.
-        matched = self._match_gates(candidates, list_gate) if n_gates else []
+        # The rich backend performs this same deterministic matching when its
+        # indexed DTO is assembled below.  Its successful fail-closed path never
+        # consumes the legacy Python seed, so avoid solving the assignment twice
+        # at every boundary.
+        matched = (self._match_gates(candidates, list_gate)
+                   if n_gates and not use_rich_boundary else [])
         matched_genes = []
         for col, placement in enumerate(matched):
             site = tuple(placement["site"])
@@ -3795,31 +4040,37 @@ class ResidentPlacer(VertexMatchingPlacer):
                                     nll=marginal,
                                 ))
 
-            rich_gate_domains = []
-            for domain in native_candidates:
-                rich_domain = []
-                for site, _weight, q1, q2 in domain:
-                    site = tuple(site)
-                    target1, target2 = self._pair_seats(q1, q2, site)
-                    rich_domain.append(RichGateOption(
-                        site_id=self.boundary_site_id[site],
-                        q1=int(q1),
-                        q2=int(q2),
-                        target1=None,
-                        target2=None,
-                        target1_site_id=self.boundary_site_id[tuple(target1)],
-                        target2_site_id=self.boundary_site_id[tuple(target2)],
-                    ))
-                rich_gate_domains.append(tuple(rich_domain))
-            native_matched = self._match_gates(
-                native_candidates, list_gate) if n_gates else []
-            native_matched_genes = []
-            for column, placement in enumerate(native_matched):
-                site = tuple(placement["site"])
-                native_matched_genes.append(next(
-                    (index for index, option in enumerate(
-                        native_candidates[column])
-                     if tuple(option[0]) == site), 0))
+            if indexed_native_rich:
+                if len(indexed_native_domains) != n_gates:
+                    raise RuntimeError(
+                        "indexed native gate domains are not column-aligned")
+                rich_gate_domains = list(indexed_native_dto_domains)
+                native_matched_sites = self._match_gates(
+                    native_candidates, list_gate,
+                    return_sites=True) if n_gates else []
+                native_matched_genes = [
+                    indexed_native_gene_by_site[column][tuple(site)]
+                    for column, site in enumerate(native_matched_sites)
+                ]
+            else:
+                rich_gate_domains = []
+                for domain in native_candidates:
+                    rich_domain = []
+                    for site, _weight, q1, q2 in domain:
+                        site = tuple(site)
+                        target1, target2 = self._pair_seats(q1, q2, site)
+                        rich_domain.append(self._cached_rich_gate_option(
+                            q1, q2, site, target1, target2))
+                    rich_gate_domains.append(tuple(rich_domain))
+                native_matched = self._match_gates(
+                    native_candidates, list_gate) if n_gates else []
+                native_matched_genes = []
+                for column, placement in enumerate(native_matched):
+                    site = tuple(placement["site"])
+                    native_matched_genes.append(next(
+                        (index for index, option in enumerate(
+                            native_candidates[column])
+                         if tuple(option[0]) == site), 0))
 
             rich_return_domains = []
             for index, q in enumerate(eligible):

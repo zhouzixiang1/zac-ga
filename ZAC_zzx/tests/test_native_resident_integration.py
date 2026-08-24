@@ -13,6 +13,7 @@ import random
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -21,6 +22,8 @@ from zac.ds.architecture import Architecture  # noqa: E402
 from zzx.algorithm_v2 import (decay_lookahead_spec,
                               maximum_lookahead_horizon)  # noqa: E402
 from zzx.native_backend import native_available  # noqa: E402
+from zzx.resident import ResidentRegistry  # noqa: E402
+from zzx import zplacer as zplacer_module  # noqa: E402
 from zzx.zplacer import ResidentPlacer  # noqa: E402
 
 
@@ -30,7 +33,7 @@ TIMING_KEYS = {
     "backend_calls", "backend_candidates", "cache",
 }
 NATIVE_WHEEL_SHA256 = (
-    "97b9bb78e2df6203a82e21ce2ebb1e41cbc2f0580c5cd3d5a435275f0099f350")
+    "6bbad02ee91127ea80d11234b98bdeb8ce1bfeddb709534724104d7a9c35eca6")
 
 
 def architecture():
@@ -41,7 +44,8 @@ def architecture():
     return result
 
 
-def run(schedule, *, backend, horizon, seed, ablation_policy="optimize"):
+def run(schedule, *, backend, horizon, seed, ablation_policy="optimize",
+        ablation_fitness_mode="phase"):
     n_qubits = 1 + max(
         q for layer in schedule for gate in layer for q in gate)
     initial = [(0, q, 0) for q in range(n_qubits)]
@@ -66,6 +70,7 @@ def run(schedule, *, backend, horizon, seed, ablation_policy="optimize"):
                              if backend == "native" else ""),
         operator_profile="exact",
         ablation_policy=ablation_policy,
+        ablation_fitness_mode=ablation_fitness_mode,
     )
     placer.run(
         architecture(), [initial], schedule, True,
@@ -91,6 +96,272 @@ def stable_log(row):
         return value
 
     return stable(result)
+
+
+class TestGateCacheFastPath(unittest.TestCase):
+    """The rich solver owns decode; legacy fitness still owns its leg cache."""
+
+    SCHEDULE = [[[0, 1]], [[0, 1]]]
+
+    def test_reference_rich_path_never_enters_legacy_decode(self):
+        # Rich paths deliberately leave the legacy Python gate cache empty.
+        # Any accidental call to decode therefore fails closed in production;
+        # successful compilation is the regression assertion.
+        placer = run(
+            self.SCHEDULE, backend="reference",
+            horizon=decay_lookahead_spec(0), seed=11)
+        self.assertEqual(len(placer.decision_log), len(self.SCHEDULE))
+        self.assertEqual(placer.decision_log[0]["backend_calls"], 1)
+        self.assertEqual(
+            placer.decision_log[0]["rich_search"]["native_future_layers"], 0)
+
+    @unittest.skipUnless(
+        native_available(), "zac_native_core wheel is not installed")
+    def test_native_rich_path_never_enters_legacy_decode(self):
+        placer = run(
+            self.SCHEDULE, backend="native",
+            horizon=decay_lookahead_spec(8), seed=11)
+        self.assertEqual(len(placer.decision_log), len(self.SCHEDULE))
+        self.assertEqual(placer.decision_log[0]["backend_calls"], 1)
+        self.assertEqual(placer.decision_log[0].get("ghost_fix", 0), 0)
+
+    def test_legacy_and_lumped_paths_still_call_python_decode(self):
+        original = zplacer_module.new_conflicts
+        for label, horizon, fitness_mode in (
+                ("legacy", 0, "phase"),
+                ("decay_lumped", decay_lookahead_spec(0), "lumped_greedy")):
+            calls = 0
+
+            def tracked_new_conflicts(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                return original(*args, **kwargs)
+
+            with self.subTest(label=label), mock.patch.object(
+                    zplacer_module, "new_conflicts",
+                    side_effect=tracked_new_conflicts):
+                placer = run(
+                    self.SCHEDULE, backend="reference", horizon=horizon,
+                    seed=11, ablation_fitness_mode=fitness_mode)
+                self.assertEqual(len(placer.decision_log), len(self.SCHEDULE))
+                self.assertGreater(calls, 0)
+
+
+class TestResidentConstructionCaches(unittest.TestCase):
+    """Construction caches may change allocation count, never semantics."""
+
+    INITIAL = [(0, 0, 0), (0, 1, 0)]
+    # Two equivalent nonterminal boundaries exercise cross-boundary reuse.  The
+    # transition-winner LRU is disabled so the reference solver evaluates both
+    # DTOs instead of taking its deliberately native-only approximate fast path.
+    SCHEDULE = [[[0, 1]], [[0, 1]], [[0, 1]]]
+
+    @classmethod
+    def make_placer(cls, *, cache_limit=131_072):
+        placer = ResidentPlacer(
+            cls.INITIAL,
+            seed=11,
+            experiment_schema=2,
+            method_id="ours_nl",
+            objective="physical_log_fidelity",
+            lookahead_horizon=decay_lookahead_spec(0),
+            alpha_lookahead=0.1,
+            engine="ga",
+            fitness_cache=True,
+            population_size=6,
+            iterations=2,
+            neighbors_per_solution=2,
+            neighbor_sample_size=8,
+            backend="reference",
+            operator_profile="exact",
+        )
+        placer.transition_cache_limit = 0
+        placer._rich_gate_option_cache_limit = cache_limit
+        return placer
+
+    def execute(self, *, cache_limit=131_072):
+        placer = self.make_placer(cache_limit=cache_limit)
+        real_option = zplacer_module.RichGateOption
+        with mock.patch.object(
+                zplacer_module, "RichGateOption",
+                wraps=real_option) as constructor:
+            placer.run(
+                architecture(), [self.INITIAL], self.SCHEDULE, True,
+                [set() for _ in self.SCHEDULE])
+        return placer, constructor.call_count
+
+    def test_run_initialization_clears_both_construction_caches(self):
+        placer, _calls = self.execute()
+        old_sites = ((999, 999, 999),)
+        placer._zone_site_cache = old_sites
+        placer._rich_gate_option_cache[("sentinel",)] = object()
+
+        placer._initialize_run_state(
+            architecture(), [self.INITIAL], self.SCHEDULE)
+
+        self.assertNotIn(("sentinel",), placer._rich_gate_option_cache)
+        self.assertEqual(placer._rich_gate_option_cache, {})
+        self.assertIsNot(placer._zone_site_cache, old_sites)
+        sites = placer._all_zone_sites()
+        self.assertIs(sites, placer._zone_site_cache)
+        self.assertIs(sites, placer._all_zone_sites())
+        self.assertIsInstance(sites, tuple)
+        self.assertTrue(all(isinstance(site, tuple) for site in sites))
+        with self.assertRaises(TypeError):
+            sites[0] = (999, 999, 999)
+        with self.assertRaises(TypeError):
+            sites[0][0] = 999
+
+    def test_rich_option_reuse_and_bounded_clear_preserve_result(self):
+        cached, cached_constructions = self.execute()
+        clearing, clearing_constructions = self.execute(cache_limit=1)
+
+        # The repeated boundary constructs each unique DTO once with the normal
+        # cache.  A one-entry bound forces reconstruction on the next boundary,
+        # proving that the normal path really reused the same keyed objects.
+        self.assertEqual(
+            cached_constructions, len(cached._rich_gate_option_cache))
+        self.assertGreater(clearing_constructions, cached_constructions)
+        self.assertLessEqual(len(clearing._rich_gate_option_cache), 1)
+
+        self.assertEqual(cached.mapping, clearing.mapping)
+        self.assertEqual(cached.registry.zone_seat,
+                         clearing.registry.zone_seat)
+        self.assertEqual(cached.registry.storage_site,
+                         clearing.registry.storage_site)
+        self.assertEqual(
+            [stable_log(row) for row in cached.decision_log],
+            [stable_log(row) for row in clearing.decision_log],
+        )
+
+
+class TestIndexedNativeGateDomain(unittest.TestCase):
+    """The native one-pass domain is an exact view of the legacy geometry."""
+
+    INITIAL = [(0, q, 0) for q in range(8)]
+
+    def make_placer(self):
+        arch = architecture()
+        placer = ResidentPlacer(self.INITIAL, backend="native")
+        placer.architecture = arch
+        placer.mapping = [list(self.INITIAL)]
+        placer.registry = ResidentRegistry(
+            arch, self.INITIAL, placer.theta_capacity)
+        placer._prepare_boundary_architecture()
+        return placer
+
+    def test_random_domains_keep_options_ties_ghosts_and_dto_exact(self):
+        rng = random.Random(20260824)
+        placer = self.make_placer()
+        all_sites = placer._all_zone_sites()
+        for case in range(24):
+            placer.registry = ResidentRegistry(
+                placer.architecture, self.INITIAL, placer.theta_capacity)
+            resident_atoms = rng.sample(range(8), rng.randrange(4))
+            resident_seats = rng.sample(
+                [site for left in all_sites
+                 for site in (left, (left[0] + 1, left[1], left[2]))],
+                len(resident_atoms),
+            )
+            for q, seat in zip(resident_atoms, resident_seats):
+                placer.registry.enter_zone(q, seat)
+            q1, q2 = rng.sample(range(8), 2)
+
+            real_pair = placer._pair_seats
+            with mock.patch.object(
+                    placer, "_pair_seats", wraps=real_pair) as pair_calls, \
+                    mock.patch.object(
+                        placer, "_site_weight",
+                        wraps=placer._site_weight) as weight_calls:
+                indexed = placer._build_indexed_rich_gate_domain(q1, q2)
+            with self.subTest(case=case, check="one_pass"):
+                self.assertEqual(pair_calls.call_count, len(all_sites))
+                self.assertEqual(weight_calls.call_count, 0)
+
+            subset = set(rng.sample(
+                list(all_sites), rng.randint(1, len(all_sites))))
+            blocked = set(rng.sample(
+                [site for left in all_sites
+                 for site in (left, (left[0] + 1, left[1], left[2]))],
+                rng.randrange(5),
+            ))
+            expected_local = placer._build_opts(
+                subset, q1, q2, blocked)
+            actual_local = placer._indexed_rich_local_opts(
+                indexed, subset, blocked)
+            expected_full = placer._build_opts(
+                set(all_sites), q1, q2, blocked)
+            actual_full = placer._indexed_rich_complete_opts(
+                indexed, blocked)
+            expected_canonical = sorted(
+                expected_full, key=lambda row: (row[1], row[0]))
+            actual_canonical = placer._indexed_rich_complete_opts(
+                indexed, blocked, canonical=True)
+            with self.subTest(case=case, check="ordering"):
+                self.assertEqual(actual_local, expected_local)
+                self.assertEqual(actual_full, expected_full)
+                self.assertEqual(actual_canonical, expected_canonical)
+
+            ghosts = [
+                (q, *placer.architecture.exact_SLM_location_tuple(
+                    placer.registry.current_pos(q)))
+                for q in range(8) if q not in (q1, q2)
+            ]
+            expected_filtered = placer._filter_menu_ghosts(
+                expected_canonical, q1, q2, ghosts, 2)
+            actual_filtered = placer._filter_menu_ghosts(
+                actual_canonical, q1, q2, ghosts, 2,
+                indexed_domain=indexed)
+            with self.subTest(case=case, check="ghost_filter"):
+                self.assertEqual(actual_filtered, expected_filtered)
+
+            for site, row in indexed.by_site.items():
+                expected_seats = placer._pair_seats(q1, q2, site)
+                with self.subTest(case=case, site=site, check="dto"):
+                    self.assertEqual(row.seats, expected_seats)
+                    self.assertEqual(
+                        row.rich_option.site_id,
+                        placer.boundary_site_id[site])
+                    self.assertEqual(
+                        row.rich_option.target1_site_id,
+                        placer.boundary_site_id[expected_seats[0]])
+                    self.assertEqual(
+                        row.rich_option.target2_site_id,
+                        placer.boundary_site_id[expected_seats[1]])
+
+    @unittest.skipUnless(
+        native_available(), "zac_native_core wheel is not installed")
+    def test_real_toy_native_run_matches_legacy_domain_builder(self):
+        schedule = [
+            [[0, 1], [2, 3]],
+            [[1, 4], [3, 5]],
+            [[0, 4]],
+            [[2, 5]],
+            [[1, 5]],
+        ]
+        for horizon in (
+                decay_lookahead_spec(0), decay_lookahead_spec(8)):
+            with self.subTest(horizon=maximum_lookahead_horizon(horizon)):
+                with mock.patch.object(
+                        ResidentPlacer,
+                        "_use_indexed_native_gate_domains",
+                        return_value=False):
+                    legacy = run(
+                        schedule, backend="native", horizon=horizon,
+                        seed=17)
+                indexed = run(
+                    schedule, backend="native", horizon=horizon,
+                    seed=17)
+                self.assertEqual(indexed.mapping, legacy.mapping)
+                self.assertEqual(indexed.registry.zone_seat,
+                                 legacy.registry.zone_seat)
+                self.assertEqual(indexed.registry.storage_site,
+                                 legacy.registry.storage_site)
+                self.assertEqual(indexed.rng.getstate(), legacy.rng.getstate())
+                self.assertEqual(
+                    [stable_log(row) for row in indexed.decision_log],
+                    [stable_log(row) for row in legacy.decision_log],
+                )
 
 
 @unittest.skipUnless(native_available(), "zac_native_core wheel is not installed")

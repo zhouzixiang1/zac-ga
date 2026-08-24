@@ -481,9 +481,20 @@ class ZAC_zzx(ZAC):
                 values, ghosts=kwargs.get("ghosts"), owners=kwargs.get("owners"),
                 exact_threshold=kwargs.get("exact_threshold", 0),
                 node_budget=self.zzx_node_budget)
-        chi, batches, method = batcher(
-            legs, ghosts=ghosts0, owners=remain_graph,
-            exact_threshold=self.zzx_exact_threshold)
+        if len(legs) == 1:
+            # The conflict graph of one leg has one isolated vertex.  Both
+            # registered batchers therefore return the same singleton batch;
+            # retain their public method label and still run the full ordered
+            # ghost/waypoint audit below.  This removes graph construction and
+            # DSATUR setup from serial circuits without relaxing safety.
+            chi, batches, method = (
+                1, [[0]],
+                "greedy-maximal" if self.routing_strategy == "greedy"
+                else "heuristic")
+        else:
+            chi, batches, method = batcher(
+                legs, ghosts=ghosts0, owners=remain_graph,
+                exact_threshold=self.zzx_exact_threshold)
         final, deferred = audit_pass(batches, pos)
         for round_i in range(3):                    # 2 轮重批 + 末轮强制单飞
             if not deferred:

@@ -8,7 +8,9 @@ import json
 import sys
 import unittest
 from copy import deepcopy
+from math import hypot
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +21,7 @@ from streaming.zac_m1_transition import ZACM1TransitionKernel  # noqa: E402
 from streaming.zac_route_transition import ZACRouteTransitionDriver  # noqa: E402
 from zac.ds.architecture import Architecture  # noqa: E402
 from zzx.zac_zzx import ZAC_zzx  # noqa: E402
+from zzx.zcost import greedy_phase_batches, phase_batches  # noqa: E402
 
 
 def _architecture():
@@ -97,6 +100,71 @@ class TestZACRouteTransition(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.architecture, cls.spec = _architecture()
+
+    def test_single_leg_coloring_fast_path_matches_registered_batchers(self):
+        mapping_from = [(0, 0, 0), (0, 9, 9)]
+        mapping_to = [(0, 1, 0), (0, 9, 9)]
+        remain = [0]
+        for strategy in ("coloring", "greedy"):
+            compiler = _compiler(self.architecture, len(mapping_from))
+            compiler.routing_strategy = strategy
+            vectors = compiler.graph_construction(
+                remain, mapping_from, mapping_to)
+            legs = [
+                (hypot(x0 - x1, y0 - y1), x0, y0, x1, y1)
+                for x0, x1, y0, y1 in vectors
+            ]
+            ghosts = [
+                (q, *self.architecture.exact_SLM_location_tuple(location))
+                for q, location in enumerate(mapping_from)
+            ]
+            if strategy == "greedy":
+                expected = greedy_phase_batches(
+                    legs, ghosts=ghosts, owners=remain)
+            else:
+                expected = phase_batches(
+                    legs, ghosts=ghosts, owners=remain,
+                    exact_threshold=compiler.zzx_exact_threshold,
+                    node_budget=compiler.zzx_node_budget)
+            with self.subTest(strategy=strategy):
+                actual = compiler._coloring_batches(
+                    remain, mapping_from, mapping_to)
+                self.assertEqual(actual, expected)
+
+    def test_single_leg_fast_path_still_runs_waypoint_audit(self):
+        mapping_from = [(0, 0, 0), (0, 9, 9)]
+        mapping_to = [(0, 1, 0), (0, 9, 9)]
+        compiler = _compiler(self.architecture, len(mapping_from))
+        waypoint = (0, 2, 0)
+        forced_hit = [(1, 27.0, 27.0, (0.0, 0.0),
+                       (0.0, 3.0), 0.5)]
+        with patch("zzx.zac_zzx.ghost_hits", return_value=forced_hit), \
+                patch.object(
+                    compiler, "_safe_slm_waypoint",
+                    return_value=waypoint) as safe_waypoint:
+            result = compiler._coloring_batches(
+                [0], mapping_from, mapping_to)
+        self.assertEqual(result, (1, [[0]], "heuristic"))
+        safe_waypoint.assert_called_once()
+        self.assertEqual(
+            compiler._zzx_waypoint_plan[
+                (0, tuple(mapping_from[0]), tuple(mapping_to[0]))],
+            waypoint)
+
+    def test_single_leg_fast_path_fails_when_audit_cannot_repair(self):
+        mapping_from = [(0, 0, 0), (0, 9, 9)]
+        mapping_to = [(0, 1, 0), (0, 9, 9)]
+        compiler = _compiler(self.architecture, len(mapping_from))
+        forced_hit = [(1, 27.0, 27.0, (0.0, 0.0),
+                       (0.0, 3.0), 0.5)]
+        with patch("zzx.zac_zzx.ghost_hits", return_value=forced_hit), \
+                patch.object(
+                    compiler, "_safe_slm_waypoint", return_value=None
+                ) as safe_waypoint:
+            with self.assertRaisesRegex(
+                    ValueError, "ghost-safe routing could not place atoms"):
+                compiler._coloring_batches([0], mapping_from, mapping_to)
+        self.assertGreaterEqual(safe_waypoint.call_count, 1)
 
     def test_streamed_native_chunks_are_dictionary_exact_to_batch(self):
         mappings, schedule, gate_ids, one_qubit, initial_one_qubit = _fixture()

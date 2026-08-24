@@ -189,6 +189,18 @@ struct Evaluated {
   std::size_t pre_score_reseats{};
 };
 
+// Exact current-boundary replay for one chromosome.  ``current_candidates``
+// contains every bounded RETURN assignment in canonical rank order, but none
+// of them has consumed the (non-negative) future rollout yet.  This is an
+// admissible lower-bound representation, never a publishable fitness value.
+struct PreparedCurrent {
+  bool complete{};
+  Evaluated complete_value;
+  std::vector<Evaluated> current_candidates;
+  std::size_t ghost_rejections{};
+  double lower_bound{std::numeric_limits<double>::infinity()};
+};
+
 struct ForecastReplay {
   double nll{};
   std::vector<double> by_depth;
@@ -519,6 +531,7 @@ class RichSolver {
       domain = std::move(limited);
     }
     compile_forecast();
+    compile_future_layers();
     stats_.stochastic_budget = config_.max_unique_evaluations;
   }
 
@@ -578,7 +591,8 @@ class RichSolver {
                 neighbors.push_back(neighbor(parent.fitness.chromosome));
               }
             }
-            auto pool = score_unique(neighbors, true);
+            auto pool = score_top_k_lazy(
+                neighbors, true, config_.neighbors_per_solution);
             const auto take = std::min(config_.neighbors_per_solution, pool.size());
             for (std::size_t index = 0; index < take; ++index) {
               offspring.push_back(pool[index].fitness.chromosome);
@@ -605,7 +619,8 @@ class RichSolver {
           for (const auto& parent : scored) {
             next_raw.push_back(parent.fitness.chromosome);
           }
-          auto next = score_unique(next_raw, false);
+          auto next = score_top_k_lazy(
+              next_raw, false, config_.population_size);
           if (!next.empty()) scored = std::move(next);
           if (scored.size() > config_.population_size) {
             scored.resize(config_.population_size);
@@ -1036,6 +1051,30 @@ class RichSolver {
     }
   }
 
+  void compile_future_layers() {
+    const auto layer_count = problem_.future_layers.size();
+    future_participant_masks_.assign(
+        layer_count, std::vector<unsigned char>(problem_.n_atoms, 0U));
+    future_later_use_masks_.assign(
+        layer_count, std::vector<unsigned char>(problem_.n_atoms, 0U));
+    future_decay_.resize(layer_count);
+    std::vector<unsigned char> suffix(problem_.n_atoms, 0U);
+    for (std::size_t reverse = layer_count; reverse-- > 0;) {
+      future_later_use_masks_[reverse] = suffix;
+      for (const auto& gate : problem_.future_layers[reverse].gates) {
+        future_participant_masks_[reverse][
+            static_cast<std::size_t>(gate.first)] = 1U;
+        future_participant_masks_[reverse][
+            static_cast<std::size_t>(gate.second)] = 1U;
+        suffix[static_cast<std::size_t>(gate.first)] = 1U;
+        suffix[static_cast<std::size_t>(gate.second)] = 1U;
+      }
+      future_decay_[reverse] = std::pow(
+          config_.decay_rho,
+          static_cast<double>(problem_.future_layers[reverse].depth - 1));
+    }
+  }
+
   void apply_forecast(Evaluated& result,
                       const std::vector<std::int64_t>& chromosome) {
     const auto started = Clock::now();
@@ -1142,6 +1181,53 @@ class RichSolver {
         architecture_, candidate, boundary_config);
   }
 
+  FitnessResult score_forecast_single_leg(
+      std::int64_t owner, const Point& source, const Point& target,
+      const std::vector<Point>& positions) const {
+    FitnessResult result;
+    const auto distance = point_distance(source, target);
+    for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+      if (static_cast<std::int64_t>(atom) == owner) continue;
+      const auto x = cover(source.x, target.x, positions[atom].x);
+      const auto y = cover(source.y, target.y, positions[atom].y);
+      if (coverage_matches(x, y)) {
+        result.feasible = false;
+        result.negative_log_fidelity =
+            std::numeric_limits<double>::infinity();
+        result.transfer_nll = result.negative_log_fidelity;
+        result.idle_excitation_nll = result.negative_log_fidelity;
+        result.coherence_nll = result.negative_log_fidelity;
+        result.error = "phase 0 has no ghost-safe straight-leg batch order";
+        return result;
+      }
+    }
+    const auto phase_time =
+        2.0 * kTransferUs + std::sqrt(distance / kAccelUmPerUs2);
+    const auto mover_idle = std::max(0.0, phase_time - 2.0 * kTransferUs);
+    if (phase_time >= kT2Us || mover_idle >= kT2Us) {
+      result.feasible = false;
+      result.negative_log_fidelity =
+          std::numeric_limits<double>::infinity();
+      result.transfer_nll = result.negative_log_fidelity;
+      result.idle_excitation_nll = result.negative_log_fidelity;
+      result.coherence_nll = result.negative_log_fidelity;
+      result.error = "linear coherence model out of domain";
+      return result;
+    }
+    result.move_batches = 1;
+    result.move_time_us = phase_time;
+    result.total_distance_um = distance;
+    result.transfers = 2;
+    result.transfer_nll = -2.0 * std::log(kFTransfer);
+    result.coherence_nll =
+        -static_cast<double>(architecture_.n_atoms() - 1) *
+            std::log1p(-phase_time / kT2Us) -
+        std::log1p(-mover_idle / kT2Us);
+    result.negative_log_fidelity =
+        result.transfer_nll + result.coherence_nll;
+    return result;
+  }
+
   bool is_zone_point(const Point& point) const {
     return zone_points_.count({point.x, point.y}) != 0U;
   }
@@ -1159,46 +1245,55 @@ class RichSolver {
   forecast_move_to_storage(std::int64_t atom,
                            std::vector<Point>& positions) const {
     const auto& source = positions[static_cast<std::size_t>(atom)];
-    const auto& choices =
-        architecture_.storage_site_ids_by_distance(source);
-    std::optional<std::pair<std::int64_t, FitnessResult>> best;
-    std::size_t tested = 0;
-    for (const auto site_id : choices) {
-      const auto& target = architecture_.site_coordinates()[
-          static_cast<std::size_t>(site_id)];
-      if (point_occupied(positions, target, atom)) continue;
-      const auto distance = point_distance(source, target);
-      if (distance <= 1e-9) continue;
-      std::vector<Leg> legs;
-      if (distance > 1e-9) legs.push_back({distance, source, target});
-      const auto score = score_forecast_phase(
-          legs, legs.empty() ? std::vector<std::int64_t>{}
-                             : std::vector<std::int64_t>{atom},
-          positions);
-      if (!score.feasible) continue;
-      ++tested;
-      if (!best.has_value() ||
-          std::tie(score.negative_log_fidelity, score.move_batches,
-                   score.move_time_us, score.total_distance_um, site_id) <
-              std::tie(best->second.negative_log_fidelity,
-                       best->second.move_batches, best->second.move_time_us,
-                       best->second.total_distance_um, best->first)) {
-        best = std::make_pair(site_id, score);
+    const auto storage_count = architecture_.storage_site_ids().size();
+    std::size_t query_limit = std::min<std::size_t>(
+        storage_count,
+        std::max<std::size_t>(
+            16, positions.size() + 4 * config_.forecast_gate_candidate_budget));
+    while (query_limit != 0) {
+      const auto& choices =
+          architecture_.nearest_storage_site_ids(source, query_limit);
+      std::optional<std::pair<std::int64_t, FitnessResult>> best;
+      std::size_t tested = 0;
+      for (const auto site_id : choices) {
+        const auto& target = architecture_.site_coordinates()[
+            static_cast<std::size_t>(site_id)];
+        if (point_occupied(positions, target, atom)) continue;
+        const auto distance = point_distance(source, target);
+        if (distance <= 1e-9) continue;
+        const auto score = score_forecast_single_leg(
+            atom, source, target, positions);
+        if (!score.feasible) continue;
+        ++tested;
+        if (!best.has_value() ||
+            std::tie(score.negative_log_fidelity, score.move_batches,
+                     score.move_time_us, score.total_distance_um, site_id) <
+                std::tie(best->second.negative_log_fidelity,
+                         best->second.move_batches, best->second.move_time_us,
+                         best->second.total_distance_um, best->first)) {
+          best = std::make_pair(site_id, score);
+        }
+        // The registered 1/2/4 rollout budget controls the number of
+        // physically replayed safe parking alternatives.  Querying an exact
+        // nearest prefix preserves the full-sort choice while avoiding a
+        // 10,000-site vector for every transient forecast position.
+        if (best.has_value() &&
+            tested >= config_.forecast_gate_candidate_budget) {
+          break;
+        }
       }
-      // The registered 1/2/4 rollout budget now controls the number of
-      // physically replayed safe parking alternatives as well as the future
-      // gate support.  This keeps M4 bounded without a proxy ghost penalty.
-      if (best.has_value() &&
-          tested >= config_.forecast_gate_candidate_budget) {
-        break;
+      if (tested >= config_.forecast_gate_candidate_budget ||
+          query_limit == storage_count) {
+        if (best.has_value()) {
+          positions[static_cast<std::size_t>(atom)] =
+              architecture_.site_coordinates()[
+                  static_cast<std::size_t>(best->first)];
+        }
+        return best;
       }
+      query_limit = std::min(storage_count, query_limit * 2);
     }
-    if (best.has_value()) {
-      positions[static_cast<std::size_t>(atom)] =
-          architecture_.site_coordinates()[
-              static_cast<std::size_t>(best->first)];
-    }
-    return best;
+    return std::nullopt;
   }
 
   static double finite_nll(const FitnessResult& score) {
@@ -1208,7 +1303,7 @@ class RichSolver {
 
   FitnessResult score_forecast_relocation_batch(
       const std::vector<Point>& before, const std::vector<Point>& after,
-      const std::set<std::int64_t>& atoms) const {
+      const std::vector<std::int64_t>& atoms) const {
     std::vector<Leg> legs;
     std::vector<std::int64_t> owners;
     for (const auto atom : atoms) {
@@ -1284,20 +1379,18 @@ class RichSolver {
     };
 
     const auto& site_pairs = architecture_.entangling_site_pairs();
+    std::vector<std::uint32_t> used_pair_epoch(site_pairs.size(), 0U);
+    std::uint32_t pair_epoch = 0U;
     for (std::size_t layer_index = 0;
          layer_index < problem_.future_layers.size(); ++layer_index) {
       const auto& layer = problem_.future_layers[layer_index];
-      const auto decay = std::pow(
-          config_.decay_rho, static_cast<double>(layer.depth - 1));
+      const auto decay = future_decay_[layer_index];
       if (decay < config_.decay_epsilon) {
         ++stats_.forecast_terms_skipped_cutoff;
         continue;
       }
-      std::set<std::int64_t> participants;
-      for (const auto& gate : layer.gates) {
-        participants.insert(gate.first);
-        participants.insert(gate.second);
-      }
+      const auto& participant_mask =
+          future_participant_masks_[layer_index];
 
       struct FuturePlacement {
         std::int64_t q1{};
@@ -1310,57 +1403,93 @@ class RichSolver {
       // every pair/orientation made the rollout quadratic in the number of
       // atoms.  Preserve the exact duplicate-occupancy semantics by indexing
       // every point to all atoms currently held there.
+      const auto linear_occupants = positions.size() <= 64;
       std::map<std::pair<double, double>, std::vector<std::int64_t>>
           occupants_by_point;
-      for (std::size_t atom = 0; atom < positions.size(); ++atom) {
-        occupants_by_point[{positions[atom].x, positions[atom].y}].push_back(
-            static_cast<std::int64_t>(atom));
+      if (!linear_occupants) {
+        for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+          occupants_by_point[{positions[atom].x, positions[atom].y}].push_back(
+              static_cast<std::int64_t>(atom));
+        }
       }
+      const auto for_each_occupant = [&](const Point& target,
+                                         const auto& callback) {
+        if (linear_occupants) {
+          for (std::size_t atom = 0; atom < positions.size(); ++atom) {
+            if (same_point(positions[atom], target)) {
+              callback(static_cast<std::int64_t>(atom));
+            }
+          }
+          return;
+        }
+        const auto occupied = occupants_by_point.find({target.x, target.y});
+        if (occupied == occupants_by_point.end()) return;
+        for (const auto atom : occupied->second) callback(atom);
+      };
       const auto blocker_distance = [&](const Point& target) {
         double total = 0.0;
-        const auto occupied = occupants_by_point.find({target.x, target.y});
-        if (occupied == occupants_by_point.end()) return total;
-        for (const auto atom_id : occupied->second) {
-          if (participants.count(atom_id) != 0U) continue;
+        bool unavailable = false;
+        for_each_occupant(target, [&](const auto atom_id) {
+          if (participant_mask[static_cast<std::size_t>(atom_id)] != 0U) {
+            return;
+          }
           const auto atom = static_cast<std::size_t>(atom_id);
           const auto& ordered =
-              architecture_.storage_site_ids_by_distance(positions[atom]);
+              architecture_.nearest_storage_site_ids(positions[atom], 1);
           if (ordered.empty()) {
-            return std::numeric_limits<double>::infinity();
+            unavailable = true;
+            return;
           }
           total += point_distance(
               positions[atom],
               architecture_.site_coordinates()[
                   static_cast<std::size_t>(ordered.front())]);
-        }
-        return total;
+        });
+        return unavailable ? std::numeric_limits<double>::infinity() : total;
       };
       std::vector<FuturePlacement> placements;
-      std::set<std::size_t> used_pairs;
+      placements.reserve(layer.gates.size());
+      ++pair_epoch;
       for (const auto& gate : layer.gates) {
         std::optional<std::tuple<double, std::size_t, bool>> selected;
+        const auto& first_source =
+            positions[static_cast<std::size_t>(gate.first)];
+        const auto& second_source =
+            positions[static_cast<std::size_t>(gate.second)];
+        const auto& first_distances =
+            architecture_.entangling_endpoint_distances(first_source);
+        const auto& second_distances =
+            architecture_.entangling_endpoint_distances(second_source);
+        // The old implementation sorted every pair/orientation by raw
+        // movement cost before adding blocker cost.  Forecast positions are
+        // highly transient, so most rankings missed the bounded cache and
+        // paid O(P log P) allocation/sort work.  Scan all options once in
+        // canonical (pair, reversed) order instead.  Blocker cost is
+        // non-negative, so an option whose raw cost already exceeds the best
+        // total cost cannot win.  The final (total, pair, reversed) key is
+        // unchanged, preserving the exact winner and tie-break semantics.
         for (std::size_t pair_index = 0; pair_index < site_pairs.size();
              ++pair_index) {
-          if (used_pairs.count(pair_index) != 0U) continue;
+          if (used_pair_epoch[pair_index] == pair_epoch) continue;
           const auto& pair = site_pairs[pair_index];
           const auto& left = architecture_.site_coordinates()[
               static_cast<std::size_t>(pair[0])];
           const auto& right = architecture_.site_coordinates()[
               static_cast<std::size_t>(pair[1])];
-          for (const auto reversed : {false, true}) {
+          for (const bool reversed : {false, true}) {
             const auto& first = reversed ? right : left;
             const auto& second = reversed ? left : right;
-            auto cost = point_distance(
-                            positions[static_cast<std::size_t>(gate.first)],
-                            first) +
-                        point_distance(
-                            positions[static_cast<std::size_t>(gate.second)],
-                            second);
-            // This is only a deterministic placement ordering key.  The
-            // selected blocker is physically moved and scored below.  The
-            // architecture cache returns the same nearest-storage distance as
-            // the former full scan, including deterministic distance ties.
-            cost += blocker_distance(first);
+            const auto offset = 2 * pair_index;
+            const auto raw_cost =
+                (reversed ? first_distances[offset + 1]
+                          : first_distances[offset]) +
+                (reversed ? second_distances[offset]
+                          : second_distances[offset + 1]);
+            if (selected.has_value() &&
+                raw_cost > std::get<0>(*selected)) {
+              continue;
+            }
+            auto cost = raw_cost + blocker_distance(first);
             if (!same_point(first, second)) {
               cost += blocker_distance(second);
             }
@@ -1376,7 +1505,7 @@ class RichSolver {
         }
         const auto pair_index = std::get<1>(*selected);
         const auto reversed = std::get<2>(*selected);
-        used_pairs.insert(pair_index);
+        used_pair_epoch[pair_index] = pair_epoch;
         const auto& pair = site_pairs[pair_index];
         const auto& left = architecture_.site_coordinates()[
             static_cast<std::size_t>(pair[0])];
@@ -1387,14 +1516,13 @@ class RichSolver {
                               reversed ? left : right});
       }
 
-      std::set<std::int64_t> blockers;
+      std::vector<unsigned char> blocker_mask(positions.size(), 0U);
       for (const auto& placement : placements) {
         for (const auto& target : {placement.target1, placement.target2}) {
-          const auto occupied = occupants_by_point.find({target.x, target.y});
-          if (occupied == occupants_by_point.end()) continue;
-          for (const auto atom_id : occupied->second) {
-            if (participants.count(atom_id) == 0U) blockers.insert(atom_id);
-          }
+          for_each_occupant(target, [&](const auto atom_id) {
+            const auto atom = static_cast<std::size_t>(atom_id);
+            if (participant_mask[atom] == 0U) blocker_mask[atom] = 1U;
+          });
         }
       }
       // A stationary atom intersected by any individual AOD leg is a real
@@ -1406,16 +1534,23 @@ class RichSolver {
           const auto& source = positions[static_cast<std::size_t>(atom)];
           const auto distance = point_distance(source, target);
           if (distance <= 1e-9) continue;
-          const auto hits = ghost_hit_atoms(
-              {{distance, source, target}}, forecast_ghosts(positions));
-          for (const auto hit : hits) {
-            if (participants.count(hit) == 0U) blockers.insert(hit);
+          for (std::size_t index = 0; index < positions.size(); ++index) {
+            if (participant_mask[index] != 0U) continue;
+            const auto x = cover(source.x, target.x, positions[index].x);
+            const auto y = cover(source.y, target.y, positions[index].y);
+            if (coverage_matches(x, y)) blocker_mask[index] = 1U;
           }
         }
       }
 
       const auto before_blockers = positions;
       double routing_nll = 0.0;
+      std::vector<std::int64_t> blockers;
+      for (std::size_t atom = 0; atom < blocker_mask.size(); ++atom) {
+        if (blocker_mask[atom] != 0U) {
+          blockers.push_back(static_cast<std::int64_t>(atom));
+        }
+      }
       for (const auto blocker : blockers) {
         const auto moved = forecast_move_to_storage(blocker, positions);
         if (!moved.has_value()) {
@@ -1454,7 +1589,7 @@ class RichSolver {
 
       std::int64_t idle_exposures = 0;
       for (std::size_t atom = 0; atom < positions.size(); ++atom) {
-        if (participants.count(static_cast<std::int64_t>(atom)) == 0U &&
+        if (participant_mask[atom] == 0U &&
             is_zone_point(positions[atom])) {
           ++idle_exposures;
         }
@@ -1463,24 +1598,17 @@ class RichSolver {
           {}, {}, positions, idle_exposures);
       const auto residency_nll = finite_nll(idle_score);
 
-      std::set<std::int64_t> later_use;
-      for (std::size_t later = layer_index + 1;
-           later < problem_.future_layers.size(); ++later) {
-        for (const auto& gate : problem_.future_layers[later].gates) {
-          later_use.insert(gate.first);
-          later_use.insert(gate.second);
-        }
-      }
+      const auto& later_use = future_later_use_masks_[layer_index];
       double terminal_nll = 0.0;
-      std::set<std::int64_t> terminal_atoms;
+      std::vector<std::int64_t> terminal_atoms;
       const auto before_terminal = positions;
       for (std::size_t atom = 0; atom < positions.size(); ++atom) {
         const auto atom_id = static_cast<std::int64_t>(atom);
         if (!is_zone_point(positions[atom]) ||
-            later_use.count(atom_id) != 0U) {
+            later_use[atom] != 0U) {
           continue;
         }
-        terminal_atoms.insert(atom_id);
+        terminal_atoms.push_back(atom_id);
         const auto moved = forecast_move_to_storage(atom_id, positions);
         if (!moved.has_value()) {
           terminal_nll = std::numeric_limits<double>::infinity();
@@ -1806,12 +1934,27 @@ class RichSolver {
   }
 
   Evaluated evaluate_normalized(
-      const std::vector<std::int64_t>& chromosome, bool stochastic) {
+      const std::vector<std::int64_t>& chromosome, bool stochastic,
+      std::optional<double> direct_incumbent_nll = std::nullopt,
+      bool* exact_current_pruned = nullptr) {
+    if (exact_current_pruned != nullptr) *exact_current_pruned = false;
     ++stats_.evaluations;
     const auto cached = fitness_cache_.find(chromosome);
     if (config_.fitness_cache && cached != fitness_cache_.end()) {
       ++stats_.fitness_hits;
       return cached->second;
+    }
+    const auto compact = partial_current_bounds_.find(chromosome);
+    if (config_.fitness_cache && compact != partial_current_bounds_.end()) {
+      // score_unique/local-polish requests a complete value for a chromosome
+      // previously deferred by lazy top-k.  Rebuild the already-accounted
+      // current replay, then finish its forecast without publishing or
+      // ranking the partial value itself.
+      const auto saved_stats = stats_;
+      auto prepared = prepare_current_normalized(chromosome, stochastic);
+      stats_ = saved_stats;
+      ++stats_.fitness_hits;
+      return complete_prepared_current(chromosome, std::move(prepared));
     }
     const bool new_key = evaluated_keys_.insert(chromosome).second;
     if (new_key) {
@@ -1854,13 +1997,58 @@ class RichSolver {
       return result;
     }
     stats_.return_assignment_evaluated += candidates.size();
-    bool have_best = false;
+    const auto use_exact_current_prune =
+        direct_incumbent_nll.has_value() &&
+        std::isfinite(*direct_incumbent_nll);
+    std::vector<Evaluated> current_candidates;
     std::size_t ghost_rejections = 0;
+    if (use_exact_current_prune) {
+      current_candidates.reserve(candidates.size());
+      bool all_strictly_worse = true;
+      for (std::size_t rank = 0; rank < candidates.size(); ++rank) {
+        auto candidate = evaluate_assignment(
+            chromosome, result.decoded, returners, candidates[rank], rank,
+            candidates.size(), false);
+        ghost_rejections += candidate.current_ghost_rejections;
+        if (candidate.fitness.feasible &&
+            !(candidate.fitness.negative_log_fidelity >
+              *direct_incumbent_nll + 1e-12)) {
+          all_strictly_worse = false;
+        }
+        current_candidates.push_back(std::move(candidate));
+      }
+      if (all_strictly_worse) {
+        // These are exact current-boundary scores, but intentionally not full
+        // current+forecast values.  Non-negative forecast contributions make
+        // the strict global comparison sufficient to reject the chromosome.
+        // Never publish this partial value through fitness_cache_.
+        bool have_current_best = false;
+        for (auto& candidate : current_candidates) {
+          candidate.search_nll =
+              candidate.fitness.negative_log_fidelity;
+          if (!have_current_best || evaluated_less(candidate, result)) {
+            result = std::move(candidate);
+            have_current_best = true;
+          }
+        }
+        result.current_ghost_rejections = ghost_rejections;
+        if (exact_current_pruned != nullptr) *exact_current_pruned = true;
+        fitness_ns_ += elapsed_ns(started);
+        return result;
+      }
+    }
+
+    bool have_best = false;
     for (std::size_t rank = 0; rank < candidates.size(); ++rank) {
-      auto candidate = evaluate_assignment(
-          chromosome, result.decoded, returners, candidates[rank], rank,
-          candidates.size(), false);
-      ghost_rejections += candidate.current_ghost_rejections;
+      auto candidate = use_exact_current_prune
+                           ? std::move(current_candidates[rank])
+                           : evaluate_assignment(
+                                 chromosome, result.decoded, returners,
+                                 candidates[rank], rank, candidates.size(),
+                                 false);
+      if (!use_exact_current_prune) {
+        ghost_rejections += candidate.current_ghost_rejections;
+      }
       if (!candidate.fitness.feasible) {
         if (!have_best || evaluated_less(candidate, result)) {
           result = std::move(candidate);
@@ -1886,6 +2074,148 @@ class RichSolver {
     }
     result.current_ghost_rejections = ghost_rejections;
     if (config_.fitness_cache) fitness_cache_[chromosome] = result;
+    fitness_ns_ += elapsed_ns(started);
+    return result;
+  }
+
+  PreparedCurrent prepare_current_normalized(
+      const std::vector<std::int64_t>& chromosome, bool stochastic) {
+    ++stats_.evaluations;
+    const auto cached = fitness_cache_.find(chromosome);
+    if (config_.fitness_cache && cached != fitness_cache_.end()) {
+      ++stats_.fitness_hits;
+      PreparedCurrent prepared;
+      prepared.complete = true;
+      prepared.complete_value = cached->second;
+      prepared.lower_bound = cached->second.search_nll;
+      return prepared;
+    }
+    const bool new_key = evaluated_keys_.insert(chromosome).second;
+    if (new_key) {
+      ++stats_.unique_evaluations;
+      if (stochastic) {
+        ++stats_.stochastic_unique_evaluations;
+      } else {
+        ++stats_.deterministic_unique_evaluations;
+      }
+    }
+
+    const auto started = Clock::now();
+    PreparedCurrent prepared;
+    Evaluated initial;
+    initial.search_nll = std::numeric_limits<double>::infinity();
+    initial.decoded = decode(chromosome);
+    if (!initial.decoded.feasible) {
+      initial.fitness = infeasible_fitness(chromosome, initial.decoded.error);
+      prepared.complete = true;
+      prepared.complete_value = std::move(initial);
+      if (config_.fitness_cache) {
+        fitness_cache_[chromosome] = prepared.complete_value;
+      }
+      fitness_ns_ += elapsed_ns(started);
+      return prepared;
+    }
+
+    const auto gate_count = problem_.gate_domains.size();
+    std::vector<std::size_t> returners;
+    for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
+      if (chromosome[gate_count + index] != 0) returners.push_back(index);
+    }
+    std::vector<std::vector<ReturnAssignment>> assignments;
+    try {
+      assignments = match_returns(returners);
+    } catch (const std::exception& error) {
+      initial.fitness = infeasible_fitness(chromosome, error.what());
+      prepared.complete = true;
+      prepared.complete_value = std::move(initial);
+      if (config_.fitness_cache) {
+        fitness_cache_[chromosome] = prepared.complete_value;
+      }
+      fitness_ns_ += elapsed_ns(started);
+      return prepared;
+    }
+    if (assignments.empty()) {
+      initial.fitness = infeasible_fitness(
+          chromosome, "RETURN matching has no bounded injective assignment");
+      prepared.complete = true;
+      prepared.complete_value = std::move(initial);
+      if (config_.fitness_cache) {
+        fitness_cache_[chromosome] = prepared.complete_value;
+      }
+      fitness_ns_ += elapsed_ns(started);
+      return prepared;
+    }
+
+    stats_.return_assignment_evaluated += assignments.size();
+    prepared.current_candidates.reserve(assignments.size());
+    bool have_feasible = false;
+    for (std::size_t rank = 0; rank < assignments.size(); ++rank) {
+      auto candidate = evaluate_assignment(
+          chromosome, initial.decoded, returners, assignments[rank], rank,
+          assignments.size(), false);
+      prepared.ghost_rejections += candidate.current_ghost_rejections;
+      if (candidate.fitness.feasible) {
+        have_feasible = true;
+        prepared.lower_bound = std::min(
+            prepared.lower_bound,
+            candidate.fitness.negative_log_fidelity);
+      }
+      prepared.current_candidates.push_back(std::move(candidate));
+    }
+
+    if (!have_feasible) {
+      bool have_best = false;
+      for (auto& candidate : prepared.current_candidates) {
+        if (!have_best || evaluated_less(candidate, initial)) {
+          initial = std::move(candidate);
+          have_best = true;
+        }
+      }
+      initial.current_ghost_rejections = prepared.ghost_rejections;
+      prepared.complete = true;
+      prepared.complete_value = std::move(initial);
+      prepared.current_candidates.clear();
+      if (config_.fitness_cache) {
+        fitness_cache_[chromosome] = prepared.complete_value;
+      }
+    }
+    fitness_ns_ += elapsed_ns(started);
+    return prepared;
+  }
+
+  Evaluated complete_prepared_current(
+      const std::vector<std::int64_t>& chromosome,
+      PreparedCurrent prepared) {
+    if (prepared.complete) return std::move(prepared.complete_value);
+    const auto started = Clock::now();
+    Evaluated result;
+    result.search_nll = std::numeric_limits<double>::infinity();
+    bool have_best = false;
+    for (auto& candidate : prepared.current_candidates) {
+      if (!candidate.fitness.feasible) {
+        if (!have_best || evaluated_less(candidate, result)) {
+          result = std::move(candidate);
+          have_best = true;
+        }
+        continue;
+      }
+      // The current physical NLL is a lower bound on the complete search NLL.
+      // Preserve exact ties so the downstream physical/canonical tie-breaks
+      // observe the same set of assignments as the full evaluator.
+      if (have_best && std::isfinite(result.search_nll) &&
+          candidate.fitness.negative_log_fidelity >
+              result.search_nll + 1e-12) {
+        continue;
+      }
+      apply_forecast(candidate, chromosome);
+      if (!have_best || evaluated_less(candidate, result)) {
+        result = std::move(candidate);
+        have_best = true;
+      }
+    }
+    result.current_ghost_rejections = prepared.ghost_rejections;
+    if (config_.fitness_cache) fitness_cache_[chromosome] = result;
+    partial_current_bounds_.erase(chromosome);
     fitness_ns_ += elapsed_ns(started);
     return result;
   }
@@ -1954,51 +2284,87 @@ class RichSolver {
 
   std::optional<Evaluated> score_direct_exact(
       const std::vector<std::vector<std::int64_t>>& raw_values) {
-    std::optional<Evaluated> best;
+    struct DirectCandidate {
+      std::vector<std::int64_t> chromosome;
+      // Absent means the full evaluator owns an infeasible/malformed
+      // diagnostic.  Such a candidate is never removed by the physical
+      // lower-bound shortcut.
+      std::optional<double> physical_lower_bound;
+    };
+
+    std::vector<DirectCandidate> candidates;
+    candidates.reserve(raw_values.size());
     std::unordered_set<std::vector<std::int64_t>, VectorHash<std::int64_t>> seen;
     for (const auto& raw : raw_values) {
-      const auto chromosome = normalize(raw);
+      auto chromosome = normalize(raw);
       if (!seen.insert(chromosome).second) continue;
 
-      if (best.has_value() && std::isfinite(best->search_nll)) {
-        const auto decoded = decode(chromosome);
-        bool can_improve = !decoded.feasible;
-        if (decoded.feasible) {
-          const auto gate_count = problem_.gate_domains.size();
-          std::vector<std::size_t> returners;
-          for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
-            if (chromosome[gate_count + index] != 0) {
-              returners.push_back(index);
-            }
-          }
-          try {
-            const auto assignments = match_returns(returners);
-            can_improve = assignments.empty();
-            for (const auto& assignment : assignments) {
-              if (physical_lower_bound(decoded, assignment, returners.size()) <=
-                  best->search_nll + 1e-12) {
-                can_improve = true;
-                break;
-              }
-            }
-          } catch (const std::exception&) {
-            // Preserve the established fail-closed diagnostic path: the full
-            // evaluator owns malformed/infeasible RETURN reporting.
-            can_improve = true;
+      std::optional<double> lower_bound;
+      const auto decoded = decode(chromosome);
+      if (decoded.feasible) {
+        const auto gate_count = problem_.gate_domains.size();
+        std::vector<std::size_t> returners;
+        for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
+          if (chromosome[gate_count + index] != 0) {
+            returners.push_back(index);
           }
         }
-        if (!can_improve) {
-          ++stats_.evaluations;
-          if (evaluated_keys_.insert(chromosome).second) {
-            ++stats_.unique_evaluations;
-            ++stats_.deterministic_unique_evaluations;
+        try {
+          const auto assignments = match_returns(returners);
+          if (!assignments.empty()) {
+            auto best_bound = std::numeric_limits<double>::infinity();
+            for (const auto& assignment : assignments) {
+              best_bound = std::min(
+                  best_bound,
+                  physical_lower_bound(decoded, assignment, returners.size()));
+            }
+            lower_bound = best_bound;
           }
-          ++stats_.direct_lower_bound_prunes;
-          continue;
+        } catch (const std::exception&) {
+          // Preserve the established fail-closed diagnostic path: the full
+          // evaluator owns malformed/infeasible RETURN reporting.
         }
       }
+      candidates.push_back({std::move(chromosome), lower_bound});
+    }
 
-      auto value = evaluate_normalized(chromosome, false);
+    // Forecast contributions are non-negative.  Evaluating the smallest
+    // admissible current-physics bound first establishes the strongest exact
+    // incumbent without changing the objective, chromosome tie-break, or RNG
+    // state.  Canonical chromosome order makes equal-bound ordering stable.
+    std::sort(candidates.begin(), candidates.end(), [](const auto& first,
+                                                       const auto& second) {
+      const auto first_bound = first.physical_lower_bound.value_or(
+          std::numeric_limits<double>::infinity());
+      const auto second_bound = second.physical_lower_bound.value_or(
+          std::numeric_limits<double>::infinity());
+      return std::tie(first_bound, first.chromosome) <
+             std::tie(second_bound, second.chromosome);
+    });
+
+    std::optional<Evaluated> best;
+    for (const auto& candidate : candidates) {
+      const auto& chromosome = candidate.chromosome;
+      if (best.has_value() && std::isfinite(best->search_nll) &&
+          candidate.physical_lower_bound.has_value() &&
+          *candidate.physical_lower_bound > best->search_nll + 1e-12) {
+        ++stats_.evaluations;
+        if (evaluated_keys_.insert(chromosome).second) {
+          ++stats_.unique_evaluations;
+          ++stats_.deterministic_unique_evaluations;
+        }
+        ++stats_.direct_lower_bound_prunes;
+        continue;
+      }
+
+      bool exact_current_pruned = false;
+      auto value = evaluate_normalized(
+          chromosome, false,
+          best.has_value() && std::isfinite(best->search_nll)
+              ? std::optional<double>{best->search_nll}
+              : std::nullopt,
+          &exact_current_pruned);
+      if (exact_current_pruned) continue;
       if (!best.has_value() || evaluated_less(value, *best)) {
         best = std::move(value);
       }
@@ -2031,6 +2397,140 @@ class RichSolver {
       return evaluated_less(first, second);
     });
     return result;
+  }
+
+  std::vector<Evaluated> score_top_k_lazy(
+      const std::vector<std::vector<std::int64_t>>& raw_values,
+      bool stochastic, std::size_t top_k) {
+    // H=0 has no rollout to defer.  The cache-off path intentionally remains
+    // the complete-score oracle used by differential tests and diagnostics.
+    if (top_k == 0 || config_.max_horizon == 0 ||
+        config_.alpha_lookahead <= 0.0 ||
+        (problem_.forecast_terms.empty() && problem_.future_layers.empty()) ||
+        !config_.fitness_cache) {
+      auto result = score_unique(raw_values, stochastic);
+      if (result.size() > top_k) result.resize(top_k);
+      return result;
+    }
+
+    std::vector<std::vector<std::int64_t>> unique;
+    std::unordered_set<std::vector<std::int64_t>, VectorHash<std::int64_t>> seen;
+    for (const auto& raw : raw_values) {
+      auto chromosome = normalize(raw);
+      if (seen.insert(chromosome).second) unique.push_back(std::move(chromosome));
+    }
+    if (unique.size() <= top_k) return score_unique(unique, stochastic);
+
+    struct LazyCandidate {
+      std::vector<std::int64_t> chromosome;
+      double lower_bound{std::numeric_limits<double>::infinity()};
+      std::optional<PreparedCurrent> prepared;
+      std::optional<Evaluated> complete;
+    };
+
+    std::vector<LazyCandidate> candidates;
+    candidates.reserve(unique.size());
+    for (const auto& chromosome : unique) {
+      if (!budget_can_score_normalized(chromosome)) continue;
+      const auto full = fitness_cache_.find(chromosome);
+      if (full != fitness_cache_.end()) {
+        ++stats_.evaluations;
+        ++stats_.fitness_hits;
+        candidates.push_back(
+            {chromosome, full->second.search_nll, std::nullopt,
+             full->second});
+        continue;
+      }
+      const auto compact = partial_current_bounds_.find(chromosome);
+      if (compact != partial_current_bounds_.end()) {
+        // A previous lazy pool evaluated this chromosome at the exact current
+        // boundary but did not need its future rollout.  Count the logical
+        // score-cache hit exactly once, matching a full-cache revisit, and
+        // rebuild the current details only if this pool promotes it.
+        ++stats_.evaluations;
+        ++stats_.fitness_hits;
+        candidates.push_back(
+            {chromosome, compact->second, std::nullopt, std::nullopt});
+        continue;
+      }
+      auto prepared = prepare_current_normalized(chromosome, stochastic);
+      if (prepared.complete) {
+        const auto bound = prepared.complete_value.search_nll;
+        candidates.push_back(
+            {chromosome, bound, std::nullopt,
+             std::move(prepared.complete_value)});
+      } else {
+        const auto bound = prepared.lower_bound;
+        candidates.push_back(
+            {chromosome, bound, std::move(prepared), std::nullopt});
+      }
+    }
+    if (candidates.empty()) return {};
+
+    std::vector<std::size_t> order(candidates.size());
+    for (std::size_t index = 0; index < order.size(); ++index) order[index] = index;
+    std::stable_sort(order.begin(), order.end(), [&](const auto first,
+                                                      const auto second) {
+      return candidates[first].lower_bound < candidates[second].lower_bound;
+    });
+
+    std::vector<Evaluated> exact;
+    exact.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+      if (candidate.complete.has_value()) exact.push_back(*candidate.complete);
+    }
+    const auto sort_exact = [&]() {
+      std::sort(exact.begin(), exact.end(), [](const auto& first,
+                                               const auto& second) {
+        return evaluated_less(first, second);
+      });
+    };
+    sort_exact();
+
+    for (const auto index : order) {
+      auto& candidate = candidates[index];
+      if (candidate.complete.has_value()) continue;
+      if (exact.size() >= top_k) {
+        sort_exact();
+        const auto& threshold = exact[top_k - 1];
+        if (candidate.lower_bound > threshold.search_nll + 1e-12) {
+          break;
+        }
+      }
+
+      if (!candidate.prepared.has_value()) {
+        // Rebuild a compact-cache hit without double-accounting its earlier
+        // current-boundary evaluation.  The work is real and remains in the
+        // timing counters; only public semantic counters are restored.
+        const auto saved_stats = stats_;
+        auto prepared = prepare_current_normalized(
+            candidate.chromosome, stochastic);
+        stats_ = saved_stats;
+        if (prepared.complete) {
+          candidate.complete = std::move(prepared.complete_value);
+        } else {
+          candidate.prepared = std::move(prepared);
+        }
+      }
+      if (!candidate.complete.has_value()) {
+        candidate.complete = complete_prepared_current(
+            candidate.chromosome, std::move(*candidate.prepared));
+        candidate.prepared.reset();
+      }
+      exact.push_back(*candidate.complete);
+    }
+
+    // Store only the exact current NLL for deferred candidates.  A partial is
+    // deliberately never inserted into fitness_cache_ and can never enter the
+    // returned top-k population or winner path.
+    for (const auto& candidate : candidates) {
+      if (!candidate.complete.has_value()) {
+        partial_current_bounds_[candidate.chromosome] = candidate.lower_bound;
+      }
+    }
+    sort_exact();
+    if (exact.size() > top_k) exact.resize(top_k);
+    return exact;
   }
 
   std::size_t direct_search_space() const {
@@ -2421,6 +2921,8 @@ class RichSolver {
                      VectorHash<std::size_t>> return_cache_;
   std::unordered_map<std::vector<std::int64_t>, Evaluated,
                      VectorHash<std::int64_t>> fitness_cache_;
+  std::unordered_map<std::vector<std::int64_t>, double,
+                     VectorHash<std::int64_t>> partial_current_bounds_;
   std::unordered_map<std::vector<std::uint64_t>, ForecastReplay,
                      VectorHash<std::uint64_t>> forecast_state_cache_;
   std::unordered_set<std::vector<std::int64_t>, VectorHash<std::int64_t>>
@@ -2431,6 +2933,9 @@ class RichSolver {
   ForecastBits constant_forecast_bits_;
   std::vector<ForecastBits> stay_forecast_bits_;
   std::vector<ForecastBits> return_forecast_bits_;
+  std::vector<std::vector<unsigned char>> future_participant_masks_;
+  std::vector<std::vector<unsigned char>> future_later_use_masks_;
+  std::vector<double> future_decay_;
   std::vector<std::vector<ForecastBits>> gate_option_forecast_bits_;
   std::map<std::pair<std::size_t, std::int64_t>, ForecastBits>
       return_site_forecast_bits_;

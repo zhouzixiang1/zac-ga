@@ -31,6 +31,7 @@ from zzx.algorithm_v2 import (  # noqa: E402
 )
 from zzx.resident import NextUse, ResidentRegistry, match_return_sites  # noqa: E402
 from zzx.zac_zzx import ZAC_zzx  # noqa: E402
+from zzx import zplacer as zplacer_module  # noqa: E402
 from zzx.zplacer import ResidentPlacer, _replay_phase_batches  # noqa: E402
 
 
@@ -501,6 +502,31 @@ class TestResidentDecisionMechanics(unittest.TestCase):
     def setUpClass(cls):
         cls.arch = make_arch()
 
+    def legacy_single_gate_match(self, placer, opts):
+        """Run the pre-fast-path sparse matching contract for one gate."""
+        site_to_row = {}
+        rows_list = []
+        rows, cols, data = [], [], []
+        for site, weight, _q1, _q2 in opts:
+            if site not in site_to_row:
+                site_to_row[site] = len(rows_list)
+                rows_list.append(site)
+            rows.append(site_to_row[site])
+            cols.append(0)
+            data.append(max(
+                float(weight), zplacer_module.np.nextafter(0.0, 1.0)))
+        matrix = zplacer_module.coo_matrix(
+            (zplacer_module.np.array(data),
+             (zplacer_module.np.array(rows),
+              zplacer_module.np.array(cols))),
+            shape=(len(rows_list), 1),
+        )
+        row_ind, col_ind = \
+            zplacer_module.min_weight_full_bipartite_matching(matrix)
+        chosen = {column: rows_list[row]
+                  for row, column in zip(row_ind, col_ind)}
+        return [placer._mk_placement(opts[0][2], opts[0][3], chosen[0])]
+
     def test_dead_resident_is_still_a_decision_candidate(self):
         # q1 has no use after the current layer; eligibility is based on residency,
         # not NextUse.has_future_use().
@@ -723,6 +749,51 @@ class TestResidentDecisionMechanics(unittest.TestCase):
         matched = placer._match_gates(candidates, [(0, 1), (2, 3)])
         self.assertEqual([placement["site"] for placement in matched],
                          [left, right])
+
+    def test_single_gate_fast_match_equals_legacy_sparse_contract(self):
+        initial = [(0, i, 0) for i in range(2)]
+        placer = ResidentPlacer(initial)
+        placer.architecture = self.arch
+        placer.registry = ResidentRegistry(self.arch, initial)
+        sites = ((1, 0, 0), (1, 0, 1), (1, 1, 0))
+        cases = {
+            "ordinary_middle_minimum": (3.0, 1.0, 2.0),
+            "ordinary_first_minimum": (1.0, 4.0, 3.0),
+            "ordinary_last_minimum": (5.0, 4.0, 0.5),
+            "exact_zero": (4.0, 0.0, 2.0),
+            "positive_tie": (1.0, 1.0, 3.0),
+            "zero_tie": (0.0, 0.0, 1.0),
+        }
+        for label, weights in cases.items():
+            opts = [
+                (site, weight, 0, 1)
+                for site, weight in zip(sites, weights)
+            ]
+            with self.subTest(label=label):
+                expected = self.legacy_single_gate_match(placer, opts)
+                actual = placer._match_gates([opts], [(0, 1)])
+                self.assertEqual(actual, expected)
+
+    def test_single_gate_duplicate_site_falls_back_to_sparse_matcher(self):
+        initial = [(0, i, 0) for i in range(2)]
+        placer = ResidentPlacer(initial)
+        placer.architecture = self.arch
+        placer.registry = ResidentRegistry(self.arch, initial)
+        left = (1, 0, 0)
+        right = (1, 0, 1)
+        opts = [
+            (left, 1.0, 0, 1),
+            (left, 2.0, 0, 1),
+            (right, 5.0, 0, 1),
+        ]
+        expected = self.legacy_single_gate_match(placer, opts)
+        original = zplacer_module.min_weight_full_bipartite_matching
+        with patch.object(
+                zplacer_module, "min_weight_full_bipartite_matching",
+                wraps=original) as sparse_match:
+            actual = placer._match_gates([opts], [(0, 1)])
+        sparse_match.assert_called_once()
+        self.assertEqual(actual, expected)
 
     def test_cache_toggle_preserves_schedule_and_dead_resident_is_searched(self):
         initial = [(0, i, 0) for i in range(6)]
