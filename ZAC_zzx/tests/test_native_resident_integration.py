@@ -41,7 +41,7 @@ def architecture():
     return result
 
 
-def run(schedule, *, backend, horizon, seed):
+def run(schedule, *, backend, horizon, seed, ablation_policy="optimize"):
     n_qubits = 1 + max(
         q for layer in schedule for gate in layer for q in gate)
     initial = [(0, q, 0) for q in range(n_qubits)]
@@ -65,6 +65,7 @@ def run(schedule, *, backend, horizon, seed):
         native_wheel_sha256=(NATIVE_WHEEL_SHA256
                              if backend == "native" else ""),
         operator_profile="exact",
+        ablation_policy=ablation_policy,
     )
     placer.run(
         architecture(), [initial], schedule, True,
@@ -176,6 +177,17 @@ class TestNativeResidentIntegration(unittest.TestCase):
                 schedule, horizon=decay_lookahead_spec(0), seed=seed)
             self.assertNativeRunContract(
                 schedule, horizon=decay_lookahead_spec(8), seed=seed)
+
+    def test_native_always_return_cycles_a_resident_target_participant(self):
+        placer = run(
+            [[[0, 1]], [[0, 2]], [[3, 4]]],
+            backend="native", horizon=decay_lookahead_spec(8), seed=0,
+            ablation_policy="always_return")
+        first = placer.decision_log[0]
+        self.assertEqual(first["ablation_policy"], "always_return")
+        self.assertEqual(first["stay"], 0)
+        self.assertGreaterEqual(first["return"], 2)
+        self.assertEqual(first.get("ghost_fix", 0), 0)
 
 
 if __name__ == "__main__":

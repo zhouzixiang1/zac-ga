@@ -747,8 +747,11 @@ class RichH0Problem:
             raise ValueError("participants must be unique")
         if len(set(eligible)) != len(eligible):
             raise ValueError("eligible atoms must be unique")
-        if set(participants) & set(eligible):
-            raise ValueError("eligible atoms cannot be target participants")
+        # A resident target participant may deliberately RETURN in the back
+        # phase and re-enter for its gate in the out phase (the always-RETURN
+        # ablation exercises this exact cycle).  The two sets therefore need
+        # not be disjoint; native geometry orders the assignment before the
+        # target move and scores both transfers.
         if any(q < 0 or q >= self.architecture.n_atoms
                for q in participants + eligible):
             raise ValueError("atom id is outside the architecture")
