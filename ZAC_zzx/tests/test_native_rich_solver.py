@@ -583,6 +583,59 @@ class TestNativeRichSolver(unittest.TestCase):
         )
         self.assertGreater(result.forecast_terms_applied, 0)
 
+    def test_native_future_rollout_reuses_identical_post_boundary_state(self):
+        arch = ArchitectureSnapshot.from_coordinates(
+            4,
+            (
+                (0, 0), (1, 0), (4, 0), (5, 0),
+                (0, 10), (1, 10), (4, 10), (5, 10),
+            ),
+            (4, 5, 6, 7),
+        )
+        arch = replace(
+            arch, entangling_site_pairs=((0, 1), (2, 3)))
+        # Atom 2 is already at RETURN site 6.  STAY and RETURN therefore
+        # produce the exact same physical post-boundary state, even though
+        # they are distinct chromosomes and current actions.
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(),
+            current_site_ids=(0, 1, 6, 7),
+            participants=(0, 1),
+            gate_domains=((RichGateOption(
+                0, 0, 1, None, None,
+                target1_site_id=0, target2_site_id=1),),),
+            static_ghosts=(),
+            eligible=(2,),
+            min_returns=0,
+            eviction_order_indices=(0,),
+            forced_return_mask=(False,),
+            return_domains=((RichReturnOption(6, None, 0.0),),),
+            matched_gate_genes=(0,),
+            future_layers=((1, ((2, 3),)),),
+            boundary_id="native-future-state-cache",
+            selected_horizon=1,
+        )
+        config = RichSearchConfig(
+            operator_profile="exact", max_horizon=1,
+            alpha_lookahead=.2, decay_rho=.7,
+            direct_enumeration_limit=512,
+            max_unique_evaluations=512,
+        )
+        state = random.Random(29).getstate()
+        cached = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, state)
+        uncached = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, replace(config, fitness_cache=False), state)
+        self.assertEqual(cached.winner, uncached.winner)
+        self.assertEqual(cached.gate_option_indices,
+                         uncached.gate_option_indices)
+        self.assertEqual(cached.return_assignments,
+                         uncached.return_assignments)
+        self.assertEqual(cached.forecast_nll, uncached.forecast_nll)
+        self.assertGreater(
+            cached.operator_stats["forecast_state_cache_hits"], 0)
+
     def test_strict_h0_rejects_future_and_horizon_mismatch(self):
         term = RichForecastTerm(1, "constant", "terminal", 1.0)
         future = toy_problem(terms=(term,), horizon=1)

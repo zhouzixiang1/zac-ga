@@ -149,6 +149,7 @@ struct RichSearchStats {
   std::size_t pre_score_reseats{};
   std::size_t forecast_terms_applied{};
   std::size_t forecast_terms_skipped_cutoff{};
+  std::size_t forecast_state_cache_hits{};
 };
 
 struct RichSolveResult {

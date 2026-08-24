@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <map>
@@ -187,6 +188,32 @@ struct Evaluated {
   std::size_t current_ghost_rejections{};
   std::size_t pre_score_reseats{};
 };
+
+struct ForecastReplay {
+  double nll{};
+  std::vector<double> by_depth;
+  std::array<double, 4> by_category{};
+  std::size_t terms_applied{};
+  std::size_t terms_skipped_cutoff{};
+};
+
+std::uint64_t double_bits(double value) noexcept {
+  std::uint64_t bits{};
+  static_assert(sizeof(bits) == sizeof(value));
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+std::vector<std::uint64_t> forecast_state_key(
+    const std::vector<Point>& positions) {
+  std::vector<std::uint64_t> key;
+  key.reserve(positions.size() * 2);
+  for (const auto& point : positions) {
+    key.push_back(double_bits(point.x));
+    key.push_back(double_bits(point.y));
+  }
+  return key;
+}
 
 struct PlanGeometry {
   std::vector<Point> positions_t1;
@@ -1225,6 +1252,37 @@ class RichSolver {
       positions[static_cast<std::size_t>(option.q2)] = option.target2;
     }
 
+    const auto state_key = forecast_state_key(positions);
+    if (config_.fitness_cache) {
+      const auto cached = forecast_state_cache_.find(state_key);
+      if (cached != forecast_state_cache_.end()) {
+        result.forecast_nll = cached->second.nll;
+        result.forecast_by_depth = cached->second.by_depth;
+        result.forecast_by_category = cached->second.by_category;
+        result.search_nll = result.fitness.negative_log_fidelity +
+                            result.forecast_nll;
+        stats_.forecast_terms_applied += cached->second.terms_applied;
+        stats_.forecast_terms_skipped_cutoff +=
+            cached->second.terms_skipped_cutoff;
+        ++stats_.forecast_state_cache_hits;
+        return;
+      }
+    }
+    const auto terms_applied_before = stats_.forecast_terms_applied;
+    const auto cutoff_before = stats_.forecast_terms_skipped_cutoff;
+    const auto remember = [&]() {
+      if (!config_.fitness_cache) return;
+      forecast_state_cache_.emplace(
+          state_key,
+          ForecastReplay{
+              result.forecast_nll,
+              result.forecast_by_depth,
+              result.forecast_by_category,
+              stats_.forecast_terms_applied - terms_applied_before,
+              stats_.forecast_terms_skipped_cutoff - cutoff_before,
+          });
+    };
+
     const auto& site_pairs = architecture_.entangling_site_pairs();
     for (std::size_t layer_index = 0;
          layer_index < problem_.future_layers.size(); ++layer_index) {
@@ -1294,6 +1352,7 @@ class RichSolver {
         if (!selected.has_value()) {
           result.forecast_nll = std::numeric_limits<double>::infinity();
           result.search_nll = std::numeric_limits<double>::infinity();
+          remember();
           return;
         }
         const auto pair_index = std::get<1>(*selected);
@@ -1425,6 +1484,7 @@ class RichSolver {
     }
     result.search_nll = result.fitness.negative_log_fidelity +
                         result.forecast_nll;
+    remember();
   }
 
   PlanGeometry build_geometry(
@@ -2343,6 +2403,8 @@ class RichSolver {
                      VectorHash<std::size_t>> return_cache_;
   std::unordered_map<std::vector<std::int64_t>, Evaluated,
                      VectorHash<std::int64_t>> fitness_cache_;
+  std::unordered_map<std::vector<std::uint64_t>, ForecastReplay,
+                     VectorHash<std::uint64_t>> forecast_state_cache_;
   std::unordered_set<std::vector<std::int64_t>, VectorHash<std::int64_t>>
       evaluated_keys_;
   std::size_t forecast_word_count_{};
