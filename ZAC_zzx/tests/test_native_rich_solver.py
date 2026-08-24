@@ -418,7 +418,13 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertEqual(0.0, h1.future_ghost_cost)
 
     def test_m4_guard_pins_current_safe_k_best_assignment(self):
-        """A forecast-selected assignment cannot bypass the current guard."""
+        """The H8/L2 forecast winner retains its complete guarded assignment.
+
+        This is the minimal form of the medium-benchmark L2 regression: the
+        raw search winner prefers the farther RETURN site, while the ABI7
+        current-physics guard must pin the nearer assignment as one complete
+        evaluated value in both Python and C++.
+        """
         arch = ArchitectureSnapshot.from_coordinates(
             3,
             ((10, 10), (11, 10), (0, 0), (1, 0), (0, 10)),
@@ -441,18 +447,19 @@ class TestNativeRichSolver(unittest.TestCase):
             ),),
             matched_gate_genes=(0,),
             forecast_terms=(RichForecastTerm(
-                1, "return_site", "routing", 100.0,
+                2, "return_site", "routing", 100.0,
                 index=0, selector=3),),
-            boundary_id="guard-pins-k-best-assignment",
-            selected_horizon=1,
+            boundary_id="ours_lk:L2:minimal-guard-parity",
+            selected_horizon=8,
         )
+        config = RichSearchConfig(
+            operator_profile="exact", max_horizon=8,
+            alpha_lookahead=1.0, return_assignment_k=4)
+        rng_state = random.Random(0).getstate()
         result = NativeResidentBackend(arch).solve_rich_boundary(
-            problem,
-            RichSearchConfig(
-                operator_profile="exact", max_horizon=1,
-                alpha_lookahead=1.0, return_assignment_k=4),
-            random.Random(0).getstate(),
-        )
+            problem, config, rng_state)
+        reference = solve_rich_exact_reference(
+            problem, config, rng_state)
         self.assertEqual(((2, 3),), result.return_assignments)
         self.assertEqual((3,), result.current_gate_anchor_assignment_site_ids)
         self.assertEqual((3,), result.current_gate_final_assignment_site_ids)
@@ -460,6 +467,29 @@ class TestNativeRichSolver(unittest.TestCase):
             "residency-pareto-envelope", result.current_gate_guard_branch)
         self.assertGreaterEqual(result.current_gate_guard_cohort_size, 2)
         self.assertEqual(1, result.current_gate_guard_admitted_size)
+        self.assertEqual(reference.winner, result.winner)
+        self.assertEqual(reference.return_assignments,
+                         result.return_assignments)
+        self.assertEqual(reference.reseat_assignments,
+                         result.reseat_assignments)
+        self.assertEqual(reference.current_gate_anchor,
+                         result.current_gate_anchor)
+        self.assertEqual(
+            reference.current_gate_anchor_assignment_site_ids,
+            result.current_gate_anchor_assignment_site_ids)
+        self.assertEqual(
+            reference.current_gate_final_assignment_site_ids,
+            result.current_gate_final_assignment_site_ids)
+        self.assertEqual(reference.current_gate_guard_branch,
+                         result.current_gate_guard_branch)
+        self.assertEqual(reference.current_gate_guard_cohort_size,
+                         result.current_gate_guard_cohort_size)
+        self.assertEqual(reference.current_gate_guard_admitted_size,
+                         result.current_gate_guard_admitted_size)
+        self.assertEqual(reference.current_gate_projection_source,
+                         result.current_gate_projection_source)
+        self.assertEqual(reference.current_gate_projection_evaluated,
+                         result.current_gate_projection_evaluated)
 
     def test_gate_target_blocker_is_reseated_before_candidate_scoring(self):
         arch = ArchitectureSnapshot.from_coordinates(

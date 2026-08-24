@@ -6,7 +6,7 @@ the same implementation bug.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import product
 from math import dist, floor, inf, isfinite, log, log1p, sqrt
 from time import perf_counter_ns
@@ -1711,19 +1711,25 @@ def _infeasible_rich(chromosome: tuple[int, ...], error: str) -> FitnessResult:
         chromosome, False, inf, inf, inf, inf, 0, 0.0, 0.0, 0, 0, (), error)
 
 
-def evaluate_rich_exact_candidate(
+def _evaluate_rich_assignment_cohort(
         problem: RichH0Problem,
         config: RichSearchConfig,
         raw_chromosome: Sequence[int],
-) -> _RichEvaluated:
-    """Evaluate one rich chromosome independently of the C++ implementation."""
+) -> tuple[_RichEvaluated, ...]:
+    """Evaluate every bounded RETURN assignment for one chromosome.
+
+    ABI7's forecast guard selects a *complete* evaluated value: chromosome,
+    RETURN assignment and derived RESEATs.  Keeping the cohort construction in
+    one oracle function prevents the ordinary exact search and the downstream
+    current-physics guard from drifting to different assignment semantics.
+    """
     chromosome = _rich_normalize(problem, raw_chromosome)
     option_indices = _rich_decode(problem, chromosome)
     if option_indices is None:
         fitness = _infeasible_rich(
             chromosome, "gate menu cannot form an injection")
-        return _RichEvaluated(
-            fitness, (), (), (), (), inf, inf, (), {}, 0, 0, 0)
+        return (_RichEvaluated(
+            fitness, (), (), (), (), inf, inf, (), {}, 0, 0, 0),)
     gate_count = len(problem.gate_domains)
     returners = tuple(index for index in range(len(problem.eligible))
                       if chromosome[gate_count + index])
@@ -1732,10 +1738,9 @@ def evaluate_rich_exact_candidate(
     if not assignment_candidates:
         fitness = _infeasible_rich(
             chromosome, "RETURN matching has no bounded injective assignment")
-        return _RichEvaluated(
-            fitness, option_indices, (), (), (), inf, inf, (), {}, 0, 0, 0)
+        return (_RichEvaluated(
+            fitness, option_indices, (), (), (), inf, inf, (), {}, 0, 0, 0),)
     evaluated = []
-    ghost_rejections = 0
     for rank, assignments in enumerate(assignment_candidates, 1):
         reseats = _rich_reseats(
             problem, config, chromosome, option_indices, assignments,
@@ -1755,7 +1760,6 @@ def evaluate_rich_exact_candidate(
             rejected = int(
                 not fitness.feasible and fitness.error is not None
                 and "ghost-safe" in fitness.error)
-        ghost_rejections += rejected
         assignment_key = tuple(value[1] for value in assignments)
         if reseats:
             assignment_key += (-1,) + tuple(
@@ -1782,13 +1786,200 @@ def evaluate_rich_exact_candidate(
             fitness, option_indices, assignments, reseats, assignment_key,
             forecast_nll, search_nll, by_depth, breakdown, rank,
             len(assignment_candidates), rejected))
+    return tuple(evaluated)
+
+
+def evaluate_rich_exact_candidate(
+        problem: RichH0Problem,
+        config: RichSearchConfig,
+        raw_chromosome: Sequence[int],
+) -> _RichEvaluated:
+    """Evaluate one rich chromosome independently of the C++ implementation."""
+    evaluated = _evaluate_rich_assignment_cohort(
+        problem, config, raw_chromosome)
     winner = min(evaluated, key=lambda value: value.objective)
-    return _RichEvaluated(
-        winner.fitness, winner.option_indices, winner.assignments,
-        winner.reseats, winner.assignment_key, winner.forecast_nll,
-        winner.search_nll, winner.forecast_by_depth,
-        winner.forecast_breakdown, winner.return_assignment_rank,
-        winner.return_assignment_evaluated, ghost_rejections)
+    return replace(
+        winner,
+        current_ghost_rejections=sum(
+            value.current_ghost_rejections for value in evaluated))
+
+
+def _rich_objective_bucket(value: float, quantum: float) -> int:
+    if not isfinite(value):
+        return (1 << 63) - 1
+    return int(floor(value / quantum + 0.5))
+
+
+def _rich_current_physical_key(value: _RichEvaluated) -> tuple:
+    fitness = value.fitness
+    return (
+        0 if fitness.feasible else 1,
+        _rich_objective_bucket(fitness.negative_log_fidelity, 1e-12),
+        fitness.move_batches,
+        _rich_objective_bucket(fitness.move_time_us, 1e-6),
+        _rich_objective_bucket(fitness.total_distance_um, 1e-6),
+        fitness.chromosome,
+        value.assignment_key,
+    )
+
+
+def _rich_same_current_primary_bucket(
+        first: _RichEvaluated, second: _RichEvaluated) -> bool:
+    return _rich_current_physical_key(first)[1:5] == \
+        _rich_current_physical_key(second)[1:5]
+
+
+def _rich_current_primary_dominates(
+        first: _RichEvaluated, second: _RichEvaluated) -> bool:
+    first_nll = _rich_objective_bucket(
+        first.fitness.negative_log_fidelity, 1e-12)
+    second_nll = _rich_objective_bucket(
+        second.fitness.negative_log_fidelity, 1e-12)
+    first_time = _rich_objective_bucket(first.fitness.move_time_us, 1e-6)
+    second_time = _rich_objective_bucket(second.fitness.move_time_us, 1e-6)
+    weakly_better = (
+        first_nll <= second_nll
+        and first.fitness.move_batches <= second.fitness.move_batches
+        and first_time <= second_time
+    )
+    strictly_better = (
+        first_nll < second_nll
+        or first.fitness.move_batches < second.fitness.move_batches
+        or first_time < second_time
+    )
+    return weakly_better and strictly_better
+
+
+def _guard_rich_forecast_gate_projection(
+        problem: RichH0Problem,
+        config: RichSearchConfig,
+        provisional: _RichEvaluated,
+        complete_values: Sequence[_RichEvaluated],
+) -> tuple[_RichEvaluated, dict]:
+    """Independent Python truth for ABI7's current-physics forecast guard."""
+    inactive = {
+        "current_gate_anchor": (),
+        "current_gate_anchor_assignment_site_ids": (),
+        "current_gate_final_assignment_site_ids": (),
+        "current_gate_guard_branch": "inactive",
+        "current_gate_guard_cohort_size": 0,
+        "current_gate_guard_admitted_size": 0,
+        "current_gate_projection_source": "inactive",
+        "current_gate_projection_evaluated": 0,
+    }
+    active = (
+        config.max_horizon != 0
+        and config.alpha_lookahead > 0.0
+        and bool(problem.forecast_terms or problem.future_layers)
+    )
+    if not active:
+        return provisional, inactive
+
+    gate_count = len(problem.gate_domains)
+    cohort_cache: dict[tuple[int, ...], tuple[_RichEvaluated, ...]] = {}
+
+    def values_for(raw: Sequence[int]) -> tuple[_RichEvaluated, ...]:
+        chromosome = _rich_normalize(problem, raw)
+        if chromosome not in cohort_cache:
+            cohort_cache[chromosome] = _evaluate_rich_assignment_cohort(
+                problem, config, chromosome)
+        return cohort_cache[chromosome]
+
+    def current_min(raw: Sequence[int]) -> _RichEvaluated:
+        return min(values_for(raw), key=_rich_current_physical_key)
+
+    projected = provisional.fitness.chromosome
+    projection_source = "no-current-gates"
+    if gate_count:
+        projection_source = (
+            "single-gate-full-domain" if gate_count == 1
+            else "coordinate-full-domain-2-sweep")
+        projected_value = current_min(projected)
+        if not projected_value.fitness.feasible:
+            return provisional, {
+                **inactive,
+                "current_gate_guard_branch": "projection-infeasible-fallback",
+                "current_gate_projection_source": projection_source,
+                "current_gate_projection_evaluated": len(cohort_cache),
+            }
+        sweeps = 1 if gate_count == 1 else 2
+        for _sweep in range(sweeps):
+            changed = False
+            for gate in range(gate_count):
+                best = projected_value
+                for option in range(len(problem.gate_domains[gate])):
+                    trial = list(projected)
+                    trial[gate] = option
+                    value = current_min(trial)
+                    if _rich_current_physical_key(value) < \
+                            _rich_current_physical_key(best):
+                        best = value
+                if best.fitness.chromosome != projected:
+                    projected = best.fitness.chromosome
+                    projected_value = best
+                    changed = True
+            if not changed:
+                break
+
+    suffix = projected[gate_count:]
+    guard_chromosomes = {
+        value.fitness.chromosome
+        for value in complete_values
+        if value.fitness.chromosome[gate_count:] == suffix
+    }
+    guard_chromosomes.update(
+        chromosome for chromosome in cohort_cache
+        if chromosome[gate_count:] == suffix)
+    guard_chromosomes.add(tuple(projected))
+    cohort = tuple(
+        value
+        for chromosome in sorted(guard_chromosomes)
+        for value in values_for(chromosome)
+        if value.fitness.feasible
+    )
+    if not cohort:
+        return provisional, {
+            **inactive,
+            "current_gate_anchor": tuple(projected),
+            "current_gate_projection_source": projection_source,
+            "current_gate_projection_evaluated": len(cohort_cache),
+        }
+
+    anchor = min(cohort, key=_rich_current_physical_key)
+    if not problem.eligible:
+        branch = "eligible-empty-exact-tie"
+        admitted = tuple(
+            value for value in cohort
+            if _rich_same_current_primary_bucket(value, anchor))
+    else:
+        branch = "residency-pareto-envelope"
+        transfer_limit = anchor.fitness.transfers + 2
+        current_nll_limit = (
+            anchor.fitness.negative_log_fidelity - 2.0 * log(F_TRANSFER))
+        admitted = tuple(
+            value for value in cohort
+            if value.fitness.transfers <= transfer_limit
+            and value.fitness.negative_log_fidelity <=
+                current_nll_limit + 1e-12
+            and not any(
+                challenger is not value
+                and _rich_current_primary_dominates(challenger, value)
+                for challenger in cohort)
+        )
+    selected = min(admitted, key=lambda value: value.objective) \
+        if admitted else anchor
+    return selected, {
+        "current_gate_anchor": anchor.fitness.chromosome,
+        "current_gate_anchor_assignment_site_ids": tuple(
+            assignment[1] for assignment in anchor.assignments),
+        "current_gate_final_assignment_site_ids": tuple(
+            assignment[1] for assignment in selected.assignments),
+        "current_gate_guard_branch": branch,
+        "current_gate_guard_cohort_size": len(cohort),
+        "current_gate_guard_admitted_size": len(admitted),
+        "current_gate_projection_source": projection_source,
+        "current_gate_projection_evaluated": len(cohort_cache),
+    }
 
 
 def solve_rich_exact_reference(
@@ -1821,6 +2012,8 @@ def solve_rich_exact_reference(
     if not feasible:
         raise RuntimeError(f"boundary {problem.boundary_id!r} has no feasible candidate")
     winner = min(feasible, key=lambda value: value.objective)
+    winner, guard = _guard_rich_forecast_gate_projection(
+        problem, config, winner, feasible)
     return RichH0Result(
         winner=winner.fitness,
         gate_option_indices=winner.option_indices,
@@ -1856,14 +2049,20 @@ def solve_rich_exact_reference(
         current_ghost_rejections=winner.current_ghost_rejections,
         future_ghost_cost=winner.forecast_breakdown.get("routing", 0.0),
         pre_score_reseats=len(winner.reseats),
-        current_gate_anchor=(),
-        current_gate_anchor_assignment_site_ids=(),
-        current_gate_final_assignment_site_ids=(),
-        current_gate_guard_branch="reference-direct",
-        current_gate_guard_cohort_size=0,
-        current_gate_guard_admitted_size=0,
-        current_gate_projection_source="reference-direct",
-        current_gate_projection_evaluated=0,
+        current_gate_anchor=guard["current_gate_anchor"],
+        current_gate_anchor_assignment_site_ids=
+            guard["current_gate_anchor_assignment_site_ids"],
+        current_gate_final_assignment_site_ids=
+            guard["current_gate_final_assignment_site_ids"],
+        current_gate_guard_branch=guard["current_gate_guard_branch"],
+        current_gate_guard_cohort_size=
+            guard["current_gate_guard_cohort_size"],
+        current_gate_guard_admitted_size=
+            guard["current_gate_guard_admitted_size"],
+        current_gate_projection_source=
+            guard["current_gate_projection_source"],
+        current_gate_projection_evaluated=
+            guard["current_gate_projection_evaluated"],
         timing={},
     )
 

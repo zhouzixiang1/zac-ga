@@ -4675,6 +4675,12 @@ class ResidentPlacer(VertexMatchingPlacer):
                 step_backend[key] += value
                 self.boundary_backend_metrics[key] += value
             rich_search_stats = {
+                # Preserve the pre-normalization Cartesian size used by both
+                # exact backends.  Migration benchmarks consume this audit to
+                # prove that every measured boundary is inside the frozen
+                # direct-search budget instead of silently timing a different
+                # search mode.
+                "direct_search_space": int(direct_search_space),
                 "deterministic_unique_evaluations": int(
                     native_rich_result.deterministic_unique_evaluations),
                 "stochastic_unique_evaluations": int(

@@ -24,10 +24,11 @@ from zzx.zplacer import ResidentPlacer
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+DIRECT_EXACT_BUDGET = 16_384
 
 
 def medium_schedule(*, seed: int = 42, qubits: int = 8,
-                    layers: int = 9, gates_per_layer: int = 2
+                    layers: int = 9, gates_per_layer: int = 1
                     ) -> list[list[list[int]]]:
     if qubits < 2 * gates_per_layer or min(qubits, layers,
                                            gates_per_layer) <= 0:
@@ -71,8 +72,8 @@ def _run_once(
         iterations=8,
         neighbors_per_solution=2,
         neighbor_sample_size=24,
-        direct_enumeration_limit=16384,
-        max_unique_evaluations=16384,
+        direct_enumeration_limit=DIRECT_EXACT_BUDGET,
+        max_unique_evaluations=DIRECT_EXACT_BUDGET,
         backend=backend,
         formal_native=backend == "native",
         native_wheel_sha256=(wheel_sha256 if backend == "native" else ""),
@@ -83,6 +84,18 @@ def _run_once(
     placer.run(
         architecture, [initial], schedule, True,
         [set() for _ in schedule])
+    direct_spaces = tuple(
+        int(row.get("rich_search", {}).get("direct_search_space", -1))
+        for row in placer.decision_log[:-1]
+    )
+    if len(direct_spaces) != len(schedule) - 1:
+        raise RuntimeError(
+            "native medium benchmark transition-count audit drift")
+    if any(value <= 0 or value > DIRECT_EXACT_BUDGET
+           for value in direct_spaces):
+        raise RuntimeError(
+            "native medium benchmark boundary exceeds direct exact budget: "
+            f"spaces={direct_spaces}, budget={DIRECT_EXACT_BUDGET}")
     return placer, time.perf_counter_ns() - started_ns
 
 
@@ -100,6 +113,7 @@ def _assert_parity(reference: ResidentPlacer,
         raise RuntimeError("native medium benchmark decision-count drift")
     max_current_error = 0.0
     max_forecast_error = 0.0
+    direct_spaces = []
     for left, right in zip(reference.decision_log[:-1],
                            native.decision_log[:-1]):
         for key in ("stay", "return", "reseat", "eligible_decisions"):
@@ -115,12 +129,20 @@ def _assert_parity(reference: ResidentPlacer,
                 "weighted_negative_log_fidelity"]))
         max_current_error = max(max_current_error, current_error)
         max_forecast_error = max(max_forecast_error, forecast_error)
+        left_space = int(left["rich_search"]["direct_search_space"])
+        right_space = int(right["rich_search"]["direct_search_space"])
+        if left_space != right_space:
+            raise RuntimeError(
+                "native medium benchmark direct-space audit drift")
+        direct_spaces.append(left_space)
     if max(max_current_error, max_forecast_error) > 1e-12:
         raise RuntimeError("native medium benchmark NLL drift exceeds 1e-12")
     return {
         "mapping_equal": True,
         "registry_equal": True,
         "rng_equal": True,
+        "direct_search_spaces": direct_spaces,
+        "max_direct_search_space": max(direct_spaces, default=0),
         "max_current_nll_abs_error": max_current_error,
         "max_forecast_nll_abs_error": max_forecast_error,
     }
@@ -179,7 +201,8 @@ def run_medium_benchmark(
         "wheel_sha256": wheel_sha256,
         "schedule": {
             "seed": 42, "qubits": 8, "layers": 9,
-            "gates_per_layer": 2, "transitions": 8,
+            "gates_per_layer": len(schedule[0]), "transitions": 8,
+            "direct_exact_budget": DIRECT_EXACT_BUDGET,
         },
         "repetitions": repetitions,
         "horizons": horizons,
