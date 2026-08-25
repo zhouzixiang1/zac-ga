@@ -2144,8 +2144,23 @@ FitnessResult evaluate_candidate_impl(
       }
       updated_coherence =
           linear_coherence_delta_nll(prior_idle, candidate_idle);
+      if (!std::isfinite(updated_coherence)) {
+        // Search-time continuation only: once the final linear factor is OOD,
+        // rank the whole boundary with the registered exponential sensitivity
+        // increment.  The independent trace scorer still reports linear OOD.
+        updated_coherence = 0.0;
+        for (const auto delta : candidate_idle) {
+          updated_coherence += delta / kT2Us;
+        }
+      }
     } else if (phase_time >= kT2Us || mover_idle >= kT2Us) {
-      updated_coherence = std::numeric_limits<double>::infinity();
+      // Owner-less fixtures have no absolute per-atom ledger; preserve their
+      // aggregate model and continue this OOD phase exponentially.
+      updated_coherence +=
+          (static_cast<double>(architecture.n_atoms() - phase_movers) *
+               phase_time +
+           static_cast<double>(phase_movers) * mover_idle) /
+          kT2Us;
     } else {
       updated_coherence -=
           static_cast<double>(architecture.n_atoms() - phase_movers) *

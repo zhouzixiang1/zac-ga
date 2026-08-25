@@ -35,6 +35,65 @@ constexpr double kOneQUs = 52.0;
 constexpr double kAccelUmPerUs2 = 0.00275;
 constexpr double kT2Us = 1.5e6;
 
+// The paper's linear coherence factor is undefined once any absolute idle
+// time reaches T2.  That must make the *reported* linear fidelity OOD, but it
+// must not make every chromosome at all later compiler boundaries
+// infeasible.  The resident search therefore uses the exact linear log ratio
+// while the whole candidate is in-domain and switches the whole comparison
+// to the registered exponential sensitivity model after the first crossing.
+// The independent trace scorer remains the authority for the final OOD flag.
+double search_coherence_absolute_nll(
+    const std::vector<double>& before, const std::vector<double>& after,
+    double t2_us = kT2Us) {
+  if (before.size() != after.size()) {
+    throw std::invalid_argument("coherence vectors differ in length");
+  }
+  if (!std::isfinite(t2_us) || t2_us <= 0.0) {
+    throw std::invalid_argument("coherence T2 must be finite and positive");
+  }
+  bool outside_linear_domain = false;
+  for (std::size_t atom = 0; atom < before.size(); ++atom) {
+    if (!std::isfinite(before[atom]) || before[atom] < 0.0 ||
+        !std::isfinite(after[atom]) || after[atom] < 0.0) {
+      throw std::invalid_argument(
+          "absolute coherence idle times must be finite and non-negative");
+    }
+    outside_linear_domain = outside_linear_domain ||
+                            before[atom] >= t2_us || after[atom] >= t2_us;
+  }
+  double total = 0.0;
+  if (outside_linear_domain) {
+    for (std::size_t atom = 0; atom < before.size(); ++atom) {
+      total += (after[atom] - before[atom]) / t2_us;
+    }
+    return total;
+  }
+  for (std::size_t atom = 0; atom < before.size(); ++atom) {
+    total += std::log1p(-before[atom] / t2_us) -
+             std::log1p(-after[atom] / t2_us);
+  }
+  return total;
+}
+
+double search_coherence_delta_nll(
+    const std::vector<double>& prior,
+    const std::vector<double>& candidate_delta,
+    double t2_us = kT2Us) {
+  if (prior.size() != candidate_delta.size()) {
+    throw std::invalid_argument("coherence vectors differ in length");
+  }
+  auto after = prior;
+  for (std::size_t atom = 0; atom < prior.size(); ++atom) {
+    if (!std::isfinite(candidate_delta[atom]) ||
+        candidate_delta[atom] < -1e-12) {
+      throw std::invalid_argument(
+          "candidate idle-time delta must be finite and non-negative");
+    }
+    after[atom] += std::max(0.0, candidate_delta[atom]);
+  }
+  return search_coherence_absolute_nll(prior, after, t2_us);
+}
+
 template <typename T>
 struct VectorHash {
   std::size_t operator()(const std::vector<T>& values) const noexcept {
@@ -799,6 +858,38 @@ class RichSolver {
       }
     }
     const auto selection_started = Clock::now();
+    const auto pre_guard_stats = stats_;
+    const auto pre_guard_fitness_ns = fitness_ns_;
+    const auto pre_guard_value = evaluate_normalized(winner, false);
+    stats_ = pre_guard_stats;
+    fitness_ns_ = pre_guard_fitness_ns;
+    if (pre_guard_value.fitness.feasible &&
+        (!pre_guard_value.forecast_feasible ||
+         !std::isfinite(pre_guard_value.search_nll))) {
+      // Forecast is an optimization oracle, not an executability condition.
+      // If every bounded rollout fails, retain the already-proven safe current
+      // boundary and let the next real boundary rebuild forecast state.
+      auto current_only = pre_guard_value;
+      current_only.forecast_nll = 0.0;
+      current_only.search_nll = current_only.fitness.negative_log_fidelity;
+      current_only.forecast_feasible = true;
+      current_only.forecast_error.clear();
+      std::fill(current_only.forecast_by_depth.begin(),
+                current_only.forecast_by_depth.end(), 0.0);
+      current_only.forecast_by_category.fill(0.0);
+      guarded_final_value_ = std::move(current_only);
+      search_mode += "-forecast-current-fallback";
+    } else if (!pre_guard_value.fitness.feasible &&
+        (pre_guard_value.fitness.error.find("ghost") != std::string::npos ||
+         pre_guard_value.fitness.error.find("occupancy") !=
+             std::string::npos)) {
+      const auto recovered = recover_infeasible_current_gate_projection(winner);
+      if (recovered.has_value()) {
+        winner = recovered->fitness.chromosome;
+        guarded_final_value_ = *recovered;
+        search_mode += "-current-recovery";
+      }
+    }
     winner = guard_forecast_gate_projection(winner);
     const auto final_value = guarded_final_value_.has_value()
                                  ? *guarded_final_value_
@@ -963,7 +1054,8 @@ class RichSolver {
   }
 
   std::vector<Evaluated> evaluate_guard_assignment_cohort(
-      const std::vector<std::int64_t>& raw_chromosome) {
+      const std::vector<std::int64_t>& raw_chromosome,
+      bool include_forecast = true) {
     const auto chromosome = normalize(raw_chromosome);
     Evaluated initial;
     initial.search_nll = std::numeric_limits<double>::infinity();
@@ -997,10 +1089,97 @@ class RichSolver {
       auto value = evaluate_assignment(
           chromosome, initial.decoded, returners, assignments[rank], rank,
           assignments.size(), false);
-      if (value.fitness.feasible) apply_forecast(value, chromosome);
+      if (value.fitness.feasible) {
+        if (include_forecast) {
+          apply_forecast(value, chromosome);
+        } else {
+          // Current-physics recovery is a hard executability path.  A future
+          // forecast may be infeasible or truncated, but it must not discard
+          // an otherwise executable current boundary.  The ordinary M4 guard
+          // may add forecast information after recovery.
+          value.forecast_nll = 0.0;
+          value.search_nll = value.fitness.negative_log_fidelity;
+          value.forecast_feasible = true;
+          value.forecast_error.clear();
+        }
+      }
       cohort.push_back(std::move(value));
     }
     return cohort;
+  }
+
+  std::optional<Evaluated> recover_infeasible_current_gate_projection(
+      const std::vector<std::int64_t>& raw_winner) {
+    const auto gate_count = problem_.gate_domains.size();
+    if (gate_count == 0) return std::nullopt;
+    auto chromosome = normalize(raw_winner);
+    std::optional<Evaluated> best;
+    std::set<std::int64_t> used_gate_sites;
+    const bool stop_after_first_feasible = gate_count > 1;
+
+    // This path is entered only after the ordinary bounded GA/exact cohort is
+    // wholly current-infeasible.  It does not spend stochastic budget.  A
+    // serial layer audits its complete registered gate domain and retains the
+    // best exact physical value.  Wider layers use deterministic injective DFS
+    // and stop at the first exact feasible leaf; this is a safety recovery,
+    // not a second optimizer hidden inside fitness.
+    std::function<bool(std::size_t)> visit = [&](std::size_t gate) {
+      if (gate == gate_count) {
+        auto cohort = evaluate_guard_assignment_cohort(
+            chromosome, false);
+        ++current_gate_projection_evaluated_;
+        for (auto& value : cohort) {
+          if (!value.fitness.feasible ||
+              !std::isfinite(value.fitness.negative_log_fidelity)) {
+            continue;
+          }
+          if (!best.has_value() || current_physical_less(value, *best)) {
+            best = value;
+          }
+        }
+        return stop_after_first_feasible && best.has_value();
+      }
+      std::vector<std::size_t> order;
+      order.reserve(problem_.gate_domains[gate].size());
+      const auto preferred = positive_mod(
+          chromosome[gate], problem_.gate_domains[gate].size());
+      order.push_back(preferred);
+      for (std::size_t option = 0;
+           option < problem_.gate_domains[gate].size(); ++option) {
+        if (option != preferred) order.push_back(option);
+      }
+      for (const auto option : order) {
+        const auto site_id = problem_.gate_domains[gate][option].site_id;
+        if (used_gate_sites.count(site_id) != 0U) continue;
+        const auto prior = chromosome[gate];
+        chromosome[gate] = static_cast<std::int64_t>(option);
+        used_gate_sites.insert(site_id);
+        const auto stop = visit(gate + 1);
+        used_gate_sites.erase(site_id);
+        chromosome[gate] = prior;
+        if (stop) return true;
+      }
+      return false;
+    };
+    visit(0);
+    if (best.has_value()) {
+      current_gate_guard_branch_ = "infeasible-current-full-domain-recovery";
+      current_gate_projection_source_ =
+          gate_count == 1 ? "infeasible-single-gate-full-domain"
+                          : "infeasible-injective-gate-dfs";
+      current_gate_guard_cohort_size_ = 1;
+      current_gate_guard_admitted_size_ = 1;
+      current_gate_anchor_ = best->fitness.chromosome;
+      current_gate_anchor_assignment_site_ids_.clear();
+      current_gate_final_assignment_site_ids_.clear();
+      for (const auto& assignment : best->assignments) {
+        current_gate_anchor_assignment_site_ids_.push_back(
+            assignment.site_id);
+        current_gate_final_assignment_site_ids_.push_back(
+            assignment.site_id);
+      }
+    }
+    return best;
   }
 
   std::vector<std::int64_t> guard_forecast_gate_projection(
@@ -1030,25 +1209,32 @@ class RichSolver {
     };
 
     // The GA archive is not guaranteed to contain the current-myopic gate
-    // placement for the selected RETURN/STAY suffix.  Build that anchor
-    // deterministically before the forecast guard: one-gate layers enumerate
-    // the complete domain, while wider layers perform two full-domain
-    // coordinate sweeps.  Selection here uses current physics only; forecast
-    // remains solely the downstream tie/Pareto selector.
-    auto projected = provisional;
+    // placement for every residency suffix that matters to the rolling rent
+    // decision.  Project the provisional suffix, every recommended singleton,
+    // and the complete recommendation mask independently: one-gate layers
+    // enumerate the complete domain, while wider layers perform two
+    // full-domain coordinate sweeps.  Selection here uses current physics
+    // only; forecast remains solely the downstream tie/Pareto selector.
     const auto gate_count = problem_.gate_domains.size();
-    if (gate_count != 0) {
-      current_gate_projection_source_ =
-          gate_count == 1 ? "single-gate-full-domain"
-                          : "coordinate-full-domain-2-sweep";
+    current_gate_projection_source_ =
+        gate_count == 0
+            ? "no-current-gates"
+            : (gate_count == 1 ? "single-gate-full-domain"
+                               : "coordinate-full-domain-2-sweep");
+    const auto project_current_gates = [&](
+        const std::vector<std::int64_t>& raw)
+        -> std::optional<std::vector<std::int64_t>> {
+      auto projected = normalize(raw);
       auto* projected_pointer = current_min(values_for(projected));
       if (projected_pointer == nullptr ||
           !projected_pointer->fitness.feasible) {
-        current_gate_guard_branch_ = "projection-infeasible-fallback";
-        return provisional;
+        return std::nullopt;
       }
       auto projected_value = *projected_pointer;
-      const auto sweeps = gate_count == 1 ? std::size_t{1} : std::size_t{2};
+      const auto sweeps = gate_count == 0
+                              ? std::size_t{0}
+                              : (gate_count == 1 ? std::size_t{1}
+                                                 : std::size_t{2});
       for (std::size_t sweep = 0; sweep < sweeps; ++sweep) {
         bool changed = false;
         for (std::size_t gate = 0; gate < gate_count; ++gate) {
@@ -1071,31 +1257,81 @@ class RichSolver {
         }
         if (!changed) break;
       }
-      provisional = projected;
-    } else {
-      current_gate_projection_source_ = "no-current-gates";
-    }
-    current_gate_anchor_ = provisional;
+      return projected;
+    };
 
-    // RETURN/STAY remains the lookahead decision.  Complete only candidates
-    // with the selected normalized suffix, then audit gate placement under the
-    // exact executable current-boundary physics.
-    complete_deferred_guard_suffix(provisional);
+    // Recommendation variants follow the seed-population contract: singleton
+    // masks start from all-STAY, and the mixed mask enables every recommended
+    // RETURN.  normalize() still owns forced returns, capacity repair, and
+    // deterministic eviction order before any physical comparison.
+    std::set<std::vector<std::int64_t>> projection_seeds{provisional};
+    if (std::any_of(problem_.recommended_return_mask.begin(),
+                    problem_.recommended_return_mask.end(),
+                    [](const auto value) { return value; })) {
+      auto all_stay = provisional;
+      std::fill(all_stay.begin() + static_cast<std::ptrdiff_t>(gate_count),
+                all_stay.end(), 0);
+      auto recommended = all_stay;
+      for (std::size_t index = 0;
+           index < problem_.recommended_return_mask.size(); ++index) {
+        if (!problem_.recommended_return_mask[index]) continue;
+        auto singleton = all_stay;
+        singleton[gate_count + index] = 1;
+        projection_seeds.insert(normalize(singleton));
+        recommended[gate_count + index] = 1;
+      }
+      projection_seeds.insert(normalize(recommended));
+    }
+
+    std::set<std::vector<std::int64_t>> projected_chromosomes;
+    for (const auto& seed : projection_seeds) {
+      const auto projected = project_current_gates(seed);
+      if (projected.has_value()) projected_chromosomes.insert(*projected);
+    }
+    if (projected_chromosomes.empty()) {
+      current_gate_guard_branch_ = "projection-infeasible-fallback";
+      return provisional;
+    }
+    current_gate_anchor_ = *projected_chromosomes.begin();
+
+    // RETURN/STAY remains the lookahead decision.  Complete candidates with
+    // every projected normalized suffix, then apply one exact current-physics
+    // Pareto envelope across the union.  This prevents a useful rent
+    // recommendation from disappearing merely because it arrived with a gate
+    // prefix that was suboptimal for that suffix.
+    for (const auto& projected : projected_chromosomes) {
+      complete_deferred_guard_suffix(projected);
+    }
+    const auto residency_suffix = [&](const std::vector<std::int64_t>& value) {
+      return std::vector<std::int64_t>(
+          value.begin() + static_cast<std::ptrdiff_t>(gate_count), value.end());
+    };
+    std::set<std::vector<std::int64_t>> projected_suffixes;
+    for (const auto& projected : projected_chromosomes) {
+      projected_suffixes.insert(residency_suffix(projected));
+    }
+    const auto has_projected_suffix = [&](
+        const std::vector<std::int64_t>& chromosome) {
+      return chromosome.size() >= gate_count &&
+             projected_suffixes.find(residency_suffix(chromosome)) !=
+                 projected_suffixes.end();
+    };
 
     std::set<std::vector<std::int64_t>> guard_chromosomes;
     for (const auto& [chromosome, value] : complete_evaluated_archive_) {
       (void)value;
-      if (same_residency_suffix(chromosome, provisional)) {
+      if (has_projected_suffix(chromosome)) {
         guard_chromosomes.insert(chromosome);
       }
     }
     for (const auto& [chromosome, values] : guard_values) {
       (void)values;
-      if (same_residency_suffix(chromosome, provisional)) {
+      if (has_projected_suffix(chromosome)) {
         guard_chromosomes.insert(chromosome);
       }
     }
-    guard_chromosomes.insert(provisional);
+    guard_chromosomes.insert(projected_chromosomes.begin(),
+                             projected_chromosomes.end());
     std::vector<Evaluated> cohort;
     for (const auto& chromosome : guard_chromosomes) {
       for (const auto& value : values_for(chromosome)) {
@@ -1780,9 +2016,25 @@ class RichSolver {
     boundary_config.exact_coloring_threshold = config_.exact_coloring_threshold;
     boundary_config.enforce_single_leg_ghost =
         config_.enforce_single_leg_ghost;
-    return evaluate_candidate_summary(
-        architecture_, candidate, boundary_config,
-        accumulated_idle);
+    auto result = evaluate_candidate_summary(
+        architecture_, candidate, boundary_config, accumulated_idle);
+    if (!result.feasible &&
+        result.error == "linear coherence model out of domain") {
+      // Recover the candidate's physical movement delta without a prior, then
+      // rank it under the exponential continuation.  Ghost infeasibility and
+      // every other physical failure remain hard failures.
+      result = evaluate_candidate_summary(
+          architecture_, candidate, boundary_config,
+          std::vector<double>(architecture_.n_atoms(), 0.0));
+      if (result.feasible) {
+        const auto coherence_nll = search_coherence_delta_nll(
+            accumulated_idle, result.candidate_idle_time_us);
+        result.negative_log_fidelity +=
+            coherence_nll - result.coherence_nll;
+        result.coherence_nll = coherence_nll;
+      }
+    }
+    return result;
   }
 
   FitnessResult score_forecast_single_leg(
@@ -1810,18 +2062,8 @@ class RichSolver {
         2.0 * kTransferUs + std::sqrt(distance / kAccelUmPerUs2);
     std::vector<double> candidate_idle(architecture_.n_atoms(), phase_time);
     candidate_idle[static_cast<std::size_t>(owner)] -= 2.0 * kTransferUs;
-    const auto coherence_nll = linear_coherence_delta_nll(
+    const auto coherence_nll = search_coherence_delta_nll(
         accumulated_idle, candidate_idle);
-    if (!std::isfinite(coherence_nll)) {
-      result.feasible = false;
-      result.negative_log_fidelity =
-          std::numeric_limits<double>::infinity();
-      result.transfer_nll = result.negative_log_fidelity;
-      result.idle_excitation_nll = result.negative_log_fidelity;
-      result.coherence_nll = result.negative_log_fidelity;
-      result.error = "linear coherence model out of domain";
-      return result;
-    }
     result.move_batches = 1;
     result.move_time_us = phase_time;
     result.total_distance_um = distance;
@@ -2385,14 +2627,12 @@ class RichSolver {
       for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
         if (participant_mask[atom] != 0U) pulse_idle[atom] = 0.0;
       }
-      const auto pulse_nll = linear_coherence_delta_nll(
+      const auto pulse_nll = search_coherence_delta_nll(
           accumulated_idle, pulse_idle);
       auto residency_nll =
           -static_cast<double>(idle_exposures) * std::log(kFExc) + pulse_nll;
-      if (std::isfinite(pulse_nll)) {
-        for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
-          accumulated_idle[atom] += pulse_idle[atom];
-        }
+      for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
+        accumulated_idle[atom] += pulse_idle[atom];
       }
 
       add_weighted_forecast(result, layer.depth, 0, residency_nll);
@@ -2804,28 +3044,15 @@ class RichSolver {
       }
 
       std::vector<double> idle_after(problem_.n_atoms, 0.0);
-      double coherence_nll = 0.0;
       for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
         if (active[atom] > trace_end + 1e-7) {
           throw std::logic_error(
               "ABI8 active union exceeds candidate trace makespan");
         }
         idle_after[atom] = std::max(0.0, trace_end - active[atom]);
-        const auto before = problem_.prior_idle_time_us[atom];
-        const auto after = idle_after[atom];
-        if (before >= coherence_t2_us || after >= coherence_t2_us) {
-          result.feasible = false;
-          result.negative_log_fidelity =
-              std::numeric_limits<double>::infinity();
-          result.transfer_nll = result.negative_log_fidelity;
-          result.idle_excitation_nll = result.negative_log_fidelity;
-          result.coherence_nll = result.negative_log_fidelity;
-          result.error = "linear coherence model out of domain";
-          return result;
-        }
-        coherence_nll += std::log1p(-before / coherence_t2_us) -
-                         std::log1p(-after / coherence_t2_us);
       }
+      const auto coherence_nll = search_coherence_absolute_nll(
+          problem_.prior_idle_time_us, idle_after, coherence_t2_us);
       std::int64_t idle_exposures = 0;
       for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
         if (!participant_mask_[atom] && is_zone_point(
@@ -2868,9 +3095,25 @@ class RichSolver {
                        : evaluate_candidate_summary(
                              architecture_, candidate, boundary_config,
                              scoring_prior));
-    const auto pulse_nll = linear_coherence_delta_nll(
+    if (!result.feasible &&
+        result.error == "linear coherence model out of domain") {
+      result = (record_batches
+                    ? evaluate_candidate(
+                          architecture_, candidate, boundary_config,
+                          std::vector<double>(problem_.n_atoms, 0.0))
+                    : evaluate_candidate_summary(
+                          architecture_, candidate, boundary_config,
+                          std::vector<double>(problem_.n_atoms, 0.0)));
+      if (result.feasible) {
+        const auto movement_nll = search_coherence_delta_nll(
+            scoring_prior, result.candidate_idle_time_us);
+        result.negative_log_fidelity += movement_nll - result.coherence_nll;
+        result.coherence_nll = movement_nll;
+      }
+    }
+    const auto pulse_nll = search_coherence_delta_nll(
         problem_.prior_idle_time_us, pulse_idle);
-    if (result.feasible && std::isfinite(pulse_nll)) {
+    if (result.feasible) {
       result.coherence_nll += pulse_nll;
       result.negative_log_fidelity += pulse_nll;
       if (result.candidate_idle_time_us.empty()) {
@@ -2879,13 +3122,6 @@ class RichSolver {
       for (std::size_t atom = 0; atom < problem_.n_atoms; ++atom) {
         result.candidate_idle_time_us[atom] += pulse_idle[atom];
       }
-    } else if (result.feasible) {
-      result.feasible = false;
-      result.negative_log_fidelity = std::numeric_limits<double>::infinity();
-      result.transfer_nll = result.negative_log_fidelity;
-      result.idle_excitation_nll = result.negative_log_fidelity;
-      result.coherence_nll = result.negative_log_fidelity;
-      result.error = "linear coherence model out of domain";
     }
     return result;
   }
@@ -3520,11 +3756,8 @@ class RichSolver {
         if (!participant_mask_[atom]) candidate_idle[atom] += kRydbergUs;
       }
     }
-    const auto coherence_nll = linear_coherence_delta_nll(
+    const auto coherence_nll = search_coherence_delta_nll(
         problem_.prior_idle_time_us, candidate_idle);
-    if (!std::isfinite(coherence_nll)) {
-      return std::numeric_limits<double>::infinity();
-    }
     const auto transfers = 2 * (back_movers + out_movers);
     const auto transfer_nll =
         -static_cast<double>(transfers) * std::log(kFTransfer);

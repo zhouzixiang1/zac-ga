@@ -2975,10 +2975,17 @@ class ResidentPlacer(VertexMatchingPlacer):
                 def conditional_coherence_nll(delta_us):
                     delta_us = float(delta_us)
                     after = prior_idle_us + delta_us
-                    if (delta_us < -1e-12
-                            or prior_idle_us >= physical.T2_US
-                            or after >= physical.T2_US):
+                    if delta_us < -1e-12:
                         return float("inf")
+                    # The paper's linear coherence term is still enforced by
+                    # the independent final scorer, which reports OOD once an
+                    # atom reaches T2.  Search itself must nevertheless keep
+                    # ranking candidates on long circuits; use the registered
+                    # exponential sensitivity only after either endpoint
+                    # leaves the linear model's domain.
+                    if (prior_idle_us >= physical.T2_US
+                            or after >= physical.T2_US):
+                        return delta_us / physical.T2_US
                     return (
                         math.log1p(-prior_idle_us / physical.T2_US)
                         - math.log1p(-after / physical.T2_US))

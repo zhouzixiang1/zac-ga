@@ -184,6 +184,32 @@ class TestResidentPhysicalLedgers(unittest.TestCase):
         self.assertEqual(first.decision_log["rent_guard_returns"], 0)
         self.assertEqual(first.decision_log["rent_recommended_returns"], 1)
 
+    def test_rent_guard_keeps_ranking_after_linear_coherence_ood(self):
+        schedule = (
+            ((0, 1),),
+            ((2, 3),),
+            ((0, 4),),
+        )
+        initial = [(0, 0, q) for q in range(5)]
+        provider = CachedForecastLayerProvider(
+            len(schedule), lambda layer: schedule[layer],
+            max_cached_layers=10)
+        kernel = ResidentTransitionKernel(
+            placer(initial, horizon=8), self.arch, initial, provider)
+        # Search must continue on very long circuits even though the final
+        # paper-linear scorer will correctly mark the run OOD.  This injects
+        # an already-OOD scheduler prior without altering that final contract.
+        kernel.placer.registry.record_movement_phase(
+            1.5e6 + 10.0, movers=(0,))
+
+        transition = kernel.advance()
+        guards = transition.decision_log["rent_guard"]
+        self.assertTrue(guards)
+        self.assertTrue(all(math.isfinite(row["stay_increment_nll"])
+                            for row in guards))
+        self.assertTrue(any(math.isfinite(row["return_round_trip_nll"])
+                            for row in guards))
+
     def test_break_even_audit_keeps_causal_return_as_soft_recommendation(self):
         cases = (
             (0, (((0, 1),), ((2, 3),)), 4, "RETURN", 0),

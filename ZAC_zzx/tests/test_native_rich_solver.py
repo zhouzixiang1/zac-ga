@@ -30,6 +30,8 @@ from zzx.native_backend import (
 )
 from zzx.reference_backend import (
     ReferenceResidentBackend,
+    _guard_rich_forecast_gate_projection,
+    _recover_rich_infeasible_current_gate_projection,
     _rich_normalize,
     evaluate_decay_forecast,
     evaluate_rich_exact_candidate,
@@ -617,6 +619,131 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertEqual(reference.current_gate_projection_evaluated,
                          result.current_gate_projection_evaluated)
 
+    def test_m4_guard_projects_every_recommended_residency_suffix(self):
+        """Rent hints survive current-gate projection as exact cohorts.
+
+        The cached incumbent is deliberately all-STAY.  Both resident atoms
+        occupy unused entangling sites, so RETURN replaces two idle-excitation
+        errors with physical load/move/store work.  The guard must independently
+        project the two singleton recommendations and their joint mask, then
+        compare all four exact suffix cohorts in one Pareto envelope.  The
+        Python truth and native result must select the same all-RETURN value.
+        """
+        points = tuple(Point(*value) for value in (
+            (0, 0), (1, 0), (2, 0), (3, 0),
+            (4, 0), (5, 0), (2, 1), (4, 1)))
+        arch = ArchitectureSnapshot(
+            4, points, (6, 7), ((0, 1), (2, 3), (4, 5)))
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(points[0], points[1], points[2], points[4]),
+            participants=(0, 1),
+            gate_domains=((RichGateOption(
+                10, 0, 1, points[0], points[1]),),),
+            static_ghosts=(),
+            eligible=(2, 3),
+            min_returns=0,
+            eviction_order_indices=(0, 1),
+            forced_return_mask=(False, False),
+            recommended_return_mask=(True, True),
+            return_domains=(
+                (RichReturnOption(6, points[6], 1.0),),
+                (RichReturnOption(7, points[7], 1.0),),
+            ),
+            matched_gate_genes=(0,),
+            forecast_terms=(
+                RichForecastTerm(
+                    1, "stay", "residency", 0.1, index=0),
+                RichForecastTerm(
+                    1, "stay", "residency", 0.1, index=1),
+            ),
+            boundary_id="rent-recommendation-guard",
+            selected_horizon=1,
+        )
+        config = RichSearchConfig(
+            operator_profile="exact", max_horizon=1,
+            alpha_lookahead=1.0)
+        rng_state = random.Random(0).getstate()
+
+        provisional = evaluate_rich_exact_candidate(
+            problem, config, (0, 0, 0))
+        reference, guard = _guard_rich_forecast_gate_projection(
+            problem, config, provisional, (provisional,))
+        native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, rng_state, cached_winner=(0, 0, 0))
+
+        self.assertEqual((0, 1, 1), reference.fitness.chromosome)
+        self.assertEqual(reference.fitness, native.winner)
+        self.assertEqual(((2, 6), (3, 7)), native.return_assignments)
+        self.assertEqual((0, 1, 1), native.current_gate_anchor)
+        self.assertEqual(4, native.current_gate_projection_evaluated)
+        self.assertEqual(4, native.current_gate_guard_cohort_size)
+        self.assertEqual(2, native.current_gate_guard_admitted_size)
+        self.assertEqual(
+            guard["current_gate_projection_evaluated"],
+            native.current_gate_projection_evaluated)
+        self.assertEqual(
+            guard["current_gate_guard_cohort_size"],
+            native.current_gate_guard_cohort_size)
+        self.assertEqual(
+            guard["current_gate_guard_admitted_size"],
+            native.current_gate_guard_admitted_size)
+
+    def test_current_recovery_is_forecast_independent_and_matches_python(self):
+        points = tuple(Point(*value) for value in (
+            (0, 0), (0, 1), (1, 1),
+            (2, 2), (3, 2), (4, 4), (5, 4)))
+        arch = ArchitectureSnapshot(3, points, (), ((1, 2),))
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(points[0], points[1], points[2]),
+            participants=(0, 1),
+            gate_domains=((
+                RichGateOption(70, 0, 1, points[3], points[4]),
+                RichGateOption(71, 0, 1, points[5], points[6]),
+                RichGateOption(72, 0, 1, points[0], points[1]),
+            ),),
+            static_ghosts=(),
+            eligible=(),
+            min_returns=0,
+            eviction_order_indices=(),
+            forced_return_mask=(),
+            return_domains=(),
+            matched_gate_genes=(0,),
+            # q2 blocks the only future pair and there is no storage site, so
+            # forecast replay is intentionally impossible.  It may not erase
+            # the executable current tail option.
+            future_layers=((1, ((0, 1),)),),
+            selected_horizon=1,
+            boundary_id="current-recovery-forecast-independent",
+        )
+        config = RichSearchConfig(
+            operator_profile="tuned",
+            population_size=1,
+            iterations=1,
+            max_unique_evaluations=1,
+            direct_enumeration_limit=1,
+            max_horizon=1,
+            alpha_lookahead=1.0,
+            decay_rho=1.0,
+            decay_epsilon=0.0,
+        )
+        reference, audit = _recover_rich_infeasible_current_gate_projection(
+            problem, config, (0,))
+        self.assertIsNotNone(reference)
+        self.assertEqual((2,), reference.fitness.chromosome)
+        self.assertEqual(3, audit["current_gate_projection_evaluated"])
+        self.assertTrue(math.isfinite(reference.search_nll))
+
+        native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, random.Random(0).getstate())
+        self.assertEqual(reference.fitness, native.winner)
+        self.assertEqual((2,), native.gate_option_indices)
+        self.assertIn("current-recovery", native.search_mode)
+        self.assertTrue(math.isfinite(
+            native.search_negative_log_fidelity))
+        self.assertEqual(0.0, native.forecast_nll)
+
     def test_gate_target_blocker_is_reseated_before_candidate_scoring(self):
         arch = ArchitectureSnapshot.from_coordinates(
             3,
@@ -1059,8 +1186,8 @@ class TestNativeRichSolver(unittest.TestCase):
                 delta=1e-12,
             )
 
-    def test_unrecoverable_forecast_rejects_only_that_candidate(self):
-        """One failed rollout cannot abort search while a peer is executable."""
+    def test_unrecoverable_forecast_rejects_candidate_then_falls_back_current(self):
+        """Prefer a valid rollout, but never discard all current-safe work."""
         arch = ArchitectureSnapshot.from_coordinates(
             4, ((0, 0), (2, 0), (0, 4), (2, 4)), ())
         arch = replace(
@@ -1119,12 +1246,17 @@ class TestNativeRichSolver(unittest.TestCase):
             matched_gate_genes=(0,),
             boundary_id="all-forecast-candidates-unrecoverable",
         )
-        with self.assertRaisesRegex(RuntimeError, "no feasible candidate"):
-            solve_rich_exact_reference(bad_only, config, state)
-        with self.assertRaisesRegex(
-                NativeBackendError, "no feasible candidate"):
-            NativeResidentBackend(arch).solve_rich_boundary(
-                bad_only, config, state)
+        bad_reference = solve_rich_exact_reference(bad_only, config, state)
+        bad_native = NativeResidentBackend(arch).solve_rich_boundary(
+            bad_only, config, state)
+        self.assertEqual(bad_reference.winner, bad_native.winner)
+        self.assertTrue(bad_native.winner.feasible)
+        self.assertEqual(0.0, bad_native.forecast_nll)
+        self.assertAlmostEqual(
+            bad_native.search_negative_log_fidelity,
+            bad_native.winner.negative_log_fidelity,
+            delta=1e-12)
+        self.assertIn("forecast-current-fallback", bad_native.search_mode)
 
     def test_native_future_rollout_reuses_identical_post_boundary_state(self):
         arch = ArchitectureSnapshot.from_coordinates(

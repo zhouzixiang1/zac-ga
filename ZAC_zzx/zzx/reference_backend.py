@@ -714,27 +714,54 @@ def _single_leg_violation(phase: MovementPhase) -> tuple[int, ...]:
     return tuple(sorted(hits))
 
 
-def _linear_coherence_delta_nll(
-        prior_idle_time_us: Sequence[float],
-        candidate_idle_time_us: Sequence[float]) -> float:
-    """Return the exact incremental NLL of the final linear T2 model.
+def _search_coherence_absolute_nll(
+        before_idle_time_us: Sequence[float],
+        after_idle_time_us: Sequence[float],
+        t2_us: float = T2_US) -> float:
+    """Return the boundary coherence increment used to rank candidates.
 
-    The final scorer evaluates one factor ``1 - t_q/T2`` per atom.  Movement
-    phases therefore accumulate into one ``dt_q`` before the log-ratio is
-    taken; summing an independent ``-log(1-dt_phase/T2)`` per phase is merely a
-    first-order approximation once an atom already has idle time.
+    In the linear model's domain this is its exact absolute log-ratio.  If any
+    atom is at or beyond ``T2`` before or after the boundary, the final scorer
+    must report linear fidelity as OOD; search still needs a finite ordering to
+    finish compiling that trace.  In that case the *whole boundary* uses the
+    exponential sensitivity increment ``sum(after - before) / T2``.  It is a
+    ranking continuation, never clipping of the reported linear fidelity.
     """
+    if len(before_idle_time_us) != len(after_idle_time_us):
+        raise ValueError("coherence vectors differ in length")
+    t2 = float(t2_us)
+    if not isfinite(t2) or t2 <= 0.0:
+        raise ValueError("coherence T2 must be finite and positive")
+    before = tuple(float(value) for value in before_idle_time_us)
+    after = tuple(float(value) for value in after_idle_time_us)
+    if any(not isfinite(value) or value < 0.0
+           for value in (*before, *after)):
+        raise ValueError(
+            "absolute coherence idle times must be finite and non-negative")
+    if any(prior >= t2 or current >= t2
+           for prior, current in zip(before, after)):
+        return sum(current - prior
+                   for prior, current in zip(before, after)) / t2
+    return sum(
+        log1p(-prior / t2) - log1p(-current / t2)
+        for prior, current in zip(before, after))
+
+
+def _search_coherence_delta_nll(
+        prior_idle_time_us: Sequence[float],
+        candidate_idle_time_us: Sequence[float],
+        t2_us: float = T2_US) -> float:
+    """Apply :func:`_search_coherence_absolute_nll` to idle-time deltas."""
     if len(prior_idle_time_us) != len(candidate_idle_time_us):
         raise ValueError("coherence vectors differ in length")
-    total = 0.0
-    for prior, delta in zip(prior_idle_time_us, candidate_idle_time_us):
-        after = prior + delta
-        if prior >= T2_US or after >= T2_US:
-            return inf
-        if delta < -1e-12:
-            raise ValueError("candidate idle-time delta must be non-negative")
-        total += log1p(-prior / T2_US) - log1p(-after / T2_US)
-    return total
+    before = tuple(float(value) for value in prior_idle_time_us)
+    delta = tuple(float(value) for value in candidate_idle_time_us)
+    if any(not isfinite(value) or value < -1e-12 for value in delta):
+        raise ValueError(
+            "candidate idle-time delta must be finite and non-negative")
+    after = tuple(prior + max(0.0, increment)
+                  for prior, increment in zip(before, delta))
+    return _search_coherence_absolute_nll(before, after, t2_us)
 
 
 def evaluate_candidate(problem: BoundaryProblem, candidate: CandidatePlan,
@@ -816,15 +843,23 @@ def evaluate_candidate(problem: BoundaryProblem, candidate: CandidatePlan,
                     candidate_idle[atom] += batch_time
                 for owner in batch.owners:
                     candidate_idle[owner] -= 2 * T_TRANSFER_US
-            updated_coherence = _linear_coherence_delta_nll(
+            updated_coherence = _search_coherence_delta_nll(
                 prior_idle, candidate_idle)
         else:
-            updated_coherence = (
-                inf if stationary_idle >= T2_US or mover_idle >= T2_US else
-                coherence_nll
-                - (problem.architecture.n_atoms - phase_movers) * log1p(
-                    -stationary_idle / T2_US)
-                - phase_movers * log1p(-mover_idle / T2_US))
+            # Pre-ABI owner-less diagnostics cannot reconstruct a per-atom
+            # absolute ledger.  Preserve their historical in-domain formula;
+            # if even this single phase is OOD, use the corresponding
+            # aggregate exponential increment instead of rejecting it.
+            if stationary_idle >= T2_US or mover_idle >= T2_US:
+                updated_coherence = coherence_nll + (
+                    (problem.architecture.n_atoms - phase_movers)
+                    * stationary_idle + phase_movers * mover_idle) / T2_US
+            else:
+                updated_coherence = (
+                    coherence_nll
+                    - (problem.architecture.n_atoms - phase_movers) * log1p(
+                        -stationary_idle / T2_US)
+                    - phase_movers * log1p(-mover_idle / T2_US))
         if not isfinite(updated_coherence):
             return FitnessResult(
                 candidate.chromosome, False, inf, inf, inf, inf,
@@ -1359,23 +1394,8 @@ def _score_exact_current_scheduler(
                     before_gate_dependency[atom], cz_end)
 
     idle_after = tuple(max(0.0, trace_end - value) for value in active)
-    coherence_nll = 0.0
-    for before, after in zip(problem.prior_idle_time_us, idle_after):
-        if before >= coherence_t2_us or after >= coherence_t2_us:
-            return FitnessResult(
-                chromosome=score.chromosome, feasible=False,
-                negative_log_fidelity=inf, transfer_nll=inf,
-                idle_excitation_nll=inf, coherence_nll=inf,
-                move_batches=score.move_batches,
-                move_time_us=model_move_time_us,
-                total_distance_um=score.total_distance_um,
-                idle_exposures=score.idle_exposures,
-                transfers=score.transfers,
-                phase_batches=score.phase_batches,
-                error="linear coherence model out of domain")
-        coherence_nll += (
-            log1p(-before / coherence_t2_us)
-            - log1p(-after / coherence_t2_us))
+    coherence_nll = _search_coherence_absolute_nll(
+        problem.prior_idle_time_us, idle_after, coherence_t2_us)
     idle_exposures = sum(
         atom not in participants and current_site_ids[atom] in zone_sites
         for atom in range(n_atoms))
@@ -1457,15 +1477,8 @@ def _score_rich_geometry(problem: RichH0Problem,
             exact_coloring_threshold=config.exact_coloring_threshold,
             enforce_single_leg_ghost=enforce_ghost),
     )
-    pulse_nll = _linear_coherence_delta_nll(prior_idle, pulse_idle)
-    if not score.feasible or not isfinite(pulse_nll):
-        if score.feasible:
-            return FitnessResult(
-                score.chromosome, False, inf, inf, inf, inf,
-                score.move_batches, score.move_time_us,
-                score.total_distance_um, score.idle_exposures,
-                score.transfers, score.phase_batches,
-                "linear coherence model out of domain")
+    pulse_nll = _search_coherence_delta_nll(prior_idle, pulse_idle)
+    if not score.feasible:
         return score
     total_idle = tuple(
         pulse + movement
@@ -1874,12 +1887,11 @@ def _evaluate_native_future_rollout(
         pulse_idle = tuple(
             0.0 if atom in participants else T_RYDBERG_US
             for atom in range(architecture.n_atoms))
-        pulse_nll = _linear_coherence_delta_nll(
+        pulse_nll = _search_coherence_delta_nll(
             accumulated_idle, pulse_idle)
         residency_nll = -idle_exposures * log(F_EXC) + pulse_nll
-        if isfinite(pulse_nll):
-            for atom, delta in enumerate(pulse_idle):
-                accumulated_idle[atom] += delta
+        for atom, delta in enumerate(pulse_idle):
+            accumulated_idle[atom] += delta
 
         add(depth, "residency", residency_nll)
         add(depth, "reentry", reentry_nll)
@@ -2088,6 +2100,8 @@ def _evaluate_rich_assignment_cohort(
         problem: RichH0Problem,
         config: RichSearchConfig,
         raw_chromosome: Sequence[int],
+        *,
+        include_forecast: bool = True,
 ) -> tuple[_RichEvaluated, ...]:
     """Evaluate every bounded RETURN assignment for one chromosome.
 
@@ -2157,7 +2171,15 @@ def _evaluate_rich_assignment_cohort(
                 component
                 for atom, site_id, _point in participant_parkings
                 for component in (atom, site_id))
-        if fitness.feasible:
+        if fitness.feasible and not include_forecast:
+            # Current-boundary recovery is a hard executability oracle.  The
+            # optional rolling forecast is applied only after a safe current
+            # candidate has been retained.
+            forecast_nll = 0.0
+            search_nll = fitness.negative_log_fidelity
+            by_depth, breakdown = (), {}
+            forecast_feasible, forecast_error = True, ""
+        elif fitness.feasible:
             return_pairs = tuple(
                 (problem.eligible[index], site_id)
                 for index, site_id, _point in assignments)
@@ -2257,6 +2279,86 @@ def _rich_current_primary_dominates(
     return weakly_better and strictly_better
 
 
+def _recover_rich_infeasible_current_gate_projection(
+        problem: RichH0Problem,
+        config: RichSearchConfig,
+        raw_winner: Sequence[int],
+) -> tuple[_RichEvaluated | None, dict]:
+    """Python truth for the native current-only full gate-domain recovery.
+
+    A serial layer evaluates its complete registered gate domain and retains
+    the best executable current value.  A wider layer performs deterministic
+    injective DFS and stops at its first executable leaf.  Forecast failure is
+    intentionally irrelevant here: it may guide M4 only after current
+    executability has been established.
+    """
+    gate_count = len(problem.gate_domains)
+    inactive = {
+        "current_gate_guard_branch": "inactive",
+        "current_gate_projection_source": "inactive",
+        "current_gate_projection_evaluated": 0,
+    }
+    if not gate_count:
+        return None, inactive
+
+    chromosome = list(_rich_normalize(problem, raw_winner))
+    used_gate_sites: set[int] = set()
+    best: _RichEvaluated | None = None
+    evaluated = 0
+    stop_after_first = gate_count > 1
+
+    def visit(gate: int) -> bool:
+        nonlocal best, evaluated
+        if gate == gate_count:
+            cohort = _evaluate_rich_assignment_cohort(
+                problem, config, chromosome, include_forecast=False)
+            evaluated += 1
+            for value in cohort:
+                if (not value.fitness.feasible
+                        or not isfinite(
+                            value.fitness.negative_log_fidelity)):
+                    continue
+                if (best is None
+                        or _rich_current_physical_key(value)
+                        < _rich_current_physical_key(best)):
+                    best = value
+            return stop_after_first and best is not None
+
+        domain = problem.gate_domains[gate]
+        preferred = chromosome[gate] % len(domain)
+        order = (preferred,) + tuple(
+            option for option in range(len(domain))
+            if option != preferred)
+        for option in order:
+            site_id = domain[option].site_id
+            if site_id in used_gate_sites:
+                continue
+            prior = chromosome[gate]
+            chromosome[gate] = option
+            used_gate_sites.add(site_id)
+            stop = visit(gate + 1)
+            used_gate_sites.remove(site_id)
+            chromosome[gate] = prior
+            if stop:
+                return True
+        return False
+
+    visit(0)
+    if best is None:
+        return None, {
+            **inactive,
+            "current_gate_projection_evaluated": evaluated,
+        }
+    return best, {
+        "current_gate_guard_branch":
+            "infeasible-current-full-domain-recovery",
+        "current_gate_projection_source": (
+            "infeasible-single-gate-full-domain" if gate_count == 1
+            else "infeasible-injective-gate-dfs"),
+        "current_gate_projection_evaluated": evaluated,
+    }
+
+
 def _guard_rich_forecast_gate_projection(
         problem: RichH0Problem,
         config: RichSearchConfig,
@@ -2297,21 +2399,19 @@ def _guard_rich_forecast_gate_projection(
     def current_min(raw: Sequence[int]) -> _RichEvaluated:
         return min(values_for(raw), key=_rich_current_physical_key)
 
-    projected = provisional.fitness.chromosome
     projection_source = "no-current-gates"
     if gate_count:
         projection_source = (
             "single-gate-full-domain" if gate_count == 1
             else "coordinate-full-domain-2-sweep")
+
+    def project_current_gates(
+            raw: Sequence[int]) -> tuple[int, ...] | None:
+        projected = _rich_normalize(problem, raw)
         projected_value = current_min(projected)
         if not projected_value.fitness.feasible:
-            return provisional, {
-                **inactive,
-                "current_gate_guard_branch": "projection-infeasible-fallback",
-                "current_gate_projection_source": projection_source,
-                "current_gate_projection_evaluated": len(cohort_cache),
-            }
-        sweeps = 1 if gate_count == 1 else 2
+            return None
+        sweeps = 0 if not gate_count else (1 if gate_count == 1 else 2)
         for _sweep in range(sweeps):
             changed = False
             for gate in range(gate_count):
@@ -2329,17 +2429,52 @@ def _guard_rich_forecast_gate_projection(
                     changed = True
             if not changed:
                 break
+        return tuple(projected)
 
-    suffix = projected[gate_count:]
+    # Keep the provisional residency suffix, but also project every rent
+    # recommendation variant under its own exact current physics.  Singleton
+    # variants follow the native seed contract and start from all-STAY; the
+    # final variant enables the complete recommended mask.  Normalization still
+    # owns forced returns and deterministic capacity repair.
+    provisional_chromosome = provisional.fitness.chromosome
+    projection_seeds = {provisional_chromosome}
+    if any(problem.recommended_return_mask):
+        all_stay = list(provisional_chromosome)
+        all_stay[gate_count:] = [0] * len(problem.eligible)
+        recommended = list(all_stay)
+        for index, enabled in enumerate(problem.recommended_return_mask):
+            if not enabled:
+                continue
+            singleton = list(all_stay)
+            singleton[gate_count + index] = 1
+            projection_seeds.add(_rich_normalize(problem, singleton))
+            recommended[gate_count + index] = 1
+        projection_seeds.add(_rich_normalize(problem, recommended))
+
+    projected_chromosomes = {
+        projected
+        for seed in sorted(projection_seeds)
+        if (projected := project_current_gates(seed)) is not None
+    }
+    if not projected_chromosomes:
+        return provisional, {
+            **inactive,
+            "current_gate_guard_branch": "projection-infeasible-fallback",
+            "current_gate_projection_source": projection_source,
+            "current_gate_projection_evaluated": len(cohort_cache),
+        }
+
+    projected_suffixes = {
+        chromosome[gate_count:] for chromosome in projected_chromosomes}
     guard_chromosomes = {
         value.fitness.chromosome
         for value in complete_values
-        if value.fitness.chromosome[gate_count:] == suffix
+        if value.fitness.chromosome[gate_count:] in projected_suffixes
     }
     guard_chromosomes.update(
         chromosome for chromosome in cohort_cache
-        if chromosome[gate_count:] == suffix)
-    guard_chromosomes.add(tuple(projected))
+        if chromosome[gate_count:] in projected_suffixes)
+    guard_chromosomes.update(projected_chromosomes)
     cohort = tuple(
         value
         for chromosome in sorted(guard_chromosomes)
@@ -2418,15 +2553,39 @@ def solve_rich_exact_reference(
         _rich_normalize(problem, chromosome) for chromosome in raw_values))
     evaluated = tuple(evaluate_rich_exact_candidate(
         problem, config, chromosome) for chromosome in chromosomes)
-    feasible = tuple(
+    current_feasible = tuple(
         value for value in evaluated
-        if (value.fitness.feasible and value.forecast_feasible
-            and isfinite(value.search_nll)))
-    if not feasible:
+        if (value.fitness.feasible
+            and isfinite(value.fitness.negative_log_fidelity)))
+    if not current_feasible:
         raise RuntimeError(f"boundary {problem.boundary_id!r} has no feasible candidate")
-    winner = min(feasible, key=lambda value: value.objective)
+    forecast_feasible = tuple(
+        value for value in current_feasible
+        if value.forecast_feasible and isfinite(value.search_nll))
+    if forecast_feasible:
+        winner = min(forecast_feasible, key=lambda value: value.objective)
+    else:
+        # A bounded forecast is advisory.  Preserve the best executable
+        # current boundary when every rollout fails, matching the native
+        # fail-open-to-current (but never fail-open-to-ghost) contract.
+        winner = min(current_feasible, key=_rich_current_physical_key)
+        winner = replace(
+            winner,
+            forecast_nll=0.0,
+            search_nll=winner.fitness.negative_log_fidelity,
+            forecast_by_depth=tuple(
+                0.0 for _ in winner.forecast_by_depth),
+            forecast_breakdown={
+                "residency": 0.0,
+                "reentry": 0.0,
+                "terminal": 0.0,
+                "routing": 0.0,
+            },
+            forecast_feasible=True,
+            forecast_error="",
+        )
     winner, guard = _guard_rich_forecast_gate_projection(
-        problem, config, winner, feasible)
+        problem, config, winner, forecast_feasible or (winner,))
     return RichH0Result(
         winner=winner.fitness,
         gate_option_indices=winner.option_indices,

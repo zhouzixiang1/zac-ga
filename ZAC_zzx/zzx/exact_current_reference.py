@@ -54,16 +54,34 @@ def _freeze_one_qubit(
 def _coherence_log_ratio(
         before: Sequence[float], after: Sequence[float], t2_us: float,
 ) -> float:
+    """Return the search-time coherence increment for one boundary.
+
+    The paper's linear factor is authoritative while every absolute idle time
+    is strictly below ``T2``.  At and beyond that boundary the final linear
+    fidelity is out of domain, but rejecting every later placement candidate
+    would prevent the compiler from completing the trace that the independent
+    scorer must diagnose.  Search therefore switches the *whole boundary*
+    comparison to the registered exponential sensitivity increment
+    ``sum(after - before) / T2``.  This is a continuation for candidate ranking,
+    not a clipped or fabricated linear fidelity.
+    """
     t2 = float(t2_us)
     if not math.isfinite(t2) or t2 <= 0.0:
         raise ValueError("coherence T2 must be finite and positive")
     if len(before) != len(after):
         raise ValueError("scheduler idle vectors differ in width")
+    frozen_before = tuple(float(value) for value in before)
+    frozen_after = tuple(float(value) for value in after)
+    if any(not math.isfinite(value) or value < 0.0
+           for value in (*frozen_before, *frozen_after)):
+        raise ValueError(
+            "absolute coherence idle times must be finite and non-negative")
+    if any(prior >= t2 or current >= t2
+           for prior, current in zip(frozen_before, frozen_after)):
+        return sum(current - prior for prior, current in zip(
+            frozen_before, frozen_after)) / t2
     value = 0.0
-    for prior, current in zip(before, after):
-        prior, current = float(prior), float(current)
-        if prior < 0.0 or current < 0.0 or prior >= t2 or current >= t2:
-            raise ValueError("linear coherence model is outside its T2 domain")
+    for prior, current in zip(frozen_before, frozen_after):
         value += math.log1p(-prior / t2) - math.log1p(-current / t2)
     return value
 

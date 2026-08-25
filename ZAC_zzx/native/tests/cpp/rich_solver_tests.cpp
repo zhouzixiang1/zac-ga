@@ -614,6 +614,122 @@ int main() {
   assert(exact_current_tied.stats.forecast_terms_applied == 4);
   ++tests;
 
+  // Crossing the paper's linear T2 domain is a reporting OOD condition, not
+  // a compiler dead end.  Exact current search switches the entire boundary
+  // comparison to the exponential sensitivity increment and remains
+  // feasible.  Here both CZ participants fill 0.36 us of an existing tail.
+  RichH0Problem exact_current_ood;
+  exact_current_ood.n_atoms = 2;
+  exact_current_ood.current_points = {{0.0, 0.0}, {1.0, 0.0}};
+  exact_current_ood.current_site_ids = {0, 1};
+  exact_current_ood.prior_idle_time_us = {1.5e6, 1.5e6};
+  exact_current_ood.exact_current_scheduler = true;
+  exact_current_ood.scheduler_trace_end_us = 1.5e6;
+  exact_current_ood.scheduler_active_union_us = {0.0, 0.0};
+  exact_current_ood.scheduler_aod_end_us = {0.0};
+  exact_current_ood.scheduler_one_qubit_end_us = 0.0;
+  exact_current_ood.scheduler_rydberg_end_us = {0.0};
+  exact_current_ood.scheduler_qubit_dependency_end_us = {0.0, 0.0};
+  exact_current_ood.scheduler_back_dependency_end_us = {0.0, 0.0};
+  exact_current_ood.participants = {0, 1};
+  exact_current_ood.gate_domains = {{
+      {52, 0, 1, {0.0, 0.0}, {1.0, 0.0}, {}, {}, {}, 0, 1},
+  }};
+  exact_current_ood.matched_gate_genes = {0};
+  const auto continued_ood = solve_rich_h0(
+      enum_architecture, exact_current_ood,
+      exact_current_config, rng_fixture());
+  assert(continued_ood.winner.feasible);
+  assert(std::abs(continued_ood.winner.coherence_nll -
+                  (-2.0 * 0.36 / 1.5e6)) < 1e-15);
+  assert(continued_ood.winner.error.empty());
+  ++tests;
+
+  // A tiny stochastic budget can inspect only an unsafe head gate option.
+  // Current feasibility is a hard contract, so the post-search native safety
+  // projection must audit the complete serial gate domain and recover the
+  // safe tail option without consuming another GA budget.
+  ArchitectureSnapshot recovery_architecture(
+      3, {{0.0, 0.0}, {0.0, 1.0}, {1.0, 1.0},
+          {2.0, 2.0}, {3.0, 2.0}, {4.0, 4.0}, {5.0, 4.0}});
+  RichH0Problem recovery_problem;
+  recovery_problem.n_atoms = 3;
+  recovery_problem.current_points = {
+      {0.0, 0.0}, {0.0, 1.0}, {1.0, 1.0}};
+  recovery_problem.participants = {0, 1};
+  recovery_problem.gate_domains = {{
+      {70, 0, 1, {2.0, 2.0}, {3.0, 2.0}},
+      {71, 0, 1, {4.0, 4.0}, {5.0, 4.0}},
+      {72, 0, 1, {0.0, 0.0}, {0.0, 1.0}},
+  }};
+  recovery_problem.matched_gate_genes = {0};
+  auto recovery_config = exact_config();
+  recovery_config.operator_profile = RichOperatorProfile::kTuned;
+  recovery_config.population_size = 1;
+  recovery_config.iterations = 1;
+  recovery_config.max_unique_evaluations = 1;
+  recovery_config.direct_enumeration_limit = 1;
+  const auto recovered = solve_rich_h0(
+      recovery_architecture, recovery_problem,
+      recovery_config, rng_fixture());
+  assert(recovered.winner.feasible);
+  assert(recovered.gate_option_indices == std::vector<std::size_t>({2}));
+  assert(recovered.search_mode.find("current-recovery") != std::string::npos);
+  assert(recovered.current_gate_guard_branch ==
+         "infeasible-current-full-domain-recovery");
+  assert(recovered.current_gate_projection_source ==
+         "infeasible-single-gate-full-domain");
+  assert(recovered.current_gate_projection_evaluated == 3);
+  ++tests;
+
+  // Forecast is advisory to current executability.  With no registered
+  // entangling pair, the synthetic future layer is deliberately impossible;
+  // the safety recovery must still retain the current-safe tail gate instead
+  // of filtering it out through the forecast cohort.
+  auto recovery_forecast_problem = recovery_problem;
+  recovery_forecast_problem.future_layers = {{1, {{0, 1}}}};
+  ArchitectureSnapshot recovery_forecast_architecture(
+      3, {{0.0, 0.0}, {0.0, 1.0}, {1.0, 1.0},
+          {2.0, 2.0}, {3.0, 2.0}, {4.0, 4.0}, {5.0, 4.0}},
+      {}, {{1, 2}});
+  auto recovery_forecast_config = recovery_config;
+  recovery_forecast_config.max_horizon = 1;
+  recovery_forecast_config.alpha_lookahead = 1.0;
+  recovery_forecast_config.decay_rho = 1.0;
+  recovery_forecast_config.decay_epsilon = 0.0;
+  const auto recovered_with_impossible_forecast = solve_rich_h0(
+      recovery_forecast_architecture, recovery_forecast_problem,
+      recovery_forecast_config, rng_fixture());
+  assert(recovered_with_impossible_forecast.winner.feasible);
+  assert(recovered_with_impossible_forecast.gate_option_indices ==
+         std::vector<std::size_t>({2}));
+  assert(std::isfinite(
+      recovered_with_impossible_forecast.search_negative_log_fidelity));
+  assert(recovered_with_impossible_forecast.forecast_nll == 0.0);
+  assert(recovered_with_impossible_forecast.search_mode.find(
+             "current-recovery") != std::string::npos);
+  ++tests;
+
+  // The same advisory rule applies when the stochastic incumbent is already
+  // current-safe: an impossible bounded forecast must fall back directly to
+  // current physics without invoking the gate-recovery path.
+  auto direct_forecast_fallback_problem = recovery_forecast_problem;
+  direct_forecast_fallback_problem.matched_gate_genes = {2};
+  auto direct_forecast_fallback_config = recovery_forecast_config;
+  direct_forecast_fallback_config.population_size = 2;
+  const auto direct_forecast_fallback = solve_rich_h0(
+      recovery_forecast_architecture, direct_forecast_fallback_problem,
+      direct_forecast_fallback_config, rng_fixture());
+  assert(direct_forecast_fallback.winner.feasible);
+  assert(direct_forecast_fallback.gate_option_indices ==
+         std::vector<std::size_t>({2}));
+  assert(direct_forecast_fallback.search_mode.find(
+             "forecast-current-fallback") != std::string::npos);
+  assert(direct_forecast_fallback.search_mode.find(
+             "current-recovery") == std::string::npos);
+  assert(direct_forecast_fallback.forecast_nll == 0.0);
+  ++tests;
+
   // P1 gate projection: with no residency decision, decay lookahead may not
   // purchase worse executable current NLL/batches/Move time merely to improve
   // a future gate-option term.  Option 1 wins the unguarded sum, but option 0

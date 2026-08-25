@@ -59,6 +59,21 @@ int main() {
                    score.coherence_nll)) < 1e-15);
   ++tests;
 
+  // Reaching T2 makes the final linear score OOD, but native candidate search
+  // must remain feasible and rank this boundary with the exponential
+  // sensitivity increment instead of terminating the compiler.
+  const std::vector<double> ood_prior{1.5e6 - 1.0, 10.0, 20.0, 30.0};
+  const auto continued_score = evaluate_candidate(
+      architecture, candidate, {}, ood_prior);
+  assert(continued_score.feasible);
+  double expected_ood_coherence = 0.0;
+  for (const auto delta : continued_score.candidate_idle_time_us) {
+    expected_ood_coherence += delta / 1.5e6;
+  }
+  assert(std::abs(continued_score.coherence_nll -
+                  expected_ood_coherence) < 1e-15);
+  ++tests;
+
   ArchitectureSnapshot nearest_architecture(
       2,
       {{0.0, 0.0}, {4.0, 0.0}, {1.0, 0.0}, {0.0, 2.0}, {3.0, 0.0},
