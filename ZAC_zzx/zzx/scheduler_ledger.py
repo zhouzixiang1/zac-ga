@@ -684,6 +684,25 @@ class PureSchedulerLedger:
         if deactivation_offset is None:
             raise AssertionError("STORE presence check drift")
 
+        # The production router can name the current rearrangeJob as a site
+        # dependency when one atom in a multi-atom batch moves into a site
+        # vacated by another atom in that same batch.  Its legacy timing rule
+        # evaluates this as
+        # ``begin + activation_finish_offset - deactivation_offset``.  Because
+        # every LOAD finishes before the first STORE begins, that constraint is
+        # tautological and must not be looked up as a prior instruction.  Keep
+        # the ordering assertion explicit, then remove only the exact self id;
+        # every genuinely prior site dependency remains fail-closed.
+        site_dependencies = tuple(int(value) for value in site_dependencies)
+        if instruction_id in site_dependencies:
+            if (activation_finish_offset
+                    > deactivation_offset + _TIME_TOLERANCE_US):
+                raise ValueError(
+                    "AOD self site dependency crosses its own STORE phase")
+            site_dependencies = tuple(
+                value for value in site_dependencies
+                if value != instruction_id)
+
         selected_aod = min(
             range(len(self.aod_end_us)),
             key=lambda index: (self.aod_end_us[index], index))

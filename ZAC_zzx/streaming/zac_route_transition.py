@@ -303,7 +303,26 @@ class ZACRouteTransitionDriver:
     def _consume_scheduler_range(self, start: int, stop: int) -> None:
         for instruction_id in range(int(start), int(stop)):
             instruction = self.instructions[instruction_id]
-            timing = self.scheduler.consume_zair_instruction(instruction)
+            try:
+                timing = self.scheduler.consume_zair_instruction(instruction)
+            except ValueError as error:
+                dependencies = instruction.get("dependency") or {}
+                referenced = sorted({
+                    int(value)
+                    for raw in dependencies.values()
+                    for value in (raw if isinstance(raw, list) else [raw])
+                    if value is not None
+                })
+                missing = [
+                    value for value in referenced
+                    if value not in self.scheduler.instructions
+                ]
+                raise ValueError(
+                    "scheduler failed while consuming native instruction "
+                    f"{instruction_id} in range [{start}, {stop}); "
+                    f"dependencies={referenced}, missing={missing}, "
+                    f"scheduler_next={self.scheduler.next_instruction_id}"
+                ) from error
             if timing.instruction_id != instruction_id:
                 raise RuntimeError("scheduler/router native id drift")
 

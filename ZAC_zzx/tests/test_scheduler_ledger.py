@@ -109,6 +109,23 @@ class TestPureSchedulerLedger(unittest.TestCase):
         self.assertEqual(current.begin_us + current.deactivation_offset_us,
                          prior.activation_finish_us)
 
+    def test_same_batch_site_handoff_does_not_create_a_self_cycle(self):
+        ledger = PureSchedulerLedger(2)
+        ledger.schedule_init(0)
+        movement = ledger.schedule_aod(
+            1,
+            (
+                ExpandedAODPhase("load", 15.0, (0, 1)),
+                ExpandedAODPhase("move", 10.0, (0, 1)),
+                ExpandedAODPhase("store", 15.0, (0, 1)),
+            ),
+            dependencies=(0,),
+            site_dependencies=(1,),
+        )
+        self.assertEqual((movement.begin_us, movement.end_us), (0.0, 40.0))
+        self.assertEqual(movement.activation_finish_us, 15.0)
+        self.assertEqual(movement.deactivation_offset_us, 25.0)
+
     def test_exact_current_uses_absolute_idle_and_can_be_negative(self):
         ledger = PureSchedulerLedger(3, keep_events=False)
         ledger.schedule_init(0)
