@@ -135,7 +135,16 @@ class ZAC_zzx(ZAC):
                     "max_unique_evaluations", "operator_profile",
                     "direct_enumeration_limit", "crossover_rate",
                     "local_polish_sweeps", "return_candidate_limit",
-                    "return_assignment_k", "forecast_gate_candidate_budget",
+                    "return_assignment_k", "return_anchor_policy",
+                    "h0_state_potential_weight",
+                    "h0_state_potential_weight_policy",
+                    "h0_uncertain_stay_weight",
+                    "h0_uncertain_stay_policy",
+                    "h0_state_anchor_policy",
+                    "h0_anchor_pull_radius_um",
+                    "m3_search_budget_policy", "m3_pin_radius_policy",
+                    "h0_rent_policy",
+                    "forecast_gate_candidate_budget",
                     # ---- 初始布局引擎（"ga" = GAInitialPlacer 换掉 ZAC 的 SA）----
                     "init_engine", "init_pop", "init_gens")
     # ZAC 原版认识的键（消费断言用； Zac.parse_setting 同步维护）

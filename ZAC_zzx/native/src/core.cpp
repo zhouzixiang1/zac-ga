@@ -96,6 +96,49 @@ bool pair_hits_ghost(const Leg& first, const Leg& second,
   return false;
 }
 
+// Two-leg phases are common at serial 2Q boundaries.  Preserve the generic
+// adjacency rule (all phase owners are dynamic, every other atom is static)
+// without allocating the filtered ghost vector used by ``phase_adjacency``.
+bool pair_hits_phase_static_ghost(const MovementPhase& phase) {
+  if (phase.ghosts.empty()) return false;
+  const auto& first = phase.legs[0];
+  const auto& second = phase.legs[1];
+  const std::array<const Leg*, 2> legs{&first, &second};
+  const double x_min = std::min(
+      {first.source.x, first.target.x, second.source.x, second.target.x});
+  const double x_max = std::max(
+      {first.source.x, first.target.x, second.source.x, second.target.x});
+  const double y_min = std::min(
+      {first.source.y, first.target.y, second.source.y, second.target.y});
+  const double y_max = std::max(
+      {first.source.y, first.target.y, second.source.y, second.target.y});
+  for (const auto& ghost : phase.ghosts) {
+    if (std::find(phase.owners.begin(), phase.owners.end(), ghost.atom) !=
+        phase.owners.end()) {
+      continue;
+    }
+    const auto gx = ghost.position.x;
+    const auto gy = ghost.position.y;
+    if (gx < x_min - kEps || gx > x_max + kEps ||
+        gy < y_min - kEps || gy > y_max + kEps) {
+      continue;
+    }
+    for (const auto* column : legs) {
+      const auto x = cover(column->source.x, column->target.x, gx);
+      if (!x.valid) continue;
+      for (const auto* row : legs) {
+        const auto y = cover(row->source.y, row->target.y, gy);
+        if (!y.valid) continue;
+        if (x.always || y.always ||
+            std::abs(x.time - y.time) < kSTolerance) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 Adjacency phase_adjacency(const MovementPhase& phase) {
   const auto size = phase.legs.size();
   Adjacency adjacency(size);
@@ -257,6 +300,81 @@ std::vector<std::vector<std::size_t>> batches_from_colors(
 // at 129 legs; two 256x256-bit matrices consume only 16 KiB on the stack.
 constexpr std::size_t kDenseColorCapacity = 256;
 
+struct DenseAxisCoverage {
+  Coverage x;
+  Coverage y;
+};
+
+struct DenseLegBounds {
+  double x_min{};
+  double x_max{};
+  double y_min{};
+  double y_max{};
+};
+
+struct DenseColorScratch {
+  std::vector<std::int64_t> moving_owners;
+  std::vector<Ghost> static_ghosts;
+  std::vector<DenseAxisCoverage> coverage;
+  std::vector<DenseLegBounds> bounds;
+};
+
+// Dense heuristic calls are sequential within one boundary solve.  Reusing
+// these flat buffers removes allocator traffic from every candidate,
+// while thread-local ownership keeps independent compiler threads isolated.
+// Every live element is overwritten below before it is read.
+DenseColorScratch& dense_color_scratch() {
+  thread_local DenseColorScratch scratch;
+  return scratch;
+}
+
+std::vector<std::vector<std::size_t>> dense_batches_from_colors(
+    const MovementPhase& phase,
+    const std::array<int, kDenseColorCapacity>& colors,
+    std::size_t size) {
+  std::array<std::size_t, kDenseColorCapacity> slot_by_color;
+  slot_by_color.fill(size);
+  std::array<std::size_t, kDenseColorCapacity> counts{};
+  std::size_t batch_count = 0;
+  for (std::size_t vertex = 0; vertex < size; ++vertex) {
+    const auto color = static_cast<std::size_t>(colors[vertex]);
+    if (slot_by_color[color] == size) {
+      slot_by_color[color] = batch_count++;
+    }
+    ++counts[slot_by_color[color]];
+  }
+
+  std::vector<std::vector<std::size_t>> batches;
+  batches.reserve(batch_count);
+  for (std::size_t slot = 0; slot < batch_count; ++slot) {
+    batches.emplace_back();
+    batches.back().reserve(counts[slot]);
+  }
+  for (std::size_t vertex = 0; vertex < size; ++vertex) {
+    const auto color = static_cast<std::size_t>(colors[vertex]);
+    batches[slot_by_color[color]].push_back(vertex);
+  }
+  for (auto& members : batches) {
+    std::stable_sort(members.begin(), members.end(), [&](auto first,
+                                                          auto second) {
+      return phase.legs[first].distance_um >
+             phase.legs[second].distance_um;
+    });
+  }
+  std::stable_sort(batches.begin(), batches.end(), [&](const auto& first,
+                                                       const auto& second) {
+    const auto longest = [&](const auto& members) {
+      double value = 0.0;
+      for (const auto member : members) {
+        value = std::max(value, phase.legs[member].distance_um);
+      }
+      return value;
+    };
+    return longest(first) > longest(second);
+  });
+  return batches;
+}
+
 // Allocation-free adjacency/DSATUR for large current layers.  Exact coloring
 // is attempted only at or below ``exact_threshold``; above that threshold the
 // registered semantics are precisely the heuristic below.  The generic path's
@@ -268,14 +386,19 @@ std::vector<std::vector<std::size_t>> color_phase_dense_heuristic(
   const auto size = phase.legs.size();
   std::array<std::bitset<kDenseColorCapacity>, kDenseColorCapacity>
       adjacency{};
-  std::set<std::int64_t> moving_owners;
-  if (!phase.owners.empty()) {
-    moving_owners.insert(phase.owners.begin(), phase.owners.end());
-  }
-  std::vector<Ghost> static_ghosts;
+  auto& scratch = dense_color_scratch();
+  auto& moving_owners = scratch.moving_owners;
+  moving_owners.assign(phase.owners.begin(), phase.owners.end());
+  std::sort(moving_owners.begin(), moving_owners.end());
+  moving_owners.erase(
+      std::unique(moving_owners.begin(), moving_owners.end()),
+      moving_owners.end());
+  auto& static_ghosts = scratch.static_ghosts;
+  static_ghosts.clear();
   static_ghosts.reserve(phase.ghosts.size());
   for (const auto& ghost : phase.ghosts) {
-    if (moving_owners.count(ghost.atom) == 0U) {
+    if (!std::binary_search(
+            moving_owners.begin(), moving_owners.end(), ghost.atom)) {
       static_ghosts.push_back(ghost);
     }
   }
@@ -284,27 +407,25 @@ std::vector<std::vector<std::size_t>> color_phase_dense_heuristic(
   // in every O(n^2) pair.  The later 2x2 Cartesian-product check is exactly
   // the column/row set semantics of ``ghost_hit_atoms``.
   const auto static_count = static_ghosts.size();
-  std::vector<Coverage> x_coverage(size * static_count);
-  std::vector<Coverage> y_coverage(size * static_count);
-  std::vector<double> leg_x_min(size);
-  std::vector<double> leg_x_max(size);
-  std::vector<double> leg_y_min(size);
-  std::vector<double> leg_y_max(size);
+  auto& coverage = scratch.coverage;
+  auto& bounds = scratch.bounds;
+  coverage.resize(size * static_count);
+  bounds.resize(size);
   for (std::size_t leg = 0; leg < size; ++leg) {
-    leg_x_min[leg] = std::min(
+    bounds[leg].x_min = std::min(
         phase.legs[leg].source.x, phase.legs[leg].target.x);
-    leg_x_max[leg] = std::max(
+    bounds[leg].x_max = std::max(
         phase.legs[leg].source.x, phase.legs[leg].target.x);
-    leg_y_min[leg] = std::min(
+    bounds[leg].y_min = std::min(
         phase.legs[leg].source.y, phase.legs[leg].target.y);
-    leg_y_max[leg] = std::max(
+    bounds[leg].y_max = std::max(
         phase.legs[leg].source.y, phase.legs[leg].target.y);
     for (std::size_t ghost = 0; ghost < static_count; ++ghost) {
       const auto offset = leg * static_count + ghost;
-      x_coverage[offset] = cover(
+      coverage[offset].x = cover(
           phase.legs[leg].source.x, phase.legs[leg].target.x,
           static_ghosts[ghost].position.x);
-      y_coverage[offset] = cover(
+      coverage[offset].y = cover(
           phase.legs[leg].source.y, phase.legs[leg].target.y,
           static_ghosts[ghost].position.y);
     }
@@ -312,10 +433,10 @@ std::vector<std::vector<std::size_t>> color_phase_dense_heuristic(
   const auto pair_static_conflict = [&](std::size_t first,
                                         std::size_t second) {
     const std::array<std::size_t, 2> legs{first, second};
-    const auto x_min = std::min(leg_x_min[first], leg_x_min[second]);
-    const auto x_max = std::max(leg_x_max[first], leg_x_max[second]);
-    const auto y_min = std::min(leg_y_min[first], leg_y_min[second]);
-    const auto y_max = std::max(leg_y_max[first], leg_y_max[second]);
+    const auto x_min = std::min(bounds[first].x_min, bounds[second].x_min);
+    const auto x_max = std::max(bounds[first].x_max, bounds[second].x_max);
+    const auto y_min = std::min(bounds[first].y_min, bounds[second].y_min);
+    const auto y_max = std::max(bounds[first].y_max, bounds[second].y_max);
     for (std::size_t ghost = 0; ghost < static_count; ++ghost) {
       const auto& point = static_ghosts[ghost].position;
       if (point.x < x_min - kEps || point.x > x_max + kEps ||
@@ -323,10 +444,10 @@ std::vector<std::vector<std::size_t>> color_phase_dense_heuristic(
         continue;
       }
       for (const auto column : legs) {
-        const auto& x = x_coverage[column * static_count + ghost];
+        const auto& x = coverage[column * static_count + ghost].x;
         if (!x.valid) continue;
         for (const auto row : legs) {
-          const auto& y = y_coverage[row * static_count + ghost];
+          const auto& y = coverage[row * static_count + ghost].y;
           if (!y.valid) continue;
           if (x.always || y.always ||
               std::abs(x.time - y.time) < kSTolerance) {
@@ -383,7 +504,8 @@ std::vector<std::vector<std::size_t>> color_phase_dense_heuristic(
     throw std::invalid_argument("unknown batching policy: " + phase.batching);
   }
 
-  std::vector<int> colors(size, -1);
+  std::array<int, kDenseColorCapacity> colors;
+  colors.fill(-1);
   std::array<std::bitset<kDenseColorCapacity>, kDenseColorCapacity>
       neighbor_colors{};
   for (std::size_t step = 0; step < size; ++step) {
@@ -410,7 +532,7 @@ std::vector<std::vector<std::size_t>> color_phase_dense_heuristic(
       }
     }
   }
-  return batches_from_colors(phase, colors);
+  return dense_batches_from_colors(phase, colors, size);
 }
 
 std::vector<std::vector<std::size_t>> greedy_batches(
@@ -820,6 +942,42 @@ std::vector<std::vector<std::size_t>> color_phase(
     const MovementPhase& phase, std::size_t exact_threshold) {
   if (phase.legs.empty()) {
     return {};
+  }
+  if (phase.legs.size() <= 2) {
+    if (phase.batching != "phase" && phase.batching != "greedy") {
+      throw std::invalid_argument("unknown batching policy: " +
+                                  phase.batching);
+    }
+    if (phase.legs.size() == 1) {
+      return {{0}};
+    }
+    const auto& first = phase.legs[0];
+    const auto& second = phase.legs[1];
+    const std::array<double, 4> first_vector{
+        first.source.x, first.target.x, first.source.y, first.target.y};
+    const std::array<double, 4> second_vector{
+        second.source.x, second.target.x, second.source.y, second.target.y};
+    const bool conflict =
+        !compatible_2d(first_vector, second_vector) ||
+        pair_hits_phase_static_ghost(phase);
+    if (!conflict) {
+      if (second.distance_um > first.distance_um) {
+        return {{1, 0}};
+      }
+      return {{0, 1}};
+    }
+    // Greedy sorts its priority directly by distance.  Phase/DSATUR first
+    // creates two singleton color classes and then sorts their longest-leg
+    // values, whose implementation starts from 0.0.  Keep that corner-case
+    // distinction for arbitrary raw inputs as well as ordinary distances.
+    const bool reverse = phase.batching == "greedy"
+        ? second.distance_um > first.distance_um
+        : std::max(0.0, second.distance_um) >
+              std::max(0.0, first.distance_um);
+    if (reverse) {
+      return {{1}, {0}};
+    }
+    return {{0}, {1}};
   }
   if (phase.legs.size() <= kDenseColorCapacity &&
       (exact_threshold == 0 || phase.legs.size() > exact_threshold)) {

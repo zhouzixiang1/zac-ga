@@ -241,7 +241,7 @@ class QualityRacingTests(unittest.TestCase):
             "sequential-profile-then-one-factor-then-m4-decay",
             search_space_manifest()["design"])
 
-    def test_race_eliminates_quality_loser_unless_move_is_better(self):
+    def test_race_never_uses_move_to_rescue_mean_logf_loser(self):
         circuits = tuple(f"c{index}" for index in range(5))
         ids = ("leader", "loser", "move-winner")
         rows = []
@@ -258,8 +258,10 @@ class QualityRacingTests(unittest.TestCase):
             rows, active_candidate_ids=ids, method="M3",
             completed_circuits=circuits)
         self.assertEqual("leader", result["leader"])
-        self.assertEqual({"leader", "move-winner"}, set(result["retained"]))
-        self.assertEqual("loser", result["eliminated"][0]["candidate_id"])
+        self.assertEqual({"leader"}, set(result["retained"]))
+        self.assertEqual(
+            {"loser", "move-winner"},
+            {row["candidate_id"] for row in result["eliminated"]})
 
     def test_race_accepts_final_partial_block(self):
         circuits = tuple(f"c{index}" for index in range(4))
@@ -289,7 +291,31 @@ class QualityRacingTests(unittest.TestCase):
         selected = select_top(
             rows, candidate_ids=ids, method="M4", circuits=circuits,
             seeds=VALIDATION_SEEDS, count=2)
-        self.assertEqual(["near-fast", "best"], selected["selected"])
+        self.assertEqual(["best", "near-fast"], selected["selected"])
+
+    def test_selection_uses_mean_logf_not_outlier_friendly_median(self):
+        circuits = tuple(f"c{index}" for index in range(5))
+        outlier_deltas = (0.10, 0.01, 0.01, 0.01, -0.20)
+        rows = []
+        for circuit, delta in zip(circuits, outlier_deltas):
+            rows.append(trial(
+                "median-winner", "M4", circuit, 0, delta=delta,
+                runtime=1))
+            rows.append(trial(
+                "gm-winner", "M4", circuit, 0, delta=0.005,
+                runtime=100))
+        selected = select_top(
+            rows, candidate_ids=("median-winner", "gm-winner"), method="M4",
+            circuits=circuits, seeds=(0,), count=1)
+        self.assertEqual(["gm-winner"], selected["selected"])
+        summaries = {row["candidate_id"]: row
+                     for row in selected["summaries"]}
+        self.assertGreater(
+            summaries["median-winner"]["median_delta_log_fidelity"],
+            summaries["gm-winner"]["median_delta_log_fidelity"])
+        self.assertLess(
+            summaries["median-winner"]["mean_delta_log_fidelity"],
+            summaries["gm-winner"]["mean_delta_log_fidelity"])
 
     def test_incumbent_gate_forbids_purchasing_quality_regression(self):
         circuits = ("a", "b")

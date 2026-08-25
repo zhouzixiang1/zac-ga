@@ -129,11 +129,12 @@ class TestResidentPhysicalLedgers(unittest.TestCase):
         self.assertEqual(guards[0]["future_idle_exposures"], 1)
         self.assertFalse(guards[0]["forced_return"])
         self.assertTrue(guards[0]["stay_admitted"])
+        self.assertFalse(guards[0]["recommended_stay"])
+        self.assertEqual(first.decision_log["rent_recommended_stays"], 0)
 
         # Inject one already-paid physical idle pulse into an otherwise equal
-        # boundary.  It remains visible in the audit ledger and conditions the
-        # linear-T2 log-ratio, but is sunk cost: the H=0 decision still compares
-        # exactly one *future* pulse against RETURN/re-entry.
+        # boundary. It is the first rent unit in the deterministic online
+        # buy-versus-rent threshold, without reading a future circuit layer.
         long_provider = CachedForecastLayerProvider(
             len(schedule), lambda layer: schedule[layer], max_cached_layers=2)
         long_kernel = ResidentTransitionKernel(
@@ -142,17 +143,19 @@ class TestResidentPhysicalLedgers(unittest.TestCase):
         second = long_kernel.advance()
         guards = {row["q"]: row for row in second.decision_log["rent_guard"]}
         self.assertEqual(guards[0]["history_idle_exposures"], 1)
-        self.assertEqual(guards[0]["future_idle_exposures"], 1)
-        self.assertFalse(guards[0]["forced_return"])
-        self.assertEqual(guards[0]["reason"], "rent_below_return")
+        self.assertEqual(guards[0]["future_idle_exposures"], 2)
+        self.assertTrue(guards[0]["recommended_return"])
+        self.assertTrue(guards[0]["forced_return"])
+        self.assertEqual(
+            guards[0]["reason"], "rolling_horizon_return_deadline")
         self.assertEqual(
             guards[0]["stay_excitation_nll"],
-            -math.log(0.9975),
+            -2 * math.log(0.9975),
         )
         expected_coherence = (
             math.log1p(-guards[0]["coherence_prior_us"] / 1.5e6)
             - math.log1p(
-                -(guards[0]["coherence_prior_us"] + 0.36) / 1.5e6))
+                -(guards[0]["coherence_prior_us"] + 0.72) / 1.5e6))
         self.assertAlmostEqual(
             guards[0]["stay_coherence_increment_nll"],
             expected_coherence, places=15)
@@ -161,9 +164,9 @@ class TestResidentPhysicalLedgers(unittest.TestCase):
         schedule = (
             ((0, 1),),
             ((2, 3),),
-            ((0, 4),),
+            ((0, 2),),
         )
-        initial = [(0, 0, q) for q in range(5)]
+        initial = [(0, 0, q) for q in range(4)]
         provider = CachedForecastLayerProvider(
             len(schedule), lambda layer: schedule[layer],
             max_cached_layers=10)
@@ -183,6 +186,32 @@ class TestResidentPhysicalLedgers(unittest.TestCase):
         self.assertEqual(guards[1]["selected_decision"], "RETURN")
         self.assertEqual(first.decision_log["rent_guard_returns"], 0)
         self.assertEqual(first.decision_log["rent_recommended_returns"], 1)
+
+    def test_h0_one_idle_pulse_activates_online_return_threshold(self):
+        schedule = (
+            ((0, 1),),
+            ((2, 3),),
+            ((0, 4),),
+        )
+        initial = [(0, 0, q) for q in range(5)]
+        provider = CachedForecastLayerProvider(
+            len(schedule), lambda layer: schedule[layer], max_cached_layers=2)
+        kernel = ResidentTransitionKernel(
+            placer(initial, horizon=0), self.arch, initial, provider)
+        # Only already-observed state is supplied. H=0 cannot read layer two;
+        # the observed pulse is the online rent certificate for buying RETURN.
+        kernel.placer.registry.record_rydberg_pulse((1,), 0.36)
+
+        transition = kernel.advance()
+        guards = {row["q"]: row for row in
+                  transition.decision_log["rent_guard"]}
+        self.assertEqual("h0_current_only", guards[0]["mode"])
+        self.assertEqual(1, guards[0]["history_idle_exposures"])
+        self.assertEqual(2, guards[0]["future_idle_exposures"])
+        self.assertTrue(guards[0]["recommended_return"])
+        self.assertTrue(guards[0]["forced_return"])
+        self.assertEqual("RETURN", guards[0]["selected_decision"])
+        self.assertNotIn(2, provider.cached_layers)
 
     def test_m4_one_idle_pulse_activates_rolling_return_deadline(self):
         schedule = (
@@ -242,10 +271,13 @@ class TestResidentPhysicalLedgers(unittest.TestCase):
 
     def test_break_even_audit_keeps_causal_return_as_soft_recommendation(self):
         cases = (
-            (0, (((0, 1),), ((2, 3),)), 4, "RETURN", 0),
-            (0, (((0, 1),), ((2, 3),)), 20, "STAY", 0),
-            (8, (((0, 1),), ((2, 3),), ((0, 4),)), 5, "RETURN", 0),
-            (8, (((0, 1),), ((2, 3),), ((0, 4),)), 40, "STAY", 0),
+            (0, (((0, 1),), ((2, 3),)), 4, {"RETURN"}, 0),
+            (0, (((0, 1),), ((2, 3),)), 20, {"STAY"}, 0),
+            # M4's complete round-trip audit protects q0's cheaper STAY while
+            # q1, which has no visible reuse, still takes the cheaper RETURN.
+            (8, (((0, 1),), ((2, 3),), ((0, 4),)), 5,
+             {"STAY", "RETURN"}, 0),
+            (8, (((0, 1),), ((2, 3),), ((0, 4),)), 40, {"STAY"}, 0),
         )
         for horizon, schedule, n_atoms, expected, expected_forced in cases:
             with self.subTest(
@@ -267,7 +299,7 @@ class TestResidentPhysicalLedgers(unittest.TestCase):
                 )
                 self.assertEqual(
                     {row["selected_decision"] for row in guards},
-                    {expected},
+                    expected,
                 )
         # The scalar bound is diagnostic only.  It injects an exact-scored
         # RETURN candidate but never hard-masks the joint native decision.

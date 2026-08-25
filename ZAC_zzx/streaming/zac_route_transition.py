@@ -500,15 +500,26 @@ class ZACRouteTransitionDriver:
         initial = _freeze_mapping(initial_mapping)
         if initial != _freeze_mapping(state["initial_mapping"]):
             raise ValueError("checkpoint route initial mapping mismatch")
-        driver = cls(
-            architecture,
-            initial,
-            initial_one_qubit_gates=state["initial_one_qubit_gates"],
-            window_size=int(state["window_size"]),
-            placer_kind=str(state["placer_kind"]),
-            coloring_exact_threshold=int(
-                state.get("coloring_exact_threshold", 24)),
-        )
+        # This path is the exact-current candidate hot path: it executes twice
+        # per boundary.  Calling __init__ here emitted and scheduled a fresh
+        # initial instruction stream only to overwrite every field below.
+        # Build the same bounded state directly so restoration remains exact
+        # while avoiding O(number of boundaries) redundant router starts.
+        placer_kind = str(state["placer_kind"])
+        if placer_kind not in {"zac", "resident"}:
+            raise ValueError("checkpoint placer kind is invalid")
+        window_size = int(state["window_size"])
+        if window_size <= 0:
+            raise ValueError("checkpoint window size must be positive")
+        exact_threshold = int(state.get("coloring_exact_threshold", 24))
+        if exact_threshold < 0:
+            raise ValueError("checkpoint coloring threshold is negative")
+
+        driver = cls.__new__(cls)
+        driver.architecture = architecture
+        driver.initial_mapping = initial
+        driver.placer_kind = placer_kind
+        driver.n_qubits = len(initial)
         driver.next_layer = int(state["next_layer"])
         if driver.next_layer < 0:
             raise ValueError("checkpoint route layer is negative")
@@ -517,7 +528,29 @@ class ZACRouteTransitionDriver:
         driver.initial_instructions = tuple(
             deepcopy(state["initial_instructions"]))
 
-        compiler = driver.compiler
+        compiler = ZAC_zzx()
+        compiler.architecture = architecture
+        compiler.n_q = driver.n_qubits
+        compiler.placer_kind = placer_kind
+        compiler.routing_strategy = (
+            "greedy" if placer_kind == "zac" else "coloring")
+        compiler.zzx_exact_threshold = exact_threshold
+        compiler.dynamic_placement = True
+        compiler.reuse = True
+        compiler.use_window = True
+        compiler.window_size = window_size
+        compiler.qubit_mapping = [_mutable_mapping(driver.current_boundary)]
+        compiler.gate_scheduling = []
+        compiler.gate_scheduling_idx = []
+        compiler.gate_1q_scheduling = []
+        compiler.dict_g_1q_parent = {
+            -1: driver._one_qubit_gates(state["initial_one_qubit_gates"]),
+        }
+        compiler.result_json["instructions"] = driver.instructions
+        compiler.result_json["runtime"] = 0.0
+        compiler.zzx_route_log = []
+        compiler.zzx_ghost_splits = 0
+        driver.compiler = compiler
         compiler.result_json["instructions"] = driver.instructions
         dependencies = state["dependencies"]
         compiler.qubit_dependency = [int(v) for v in dependencies["qubit"]]

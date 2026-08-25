@@ -202,6 +202,7 @@ def _forecast_summary(decisions: list[dict],
     visible_depths: Dict[str, int] = {}
     offset_weights = None
     weighted_nll = 0.0
+    state_potential_nll = 0.0
     for row in rows:
         for key, value in expected.items():
             if float(row.get(key, float("nan"))) != float(value):
@@ -221,6 +222,8 @@ def _forecast_summary(decisions: list[dict],
         elif weights != offset_weights:
             raise ValueError("forecast offset weights drift between boundaries")
         weighted_nll += float(row.get("weighted_negative_log_fidelity", 0.0))
+        state_potential_nll += float(
+            row.get("state_potential_negative_log_fidelity", 0.0))
     if offset_weights is None:
         # Empty schedules have no boundary rows, but their registered window is
         # still reconstructible without reading a future layer.
@@ -247,6 +250,8 @@ def _forecast_summary(decisions: list[dict],
         "alpha_lookahead": alpha,
         "offset_weights": offset_weights,
         "weighted_negative_log_fidelity_total": weighted_nll,
+        "state_potential_negative_log_fidelity_total": (
+            state_potential_nll),
         "transition_count": len(rows),
     }
 

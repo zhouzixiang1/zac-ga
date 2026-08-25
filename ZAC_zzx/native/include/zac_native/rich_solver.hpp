@@ -113,6 +113,10 @@ struct RichH0Problem {
   std::vector<std::size_t> eviction_order_indices;
   std::vector<bool> forced_return_mask;
   std::vector<bool> recommended_return_mask;
+  // Full RETURN+re-entry rent audit prefers STAY.  The solver treats this as a
+  // trust-region recommendation; forced/capacity RETURN and joint infeasibility
+  // remain authoritative.
+  std::vector<bool> recommended_stay_mask;
   std::vector<std::vector<RichReturnOption>> return_domains;
   std::vector<std::int64_t> occupied_storage_site_ids;
   std::vector<std::int64_t> matched_gate_genes;

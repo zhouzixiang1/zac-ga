@@ -34,6 +34,28 @@ constexpr double kRydbergUs = 0.36;
 constexpr double kOneQUs = 52.0;
 constexpr double kAccelUmPerUs2 = 0.00275;
 constexpr double kT2Us = 1.5e6;
+// The bounded rollout is a heuristic, not an exact Bellman oracle. Requiring
+// a fourfold predicted saving before spending executable current fidelity
+// prevents long-distance placements from exploiting optimistic rollout error.
+constexpr double kForecastSacrificeTrust = 0.25;
+// A wide target layer already gives the GA a coupled gate placement.  Replaying
+// every complete gate domain for every residency suffix turns the M4 safety
+// guard into a second, much larger optimizer (20-gate Ising layers were
+// spending minutes here).  Above this threshold the guard audits a bounded,
+// deterministic neighbourhood around the GA winner and the ordinary matched
+// placement.  The current gene, matched gene and the first few weight-ordered
+// local candidates keep the physical anchor while avoiding a gate_count x
+// full_zone_domain x suffix explosion.
+constexpr std::size_t kParallelGuardGateThreshold = 8;
+constexpr std::size_t kParallelGuardOptionLimit = 6;
+// A long-depth profile is signalled by the registered exact-enumeration cap.
+// Its layers are overwhelmingly one-to-three gates wide, so the M4 guard
+// audits a stable six-option current-physics neighbourhood per gate rather
+// than re-solving all 140 zone sites after every already-bounded GA call.  All
+// sites remain in the search DTO and full-domain recovery still runs when the
+// bounded cohort is current-infeasible.
+constexpr std::size_t kLongDepthEnumerationLimit = 64;
+constexpr std::size_t kLongDepthGuardOptionLimit = 6;
 
 // The paper's linear coherence factor is undefined once any absolute idle
 // time reaches T2.  That must make the *reported* linear fidelity OOD, but it
@@ -459,39 +481,6 @@ bool current_physical_less(const Evaluated& first, const Evaluated& second) {
   return current_physical_key(first) < current_physical_key(second);
 }
 
-bool same_current_primary_bucket(const Evaluated& first,
-                                 const Evaluated& second) {
-  return std::make_tuple(
-             objective_bucket(first.fitness.negative_log_fidelity, 1e-12),
-             first.fitness.move_batches,
-             objective_bucket(first.fitness.move_time_us, 1e-6),
-             objective_bucket(first.fitness.total_distance_um, 1e-6)) ==
-         std::make_tuple(
-             objective_bucket(second.fitness.negative_log_fidelity, 1e-12),
-             second.fitness.move_batches,
-             objective_bucket(second.fitness.move_time_us, 1e-6),
-             objective_bucket(second.fitness.total_distance_um, 1e-6));
-}
-
-bool current_primary_dominates(const Evaluated& first,
-                               const Evaluated& second) {
-  const auto first_nll =
-      objective_bucket(first.fitness.negative_log_fidelity, 1e-12);
-  const auto second_nll =
-      objective_bucket(second.fitness.negative_log_fidelity, 1e-12);
-  const auto first_time = objective_bucket(first.fitness.move_time_us, 1e-6);
-  const auto second_time = objective_bucket(second.fitness.move_time_us, 1e-6);
-  const auto weakly_better =
-      first_nll <= second_nll &&
-      first.fitness.move_batches <= second.fitness.move_batches &&
-      first_time <= second_time;
-  const auto strictly_better =
-      first_nll < second_nll ||
-      first.fitness.move_batches < second.fitness.move_batches ||
-      first_time < second_time;
-  return weakly_better && strictly_better;
-}
-
 struct AssignmentSolution {
   std::vector<std::int64_t> site_ids;
   double cost{};
@@ -696,6 +685,10 @@ class RichSolver {
     }
     if (problem_.recommended_return_mask.empty()) {
       problem_.recommended_return_mask.assign(
+          problem_.eligible.size(), false);
+    }
+    if (problem_.recommended_stay_mask.empty()) {
+      problem_.recommended_stay_mask.assign(
           problem_.eligible.size(), false);
     }
     validate();
@@ -1193,7 +1186,13 @@ class RichSolver {
       const auto chromosome = normalize(raw);
       auto [iterator, inserted] = guard_values.try_emplace(chromosome);
       if (inserted) {
-        iterator->second = evaluate_guard_assignment_cohort(chromosome);
+        // Gate projection is ordered solely by exact current-boundary physics.
+        // Deferring the bounded rollout here avoids replaying H future layers
+        // for every option inspected by the coordinate/full-domain sweep.
+        // The final guard cohort below receives the complete forecast before
+        // any future-aware admission or winner comparison.
+        iterator->second =
+            evaluate_guard_assignment_cohort(chromosome, false);
         ++current_gate_projection_evaluated_;
       }
       return iterator->second;
@@ -1210,17 +1209,50 @@ class RichSolver {
 
     // The GA archive is not guaranteed to contain the current-myopic gate
     // placement for every residency suffix that matters to the rolling rent
-    // decision.  Project the provisional suffix, every recommended singleton,
-    // and the complete recommendation mask independently: one-gate layers
-    // enumerate the complete domain, while wider layers perform two
-    // full-domain coordinate sweeps.  Selection here uses current physics
-    // only; forecast remains solely the downstream tie/Pareto selector.
+    // decision.  Serial and narrow layers retain the complete audit.  Wide
+    // parallel layers use one bounded coordinate sweep and only the all-STAY,
+    // provisional, and complete recommendation suffixes; per-resident
+    // singleton projection there is both combinatorial and redundant with the
+    // coupled suffix already selected by the GA.  Selection here uses current
+    // physics only; forecast remains solely the downstream tie/Pareto selector.
     const auto gate_count = problem_.gate_domains.size();
+    const bool long_depth_guard =
+        gate_count > 0 &&
+        config_.direct_enumeration_limit <= kLongDepthEnumerationLimit;
+    const bool bounded_parallel_guard =
+        gate_count >= kParallelGuardGateThreshold ||
+        (long_depth_guard && gate_count > 1);
+    const bool bounded_serial_guard =
+        gate_count == 1 && long_depth_guard;
+    const bool bounded_gate_guard =
+        bounded_parallel_guard || bounded_serial_guard;
+    const auto bounded_option_limit =
+        bounded_parallel_guard ? kParallelGuardOptionLimit
+                               : kLongDepthGuardOptionLimit;
+    const bool has_return_recommendation = std::any_of(
+        problem_.recommended_return_mask.begin(),
+        problem_.recommended_return_mask.end(),
+        [](const auto value) { return value; });
+    const bool has_stay_recommendation = std::any_of(
+        problem_.recommended_stay_mask.begin(),
+        problem_.recommended_stay_mask.end(),
+        [](const auto value) { return value; });
     current_gate_projection_source_ =
         gate_count == 0
             ? "no-current-gates"
-            : (gate_count == 1 ? "single-gate-full-domain"
-                               : "coordinate-full-domain-2-sweep");
+            : (gate_count == 1
+               ? (bounded_serial_guard
+                      ? (has_return_recommendation
+                             ? "single-gate-joint-long-depth-bounded"
+                             : "single-gate-long16")
+                      : (has_return_recommendation
+                             ? "single-gate-joint-full-domain-singleton-reuse"
+                             : "single-gate-full-domain"))
+               : (bounded_parallel_guard
+                      ? (long_depth_guard
+                             ? "coordinate-bounded-long-depth-1-sweep"
+                             : "coordinate-bounded-parallel-1-sweep")
+                      : "coordinate-full-domain-2-sweep"));
     const auto project_current_gates = [&](
         const std::vector<std::int64_t>& raw)
         -> std::optional<std::vector<std::int64_t>> {
@@ -1234,13 +1266,38 @@ class RichSolver {
       const auto sweeps = gate_count == 0
                               ? std::size_t{0}
                               : (gate_count == 1 ? std::size_t{1}
-                                                 : std::size_t{2});
+                                 : (bounded_parallel_guard
+                                        ? std::size_t{1}
+                                        : std::size_t{2}));
       for (std::size_t sweep = 0; sweep < sweeps; ++sweep) {
         bool changed = false;
         for (std::size_t gate = 0; gate < gate_count; ++gate) {
           auto best = projected_value;
-          for (std::size_t option = 0;
-               option < problem_.gate_domains[gate].size(); ++option) {
+          std::vector<std::size_t> options;
+          const auto add_option = [&options](const std::size_t option) {
+            if (std::find(options.begin(), options.end(), option) ==
+                options.end()) {
+              options.push_back(option);
+            }
+          };
+          const auto domain_size = problem_.gate_domains[gate].size();
+          if (bounded_gate_guard) {
+            add_option(positive_mod(projected[gate], domain_size));
+            add_option(positive_mod(problem_.matched_gate_genes[gate],
+                                    domain_size));
+            for (std::size_t option = 0;
+                 option < domain_size &&
+                 options.size() < bounded_option_limit;
+                 ++option) {
+              add_option(option);
+            }
+          } else {
+            options.reserve(domain_size);
+            for (std::size_t option = 0; option < domain_size; ++option) {
+              options.push_back(option);
+            }
+          }
+          for (const auto option : options) {
             auto trial = projected;
             trial[gate] = static_cast<std::int64_t>(option);
             trial = normalize(trial);
@@ -1265,9 +1322,8 @@ class RichSolver {
     // RETURN.  normalize() still owns forced returns, capacity repair, and
     // deterministic eviction order before any physical comparison.
     std::set<std::vector<std::int64_t>> projection_seeds{provisional};
-    if (std::any_of(problem_.recommended_return_mask.begin(),
-                    problem_.recommended_return_mask.end(),
-                    [](const auto value) { return value; })) {
+    std::set<std::vector<std::int64_t>> serial_singleton_seeds;
+    if (has_return_recommendation) {
       auto all_stay = provisional;
       std::fill(all_stay.begin() + static_cast<std::ptrdiff_t>(gate_count),
                 all_stay.end(), 0);
@@ -1275,18 +1331,64 @@ class RichSolver {
       for (std::size_t index = 0;
            index < problem_.recommended_return_mask.size(); ++index) {
         if (!problem_.recommended_return_mask[index]) continue;
-        auto singleton = all_stay;
-        singleton[gate_count + index] = 1;
-        projection_seeds.insert(normalize(singleton));
+        if (!bounded_gate_guard) {
+          auto singleton = all_stay;
+          singleton[gate_count + index] = 1;
+          singleton = normalize(singleton);
+          if (gate_count == 1) {
+            serial_singleton_seeds.insert(std::move(singleton));
+          } else {
+            projection_seeds.insert(std::move(singleton));
+          }
+        }
         recommended[gate_count + index] = 1;
+      }
+      if (bounded_parallel_guard) {
+        projection_seeds.insert(normalize(all_stay));
       }
       projection_seeds.insert(normalize(recommended));
     }
+    if (has_stay_recommendation) {
+      // A decayed objective can under-price RETURN by charging its current
+      // half-cycle at full weight but discounting the later re-entry.  The
+      // caller's full round-trip rent audit supplies one exact joint suffix
+      // with those proven-cheaper atoms kept resident.  normalize() still
+      // owns forced RETURNs and deterministic capacity eviction.
+      auto recommended_stay = provisional;
+      for (std::size_t index = 0;
+           index < problem_.recommended_stay_mask.size(); ++index) {
+        if (problem_.recommended_stay_mask[index]) {
+          recommended_stay[gate_count + index] = 0;
+        }
+      }
+      projection_seeds.insert(normalize(recommended_stay));
+    }
 
     std::set<std::vector<std::int64_t>> projected_chromosomes;
+    std::optional<std::vector<std::int64_t>> projected_provisional;
     for (const auto& seed : projection_seeds) {
       const auto projected = project_current_gates(seed);
-      if (projected.has_value()) projected_chromosomes.insert(*projected);
+      if (!projected.has_value()) continue;
+      projected_chromosomes.insert(*projected);
+      if (seed == provisional) projected_provisional = *projected;
+    }
+    if (gate_count == 1 && projected_provisional.has_value()) {
+      // Ordinary serial layers retain exact singleton suffixes.  The registered
+      // long-depth guard deliberately leaves this set empty: its provisional
+      // GA winner plus the joint recommended RETURN/STAY suffixes already
+      // contain the coupled decisions, while replaying one suffix per atom was
+      // the dominant 10k-layer cost.  Every retained suffix still passes the
+      // unchanged strict current assignment and ghost-safe scorer.
+      for (const auto& singleton : serial_singleton_seeds) {
+        if (projection_seeds.count(singleton) != 0U) continue;
+        auto reused = singleton;
+        reused[0] = (*projected_provisional)[0];
+        reused = normalize(reused);
+        auto* value = current_min(values_for(reused));
+        if (value != nullptr && value->fitness.feasible) {
+          projected_chromosomes.insert(value->fitness.chromosome);
+        }
+      }
     }
     if (projected_chromosomes.empty()) {
       current_gate_guard_branch_ = "projection-infeasible-fallback";
@@ -1299,8 +1401,10 @@ class RichSolver {
     // Pareto envelope across the union.  This prevents a useful rent
     // recommendation from disappearing merely because it arrived with a gate
     // prefix that was suboptimal for that suffix.
-    for (const auto& projected : projected_chromosomes) {
-      complete_deferred_guard_suffix(projected);
+    if (!bounded_gate_guard) {
+      for (const auto& projected : projected_chromosomes) {
+        complete_deferred_guard_suffix(projected);
+      }
     }
     const auto residency_suffix = [&](const std::vector<std::int64_t>& value) {
       return std::vector<std::int64_t>(
@@ -1318,31 +1422,136 @@ class RichSolver {
     };
 
     std::set<std::vector<std::int64_t>> guard_chromosomes;
-    for (const auto& [chromosome, value] : complete_evaluated_archive_) {
-      (void)value;
-      if (has_projected_suffix(chromosome)) {
-        guard_chromosomes.insert(chromosome);
+    if (!bounded_parallel_guard) {
+      for (const auto& [chromosome, value] : complete_evaluated_archive_) {
+        (void)value;
+        if (has_projected_suffix(chromosome)) {
+          guard_chromosomes.insert(chromosome);
+        }
       }
-    }
-    for (const auto& [chromosome, values] : guard_values) {
-      (void)values;
-      if (has_projected_suffix(chromosome)) {
-        guard_chromosomes.insert(chromosome);
+      for (const auto& [chromosome, values] : guard_values) {
+        (void)values;
+        if (has_projected_suffix(chromosome)) {
+          guard_chromosomes.insert(chromosome);
+        }
       }
     }
     guard_chromosomes.insert(projected_chromosomes.begin(),
                              projected_chromosomes.end());
-    std::vector<Evaluated> cohort;
+    struct GuardCurrentCandidate {
+      const std::vector<std::int64_t>* chromosome{};
+      Evaluated* value{};
+    };
+    std::vector<GuardCurrentCandidate> current_cohort;
     for (const auto& chromosome : guard_chromosomes) {
-      for (const auto& value : values_for(chromosome)) {
-        if (value.fitness.feasible && value.forecast_feasible &&
-            std::isfinite(value.search_nll)) {
-          cohort.push_back(value);
+      auto& values = values_for(chromosome);
+      for (auto& value : values) {
+        if (value.fitness.feasible) {
+          current_cohort.push_back({&chromosome, &value});
         }
       }
     }
-    if (cohort.empty()) return fallback;
-    current_gate_guard_cohort_size_ = cohort.size();
+    if (current_cohort.empty()) return fallback;
+
+    // Forced returns and the deterministic min_returns normalization are
+    // authoritative.  Every other full-round-trip STAY recommendation forms
+    // a trust region: among forecast-feasible candidates, first minimize how
+    // many of those bits had to be overridden (for example by a joint ghost
+    // conflict), then compare the physical/forecast objective.  Deriving the
+    // capacity suffix through normalize(all-STAY) exactly mirrors the Python
+    // semantic reference and lets hard capacity override the hint.
+    auto normalized_all_stay = provisional;
+    std::fill(
+        normalized_all_stay.begin() +
+            static_cast<std::ptrdiff_t>(gate_count),
+        normalized_all_stay.end(), 0);
+    normalized_all_stay = normalize(normalized_all_stay);
+    std::vector<std::size_t> protected_stays;
+    for (std::size_t index = 0;
+         index < problem_.recommended_stay_mask.size(); ++index) {
+      if (problem_.recommended_stay_mask[index] &&
+          !problem_.forced_return_mask[index] &&
+          normalized_all_stay[gate_count + index] == 0) {
+        protected_stays.push_back(index);
+      }
+    }
+    const auto stay_violations = [&](const GuardCurrentCandidate& candidate) {
+      return static_cast<std::size_t>(std::count_if(
+          protected_stays.begin(), protected_stays.end(),
+          [&](const auto index) {
+            return candidate.value->fitness.chromosome[gate_count + index] !=
+                   0;
+          }));
+    };
+    std::sort(current_cohort.begin(), current_cohort.end(),
+              [&](const auto& first, const auto& second) {
+                const auto first_violations = stay_violations(first);
+                const auto second_violations = stay_violations(second);
+                if (first_violations != second_violations) {
+                  return first_violations < second_violations;
+                }
+                return current_physical_less(*first.value, *second.value);
+              });
+
+    // Projection values are deliberately current-only.  Complete candidates
+    // in exact current-physics order until the first forecast-feasible value
+    // establishes the guard anchor.  Every forecast contribution is a
+    // non-negative physical NLL, so a later assignment whose exact current
+    // NLL already strictly exceeds that complete anchor can neither become the
+    // current anchor nor pass the unchanged search_nll <= anchor.search_nll
+    // admission below.  Exact ties still receive the full rollout so Move and
+    // canonical assignment tie-breaks remain byte-for-byte deterministic.
+    std::vector<Evaluated> cohort;
+    cohort.reserve(current_cohort.size());
+    std::optional<Evaluated> anchor_value;
+    std::size_t minimum_stay_violations = 0;
+    std::size_t group_begin = 0;
+    while (group_begin < current_cohort.size() && !anchor_value.has_value()) {
+      const auto group_violations = stay_violations(
+          current_cohort[group_begin]);
+      auto group_end = group_begin + 1;
+      while (group_end < current_cohort.size() &&
+             stay_violations(current_cohort[group_end]) == group_violations) {
+        ++group_end;
+      }
+
+      std::size_t next_current = group_begin;
+      for (; next_current < group_end; ++next_current) {
+        auto& current = current_cohort[next_current];
+        apply_forecast(*current.value, *current.chromosome);
+        if (current.value->forecast_feasible &&
+            std::isfinite(current.value->search_nll)) {
+          anchor_value = *current.value;
+          cohort.push_back(*current.value);
+          minimum_stay_violations = group_violations;
+          ++next_current;
+          break;
+        }
+      }
+      if (anchor_value.has_value()) {
+        for (; next_current < group_end; ++next_current) {
+          auto& current = current_cohort[next_current];
+          if (current.value->fitness.negative_log_fidelity >
+              anchor_value->search_nll + 1e-12) {
+            continue;
+          }
+          apply_forecast(*current.value, *current.chromosome);
+          if (current.value->forecast_feasible &&
+              std::isfinite(current.value->search_nll)) {
+            cohort.push_back(*current.value);
+          }
+        }
+        break;
+      }
+      group_begin = group_end;
+    }
+    if (!anchor_value.has_value()) return fallback;
+    // Keep the public cohort counter on its established contract: it counts
+    // exact-current assignments presented to the guard, including assignments
+    // whose non-negative future lower bound proved that a rollout was
+    // unnecessary.  The admitted counter below still reports the actually
+    // forecast-complete subset that can affect the winner.
+    current_gate_guard_cohort_size_ = current_cohort.size();
 
     const auto* anchor = &*std::min_element(
         cohort.begin(), cohort.end(), [](const auto& first, const auto& second) {
@@ -1356,42 +1565,26 @@ class RichSolver {
 
     std::vector<const Evaluated*> admitted;
     admitted.reserve(cohort.size());
-    if (problem_.eligible.empty()) {
-      current_gate_guard_branch_ = "eligible-empty-exact-tie";
-      // With no residency bit to optimize, a decay forecast may only break an
-      // exact current-physics tie.  It cannot purchase current NLL, batch, or
-      // Move-time degradation, which is the wide-QFT drift guard.
-      for (const auto& value : cohort) {
-        if (same_current_primary_bucket(value, *anchor)) {
-          admitted.push_back(&value);
-        }
-      }
-    } else {
-      current_gate_guard_branch_ = "residency-pareto-envelope";
-      const auto transfer_limit =
-          anchor->fitness.transfers >
-                  std::numeric_limits<std::size_t>::max() - 2
-              ? std::numeric_limits<std::size_t>::max()
-              : anchor->fitness.transfers + 2;
-      // One additional moving atom contributes exactly one load+store pair.
-      // A Pareto tradeoff may spend at most that physical error budget; this
-      // prevents a tiny batch advantage from admitting arbitrarily worse
-      // coherence/Move time merely because the future forecast is favorable.
-      const auto current_nll_limit =
-          anchor->fitness.negative_log_fidelity - 2.0 * std::log(kFTransfer);
-      for (const auto& value : cohort) {
-        if (value.fitness.transfers > transfer_limit) continue;
-        if (value.fitness.negative_log_fidelity >
-            current_nll_limit + 1e-12) {
-          continue;
-        }
-        const auto dominated = std::any_of(
-            cohort.begin(), cohort.end(), [&](const auto& challenger) {
-              return &challenger != &value &&
-                     current_primary_dominates(challenger, value);
-            });
-        if (!dominated) admitted.push_back(&value);
-      }
+    current_gate_guard_branch_ =
+        protected_stays.empty()
+            ? "trust-region-forecast-sacrifice"
+            : (minimum_stay_violations == 0
+                   ? "trust-region-round-trip-stay"
+                   : "trust-region-round-trip-stay-relaxed");
+    // A future-aware candidate may spend current fidelity only when the same
+    // physical rollout certifies at least that much future saving.  This keeps
+    // the current-safe anchor, but removes the fixed +2-transfer ceiling and
+    // the eligible-empty exact-tie rule that prevented genuine gate relocation.
+    for (const auto& value : cohort) {
+      const auto current_extra = std::max(
+          0.0, value.fitness.negative_log_fidelity -
+                   anchor->fitness.negative_log_fidelity);
+      const auto forecast_saving = std::max(
+          0.0, anchor->forecast_nll - value.forecast_nll);
+      if (current_extra >
+          kForecastSacrificeTrust * forecast_saving + 1e-12) continue;
+      if (value.search_nll > anchor->search_nll + 1e-12) continue;
+      admitted.push_back(&value);
     }
     const auto* selected = anchor;
     current_gate_guard_admitted_size_ = admitted.size();
@@ -1417,8 +1610,16 @@ class RichSolver {
     }
     if (problem_.return_domains.size() != problem_.eligible.size() ||
         problem_.forced_return_mask.size() != problem_.eligible.size() ||
-        problem_.recommended_return_mask.size() != problem_.eligible.size()) {
+        problem_.recommended_return_mask.size() != problem_.eligible.size() ||
+        problem_.recommended_stay_mask.size() != problem_.eligible.size()) {
       throw std::invalid_argument("rich eligible arrays are not aligned");
+    }
+    for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
+      if (problem_.recommended_return_mask[index] &&
+          problem_.recommended_stay_mask[index]) {
+        throw std::invalid_argument(
+            "rich RETURN and STAY recommendations are not disjoint");
+      }
     }
     if (problem_.eviction_order_indices.size() != problem_.eligible.size()) {
       throw std::invalid_argument("rich eviction order has wrong size");
@@ -1597,8 +1798,11 @@ class RichSolver {
       if (domain.empty()) throw std::invalid_argument("empty rich gate domain");
     }
     for (const auto& term : problem_.forecast_terms) {
-      if (term.depth == 0 || term.depth > config_.max_horizon || term.nll < 0.0 ||
-          !std::isfinite(term.nll)) {
+      const auto depth_zero_state =
+          term.depth == 0 && config_.max_horizon == 0;
+      if ((!depth_zero_state &&
+           (term.depth == 0 || term.depth > config_.max_horizon)) ||
+          term.nll < 0.0 || !std::isfinite(term.nll)) {
         throw std::invalid_argument("forecast term exceeds bounded decay contract");
       }
       const auto eligible_count = static_cast<std::int64_t>(problem_.eligible.size());
@@ -1827,6 +2031,17 @@ class RichSolver {
     for (std::size_t index = 0; index < problem_.forecast_terms.size();
          ++index) {
       const auto& term = problem_.forecast_terms[index];
+      if (term.depth == 0) {
+        // M3 depth-zero Phi(s') is already scaled by its registered weight in
+        // the problem DTO.  It contains no future layer and therefore must not
+        // receive alpha or geometric decay a second time.
+        compiled_forecast_terms_[index] = {
+            term.nll,
+            0,
+            static_cast<std::size_t>(term.category),
+            true,
+        };
+      } else {
       const auto decay_factor = std::pow(
           config_.decay_rho, static_cast<double>(term.depth - 1));
       if (decay_factor < config_.decay_epsilon) {
@@ -1839,6 +2054,7 @@ class RichSolver {
           static_cast<std::size_t>(term.category),
           true,
       };
+      }
       const auto eligible_index = static_cast<std::size_t>(term.index);
       switch (term.kind) {
         case RichForecastKind::kConstant:
@@ -1905,15 +2121,11 @@ class RichSolver {
     result.forecast_by_depth.assign(config_.max_horizon + 1, 0.0);
     result.forecast_by_category.fill(0.0);
     result.forecast_nll = 0.0;
-    if (config_.max_horizon == 0) {
-      // H=0 still owns a current-state Bellman cleanup value for ordinary
-      // eligible residents.  apply_native_rollout() receives no future-layer
-      // payload on this path, so the strict no-future-access contract holds.
-      if (problem_.terminal_boundary) {
-        result.search_nll = result.fitness.negative_log_fidelity;
-      } else {
-        apply_native_rollout(result);
-      }
+    if (config_.max_horizon == 0 && problem_.forecast_terms.empty()) {
+      // The reference M3 profile remains the exact current-boundary control.
+      // A tuned M3 may carry explicit depth-zero Phi(s') terms, handled by the
+      // same native predicate engine below without reading future_layers.
+      result.search_nll = result.fitness.negative_log_fidelity;
       forecast_ns_ += elapsed_ns(started);
       return;
     }
@@ -1925,7 +2137,7 @@ class RichSolver {
       return;
     }
     if (problem_.forecast_terms.empty() ||
-        config_.alpha_lookahead == 0.0) {
+        (config_.alpha_lookahead == 0.0 && config_.max_horizon != 0)) {
       result.search_nll = result.fitness.negative_log_fidelity;
       forecast_ns_ += elapsed_ns(started);
       return;
@@ -2182,16 +2394,20 @@ class RichSolver {
 
   void add_terminal_cleanup_potential(Evaluated& result, std::size_t depth,
                                       double raw_nll) {
-    // Costs of physical events *inside* the visible rollout keep their
-    // alpha*rho attenuation.  The cleanup immediately after the final
-    // visible layer is instead the bounded Bellman cost-to-go Phi(s_H).
-    // Attenuating that endpoint value again permits a receding horizon to
-    // postpone the same RETURN indefinitely.  raw_nll is still obtained by
-    // relocate_to_storage(), so endpoint selection, joint replay, ghost
-    // safety, transfer, Move time and coherence use the ordinary physics.
-    result.forecast_nll += raw_nll;
-    result.forecast_by_depth[depth] += raw_nll;
-    result.forecast_by_category[2] += raw_nll;
+    // The endpoint belongs to the same uncertain forecast as every visible
+    // layer.  Weight it on that layer's physical scale instead of letting an
+    // unattenuated all-RETURN proxy dominate the rolling objective.  The
+    // resident-rent deadline in zplacer owns anti-procrastination progress.
+    const auto decay = std::pow(
+        config_.decay_rho, static_cast<double>(depth - 1));
+    if (decay < config_.decay_epsilon) {
+      ++stats_.forecast_terms_skipped_cutoff;
+      return;
+    }
+    const auto contribution = config_.alpha_lookahead * decay * raw_nll;
+    result.forecast_nll += contribution;
+    result.forecast_by_depth[depth] += contribution;
+    result.forecast_by_category[2] += contribution;
     ++stats_.forecast_terms_applied;
   }
 
@@ -2811,23 +3027,39 @@ class RichSolver {
             option.target2_site_id;
       }
     }
-    std::vector<bool> back_movers(problem_.n_atoms, false);
-    std::vector<bool> out_movers(problem_.n_atoms, false);
+    // Geometry replay is executed for every bounded RETURN assignment.  The
+    // main suites fit in the same <=256-atom regime already used by the
+    // occupancy audit above, so keep the two transient mover masks on the
+    // stack there.  Preserve a heap fallback for larger architectures.  This
+    // changes only scratch storage: the mask values and replay order below are
+    // identical to the former two vector<bool> instances.
+    std::array<unsigned char, kStackAtoms> back_movers_stack{};
+    std::array<unsigned char, kStackAtoms> out_movers_stack{};
+    std::vector<unsigned char> back_movers_heap;
+    std::vector<unsigned char> out_movers_heap;
+    auto* back_movers = back_movers_stack.data();
+    auto* out_movers = out_movers_stack.data();
+    if (problem_.n_atoms > kStackAtoms) {
+      back_movers_heap.assign(problem_.n_atoms, 0U);
+      out_movers_heap.assign(problem_.n_atoms, 0U);
+      back_movers = back_movers_heap.data();
+      out_movers = out_movers_heap.data();
+    }
     for (const auto owner : geometry.back_owners) {
-      back_movers[static_cast<std::size_t>(owner)] = true;
+      back_movers[static_cast<std::size_t>(owner)] = 1U;
     }
     for (const auto owner : geometry.out_owners) {
-      out_movers[static_cast<std::size_t>(owner)] = true;
+      out_movers[static_cast<std::size_t>(owner)] = 1U;
     }
     const auto replay_single_legs = [&](const auto& legs,
                                         const auto& ghosts,
-                                        const auto& movers,
+                                        const unsigned char* movers,
                                         bool record_out_participant_blockers) {
       for (std::size_t index = 0; index < legs.size(); ++index) {
         const auto& leg = legs[index];
         for (const auto& ghost : ghosts) {
           const auto atom = static_cast<std::size_t>(ghost.atom);
-          if (atom < movers.size() && movers[atom]) continue;
+          if (atom < problem_.n_atoms && movers[atom] != 0U) continue;
           const auto x = cover(leg.source.x, leg.target.x, ghost.position.x);
           const auto y = cover(leg.source.y, leg.target.y, ghost.position.y);
           if (!coverage_matches(x, y)) continue;
@@ -2922,8 +3154,28 @@ class RichSolver {
             phase.owners.size() != phase.legs.size()) {
           throw std::logic_error("ABI8 candidate phase geometry is incomplete");
         }
-        const auto site_id_for_point = [&](const Point& point) {
+        const auto site_id_for_owner_target = [&](
+            const std::size_t owner, const Point& point) {
           const auto& coordinates = architecture_.site_coordinates();
+          // Every ordinary executable leg is a stable subset of the phase
+          // geometry, so its owner-indexed endpoint has already been resolved
+          // to an architecture site by build_geometry().  Keep the coordinate
+          // check: if production replay ever emits a genuine waypoint rather
+          // than only splitting/reordering endpoint legs, that intermediate
+          // point must retain the legacy coordinate lookup below.
+          const auto indexed_site = target_site_ids[owner];
+          if (indexed_site >= 0 &&
+              static_cast<std::size_t>(indexed_site) < coordinates.size()) {
+            const auto& indexed_point =
+                coordinates[static_cast<std::size_t>(indexed_site)];
+            if (std::abs(indexed_point.x - point.x) < 1e-9 &&
+                std::abs(indexed_point.y - point.y) < 1e-9) {
+              return indexed_site;
+            }
+          }
+          // Defensive compatibility path for a future physical waypoint or a
+          // non-indexed fixture whose endpoint id is unavailable.  The scan is
+          // deliberately byte-for-byte equivalent to the former hot path.
           for (std::size_t site = 0; site < coordinates.size(); ++site) {
             if (std::abs(coordinates[site].x - point.x) < 1e-9 &&
                 std::abs(coordinates[site].y - point.y) < 1e-9) {
@@ -2956,8 +3208,8 @@ class RichSolver {
                 source_back
                     ? problem_.scheduler_back_dependency_end_us[owner]
                     : qubit_dependency[owner]);
-            const auto target_site = site_id_for_point(
-                batch.legs[member].target);
+            const auto target_site = site_id_for_owner_target(
+                owner, batch.legs[member].target);
             batch_target_sites.push_back(target_site);
             const auto dependency = site_dependency.find(target_site);
             if (dependency != site_dependency.end()) {
@@ -4341,6 +4593,15 @@ class RichSolver {
   std::vector<std::int64_t> local_polish(
       const std::vector<std::int64_t>& raw_winner) {
     auto winner = normalize(raw_winner);
+    // The stochastic archive has already consumed the complete unique-fitness
+    // budget.  Building the O(gate-domain * residency) polish neighbourhood
+    // cannot admit one more uncached candidate, and every cached candidate is
+    // already represented in the ranked archive that produced ``winner``.
+    // Long serial QMAP circuits otherwise allocate and discard millions of
+    // vectors here after the search is irrevocably finished.
+    if (stats_.unique_evaluations >= stats_.stochastic_budget) {
+      return winner;
+    }
     auto best = evaluate_normalized(winner, false);
     const auto gate_count = problem_.gate_domains.size();
     for (std::size_t sweep = 0; sweep < config_.local_polish_sweeps; ++sweep) {

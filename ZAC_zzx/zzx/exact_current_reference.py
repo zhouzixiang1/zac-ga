@@ -162,7 +162,10 @@ class ExactCurrentReferenceScheduler:
         return ZACRouteTransitionDriver.from_state(
             self.architecture,
             self.initial_mapping,
-            deepcopy(self.driver.state_dict()),
+            # state_dict() already returns an isolated, bounded snapshot.
+            # Copying it once more doubled the Python marshal work at every
+            # boundary of long serial circuits without adding isolation.
+            self.driver.state_dict(),
         )
 
     def prepare_source_prefix(
@@ -378,7 +381,7 @@ class ExactCurrentReferenceScheduler:
         value.architecture = architecture
         value.initial_mapping = initial
         value.driver = ZACRouteTransitionDriver.from_state(
-            architecture, initial, deepcopy(state["driver"]))
+            architecture, initial, state["driver"])
         return value
 
 

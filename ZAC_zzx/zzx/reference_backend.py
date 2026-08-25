@@ -37,6 +37,9 @@ T_RYDBERG_US = 0.36
 T_ONE_Q_US = 52.0
 ACCEL_UM_PER_US2 = 0.00275
 T2_US = 1.5e6
+FORECAST_SACRIFICE_TRUST = 0.25
+PARALLEL_GUARD_GATE_THRESHOLD = 8
+PARALLEL_GUARD_OPTION_LIMIT = 6
 
 
 def evaluate_decay_forecast(
@@ -68,11 +71,16 @@ def evaluate_decay_forecast(
         return bool(chromosome[gate_count + index])
 
     for term in problem.forecast_terms:
-        decay_factor = config.decay_rho ** (term.depth - 1)
-        if decay_factor < config.decay_epsilon:
-            skipped += 1
-            continue
-        weight = config.alpha_lookahead * decay_factor
+        if term.depth == 0:
+            # Depth-zero M3 terms are a current-state value function whose
+            # registered coefficient is already baked into term.nll.
+            weight = 1.0
+        else:
+            decay_factor = config.decay_rho ** (term.depth - 1)
+            if decay_factor < config.decay_epsilon:
+                skipped += 1
+                continue
+            weight = config.alpha_lookahead * decay_factor
         if term.kind == "constant":
             matches = True
         elif term.kind == "stay":
@@ -1789,18 +1797,13 @@ def _evaluate_native_future_rollout(
         breakdown[category] += contribution
 
     def add_terminal_potential(depth: int, raw_nll: float) -> None:
-        """Add the Bellman endpoint value without heuristic attenuation.
-
-        Movement, reentry, residency and any cleanup performed *inside* the
-        visible rollout are real predicted costs and retain ``alpha*rho``
-        weighting.  The cleanup immediately after the last visible layer is
-        different: it is the bounded cost-to-go ``Phi(s_H)``.  Attenuating it
-        again lets a receding horizon postpone the same RETURN forever.  The
-        physical RETURN is nevertheless produced by the same joint,
-        ghost-safe storage matching/replay path as every other relocation.
-        """
-        by_depth[depth] += raw_nll
-        breakdown["terminal"] += raw_nll
+        """Weight the endpoint cleanup on the last visible layer's scale."""
+        decay = config.decay_rho ** (depth - 1)
+        if decay < config.decay_epsilon:
+            return
+        contribution = config.alpha_lookahead * decay * raw_nll
+        by_depth[depth] += contribution
+        breakdown["terminal"] += contribution
 
     for layer_index, (depth, gates) in enumerate(problem.future_layers):
         decay = config.decay_rho ** (depth - 1)
@@ -2184,18 +2187,41 @@ def _evaluate_rich_assignment_cohort(
                 (problem.eligible[index], site_id)
                 for index, site_id, _point in assignments)
             try:
-                if problem.future_layers or config.max_horizon == 0:
+                if config.max_horizon == 0:
+                    # No future layer is visible.  An optional depth-zero
+                    # Phi(s') may still rank the committed current geometry.
+                    if problem.forecast_terms:
+                        forecast = evaluate_decay_forecast(
+                            problem, config, chromosome, option_indices,
+                            return_pairs)
+                        forecast_nll, by_depth, breakdown = forecast[:3]
+                    else:
+                        forecast_nll = 0.0
+                        by_depth = (0.0,)
+                        breakdown = {
+                            "residency": 0.0,
+                            "reentry": 0.0,
+                            "terminal": 0.0,
+                            "routing": 0.0,
+                        }
+                    search_nll = fitness.negative_log_fidelity
+                    search_nll += forecast_nll
+                    forecast_feasible, forecast_error = True, ""
+                elif problem.future_layers:
                     forecast = _evaluate_native_future_rollout(
                         problem, config, option_indices, assignments, reseats,
                         participant_parkings,
                         fitness.candidate_idle_time_us)
+                    forecast_nll, by_depth, breakdown = forecast[:3]
+                    search_nll = fitness.negative_log_fidelity + forecast_nll
+                    forecast_feasible, forecast_error = True, ""
                 else:
                     forecast = evaluate_decay_forecast(
                         problem, config, chromosome, option_indices,
                         return_pairs)
-                forecast_nll, by_depth, breakdown = forecast[:3]
-                search_nll = fitness.negative_log_fidelity + forecast_nll
-                forecast_feasible, forecast_error = True, ""
+                    forecast_nll, by_depth, breakdown = forecast[:3]
+                    search_nll = fitness.negative_log_fidelity + forecast_nll
+                    forecast_feasible, forecast_error = True, ""
             except _ForecastInfeasible as error:
                 forecast_nll = search_nll = inf
                 by_depth = (0.0,) * (config.max_horizon + 1)
@@ -2400,10 +2426,14 @@ def _guard_rich_forecast_gate_projection(
         return min(values_for(raw), key=_rich_current_physical_key)
 
     projection_source = "no-current-gates"
+    bounded_parallel_guard = gate_count >= PARALLEL_GUARD_GATE_THRESHOLD
     if gate_count:
         projection_source = (
             "single-gate-full-domain" if gate_count == 1
-            else "coordinate-full-domain-2-sweep")
+            else (
+                "coordinate-bounded-parallel-1-sweep"
+                if bounded_parallel_guard
+                else "coordinate-full-domain-2-sweep"))
 
     def project_current_gates(
             raw: Sequence[int]) -> tuple[int, ...] | None:
@@ -2411,12 +2441,22 @@ def _guard_rich_forecast_gate_projection(
         projected_value = current_min(projected)
         if not projected_value.fitness.feasible:
             return None
-        sweeps = 0 if not gate_count else (1 if gate_count == 1 else 2)
+        sweeps = 0 if not gate_count else (
+            1 if gate_count == 1 or bounded_parallel_guard else 2)
         for _sweep in range(sweeps):
             changed = False
             for gate in range(gate_count):
                 best = projected_value
-                for option in range(len(problem.gate_domains[gate])):
+                domain_size = len(problem.gate_domains[gate])
+                if bounded_parallel_guard:
+                    options = list(dict.fromkeys((
+                        projected[gate] % domain_size,
+                        problem.matched_gate_genes[gate] % domain_size,
+                        *range(domain_size),
+                    )))[:PARALLEL_GUARD_OPTION_LIMIT]
+                else:
+                    options = range(domain_size)
+                for option in options:
                     trial = list(projected)
                     trial[gate] = option
                     value = current_min(trial)
@@ -2445,11 +2485,24 @@ def _guard_rich_forecast_gate_projection(
         for index, enabled in enumerate(problem.recommended_return_mask):
             if not enabled:
                 continue
-            singleton = list(all_stay)
-            singleton[gate_count + index] = 1
-            projection_seeds.add(_rich_normalize(problem, singleton))
+            if not bounded_parallel_guard:
+                singleton = list(all_stay)
+                singleton[gate_count + index] = 1
+                projection_seeds.add(_rich_normalize(problem, singleton))
             recommended[gate_count + index] = 1
+        if bounded_parallel_guard:
+            projection_seeds.add(_rich_normalize(problem, all_stay))
         projection_seeds.add(_rich_normalize(problem, recommended))
+    if any(problem.recommended_stay_mask):
+        # The decayed objective may otherwise prefer RETURN because the
+        # current half-cycle is full price while re-entry is discounted.  Give
+        # the full round-trip audit one deterministic jointly projected suffix;
+        # normalization still owns forced/capacity overrides.
+        recommended_stay = list(provisional_chromosome)
+        for index, enabled in enumerate(problem.recommended_stay_mask):
+            if enabled:
+                recommended_stay[gate_count + index] = 0
+        projection_seeds.add(_rich_normalize(problem, recommended_stay))
 
     projected_chromosomes = {
         projected
@@ -2466,14 +2519,15 @@ def _guard_rich_forecast_gate_projection(
 
     projected_suffixes = {
         chromosome[gate_count:] for chromosome in projected_chromosomes}
-    guard_chromosomes = {
-        value.fitness.chromosome
-        for value in complete_values
-        if value.fitness.chromosome[gate_count:] in projected_suffixes
-    }
-    guard_chromosomes.update(
-        chromosome for chromosome in cohort_cache
-        if chromosome[gate_count:] in projected_suffixes)
+    guard_chromosomes = set()
+    if not bounded_parallel_guard:
+        guard_chromosomes.update(
+            value.fitness.chromosome
+            for value in complete_values
+            if value.fitness.chromosome[gate_count:] in projected_suffixes)
+        guard_chromosomes.update(
+            chromosome for chromosome in cohort_cache
+            if chromosome[gate_count:] in projected_suffixes)
     guard_chromosomes.update(projected_chromosomes)
     cohort = tuple(
         value
@@ -2490,27 +2544,47 @@ def _guard_rich_forecast_gate_projection(
             "current_gate_projection_evaluated": len(cohort_cache),
         }
 
-    anchor = min(cohort, key=_rich_current_physical_key)
-    if not problem.eligible:
-        branch = "eligible-empty-exact-tie"
-        admitted = tuple(
-            value for value in cohort
-            if _rich_same_current_primary_bucket(value, anchor))
-    else:
-        branch = "residency-pareto-envelope"
-        transfer_limit = anchor.fitness.transfers + 2
-        current_nll_limit = (
-            anchor.fitness.negative_log_fidelity - 2.0 * log(F_TRANSFER))
-        admitted = tuple(
-            value for value in cohort
-            if value.fitness.transfers <= transfer_limit
-            and value.fitness.negative_log_fidelity <=
-                current_nll_limit + 1e-12
-            and not any(
-                challenger is not value
-                and _rich_current_primary_dominates(challenger, value)
-                for challenger in cohort)
-        )
+    # Capacity and explicit forced returns are authoritative.  For all other
+    # audited STAY bits, minimize violations before comparing the discounted
+    # objective.  A positive minimum means every jointly ghost-safe candidate
+    # needed at least that many overrides; the guard then relaxes only those
+    # unavoidable positions instead of discarding the complete recommendation.
+    all_stay = list(provisional_chromosome)
+    all_stay[gate_count:] = [0] * len(problem.eligible)
+    normalized_all_stay = _rich_normalize(problem, all_stay)
+    protected_stays = tuple(
+        index for index, enabled in enumerate(problem.recommended_stay_mask)
+        if (enabled
+            and not problem.forced_return_mask[index]
+            and not normalized_all_stay[gate_count + index]))
+
+    def stay_violations(value: _RichEvaluated) -> int:
+        chromosome = value.fitness.chromosome
+        return sum(
+            bool(chromosome[gate_count + index]) for index in protected_stays)
+
+    minimum_stay_violations = (
+        min(stay_violations(value) for value in cohort)
+        if protected_stays else 0)
+    trusted_cohort = tuple(
+        value for value in cohort
+        if stay_violations(value) == minimum_stay_violations)
+    anchor = min(trusted_cohort, key=_rich_current_physical_key)
+    branch = (
+        "trust-region-round-trip-stay"
+        if protected_stays and minimum_stay_violations == 0
+        else ("trust-region-round-trip-stay-relaxed"
+              if protected_stays
+              else "trust-region-forecast-sacrifice"))
+    admitted = tuple(
+        value for value in trusted_cohort
+        if max(
+            0.0,
+            value.fitness.negative_log_fidelity
+            - anchor.fitness.negative_log_fidelity,
+        ) <= FORECAST_SACRIFICE_TRUST * max(
+            0.0, anchor.forecast_nll - value.forecast_nll) + 1e-12
+        and value.search_nll <= anchor.search_nll + 1e-12)
     selected = min(admitted, key=lambda value: value.objective) \
         if admitted else anchor
     return selected, {

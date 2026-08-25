@@ -413,9 +413,10 @@ class NativeResidentBackend:
             raise NativeBackendError(
                 "problem selected_horizon differs from decay config")
         if config.max_horizon == 0 and (
-                problem.forecast_terms or problem.future_layers):
+                problem.future_layers or any(
+                    term.depth != 0 for term in problem.forecast_terms)):
             raise NativeBackendError(
-                "strict M3 boundary cannot contain future data")
+                "strict M3 boundary can contain only depth-zero state terms")
         marshal_started = perf_counter_ns()
         exact_cache_key = None
         direct_space = 1
@@ -444,6 +445,8 @@ class NativeResidentBackend:
                 problem.min_returns,
                 problem.eviction_order_indices,
                 problem.forced_return_mask,
+                problem.recommended_return_mask,
+                problem.recommended_stay_mask,
                 problem.return_domains,
                 problem.matched_gate_genes,
                 problem.decision_policy,

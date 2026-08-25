@@ -39,7 +39,7 @@ TIMING_KEYS = {
     "backend_calls", "backend_candidates", "cache",
 }
 NATIVE_WHEEL_SHA256 = (
-    "7f33b052a722ef0eede170a8a65aea762eb3d11e7fc2e6b1c23698a9c84c3bfe")
+    "1e991c0201b7bdb657257e47783d1d5b44e28b5d50b0ab323ecfaa47585f033b")
 
 
 def architecture(*, frozen_physics=False):
@@ -535,9 +535,13 @@ class TestNativeResidentIntegration(unittest.TestCase):
         self.assertTrue(all(
             row["forecast_objective"]["configured_depth"] == configured
             for row in first_run.decision_log[:-1]))
-        self.assertTrue(all(
-            row["rich_search"]["forecast_terms"] == 0
-            for row in first_run.decision_log[:-1]))
+        # H0 may carry depth-zero current-state/cycle terms; those are not a
+        # future read.  H>0 uses raw native future layers and therefore must
+        # not also carry the legacy precomputed forecast table.
+        if configured > 0:
+            self.assertTrue(all(
+                row["rich_search"]["forecast_terms"] == 0
+                for row in first_run.decision_log[:-1]))
         self.assertTrue(all(
             row["rich_search"]["native_future_layers"] == 0
             for row in first_run.decision_log[:-1]

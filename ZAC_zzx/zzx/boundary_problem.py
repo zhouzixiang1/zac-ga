@@ -556,8 +556,8 @@ class RichForecastTerm:
 
     def __post_init__(self) -> None:
         if (not isinstance(self.depth, int) or isinstance(self.depth, bool)
-                or not 1 <= self.depth <= 8):
-            raise ValueError("forecast depth must be in [1, 8]")
+                or not 0 <= self.depth <= 8):
+            raise ValueError("forecast/state depth must be in [0, 8]")
         if self.kind not in {
                 "constant", "stay", "return", "return_site", "gate_option",
                 "stay_pair", "return_pair"}:
@@ -721,6 +721,11 @@ class RichH0Problem:
     # single-bit variants as deterministic candidates, but the exact joint
     # scheduler objective remains free to reject every recommendation.
     recommended_return_mask: tuple[bool, ...] = ()
+    # A full round-trip audit may prove STAY cheaper even when geometric decay
+    # discounts the later re-entry half of RETURN.  This is a trust-region hint,
+    # not a new chromosome constraint: forced/capacity RETURN and the absence of
+    # any jointly ghost-safe STAY candidate are allowed to override it.
+    recommended_stay_mask: tuple[bool, ...] = ()
     decision_policy: str = "optimize"
     occupied_storage_site_ids: tuple[int, ...] = ()
     # Optional compact geometry wire.  When present, all current/target/RETURN
@@ -786,6 +791,10 @@ class RichH0Problem:
             bool(value) for value in self.recommended_return_mask)
         if not recommended:
             recommended = (False,) * len(eligible)
+        recommended_stay = tuple(
+            bool(value) for value in self.recommended_stay_mask)
+        if not recommended_stay:
+            recommended_stay = (False,) * len(eligible)
         return_domains = tuple(tuple(domain) for domain in self.return_domains)
         matched = tuple(int(value) for value in self.matched_gate_genes)
         occupied_storage = tuple(int(value)
@@ -888,6 +897,13 @@ class RichH0Problem:
         if len(recommended) != len(eligible):
             raise ValueError(
                 "recommended_return_mask must align with eligible")
+        if len(recommended_stay) != len(eligible):
+            raise ValueError(
+                "recommended_stay_mask must align with eligible")
+        if any(to_return and to_stay for to_return, to_stay in zip(
+                recommended, recommended_stay)):
+            raise ValueError(
+                "RETURN and STAY recommendations must be disjoint")
         if len(eviction) != len(eligible) or set(eviction) != set(range(len(eligible))):
             raise ValueError("eviction_order_indices must be a permutation")
         if len(matched) != len(gate_domains):
@@ -914,8 +930,11 @@ class RichH0Problem:
                 raise ValueError("future 2Q layer is not atom-disjoint")
             if any(q < 0 or q >= self.architecture.n_atoms for q in atoms):
                 raise ValueError("future gate atom is outside architecture")
-        if self.selected_horizon == 0 and (forecast_terms or future_layers):
-            raise ValueError("strict H=0 problem cannot contain future data")
+        if self.selected_horizon == 0 and (
+                future_layers or any(term.depth != 0
+                                     for term in forecast_terms)):
+            raise ValueError(
+                "strict H=0 problem can contain only depth-zero state terms")
         if not isinstance(self.terminal_boundary, bool):
             raise ValueError("terminal_boundary must be boolean")
         if self.terminal_boundary and future_layers:
@@ -1023,6 +1042,7 @@ class RichH0Problem:
         object.__setattr__(self, "eviction_order_indices", eviction)
         object.__setattr__(self, "forced_return_mask", forced)
         object.__setattr__(self, "recommended_return_mask", recommended)
+        object.__setattr__(self, "recommended_stay_mask", recommended_stay)
         object.__setattr__(self, "return_domains", return_domains)
         object.__setattr__(self, "matched_gate_genes", matched)
         object.__setattr__(self, "occupied_storage_site_ids", occupied_storage)
@@ -1214,6 +1234,8 @@ class RichH0Problem:
             "forced_return_mask": array("B", self.forced_return_mask),
             "recommended_return_mask": array(
                 "B", self.recommended_return_mask),
+            "recommended_stay_mask": array(
+                "B", self.recommended_stay_mask),
             "decision_policy": array("B", [policy_codes[self.decision_policy]]),
             "matched_gate_genes": array("q", self.matched_gate_genes),
             "gate_option_offsets": gate_option_offsets,

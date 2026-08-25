@@ -356,6 +356,24 @@ def _median(values: Iterable[float]) -> float:
     return float(statistics.median(materialized))
 
 
+def _lower_quantile(values: Iterable[float], probability: float) -> float:
+    """Return a deterministic linearly interpolated lower-tail quantile."""
+    materialized = sorted(float(value) for value in values)
+    if not materialized:
+        raise ValueError("cannot take quantile of empty values")
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError("quantile probability is outside [0, 1]")
+    position = probability * (len(materialized) - 1)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return materialized[lower]
+    fraction = position - lower
+    return float(
+        materialized[lower] * (1.0 - fraction)
+        + materialized[upper] * fraction)
+
+
 def summarize_candidates(
         trials: Sequence[RacingTrial], *, candidate_ids: Sequence[str],
         method: str, circuits: Sequence[str], seeds: Sequence[int]
@@ -413,9 +431,15 @@ def summarize_candidates(
                         float(row.transition_decision_ns)
                         for row in circuit_rows),
                 })
+            deltas = [row["delta_log_fidelity"] for row in per_circuit]
             summary.update({
-                "median_delta_log_fidelity": _median(
-                    row["delta_log_fidelity"] for row in per_circuit),
+                # The final fidelity geometric mean is exactly exp(mean ΔlogF).
+                # Keep median for robustness reporting, but never use it as the
+                # primary configuration-selection objective.
+                "mean_delta_log_fidelity": float(statistics.fmean(deltas)),
+                "p10_delta_log_fidelity": _lower_quantile(deltas, 0.10),
+                "worst_delta_log_fidelity": min(deltas),
+                "median_delta_log_fidelity": _median(deltas),
                 "median_move_time_us": _median(
                     row["move_time_us"] for row in per_circuit),
                 "median_move_batches": _median(
@@ -434,7 +458,9 @@ def _quality_order(row: Mapping[str, Any]) -> tuple:
                 row["candidate_id"])
     return (
         0,
-        -float(row["median_delta_log_fidelity"]),
+        -float(row["mean_delta_log_fidelity"]),
+        -float(row["p10_delta_log_fidelity"]),
+        -float(row["worst_delta_log_fidelity"]),
         float(row["median_transition_decision_ns"]),
         float(row["median_move_time_us"]),
         float(row["median_move_batches"]),
@@ -467,14 +493,9 @@ def race_checkpoint(
             })
             continue
         quality_gap = (
-            float(leader["median_delta_log_fidelity"])
-            - float(row["median_delta_log_fidelity"]))
-        move_advantage = (
-            float(row["median_move_time_us"])
-            < float(leader["median_move_time_us"]) or
-            float(row["median_move_batches"])
-            < float(leader["median_move_batches"]))
-        if quality_gap > ELIMINATION_LOGF_MARGIN and not move_advantage:
+            float(leader["mean_delta_log_fidelity"])
+            - float(row["mean_delta_log_fidelity"]))
+        if quality_gap > ELIMINATION_LOGF_MARGIN:
             eliminated.append({
                 "candidate_id": row["candidate_id"],
                 "reason": "quality_margin_without_move_advantage",
@@ -497,7 +518,7 @@ def select_top(
         trials: Sequence[RacingTrial], *, candidate_ids: Sequence[str],
         method: str, circuits: Sequence[str], seeds: Sequence[int],
         count: int = 2) -> dict[str, Any]:
-    """Select quality leaders, preferring runtime inside a 0.002 logF band."""
+    """Select mean-logF leaders, then prefer tail safety and runtime."""
     summaries = summarize_candidates(
         trials, candidate_ids=candidate_ids, method=method,
         circuits=circuits, seeds=seeds)
@@ -508,12 +529,14 @@ def select_top(
     remaining = list(valid)
     selected = []
     while remaining and len(selected) < count:
-        best_quality = max(float(row["median_delta_log_fidelity"])
+        best_quality = max(float(row["mean_delta_log_fidelity"])
                            for row in remaining)
         near = [row for row in remaining
-                if best_quality - float(row["median_delta_log_fidelity"])
+                if best_quality - float(row["mean_delta_log_fidelity"])
                 <= NEAR_OPTIMAL_LOGF]
         winner = min(near, key=lambda row: (
+            -float(row["p10_delta_log_fidelity"]),
+            -float(row["worst_delta_log_fidelity"]),
             float(row["median_transition_decision_ns"]),
             float(row["median_move_time_us"]),
             float(row["median_move_batches"]),
@@ -537,7 +560,7 @@ def select_non_degrading(
     """Select one winner after hard overall and per-dataset quality gates.
 
     Runtime and Move metrics may break a quality tie only after a candidate has
-    demonstrated that its circuit-level median delta-log-fidelity is no lower
+    demonstrated that its circuit-level mean delta-log-fidelity is no lower
     than the frozen incumbent both overall and within every represented
     dataset.  In particular, a QMAP improvement may not purchase a ZAC
     regression (or vice versa), and the ordinary 0.002 near-optimal runtime
@@ -573,7 +596,7 @@ def select_non_degrading(
     incumbent = by_id[incumbent_candidate_id]
     if not incumbent["valid"]:
         raise RuntimeError(f"{method} incumbent is invalid or incomplete")
-    incumbent_quality = float(incumbent["median_delta_log_fidelity"])
+    incumbent_quality = float(incumbent["mean_delta_log_fidelity"])
     dataset_summaries = {
         dataset: summarize_candidates(
             trials, candidate_ids=ids, method=method,
@@ -591,17 +614,17 @@ def select_non_degrading(
             raise RuntimeError(
                 f"{method} incumbent is invalid or incomplete on {dataset}")
         incumbent_quality_by_dataset[dataset] = float(
-            row["median_delta_log_fidelity"])
+            row["mean_delta_log_fidelity"])
 
     def non_degrading(candidate_id: str) -> bool:
         if (not by_id[candidate_id]["valid"]
-                or float(by_id[candidate_id]["median_delta_log_fidelity"])
+                or float(by_id[candidate_id]["mean_delta_log_fidelity"])
                 + INCUMBENT_NON_DEGRADATION_TOLERANCE < incumbent_quality):
             return False
         return all(
             dataset_by_id[dataset][candidate_id]["valid"]
             and float(dataset_by_id[dataset][candidate_id][
-                "median_delta_log_fidelity"])
+                "mean_delta_log_fidelity"])
             + INCUMBENT_NON_DEGRADATION_TOLERANCE
             >= incumbent_quality_by_dataset[dataset]
             for dataset in dataset_by_id
@@ -617,11 +640,22 @@ def select_non_degrading(
         trials, candidate_ids=eligible, method=method,
         circuits=circuits, seeds=seeds, count=1)
     winner_id = str(ranked["selected"][0])
-    winner_quality = float(by_id[winner_id]["median_delta_log_fidelity"])
+    winner_quality = float(by_id[winner_id]["mean_delta_log_fidelity"])
     if (winner_quality + INCUMBENT_NON_DEGRADATION_TOLERANCE
             < incumbent_quality):
         raise AssertionError("selected validation winner degrades the incumbent")
     winner_quality_by_dataset = {
+        dataset: float(values[winner_id]["mean_delta_log_fidelity"])
+        for dataset, values in dataset_by_id.items()
+    }
+    incumbent_median = float(incumbent["median_delta_log_fidelity"])
+    winner_median = float(by_id[winner_id]["median_delta_log_fidelity"])
+    incumbent_median_by_dataset = {
+        dataset: float(values[incumbent_candidate_id][
+            "median_delta_log_fidelity"])
+        for dataset, values in dataset_by_id.items()
+    }
+    winner_median_by_dataset = {
         dataset: float(values[winner_id]["median_delta_log_fidelity"])
         for dataset, values in dataset_by_id.items()
     }
@@ -637,12 +671,20 @@ def select_non_degrading(
         "method": method,
         "selected": [winner_id],
         "incumbent_candidate_id": incumbent_candidate_id,
-        "incumbent_median_delta_log_fidelity": incumbent_quality,
-        "winner_median_delta_log_fidelity": winner_quality,
-        "incumbent_median_delta_log_fidelity_by_dataset":
+        "incumbent_mean_delta_log_fidelity": incumbent_quality,
+        "winner_mean_delta_log_fidelity": winner_quality,
+        "incumbent_mean_delta_log_fidelity_by_dataset":
             incumbent_quality_by_dataset,
-        "winner_median_delta_log_fidelity_by_dataset":
+        "winner_mean_delta_log_fidelity_by_dataset":
             winner_quality_by_dataset,
+        # Retain the actual medians for robustness reporting and old readers;
+        # they are descriptive only and no longer drive selection.
+        "incumbent_median_delta_log_fidelity": incumbent_median,
+        "winner_median_delta_log_fidelity": winner_median,
+        "incumbent_median_delta_log_fidelity_by_dataset":
+            incumbent_median_by_dataset,
+        "winner_median_delta_log_fidelity_by_dataset":
+            winner_median_by_dataset,
         "non_degradation_tolerance": INCUMBENT_NON_DEGRADATION_TOLERANCE,
         "non_degradation_passed": True,
         "eligible_candidate_ids": eligible,

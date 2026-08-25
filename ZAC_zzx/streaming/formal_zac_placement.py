@@ -432,6 +432,7 @@ class FormalZacPlacementStream:
         placer.architecture = self.architecture
         placer.gate_scheduling = kernel.schedule
         placer.one_qubit_gates_by_layer = kernel.one_qubit_schedule
+        placer.total_transition_count = max(0, self.stage_count - 1)
         # Schema-2 resident placement never consults legacy adjacent reuse.
         placer.list_reuse_qubit = ()
         placer.mapping = deepcopy(state["mapping"])
@@ -476,7 +477,8 @@ class FormalZacPlacementStream:
         placer.registry = registry
         placer.nu = NextUse([])
         placer.forecast = ForecastOracle(
-            self.provider, placer.lookahead_horizon)
+            self.provider, placer.lookahead_horizon_config,
+            placer.alpha_lookahead)
         placer.scheduler_reference = ExactCurrentReferenceScheduler.from_state(
             self.architecture,
             self.initial_mapping,

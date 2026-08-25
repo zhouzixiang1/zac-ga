@@ -196,6 +196,14 @@ RichH0Problem parse_problem(const ArchitectureSnapshot& architecture,
     }
     problem.recommended_return_mask.push_back(value != 0);
   }
+  const auto recommended_stay =
+      copy_buffer<std::uint8_t>(buffers, "recommended_stay_mask");
+  for (const auto value : recommended_stay) {
+    if (value > 1) {
+      throw std::invalid_argument("recommended stay mask is not boolean");
+    }
+    problem.recommended_stay_mask.push_back(value != 0);
+  }
   const auto policy = copy_buffer<std::uint8_t>(buffers, "decision_policy");
   if (policy.size() != 1 || policy[0] > 3) {
     throw std::invalid_argument("invalid rich decision policy");
@@ -381,7 +389,7 @@ RichH0Problem parse_problem(const ArchitectureSnapshot& architecture,
     throw std::invalid_argument("forecast columns differ in length");
   }
   for (std::size_t index = 0; index < forecast_count; ++index) {
-    if (forecast_depths[index] <= 0 || forecast_kinds[index] > 6 ||
+    if (forecast_depths[index] < 0 || forecast_kinds[index] > 6 ||
         forecast_categories[index] > 3) {
       throw std::invalid_argument("invalid forecast term code");
     }

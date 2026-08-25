@@ -448,16 +448,15 @@ int main() {
   assert(indexed_forecast_value.gate_option_indices ==
          std::vector<std::size_t>({1}));
   const std::vector<std::pair<std::int64_t, std::int64_t>>
-      indexed_forecast_returns{{2, 4}, {3, 5}};
-  // The swapped assignment has a smaller raw forecast (0.14), but its current
-  // NLL, Move batches and Move time are all dominated by the nearest physical
-  // assignment.  The residency Pareto guard therefore retains the nearest
-  // assignment and its complete 0.21 forecast.
+      indexed_forecast_returns{{2, 5}, {3, 4}};
+  // The swapped assignment spends a bounded amount of executable current
+  // movement but saves 0.07 forecast NLL.  The registered 0.25 trust ratio
+  // admits that physical sacrifice, matching the Python semantic reference.
   assert(indexed_forecast_value.return_assignments ==
          indexed_forecast_returns);
-  assert(std::abs(indexed_forecast_value.forecast_nll - 0.21) < 1e-15);
+  assert(std::abs(indexed_forecast_value.forecast_nll - 0.14) < 1e-15);
   const std::vector<double> expected_forecast_by_depth{
-      0.0, 0.12, 0.07, 0.005, 0.015, 0.0, 0.0, 0.0, 0.0};
+      0.0, 0.12, 0.0, 0.005, 0.015, 0.0, 0.0, 0.0, 0.0};
   assert(indexed_forecast_value.forecast_by_depth.size() ==
          expected_forecast_by_depth.size());
   for (std::size_t depth = 0; depth < expected_forecast_by_depth.size();
@@ -471,11 +470,11 @@ int main() {
          1e-15);
   assert(std::abs(indexed_forecast_value.forecast_terminal_nll - 0.02) <
          1e-15);
-  assert(std::abs(indexed_forecast_value.forecast_routing_nll - 0.085) <
+  assert(std::abs(indexed_forecast_value.forecast_routing_nll - 0.015) <
          1e-15);
   assert(indexed_forecast_value.current_gate_guard_branch ==
-         "residency-pareto-envelope");
-  assert(indexed_forecast_value.current_gate_guard_admitted_size == 2);
+         "trust-region-forecast-sacrifice");
+  assert(indexed_forecast_value.current_gate_guard_admitted_size == 4);
   assert(indexed_forecast_value.stats.forecast_terms_skipped_cutoff > 0);
   ++tests;
 
@@ -645,6 +644,75 @@ int main() {
   assert(continued_ood.winner.error.empty());
   ++tests;
 
+  // ABI8 exact-current scheduling resolves each executable leg's endpoint by
+  // its owner-indexed target site.  Padding the architecture with thousands of
+  // unrelated sites must therefore be a semantic no-op: this is the
+  // differential contract behind the O(1) target lookup used by score_geometry.
+  const auto exact_site_problem = [](
+      const std::int64_t first_target,
+      const std::int64_t second_target) {
+    RichH0Problem problem;
+    problem.n_atoms = 2;
+    problem.current_points = {{0.0, 0.0}, {1.0, 0.0}};
+    problem.current_site_ids = {0, 1};
+    problem.prior_idle_time_us = {0.0, 0.0};
+    problem.exact_current_scheduler = true;
+    problem.scheduler_trace_end_us = 0.0;
+    problem.scheduler_active_union_us = {0.0, 0.0};
+    problem.scheduler_aod_end_us = {0.0};
+    problem.scheduler_one_qubit_end_us = 0.0;
+    problem.scheduler_rydberg_end_us = {0.0};
+    problem.scheduler_qubit_dependency_end_us = {0.0, 0.0};
+    problem.scheduler_back_dependency_end_us = {0.0, 0.0};
+    problem.participants = {0, 1};
+    problem.gate_domains = {{
+        {53, 0, 1, {0.0, 10.0}, {1.0, 10.0}, {}, {}, {},
+         first_target, second_target},
+    }};
+    problem.matched_gate_genes = {0};
+    return problem;
+  };
+  ArchitectureSnapshot compact_exact_site_architecture(
+      2, {{0.0, 0.0}, {1.0, 0.0}, {0.0, 10.0}, {1.0, 10.0}});
+  std::vector<Point> padded_exact_site_coordinates = {
+      {0.0, 0.0}, {1.0, 0.0}};
+  for (std::size_t site = 0; site < 4094; ++site) {
+    padded_exact_site_coordinates.push_back(
+        {10000.0 + static_cast<double>(site), 10000.0});
+  }
+  const auto padded_first_target = static_cast<std::int64_t>(
+      padded_exact_site_coordinates.size());
+  padded_exact_site_coordinates.push_back({0.0, 10.0});
+  const auto padded_second_target = static_cast<std::int64_t>(
+      padded_exact_site_coordinates.size());
+  padded_exact_site_coordinates.push_back({1.0, 10.0});
+  ArchitectureSnapshot padded_exact_site_architecture(
+      2, std::move(padded_exact_site_coordinates));
+  const auto compact_exact_site = solve_rich_h0(
+      compact_exact_site_architecture, exact_site_problem(2, 3),
+      exact_current_config, rng_fixture());
+  const auto padded_exact_site = solve_rich_h0(
+      padded_exact_site_architecture,
+      exact_site_problem(padded_first_target, padded_second_target),
+      exact_current_config, rng_fixture());
+  assert(compact_exact_site.winner.chromosome ==
+         padded_exact_site.winner.chromosome);
+  assert(compact_exact_site.winner.feasible ==
+         padded_exact_site.winner.feasible);
+  assert(compact_exact_site.winner.negative_log_fidelity ==
+         padded_exact_site.winner.negative_log_fidelity);
+  assert(compact_exact_site.winner.move_batches ==
+         padded_exact_site.winner.move_batches);
+  assert(compact_exact_site.winner.move_time_us ==
+         padded_exact_site.winner.move_time_us);
+  assert(compact_exact_site.winner.total_distance_um ==
+         padded_exact_site.winner.total_distance_um);
+  assert(compact_exact_site.winner.phase_batches ==
+         padded_exact_site.winner.phase_batches);
+  assert(compact_exact_site.gate_option_indices ==
+         padded_exact_site.gate_option_indices);
+  ++tests;
+
   // A tiny stochastic budget can inspect only an unsafe head gate option.
   // Current feasibility is a hard contract, so the post-search native safety
   // projection must audit the complete serial gate domain and recover the
@@ -730,10 +798,10 @@ int main() {
   assert(direct_forecast_fallback.forecast_nll == 0.0);
   ++tests;
 
-  // P1 gate projection: with no residency decision, decay lookahead may not
-  // purchase worse executable current NLL/batches/Move time merely to improve
-  // a future gate-option term.  Option 1 wins the unguarded sum, but option 0
-  // is the strict current-physics anchor and must be projected back.
+  // Gate projection retains an exact current anchor, but may purchase a
+  // bounded executable-current sacrifice when the forecast certifies at least
+  // four times that saving.  Option 1 spends about 0.00403 current NLL and
+  // avoids 0.10 forecast NLL, so it is admitted by the 0.25 trust ratio.
   ArchitectureSnapshot gate_guard_architecture(
       2, {{0.0, 0.0}, {1.0, 0.0}});
   RichH0Problem strict_gate_guard;
@@ -757,11 +825,13 @@ int main() {
       gate_guard_architecture, strict_gate_guard,
       gate_guard_config, rng_fixture());
   assert(strict_guarded.gate_option_indices ==
-         std::vector<std::size_t>({0}));
+         std::vector<std::size_t>({1}));
   assert(strict_guarded.winner.chromosome ==
-         std::vector<std::int64_t>({0}));
-  assert(strict_guarded.winner.negative_log_fidelity == 0.0);
-  assert(strict_guarded.forecast_nll == 0.10);
+         std::vector<std::int64_t>({1}));
+  assert(strict_guarded.winner.negative_log_fidelity > 0.0);
+  assert(strict_guarded.forecast_nll == 0.0);
+  assert(strict_guarded.current_gate_guard_branch ==
+         "trust-region-forecast-sacrifice");
   assert(strict_guarded.winner.phase_batches.size() == 2);
   ++tests;
 
@@ -781,9 +851,9 @@ int main() {
   assert(tied_guarded.forecast_nll == 0.0);
   ++tests;
 
-  // The gate guard fixes only the normalized residency suffix.  Here future
-  // terms intentionally select RETURN, while the projected gate changes from
-  // the forecast-attractive moving option back to the current-safe option.
+  // The gate guard fixes the normalized residency suffix.  Here future terms
+  // select RETURN, and the forecast-attractive moving gate remains inside the
+  // same bounded current-sacrifice trust region.
   ArchitectureSnapshot suffix_guard_architecture(
       3, {{0.0, 0.0}, {1.0, 0.0}, {4.0, 4.0}, {4.0, 5.0}}, {3});
   RichH0Problem suffix_guard;
@@ -810,9 +880,9 @@ int main() {
       suffix_guard_architecture, suffix_guard,
       gate_guard_config, rng_fixture());
   assert(suffix_guarded.winner.chromosome ==
-         std::vector<std::int64_t>({0, 1}));
+         std::vector<std::int64_t>({1, 1}));
   assert(suffix_guarded.gate_option_indices ==
-         std::vector<std::size_t>({0}));
+         std::vector<std::size_t>({1}));
   const std::vector<std::pair<std::int64_t, std::int64_t>>
       suffix_guard_return{{2, 3}};
   assert(suffix_guarded.return_assignments == suffix_guard_return);
@@ -866,10 +936,9 @@ int main() {
              transfer_allowed_uncached.rng_state.index);
   ++tests;
 
-  // Pareto status alone is insufficient: this template saves one batch but
-  // spends one extra load+store pair plus a very long trajectory.  Its current
-  // NLL exceeds the anchor by more than -2log(0.999), so the physical NLL
-  // envelope rejects it even though the transfer-count cap alone would admit.
+  // This template saves one batch and 0.10 forecast NLL while spending about
+  // 0.0108 current NLL.  It therefore remains inside the registered 0.25
+  // current-sacrifice trust ratio despite the extra moving atom.
   ArchitectureSnapshot nll_envelope_architecture(
       5, {{0.0, 0.0}, {0.0, 20.0}, {0.0, 10.0},
           {0.0, 30.0}, {2000.0, 2000.0}, {2000.0, 2001.0}}, {5});
@@ -905,14 +974,14 @@ int main() {
       nll_envelope_architecture, nll_envelope,
       gate_guard_config, rng_fixture());
   assert(nll_capped.gate_option_indices ==
-         std::vector<std::size_t>({0, 0}));
-  assert(nll_capped.winner.transfers == 4);
-  assert(nll_capped.winner.move_batches == 2);
+         std::vector<std::size_t>({1, 1}));
+  assert(nll_capped.winner.transfers == 6);
+  assert(nll_capped.winner.move_batches == 1);
   ++tests;
 
-  // Across a wide gate prefix, the all-short template is current-Pareto but
-  // adds two movers (four transfers) relative to the physical anchor.  The
-  // explicit +2-transfer envelope rejects it; mixed templates are dominated.
+  // Across a wider gate prefix, the all-short template adds two movers (four
+  // transfers) but spends only about 0.0107 current NLL to save 0.10 forecast
+  // NLL, so the physical trust ratio admits it.
   ArchitectureSnapshot transfer_cap_architecture(
       5, {{0.0, 0.0}, {100.0, 0.0}, {0.0, 100.0},
           {100.0, 100.0}, {200.0, 200.0}, {200.0, 201.0}}, {5});
@@ -948,8 +1017,8 @@ int main() {
       transfer_cap_architecture, transfer_cap,
       gate_guard_config, rng_fixture());
   assert(transfer_capped.gate_option_indices ==
-         std::vector<std::size_t>({0, 0}));
-  assert(transfer_capped.winner.transfers == 4);
+         std::vector<std::size_t>({1, 1}));
+  assert(transfer_capped.winner.transfers == 8);
   ++tests;
 
   // A forecast-attractive gate with an exact current single-leg ghost hit is

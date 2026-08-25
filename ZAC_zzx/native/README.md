@@ -17,11 +17,22 @@ only the bounded future 2Q atom ledger (at most eight layers).  C++ starts from
 each candidate's real post-boundary positions, selects future gate pairs,
 parks endpoint and single-leg ghost blockers, replays the phases, performs
 scores transfer, idle excitation and coherence, and closes the visible window
-with an unattenuated Bellman cleanup potential. In-window costs use
+with a cleanup potential weighted on the last visible layer's decay scale.
+M3 adds neither future rollout nor a depth-zero terminal proxy. M4 costs use
 `alpha_lookahead * rho ** (offset - 1)` and stop when the bare decay factor
 falls below epsilon. A target-final marker suppresses fictitious post-circuit
 cleanup without exposing any future gate content to M3. Python no longer
 expands per-candidate forecast terms on the formal path.
+
+Because the bounded rollout is approximate, an M4 candidate may spend current
+physical fidelity only inside a 0.25 trust region: the predicted future saving
+must be at least four times the executable current loss. This prevents an
+optimistic rollout from selecting very long moves merely to save transfers.
+For target layers with eight or more simultaneous gates, the guard uses one
+bounded coordinate sweep over the incumbent, matched option and the first six
+weight-ordered options per gate. It compares the GA suffix, all-STAY and the
+complete RETURN recommendation, instead of launching a second full-domain
+optimizer for every recommended resident.
 
 The persistent architecture snapshot contains every entangling pair and
 storage site once.  A boundary therefore crosses Python/C++ only once with
@@ -55,6 +66,15 @@ layers also polish the bounded gate-site x residency-bit neighbourhood, which
 escapes strict two-gene traps without changing the unique-evaluation budget.
 Cache on/off changes evaluation reuse only; winner, mapping, movement
 batches and RNG state remain identical for a fixed seed.
+
+For circuits with more than 512 placement transitions, both resident methods
+select a deterministic long-depth profile from the order-free circuit size.
+It keeps the full physical gate domain available, caps direct enumeration at
+64, disables post-budget local polishing, and bounds RETURN matching.  M4's
+narrow-layer current-physics guard then audits the incumbent, matched site and
+four stable leading sites before the unchanged strict ghost replay and final
+decayed forecast.  ZAC18 has at most 109 transitions and therefore stays on
+the complete quality path.
 
 The old forecast-term bitset path remains only for differential regression
 fixtures.  ABI8 runs use raw future layers, carry the resumable ASAP scheduler

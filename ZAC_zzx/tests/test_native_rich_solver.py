@@ -160,6 +160,31 @@ def equal_distance_return_problem(*, terms=(), horizon=0):
     )
 
 
+def stay_blocker_problem():
+    """The recommended resident must RETURN to clear a real gate leg."""
+    arch = ArchitectureSnapshot.from_coordinates(
+        3, ((0, 0), (2, 0), (0, 1), (3, 1)), (3,))
+    return arch, RichH0Problem(
+        architecture=arch,
+        current_points=(Point(0, 0), Point(2, 0), Point(0, 1)),
+        participants=(0, 1),
+        gate_domains=((RichGateOption(
+            10, 0, 1, Point(0, 2), Point(2, 2)),),),
+        static_ghosts=(),
+        eligible=(2,),
+        min_returns=0,
+        eviction_order_indices=(0,),
+        forced_return_mask=(False,),
+        recommended_stay_mask=(True,),
+        return_domains=((RichReturnOption(3, Point(3, 1), 1.0),),),
+        matched_gate_genes=(0,),
+        boundary_id="stay-blocker",
+        selected_horizon=1,
+        forecast_terms=(RichForecastTerm(
+            1, "constant", "routing", 0.001),),
+    )
+
+
 def tuned_search_problem():
     coordinates = tuple((float(atom), 0.0) for atom in range(9)) + tuple(
         (float(site + 4), 4.0) for site in range(5))
@@ -246,6 +271,73 @@ def serial_participant_pair_polish_problem():
     return arch, problem
 
 
+class TestRichRoundTripStayRecommendation(unittest.TestCase):
+    """Python semantic truth for the old-path non-regression hint.
+
+    The decayed objective can prefer RETURN at the current boundary even when
+    the caller's full RETURN+re-entry rent audit has already proved that STAY
+    is cheaper over the complete cycle.  The recommendation is intentionally
+    softer than feasibility: forced/capacity normalization may still RETURN.
+    """
+
+    def test_round_trip_stay_guard_and_capacity_override(self):
+        terms = (RichForecastTerm(
+            1, "constant", "routing", 0.001),)
+        base_problem = toy_problem(terms=terms, horizon=1)
+        config = RichSearchConfig(
+            operator_profile="exact",
+            max_horizon=1,
+            alpha_lookahead=0.5,
+            direct_enumeration_limit=512,
+            max_unique_evaluations=64,
+        )
+        rng_state = random.Random(20260826).getstate()
+
+        unprotected = solve_rich_exact_reference(
+            base_problem, config, rng_state)
+        protected_problem = replace(
+            base_problem, recommended_stay_mask=(True,))
+        protected = solve_rich_exact_reference(
+            protected_problem, config, rng_state)
+        capacity_problem = replace(
+            protected_problem, min_returns=1)
+        capacity = solve_rich_exact_reference(
+            capacity_problem, config, rng_state)
+
+        self.assertEqual((0, 1), unprotected.winner.chromosome)
+        self.assertEqual((0, 0), protected.winner.chromosome)
+        self.assertEqual(
+            "trust-region-round-trip-stay",
+            protected.current_gate_guard_branch)
+        self.assertEqual((0, 1), capacity.winner.chromosome)
+
+    def test_stay_recommendation_wire_and_disjoint_contract(self):
+        problem = replace(
+            toy_problem(indexed=True), recommended_stay_mask=(True,))
+        self.assertEqual(
+            [1], list(problem.flat_buffers()["recommended_stay_mask"]))
+        with self.assertRaisesRegex(ValueError, "disjoint"):
+            replace(
+                toy_problem(),
+                recommended_return_mask=(True,),
+                recommended_stay_mask=(True,),
+            )
+
+    def test_joint_ghost_infeasibility_relaxes_stay_recommendation(self):
+        _arch, problem = stay_blocker_problem()
+        result = solve_rich_exact_reference(
+            problem,
+            RichSearchConfig(
+                operator_profile="exact", max_horizon=1,
+                alpha_lookahead=0.5),
+            random.Random(0).getstate(),
+        )
+        self.assertEqual((0, 1), result.winner.chromosome)
+        self.assertEqual(
+            "trust-region-round-trip-stay-relaxed",
+            result.current_gate_guard_branch)
+
+
 @unittest.skipUnless(native_available(), "ABI7 native extension is not installed")
 class TestNativeRichSolver(unittest.TestCase):
     def setUp(self):
@@ -322,6 +414,53 @@ class TestNativeRichSolver(unittest.TestCase):
             delta=1e-15,
         )
 
+    def test_exact_scheduler_owner_target_site_lookup_matches_reference(self):
+        """A far indexed endpoint is identical to Python exact scheduling."""
+        padding = tuple(
+            (10000.0 + float(site), 10000.0) for site in range(1024))
+        coordinates = ((0.0, 0.0), (1.0, 0.0)) + padding + (
+            (0.0, 10.0), (1.0, 10.0))
+        first_target = len(coordinates) - 2
+        arch = ArchitectureSnapshot.from_coordinates(2, coordinates, ())
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(),
+            current_site_ids=(0, 1),
+            participants=(0, 1),
+            gate_domains=((RichGateOption(
+                53, 0, 1, None, None,
+                first_target, first_target + 1),),),
+            static_ghosts=(),
+            eligible=(),
+            min_returns=0,
+            eviction_order_indices=(),
+            forced_return_mask=(),
+            return_domains=(),
+            matched_gate_genes=(0,),
+            boundary_id="exact-owner-target-site",
+            prior_idle_time_us=(0.0, 0.0),
+            scheduler_trace_end_us=0.0,
+            scheduler_active_union_us=(0.0, 0.0),
+            scheduler_aod_end_us=(0.0,),
+            scheduler_one_qubit_end_us=0.0,
+            scheduler_rydberg_end_us=(0.0,),
+            scheduler_qubit_dependency_end_us=(0.0, 0.0),
+            scheduler_back_dependency_end_us=(0.0, 0.0),
+        )
+        config = RichSearchConfig(operator_profile="exact")
+        state = random.Random(20260826).getstate()
+        reference = solve_rich_exact_reference(problem, config, state)
+        native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, state)
+        self.assertEqual(reference.winner, native.winner)
+        self.assertEqual(reference.gate_option_indices,
+                         native.gate_option_indices)
+        self.assertEqual(reference.return_assignments,
+                         native.return_assignments)
+        self.assertEqual(reference.reseat_assignments,
+                         native.reseat_assignments)
+        self.assertEqual(reference.rng_state, native.rng_state)
+
     def test_python_exact_rich_truth_matches_native(self):
         cases = []
         cases.append((self.arch, toy_problem(),
@@ -362,6 +501,53 @@ class TestNativeRichSolver(unittest.TestCase):
                     reference.search_negative_log_fidelity,
                     native.search_negative_log_fidelity, delta=1e-12)
 
+    def test_round_trip_stay_guard_matches_native_and_capacity_wins(self):
+        terms = (RichForecastTerm(
+            1, "constant", "routing", 0.001),)
+        base = toy_problem(terms=terms, horizon=1)
+        protected = replace(base, recommended_stay_mask=(True,))
+        capacity = replace(protected, min_returns=1)
+        config = RichSearchConfig(
+            operator_profile="exact",
+            max_horizon=1,
+            alpha_lookahead=0.5,
+            direct_enumeration_limit=512,
+            max_unique_evaluations=64,
+        )
+        state = random.Random(20260826).getstate()
+        for problem, expected, branch in (
+                (base, (0, 1), "trust-region-forecast-sacrifice"),
+                (protected, (0, 0), "trust-region-round-trip-stay"),
+                (capacity, (0, 1), "trust-region-forecast-sacrifice")):
+            with self.subTest(expected=expected, branch=branch):
+                reference = solve_rich_exact_reference(
+                    problem, config, state)
+                native = NativeResidentBackend(
+                    problem.architecture).solve_rich_boundary(
+                        problem, config, state)
+                self.assertEqual(expected, native.winner.chromosome)
+                self.assertEqual(reference.winner, native.winner)
+                self.assertEqual(reference.return_assignments,
+                                 native.return_assignments)
+                self.assertEqual(branch, native.current_gate_guard_branch)
+                self.assertEqual(reference.current_gate_guard_branch,
+                                 native.current_gate_guard_branch)
+
+    def test_round_trip_stay_guard_relaxes_for_joint_ghost(self):
+        arch, problem = stay_blocker_problem()
+        config = RichSearchConfig(
+            operator_profile="exact", max_horizon=1,
+            alpha_lookahead=0.5)
+        state = random.Random(0).getstate()
+        reference = solve_rich_exact_reference(problem, config, state)
+        native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, state)
+        self.assertEqual((0, 1), native.winner.chromosome)
+        self.assertEqual(reference.winner, native.winner)
+        self.assertEqual(
+            "trust-region-round-trip-stay-relaxed",
+            native.current_gate_guard_branch)
+
     def test_participant_cycle_does_not_satisfy_min_returns(self):
         arch, problem = participant_cycle_capacity_problem()
         config = RichSearchConfig(operator_profile="exact")
@@ -393,6 +579,7 @@ class TestNativeRichSolver(unittest.TestCase):
                              eviction_order_indices=(0,),
                              forced_return_mask=(True,),
                              recommended_return_mask=(False,),
+                             recommended_stay_mask=(False,),
                              return_domains=(problem.return_domains[0],))
         config = RichSearchConfig(operator_profile="exact")
         state = random.Random(0).getstate()
@@ -543,12 +730,12 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertEqual(0.0, h1.future_ghost_cost)
 
     def test_m4_guard_pins_current_safe_k_best_assignment(self):
-        """The H8/L2 forecast winner retains its complete guarded assignment.
+        """A forecast saving may pay for a bounded current-site sacrifice.
 
-        This is the minimal form of the medium-benchmark L2 regression: the
-        raw search winner prefers the farther RETURN site, while the ABI7
-        current-physics guard must pin the nearer assignment as one complete
-        evaluated value in both Python and C++.
+        The farther RETURN site costs nine distance units now but avoids a
+        future routing cost of one hundred.  The guard therefore keeps the
+        current anchor for auditing while admitting the forecast winner in
+        both Python and C++.
         """
         arch = ArchitectureSnapshot.from_coordinates(
             3,
@@ -585,13 +772,14 @@ class TestNativeRichSolver(unittest.TestCase):
             problem, config, rng_state)
         reference = solve_rich_exact_reference(
             problem, config, rng_state)
-        self.assertEqual(((2, 3),), result.return_assignments)
+        self.assertEqual(((2, 4),), result.return_assignments)
         self.assertEqual((3,), result.current_gate_anchor_assignment_site_ids)
-        self.assertEqual((3,), result.current_gate_final_assignment_site_ids)
+        self.assertEqual((4,), result.current_gate_final_assignment_site_ids)
         self.assertEqual(
-            "residency-pareto-envelope", result.current_gate_guard_branch)
+            "trust-region-forecast-sacrifice",
+            result.current_gate_guard_branch)
         self.assertGreaterEqual(result.current_gate_guard_cohort_size, 2)
-        self.assertEqual(1, result.current_gate_guard_admitted_size)
+        self.assertGreaterEqual(result.current_gate_guard_admitted_size, 1)
         self.assertEqual(reference.winner, result.winner)
         self.assertEqual(reference.return_assignments,
                          result.return_assignments)
@@ -673,12 +861,24 @@ class TestNativeRichSolver(unittest.TestCase):
             problem, config, rng_state, cached_winner=(0, 0, 0))
 
         self.assertEqual((0, 1, 1), reference.fitness.chromosome)
-        self.assertEqual(reference.fitness, native.winner)
+        self.assertEqual(reference.fitness.chromosome,
+                         native.winner.chromosome)
+        self.assertEqual(reference.fitness.move_batches,
+                         native.winner.move_batches)
+        self.assertAlmostEqual(
+            reference.fitness.negative_log_fidelity,
+            native.winner.negative_log_fidelity, delta=1e-12)
+        self.assertAlmostEqual(
+            reference.fitness.move_time_us,
+            native.winner.move_time_us, delta=1e-12)
+        self.assertAlmostEqual(
+            reference.fitness.total_distance_um,
+            native.winner.total_distance_um, delta=1e-12)
         self.assertEqual(((2, 6), (3, 7)), native.return_assignments)
         self.assertEqual((0, 1, 1), native.current_gate_anchor)
         self.assertEqual(4, native.current_gate_projection_evaluated)
         self.assertEqual(4, native.current_gate_guard_cohort_size)
-        self.assertEqual(2, native.current_gate_guard_admitted_size)
+        self.assertEqual(1, native.current_gate_guard_admitted_size)
         self.assertEqual(
             guard["current_gate_projection_evaluated"],
             native.current_gate_projection_evaluated)
@@ -975,8 +1175,8 @@ class TestNativeRichSolver(unittest.TestCase):
         )
         self.assertGreater(result.forecast_terms_applied, 0)
 
-    def test_terminal_cleanup_is_unattenuated_bellman_potential(self):
-        """Tiny alpha/rho cannot make the horizon-end RETURN disappear."""
+    def test_terminal_cleanup_uses_last_visible_decay_weight(self):
+        """The endpoint cleanup shares the last visible layer's scale."""
         arch = ArchitectureSnapshot.from_coordinates(
             3,
             (
@@ -1004,8 +1204,7 @@ class TestNativeRichSolver(unittest.TestCase):
             return_domains=((RichReturnOption(6, None, 0.0),),),
             matched_gate_genes=(),
             # Both atoms stay live through depth 1.  Their joint ghost-safe
-            # RETURN after depth 2 is exactly Phi(s_H), rather than another
-            # alpha*rho-weighted in-window event.
+            # RETURN after depth 2 is the endpoint potential Phi(s_H).
             future_layers=(
                 (1, ((0, 1),)),
                 (2, ((0, 1),)),
@@ -1024,29 +1223,41 @@ class TestNativeRichSolver(unittest.TestCase):
             forecast_gate_candidate_budget=4,
         )
         unit = replace(tiny, alpha_lookahead=1.0, decay_rho=1.0)
+        scaled = replace(tiny, alpha_lookahead=0.2, decay_rho=0.7)
         state = random.Random(20260825).getstate()
         tiny_reference = solve_rich_exact_reference(problem, tiny, state)
         unit_reference = solve_rich_exact_reference(problem, unit, state)
+        scaled_reference = solve_rich_exact_reference(problem, scaled, state)
         tiny_native = NativeResidentBackend(arch).solve_rich_boundary(
             problem, tiny, state)
+        scaled_native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, scaled, state)
 
-        terminal = tiny_reference.forecast_breakdown["terminal"]
+        terminal = unit_reference.forecast_breakdown["terminal"]
         self.assertGreater(terminal, 0.0)
+        self.assertEqual(0.0, tiny_reference.forecast_breakdown["terminal"])
+        self.assertEqual(0.0, tiny_native.forecast_breakdown["terminal"])
         self.assertAlmostEqual(
-            unit_reference.forecast_breakdown["terminal"], terminal,
+            scaled_reference.forecast_breakdown["terminal"],
+            0.2 * 0.7 * terminal,
             delta=1e-15)
-        self.assertAlmostEqual(
-            tiny_reference.forecast_by_depth[2], terminal, delta=1e-15)
+        # The depth bucket also contains the second future layer's residency
+        # cost, while the component bucket isolates endpoint cleanup.
+        self.assertGreater(
+            scaled_reference.forecast_by_depth[2],
+            scaled_reference.forecast_breakdown["terminal"])
         self.assertEqual(tiny_reference.winner, tiny_native.winner)
+        self.assertEqual(scaled_reference.winner, scaled_native.winner)
         self.assertAlmostEqual(
-            tiny_native.forecast_breakdown["terminal"], terminal,
+            scaled_native.forecast_breakdown["terminal"],
+            scaled_reference.forecast_breakdown["terminal"],
             delta=1e-12)
         self.assertAlmostEqual(
-            tiny_native.forecast_nll, tiny_reference.forecast_nll,
+            scaled_native.forecast_nll, scaled_reference.forecast_nll,
             delta=1e-12)
 
-    def test_h0_terminal_potential_prevents_repeated_stay_deferral(self):
-        """H=0 uses Phi(s0), but receives no future-layer representation."""
+    def test_h0_uses_only_exact_current_physical_cost(self):
+        """H=0 neither reads future layers nor adds a terminal proxy."""
         arch = ArchitectureSnapshot.from_coordinates(
             3,
             (
@@ -1091,27 +1302,35 @@ class TestNativeRichSolver(unittest.TestCase):
         native = NativeResidentBackend(arch).solve_rich_boundary(
             problem, config, state)
 
-        # Myopic current physics prefers the cheap STAY.  Adding the physical
-        # cleanup value to that same post-current state makes RETURN win now,
-        # so the resident cannot repeat the one-layer deferral forever.
+        # Exact current physics prefers the cheap STAY.  H=0 must preserve that
+        # ordering instead of importing a depth-zero cleanup proxy.
         self.assertLess(
             stay.fitness.negative_log_fidelity,
             returned.fitness.negative_log_fidelity)
-        self.assertGreater(stay.forecast_breakdown["terminal"], 0.0)
+        self.assertEqual(0.0, stay.forecast_breakdown["terminal"])
         self.assertEqual(0.0, returned.forecast_breakdown["terminal"])
-        self.assertGreater(stay.search_nll, returned.search_nll)
-        self.assertEqual((0, 1), reference.winner.chromosome)
+        self.assertLess(stay.search_nll, returned.search_nll)
+        self.assertEqual((0, 0), reference.winner.chromosome)
         self.assertEqual(reference.winner, native.winner)
         self.assertAlmostEqual(
             reference.search_negative_log_fidelity,
             native.search_negative_log_fidelity,
             delta=1e-12)
         self.assertEqual((), problem.future_layers)
+        self.assertEqual(0.0, reference.forecast_nll)
+        self.assertEqual(0.0, native.forecast_nll)
+        self.assertEqual((0.0,), reference.forecast_by_depth)
+        self.assertEqual((0.0,), native.forecast_by_depth)
+        self.assertEqual(
+            {"residency": 0.0, "reentry": 0.0,
+             "terminal": 0.0, "routing": 0.0},
+            native.forecast_breakdown)
+        self.assertEqual(0, native.forecast_terms_applied)
+        self.assertEqual(0, native.forecast_terms_skipped_cutoff)
         self.assertEqual((0.0,), returned.forecast_by_depth)
 
         # Entering the final 2Q layer is structurally marked by the scheduler.
-        # H=0 still sees no future gate, but it must not price a cleanup after
-        # the circuit has already ended.
+        # The final-layer marker cannot change an already-current-only result.
         terminal_problem = replace(problem, terminal_boundary=True)
         terminal_reference = solve_rich_exact_reference(
             terminal_problem, config, state)
@@ -1122,6 +1341,27 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertEqual(0.0, terminal_reference.forecast_nll)
         self.assertEqual(0.0, terminal_native.forecast_nll)
         self.assertEqual(0, terminal_native.forecast_terms_applied)
+
+        tuned = replace(
+            config,
+            operator_profile="tuned",
+            direct_enumeration_limit=1,
+            population_size=4,
+            iterations=2,
+            neighbors_per_solution=1,
+            neighbor_sample_size=4,
+            elite_count=1,
+            max_unique_evaluations=64,
+            local_polish_sweeps=2,
+            alpha_lookahead=7.0,
+            decay_rho=0.99,
+            decay_epsilon=0.9,
+        )
+        tuned_native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, tuned, state)
+        self.assertEqual((0, 0), tuned_native.winner.chromosome)
+        self.assertEqual(0.0, tuned_native.forecast_nll)
+        self.assertEqual((0.0,), tuned_native.forecast_by_depth)
 
     def test_qft_style_reentry_interlock_uses_finite_physical_recovery(self):
         """A cyclic future front is parked/reentered, never scored as inf."""
