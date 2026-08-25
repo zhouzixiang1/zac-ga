@@ -593,11 +593,22 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
                             "decay_factor": factor,
                             "weight": float(config["alpha_lookahead"]) * factor,
                         })
-                    if summary.get("offset_weights") != expected_weights:
+                    reported_weights = summary.get("offset_weights")
+                    if (not isinstance(reported_weights, list)
+                            or len(reported_weights) > len(expected_weights)
+                            or reported_weights != expected_weights[
+                                :len(reported_weights)]
+                            or (expected_depth > 0 and reported_transition_count > 0
+                                and not reported_weights)):
                         raise ValueError(
-                            "forecast_summary offset weights do not match the "
-                            "bare-factor cutoff contract")
-                    effective_depth = len(expected_weights)
+                            "forecast_summary offset weights are not an exact "
+                            "prefix of the configured bare-factor cutoff contract")
+                    # Long-depth runs may deterministically cap the expensive
+                    # physical rollout while retaining the registered
+                    # alpha*rho**(d-1) prefix.  The manifest still records the
+                    # configured maximum separately; only this effective depth
+                    # is allowed to shrink.
+                    effective_depth = len(reported_weights)
                     effective_counts = summary.get("effective_depth_counts")
                     visible_counts = summary.get("visible_depth_counts")
                     if (not isinstance(effective_counts, Mapping)
