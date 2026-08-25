@@ -184,6 +184,36 @@ class TestResidentPhysicalLedgers(unittest.TestCase):
         self.assertEqual(first.decision_log["rent_guard_returns"], 0)
         self.assertEqual(first.decision_log["rent_recommended_returns"], 1)
 
+    def test_m4_one_idle_pulse_activates_rolling_return_deadline(self):
+        schedule = (
+            ((0, 1),),
+            ((2, 3),),
+            ((0, 4),),
+        )
+        initial = [(0, 0, q) for q in range(5)]
+        provider = CachedForecastLayerProvider(
+            len(schedule), lambda layer: schedule[layer],
+            max_cached_layers=10)
+        kernel = ResidentTransitionKernel(
+            placer(initial, horizon=8), self.arch, initial, provider)
+        # q1 has no visible reuse.  A first clean boundary remains a soft
+        # recommendation (covered above); one actually observed resident idle
+        # pulse arms the anti-procrastination commitment without recharging
+        # that sunk error in the objective.
+        kernel.placer.registry.record_rydberg_pulse((0,), 0.36)
+
+        transition = kernel.advance()
+        guards = {row["q"]: row for row in
+                  transition.decision_log["rent_guard"]}
+        self.assertEqual(1, guards[1]["history_idle_exposures"])
+        self.assertTrue(guards[1]["recommended_return"])
+        self.assertTrue(guards[1]["forced_return"])
+        self.assertFalse(guards[1]["stay_admitted"])
+        self.assertEqual(
+            "rolling_horizon_return_deadline", guards[1]["reason"])
+        self.assertEqual("RETURN", guards[1]["selected_decision"])
+        self.assertEqual(1, transition.decision_log["rent_guard_returns"])
+
     def test_rent_guard_keeps_ranking_after_linear_coherence_ood(self):
         schedule = (
             ((0, 1),),

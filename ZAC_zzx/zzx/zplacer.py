@@ -2899,7 +2899,9 @@ class ResidentPlacer(VertexMatchingPlacer):
 
         # Formal decay rent-or-return audit.  This executes before chromosome
         # normalization so its ghost-safe witness can enrich the bounded RETURN
-        # domain, but it never writes the native forced-return mask.
+        # domain.  Recommendations remain soft on their first boundary; the
+        # one-pulse rolling-horizon deadline below may then populate the native
+        # forced-return mask to prevent infinite terminal-cost postponement.
         # M3 projects exactly the immediate target pulse from current state and
         # never asks the oracle for a future use.  M4 returns atoms with no
         # reuse in its registered window; visible reuses are admitted only
@@ -3037,13 +3039,23 @@ class ResidentPlacer(VertexMatchingPlacer):
                     and return_nll + 1e-12 < stay_increment_nll)
                 if recommended:
                     rent_recommended_returns.add(q)
-                # This scalar round-trip audit is deliberately a soft hint.
-                # It cannot prove a joint gate/RETURN assignment under the
-                # exact scheduler and therefore must never populate the hard
-                # native forced mask.  The recommendation is injected as a
-                # deterministic candidate and accepted only if exact scoring
-                # selects it.
-                forced_return = False
+                # A bounded rolling controller may otherwise postpone the
+                # same terminal RETURN forever: the atom is RESEATed/STAYed,
+                # leaves the visible window again, and pays another real idle
+                # excitation at every boundary.  Past rent remains sunk cost
+                # and is never added to fitness.  It only supplies a one-pulse
+                # progress certificate: after one already-observed exposure,
+                # a still-unreused atom whose ghost-safe RETURN is physically
+                # cheaper receives a native pre-score RETURN commitment.
+                # The native solver still chooses the gate and RETURN site and
+                # must replay the joint move with zero ghost hits.
+                forced_return = (
+                    active_horizon > 0
+                    and no_visible_reuse
+                    and recommended
+                    and history_exposures > 0)
+                if forced_return:
+                    rent_forced_returns.add(q)
                 rent_guard_details.append({
                     "q": q,
                     "mode": ("h0_current_only" if active_horizon == 0 else
@@ -3067,15 +3079,18 @@ class ResidentPlacer(VertexMatchingPlacer):
                     "return_round_trip_nll": return_nll,
                     "margin_nll": return_nll - stay_increment_nll,
                     "recommended_return": recommended,
-                    # The scalar witness is a soft recommendation only.  It
-                    # seeds an exact joint candidate but never constrains the
-                    # native STAY/RETURN or K-best site assignment.
+                    # Before the one-pulse rolling deadline this remains a
+                    # soft exact-scored recommendation.  At the deadline only
+                    # the RETURN bit is committed; K-best site assignment and
+                    # gate placement remain joint native decisions.
                     "forced_return": forced_return,
                     "stay_admitted": not forced_return,
                     "reason": ("no_ghost_safe_return" if safe_return is None
-                               else ("no_visible_reuse" if no_visible_reuse
+                               else ("rolling_horizon_return_deadline"
+                                     if forced_return
+                                     else ("no_visible_reuse" if no_visible_reuse
                                      else ("physical_break_even" if recommended
-                                           else "rent_below_return"))),
+                                           else "rent_below_return")))),
                 })
 
         def resolve_commitment_conflicts(bits):
