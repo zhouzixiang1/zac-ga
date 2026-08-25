@@ -912,6 +912,34 @@ def _source_attempt_manifest(source_root: Path,
     return manifest
 
 
+def _baseline_split_inventory(split: Mapping[str, Any]
+                              ) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Extract only the circuit inventory relevant to immutable baselines.
+
+    A tuning-protocol amendment may change ranking/coverage-only metadata
+    without changing any M1/M2 input.  Baseline reuse is safe exactly when the
+    ordered development and validation circuit inventories remain identical;
+    requiring the whole split JSON to match would force needless baseline
+    reruns after such an amendment.
+    """
+    if int(split.get("experiment_schema", -1)) != 2:
+        raise ValueError("source baseline split has the wrong schema")
+    inventory: dict[str, dict[str, tuple[str, ...]]] = {}
+    for cohort in ("development", "validation"):
+        section = split.get(cohort)
+        if not isinstance(section, Mapping):
+            raise ValueError(f"source baseline split lacks {cohort}")
+        inventory[cohort] = {}
+        for dataset in ("ZAC18", "QMAP154"):
+            circuits = section.get(dataset)
+            if (not isinstance(circuits, list)
+                    or not all(isinstance(row, str) for row in circuits)):
+                raise ValueError(
+                    f"source baseline split has invalid {cohort}/{dataset}")
+            inventory[cohort][dataset] = tuple(circuits)
+    return inventory
+
+
 def import_baselines(plan: ExperimentPlan, root: Path, source_root: Path
                      ) -> Mapping[str, Any]:
     """Reuse actual paper-original M1/M2 attempts after immutable revalidation.
@@ -929,8 +957,10 @@ def import_baselines(plan: ExperimentPlan, root: Path, source_root: Path
     source_split = json.loads((
         source_root / "protocol" / "split_manifest.json"
     ).read_text(encoding="utf-8"))
-    if source_split != split_manifest():
-        raise ValueError("source baseline split differs from current protocol")
+    if (_baseline_split_inventory(source_split)
+            != _baseline_split_inventory(split_manifest())):
+        raise ValueError(
+            "source baseline circuit inventory differs from current protocol")
 
     registry = _canonical_registry(plan)
     outputs = []

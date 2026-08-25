@@ -38,6 +38,7 @@ from experiments_v2.quality_racing_runner import (
     _assert_validation_non_degradation,
     _attempt_artifact_sha256,
     _attempt_identity_lock,
+    _baseline_split_inventory,
     _native_runtime_identity_payload,
     _record_parallel_execution,
     _record_sha256,
@@ -122,6 +123,22 @@ class QualityRacingTests(unittest.TestCase):
                 _source_attempt_manifest(source, {
                     "attempt_manifest": "/former/workspace/manifest.json",
                 })
+
+    def test_baseline_inventory_ignores_tuning_only_split_amendment(self):
+        original = split_manifest()
+        amended = json.loads(json.dumps(original))
+        amended["protocol_id"] = "older-protocol"
+        amended.pop("development_tuning")
+        amended.pop("development_coverage_only")
+        amended.pop("coverage_only_rule")
+        self.assertEqual(
+            _baseline_split_inventory(original),
+            _baseline_split_inventory(amended))
+        amended["development"]["QMAP154"] = amended[
+            "development"]["QMAP154"][:-1]
+        self.assertNotEqual(
+            _baseline_split_inventory(original),
+            _baseline_split_inventory(amended))
 
     def test_parallel_quality_amendment_is_fail_closed_and_excludes_timing(self):
         with tempfile.TemporaryDirectory() as directory:
