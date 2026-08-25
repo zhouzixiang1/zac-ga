@@ -23,7 +23,7 @@ routing-aware A*、M3 无前瞻遗传驻留、M4 几何衰减多层前瞻遗传�
 
 ## 当前调参协议
 
-正式协议是 `resident-ga-quality-racing-v2`，入口为
+正式协议是 `resident-ga-quality-racing-v3`，入口为
 `experiments_v2.quality_racing_cli`。旧的 18→6→固定 270 次 validation 代码只
 保留为历史 ledger 读取器，不再生成本轮配置。
 

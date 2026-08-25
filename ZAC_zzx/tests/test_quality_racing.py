@@ -141,7 +141,7 @@ class QualityRacingTests(unittest.TestCase):
             _baseline_split_inventory(original),
             _baseline_split_inventory(amended))
 
-    def test_v1_baseline_receipt_remains_hash_valid_under_v2(self):
+    def test_v1_baseline_receipt_remains_hash_valid_under_v3(self):
         source = _seal({
             "experiment_schema": 2,
             "protocol_id": PROTOCOL_ID,
@@ -197,11 +197,14 @@ class QualityRacingTests(unittest.TestCase):
         manifest = split_manifest()
         self.assertEqual(PROTOCOL_ID, manifest["protocol_id"])
         self.assertEqual(15, len(DEVELOPMENT_CIRCUITS))
-        self.assertEqual(14, len(DEVELOPMENT_TUNING_CIRCUITS))
-        self.assertEqual(("dist_223",), DEVELOPMENT_COVERAGE_ONLY)
+        self.assertEqual(12, len(DEVELOPMENT_TUNING_CIRCUITS))
+        self.assertEqual(
+            ("dist_223", "hwb8_113", "hwb9_119"),
+            DEVELOPMENT_COVERAGE_ONLY)
         self.assertNotIn("dist_223", DEVELOPMENT_TUNING_CIRCUITS)
         self.assertEqual(
-            {"QMAP154": ["dist_223"], "ZAC18": []},
+            {"QMAP154": ["dist_223", "hwb8_113", "hwb9_119"],
+             "ZAC18": []},
             manifest["development_coverage_only"])
         self.assertEqual(15, len(VALIDATION_CIRCUITS))
         self.assertFalse(set(DEVELOPMENT_CIRCUITS) & set(VALIDATION_CIRCUITS))
@@ -411,15 +414,17 @@ class QualityRacingTests(unittest.TestCase):
                 self.assertEqual("bv_n14", baselines["outputs"][0]["identity"][
                     "circuit_key"])
                 profiles = run_profiles(plan, root, dry_run=True)
-                self.assertEqual(70, len(profiles["M3"]["outputs"]))
-                self.assertEqual(70, len(profiles["M4"]["outputs"]))
+                self.assertEqual(60, len(profiles["M3"]["outputs"]))
+                self.assertEqual(60, len(profiles["M4"]["outputs"]))
                 self.assertEqual(
                     list(DEVELOPMENT_TUNING_CIRCUITS),
                     profiles["M3"]["ranking_circuits"])
                 self.assertEqual(
-                    ["dist_223"], profiles["M3"]["coverage_only_circuits"])
+                    ["dist_223", "hwb8_113", "hwb9_119"],
+                    profiles["M3"]["coverage_only_circuits"])
                 self.assertFalse(any(
-                    row["identity"]["circuit_key"] == "dist_223"
+                    row["identity"]["circuit_key"]
+                    in DEVELOPMENT_COVERAGE_ONLY
                     for row in profiles["M3"]["outputs"]))
                 self.assertEqual(10, len(list((root / "configs").glob(
                     "*/seed-0.json"))))

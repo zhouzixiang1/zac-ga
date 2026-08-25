@@ -1,4 +1,4 @@
-"""Fail-closed execution for ``resident-ga-quality-racing-v2``.
+"""Fail-closed execution for ``resident-ga-quality-racing-v3``.
 
 Each scheduled receipt is addressed from a deterministic identity, and resume
 accepts only that exact receipt and its hashed attempt manifest.  It never
@@ -124,7 +124,9 @@ def _validate_source_baseline_receipt(payload: Mapping[str, Any]) -> None:
     if payload.get("experiment_schema") != 2:
         raise ValueError("source baseline receipt schema mismatch")
     if payload.get("protocol_id") not in {
-            "resident-ga-quality-racing-v1", PROTOCOL_ID}:
+            "resident-ga-quality-racing-v1",
+            "resident-ga-quality-racing-v2",
+            PROTOCOL_ID}:
         raise ValueError("source baseline receipt protocol is not reusable")
     if payload.get("record_sha256") != _record_sha256(payload):
         raise ValueError("source baseline receipt hash mismatch")

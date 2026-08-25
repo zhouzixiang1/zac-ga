@@ -1,6 +1,6 @@
 """Streamlined, method-specific quality racing for the native resident GA.
 
-This is the active ``resident-ga-quality-racing-v2`` protocol.  The older
+This is the active ``resident-ga-quality-racing-v3`` protocol.  The older
 screen/halving/270-validation protocol remains readable in :mod:`tuning` only
 for legacy ledgers; formal M3/M4 configs point exclusively to this module's
 protocol id.
@@ -34,7 +34,7 @@ from zzx.algorithm_v2 import (
 )
 
 
-PROTOCOL_ID = "resident-ga-quality-racing-v2"
+PROTOCOL_ID = "resident-ga-quality-racing-v3"
 if PROTOCOL_ID != FORMAL_NATIVE_TUNING_PROTOCOL_ID:
     raise RuntimeError("quality racing protocol differs from formal contract")
 
@@ -64,13 +64,13 @@ QMAP_VALIDATION = (
     "clip_206", "root_255", "misex1_241",
 )
 DEVELOPMENT_CIRCUITS = ZAC_DEVELOPMENT + QMAP_DEVELOPMENT
-# ``dist_223`` is a coverage sentinel rather than a tuning circuit.  A clean
-# native M3 run exhausts the common 600-s budget, so repeating it for every
-# hyperparameter is uninformative and would make every candidate invalid.
-# It remains in the declared development inventory and is attempted by the
-# selected methods during full QMAP154 coverage; it is never silently removed
-# from final coverage or result tables.
-DEVELOPMENT_COVERAGE_ONLY = ("dist_223",)
+# ``dist_223`` and ``hwb8_113`` exhaust the common 600-s M3 budget, so
+# repeating them for every hyperparameter is uninformative and would make
+# every candidate invalid.  Keep the larger same-family ``hwb9_119`` with its
+# sibling to avoid tuning/coverage family leakage.  All three remain in the
+# declared development inventory and are attempted by the selected methods
+# during full QMAP154 coverage; none is removed from final result tables.
+DEVELOPMENT_COVERAGE_ONLY = ("dist_223", "hwb8_113", "hwb9_119")
 DEVELOPMENT_TUNING_CIRCUITS = tuple(
     circuit for circuit in DEVELOPMENT_CIRCUITS
     if circuit not in DEVELOPMENT_COVERAGE_ONLY)
@@ -716,8 +716,9 @@ def split_manifest() -> dict[str, Any]:
                         if circuit in QMAP_DEVELOPMENT],
         },
         "coverage_only_rule": (
-            "excluded from hyperparameter ranking after a clean 600-s "
-            "sentinel timeout; retained for selected-method full coverage"),
+            "measured 600-s timeout sentinels and their same-family sibling "
+            "are excluded from hyperparameter ranking but retained for "
+            "selected-method full coverage"),
         "validation": {
             "ZAC18": list(ZAC_VALIDATION),
             "QMAP154": list(QMAP_VALIDATION),
