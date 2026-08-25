@@ -1,4 +1,4 @@
-"""Fail-closed execution for ``resident-ga-quality-racing-v1``.
+"""Fail-closed execution for ``resident-ga-quality-racing-v2``.
 
 Each scheduled receipt is addressed from a deterministic identity, and resume
 accepts only that exact receipt and its hashed attempt manifest.  It never
@@ -30,9 +30,12 @@ from .plan import (ExperimentPlan, effective_zac_setting,
                    load_experiment_plan)
 from .quality_racing import (
     DEVELOPMENT_CIRCUITS,
+    DEVELOPMENT_COVERAGE_ONLY,
+    DEVELOPMENT_TUNING_CIRCUITS,
     DEVELOPMENT_SEED,
     INCUMBENT_NON_DEGRADATION_TOLERANCE,
     PROTOCOL_ID,
+    RACE_BLOCK_SIZE,
     RacingTrial,
     VALIDATION_CIRCUITS,
     VALIDATION_SEEDS,
@@ -1211,8 +1214,13 @@ def _run_development_race(
     active = _candidate_map(candidates)
     checkpoints = []
     outputs = []
-    for stop in range(5, len(DEVELOPMENT_CIRCUITS) + 1, 5):
-        block = DEVELOPMENT_CIRCUITS[stop - 5:stop]
+    circuit_count = len(DEVELOPMENT_TUNING_CIRCUITS)
+    stops = list(range(RACE_BLOCK_SIZE, circuit_count, RACE_BLOCK_SIZE))
+    stops.append(circuit_count)
+    start = 0
+    for stop in stops:
+        block = DEVELOPMENT_TUNING_CIRCUITS[start:stop]
+        start = stop
         outputs.extend(_run_candidate_trials(
             plan, root, stage=stage, method=method,
             candidates=list(active.values()), circuits=block,
@@ -1220,7 +1228,7 @@ def _run_development_race(
             workers=workers))
         if dry_run:
             continue
-        cumulative = DEVELOPMENT_CIRCUITS[:stop]
+        cumulative = DEVELOPMENT_TUNING_CIRCUITS[:stop]
         rows = _load_candidate_rows(
             plan, root, stage=stage, method=method,
             candidates=list(active.values()), circuits=cumulative,
@@ -1237,15 +1245,19 @@ def _run_development_race(
         "experiment_schema": 2, "protocol_id": PROTOCOL_ID,
         "stage": stage, "method": method,
         "dry_run": dry_run, "outputs": outputs, "checkpoints": checkpoints,
+        "ranking_circuits": list(DEVELOPMENT_TUNING_CIRCUITS),
+        "coverage_only_circuits": list(DEVELOPMENT_COVERAGE_ONLY),
     }
     if not dry_run:
         rows = _load_candidate_rows(
             plan, root, stage=stage, method=method,
-            candidates=list(active.values()), circuits=DEVELOPMENT_CIRCUITS,
+            candidates=list(active.values()),
+            circuits=DEVELOPMENT_TUNING_CIRCUITS,
             seeds=DEVELOPMENT_SEED)
         selection = select_top(
             rows, candidate_ids=list(active), method=method,
-            circuits=DEVELOPMENT_CIRCUITS, seeds=DEVELOPMENT_SEED, count=2)
+            circuits=DEVELOPMENT_TUNING_CIRCUITS,
+            seeds=DEVELOPMENT_SEED, count=2)
         result["selection"] = selection
         result["promoted"] = [active[key] for key in selection["selected"]]
         _write_same_or_fail(

@@ -1,6 +1,6 @@
 """Streamlined, method-specific quality racing for the native resident GA.
 
-This is the active ``resident-ga-quality-racing-v1`` protocol.  The older
+This is the active ``resident-ga-quality-racing-v2`` protocol.  The older
 screen/halving/270-validation protocol remains readable in :mod:`tuning` only
 for legacy ledgers; formal M3/M4 configs point exclusively to this module's
 protocol id.
@@ -34,7 +34,7 @@ from zzx.algorithm_v2 import (
 )
 
 
-PROTOCOL_ID = "resident-ga-quality-racing-v1"
+PROTOCOL_ID = "resident-ga-quality-racing-v2"
 if PROTOCOL_ID != FORMAL_NATIVE_TUNING_PROTOCOL_ID:
     raise RuntimeError("quality racing protocol differs from formal contract")
 
@@ -64,6 +64,16 @@ QMAP_VALIDATION = (
     "clip_206", "root_255", "misex1_241",
 )
 DEVELOPMENT_CIRCUITS = ZAC_DEVELOPMENT + QMAP_DEVELOPMENT
+# ``dist_223`` is a coverage sentinel rather than a tuning circuit.  A clean
+# native M3 run exhausts the common 600-s budget, so repeating it for every
+# hyperparameter is uninformative and would make every candidate invalid.
+# It remains in the declared development inventory and is attempted by the
+# selected methods during full QMAP154 coverage; it is never silently removed
+# from final coverage or result tables.
+DEVELOPMENT_COVERAGE_ONLY = ("dist_223",)
+DEVELOPMENT_TUNING_CIRCUITS = tuple(
+    circuit for circuit in DEVELOPMENT_CIRCUITS
+    if circuit not in DEVELOPMENT_COVERAGE_ONLY)
 VALIDATION_CIRCUITS = ZAC_VALIDATION + QMAP_VALIDATION
 
 SEARCH_PROFILES: Mapping[str, Mapping[str, int]] = {
@@ -118,10 +128,10 @@ STRUCTURAL_DEFAULTS: Mapping[str, Any] = {
     "crossover_rate": 0.25,
     "local_polish_sweeps": 1,
     "direct_enumeration_limit": 512,
-    # Start profile/decision racing with the bounded fast projection so every
-    # preregistered QMAP circuit, including dist_223, fits the 600-s protocol.
-    # The M4 lookahead stage then compares 1/2/4 and may restore the full
-    # four-site physical minimum when its quality gain justifies the time.
+    # Start profile/decision racing with the bounded fast projection.  The M4
+    # lookahead stage then compares 1/2/4 and may restore the full four-site
+    # physical minimum when its quality gain justifies the time.  dist_223 is
+    # recorded separately as a full-coverage sentinel, not ranked here.
     "forecast_gate_candidate_budget": 1,
     "alpha_lookahead": 0.10,
     "rho": 0.60,
@@ -437,8 +447,8 @@ def race_checkpoint(
         method: str, completed_circuits: Sequence[str]
 ) -> dict[str, Any]:
     """Eliminate candidates only at five-circuit cumulative checkpoints."""
-    if not completed_circuits or len(completed_circuits) % RACE_BLOCK_SIZE:
-        raise ValueError("race checkpoints occur after each five circuits")
+    if not completed_circuits:
+        raise ValueError("race checkpoints require completed circuits")
     summaries = summarize_candidates(
         trials, candidate_ids=active_candidate_ids, method=method,
         circuits=completed_circuits, seeds=DEVELOPMENT_SEED)
@@ -693,6 +703,21 @@ def split_manifest() -> dict[str, Any]:
             "ZAC18": list(ZAC_DEVELOPMENT),
             "QMAP154": list(QMAP_DEVELOPMENT),
         },
+        "development_tuning": {
+            "ZAC18": [circuit for circuit in ZAC_DEVELOPMENT
+                      if circuit not in DEVELOPMENT_COVERAGE_ONLY],
+            "QMAP154": [circuit for circuit in QMAP_DEVELOPMENT
+                        if circuit not in DEVELOPMENT_COVERAGE_ONLY],
+        },
+        "development_coverage_only": {
+            "ZAC18": [circuit for circuit in DEVELOPMENT_COVERAGE_ONLY
+                      if circuit in ZAC_DEVELOPMENT],
+            "QMAP154": [circuit for circuit in DEVELOPMENT_COVERAGE_ONLY
+                        if circuit in QMAP_DEVELOPMENT],
+        },
+        "coverage_only_rule": (
+            "excluded from hyperparameter ranking after a clean 600-s "
+            "sentinel timeout; retained for selected-method full coverage"),
         "validation": {
             "ZAC18": list(ZAC_VALIDATION),
             "QMAP154": list(QMAP_VALIDATION),
@@ -743,7 +768,8 @@ def write_protocol_files(output_directory: Path) -> dict[str, str]:
 
 
 __all__ = [
-    "COMMON_KNOBS", "DEVELOPMENT_CIRCUITS", "DEVELOPMENT_SEED",
+    "COMMON_KNOBS", "DEVELOPMENT_CIRCUITS", "DEVELOPMENT_COVERAGE_ONLY",
+    "DEVELOPMENT_SEED", "DEVELOPMENT_TUNING_CIRCUITS",
     "ELIMINATION_LOGF_MARGIN", "FORMAL_CANDIDATE_KEYS",
     "INCUMBENT_NON_DEGRADATION_TOLERANCE", "M4_DECAY_KNOBS", "METHODS",
     "PROTOCOL_ID", "QMAP_DEVELOPMENT", "QMAP_VALIDATION",

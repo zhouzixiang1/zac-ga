@@ -21,7 +21,7 @@ from .quality_racing_runner import (
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run resident-ga-quality-racing-v1 fail-closed")
+        description="Run resident-ga-quality-racing-v2 fail-closed")
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--root", type=Path)
     parser.add_argument(

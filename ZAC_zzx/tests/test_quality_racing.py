@@ -9,6 +9,8 @@ from pathlib import Path
 
 from experiments_v2.quality_racing import (
     DEVELOPMENT_CIRCUITS,
+    DEVELOPMENT_COVERAGE_ONLY,
+    DEVELOPMENT_TUNING_CIRCUITS,
     FORMAL_CANDIDATE_KEYS,
     INCUMBENT_NON_DEGRADATION_TOLERANCE,
     PROTOCOL_ID,
@@ -164,6 +166,12 @@ class QualityRacingTests(unittest.TestCase):
         manifest = split_manifest()
         self.assertEqual(PROTOCOL_ID, manifest["protocol_id"])
         self.assertEqual(15, len(DEVELOPMENT_CIRCUITS))
+        self.assertEqual(14, len(DEVELOPMENT_TUNING_CIRCUITS))
+        self.assertEqual(("dist_223",), DEVELOPMENT_COVERAGE_ONLY)
+        self.assertNotIn("dist_223", DEVELOPMENT_TUNING_CIRCUITS)
+        self.assertEqual(
+            {"QMAP154": ["dist_223"], "ZAC18": []},
+            manifest["development_coverage_only"])
         self.assertEqual(15, len(VALIDATION_CIRCUITS))
         self.assertFalse(set(DEVELOPMENT_CIRCUITS) & set(VALIDATION_CIRCUITS))
         config_root = ROOT / "exp_setting" / "native_ga_v1"
@@ -218,6 +226,17 @@ class QualityRacingTests(unittest.TestCase):
         self.assertEqual("leader", result["leader"])
         self.assertEqual({"leader", "move-winner"}, set(result["retained"]))
         self.assertEqual("loser", result["eliminated"][0]["candidate_id"])
+
+    def test_race_accepts_final_partial_block(self):
+        circuits = tuple(f"c{index}" for index in range(4))
+        rows = [
+            trial(candidate, "M3", circuit, 0, delta=.01)
+            for circuit in circuits for candidate in ("a", "b")
+        ]
+        result = race_checkpoint(
+            rows, active_candidate_ids=("a", "b"), method="M3",
+            completed_circuits=circuits)
+        self.assertEqual(set(("a", "b")), set(result["retained"]))
 
     def test_validation_selection_prefers_runtime_inside_quality_band(self):
         circuits = ("a", "b")
@@ -361,8 +380,16 @@ class QualityRacingTests(unittest.TestCase):
                 self.assertEqual("bv_n14", baselines["outputs"][0]["identity"][
                     "circuit_key"])
                 profiles = run_profiles(plan, root, dry_run=True)
-                self.assertEqual(75, len(profiles["M3"]["outputs"]))
-                self.assertEqual(75, len(profiles["M4"]["outputs"]))
+                self.assertEqual(70, len(profiles["M3"]["outputs"]))
+                self.assertEqual(70, len(profiles["M4"]["outputs"]))
+                self.assertEqual(
+                    list(DEVELOPMENT_TUNING_CIRCUITS),
+                    profiles["M3"]["ranking_circuits"])
+                self.assertEqual(
+                    ["dist_223"], profiles["M3"]["coverage_only_circuits"])
+                self.assertFalse(any(
+                    row["identity"]["circuit_key"] == "dist_223"
+                    for row in profiles["M3"]["outputs"]))
                 self.assertEqual(10, len(list((root / "configs").glob(
                     "*/seed-0.json"))))
             execution = json.loads((root / "protocol" /
