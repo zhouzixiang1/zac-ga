@@ -48,6 +48,7 @@ from experiments_v2.quality_racing_runner import (
     _source_attempt_manifest,
     _strongest_original_scores,
     _validate_attempt_receipt,
+    _validate_source_baseline_receipt,
     _valid_original_baselines,
     prepare_workspace, run_baselines, run_profiles,
     validate_quality_selection_for_plan,
@@ -139,6 +140,19 @@ class QualityRacingTests(unittest.TestCase):
         self.assertNotEqual(
             _baseline_split_inventory(original),
             _baseline_split_inventory(amended))
+
+    def test_v1_baseline_receipt_remains_hash_valid_under_v2(self):
+        source = _seal({
+            "experiment_schema": 2,
+            "protocol_id": PROTOCOL_ID,
+            "identity": {"stage": "baselines"},
+        })
+        source["protocol_id"] = "resident-ga-quality-racing-v1"
+        source["record_sha256"] = _record_sha256(source)
+        _validate_source_baseline_receipt(source)
+        source["identity"] = {"stage": "tampered"}
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            _validate_source_baseline_receipt(source)
 
     def test_parallel_quality_amendment_is_fail_closed_and_excludes_timing(self):
         with tempfile.TemporaryDirectory() as directory:

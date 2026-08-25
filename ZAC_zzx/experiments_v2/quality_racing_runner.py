@@ -119,6 +119,17 @@ def _validate_sealed(payload: Mapping[str, Any]) -> None:
         raise ValueError("quality-racing receipt hash mismatch")
 
 
+def _validate_source_baseline_receipt(payload: Mapping[str, Any]) -> None:
+    """Validate a sealed baseline receipt across the registered v1->v2 amendment."""
+    if payload.get("experiment_schema") != 2:
+        raise ValueError("source baseline receipt schema mismatch")
+    if payload.get("protocol_id") not in {
+            "resident-ga-quality-racing-v1", PROTOCOL_ID}:
+        raise ValueError("source baseline receipt protocol is not reusable")
+    if payload.get("record_sha256") != _record_sha256(payload):
+        raise ValueError("source baseline receipt hash mismatch")
+
+
 def _validated_workers(workers: int) -> int:
     if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
         raise ValueError("workers must be a positive integer")
@@ -980,7 +991,7 @@ def import_baselines(plan: ExperimentPlan, root: Path, source_root: Path
                 dataset.name, circuit, 0)
             source_receipt = json.loads(
                 source_receipt_path.read_text(encoding="utf-8"))
-            _validate_sealed(source_receipt)
+            _validate_source_baseline_receipt(source_receipt)
             if source_receipt.get("identity") != identity:
                 raise ValueError(
                     f"source baseline identity drift: {source_receipt_path}")
