@@ -206,8 +206,18 @@ class RunManifest:
     peak_rss_bytes: Optional[int] = None
     transition_decision_ns: Optional[int] = None
     search_kernel_ns: Optional[int] = None
+    problem_preparation_ns: Optional[int] = None
+    result_commit_ns: Optional[int] = None
     marshal_ns: Optional[int] = None
+    python_marshal_ns: Optional[int] = None
+    native_call_wall_ns: Optional[int] = None
+    native_search_wall_ns: Optional[int] = None
     fitness_ns: Optional[int] = None
+    normalize_ns: Optional[int] = None
+    decode_ns: Optional[int] = None
+    return_match_ns: Optional[int] = None
+    forecast_ns: Optional[int] = None
+    selection_ns: Optional[int] = None
     native_parse_ns: Optional[int] = None
     native_serialize_ns: Optional[int] = None
     horizon_selection_ns: Optional[int] = None
@@ -464,8 +474,18 @@ class RunManifest:
             numeric_values.update({
                 "transition_decision_ns": self.transition_decision_ns,
                 "search_kernel_ns": self.search_kernel_ns,
+                "problem_preparation_ns": self.problem_preparation_ns,
+                "result_commit_ns": self.result_commit_ns,
                 "marshal_ns": self.marshal_ns,
+                "python_marshal_ns": self.python_marshal_ns,
+                "native_call_wall_ns": self.native_call_wall_ns,
+                "native_search_wall_ns": self.native_search_wall_ns,
                 "fitness_ns": self.fitness_ns,
+                "normalize_ns": self.normalize_ns,
+                "decode_ns": self.decode_ns,
+                "return_match_ns": self.return_match_ns,
+                "forecast_ns": self.forecast_ns,
+                "selection_ns": self.selection_ns,
                 "native_parse_ns": self.native_parse_ns,
                 "native_serialize_ns": self.native_serialize_ns,
                 "horizon_selection_ns": self.horizon_selection_ns,

@@ -34,12 +34,16 @@ from zzx.zplacer import ResidentPlacer  # noqa: E402
 
 
 TIMING_KEYS = {
-    "horizon_selection_ns", "search_kernel_ns", "marshal_ns",
-    "backend_search_kernel_ns", "fitness_ns", "backend_selection_ns",
+    "horizon_selection_ns", "problem_preparation_ns", "search_kernel_ns",
+    "result_commit_ns", "marshal_ns", "python_marshal_ns",
+    "native_call_wall_ns", "native_search_wall_ns",
+    "backend_search_kernel_ns", "fitness_ns", "normalize_ns",
+    "decode_ns", "return_match_ns", "forecast_ns", "selection_ns",
+    "backend_selection_ns",
     "backend_calls", "backend_candidates", "cache",
 }
 NATIVE_WHEEL_SHA256 = (
-    "1e991c0201b7bdb657257e47783d1d5b44e28b5d50b0ab323ecfaa47585f033b")
+    "b9109e6556e032a8c148b33c9ca1f213eac4226c6801182e67e8ef4a577786b9")
 
 
 def architecture(*, frozen_physics=False):
@@ -492,6 +496,50 @@ class TestIndexedNativeGateDomain(unittest.TestCase):
 
 @unittest.skipUnless(native_available(), "zac_native_core wheel is not installed")
 class TestNativeResidentIntegration(unittest.TestCase):
+    def test_deep_serial_domain_predicate_is_narrow(self):
+        placer = SimpleNamespace(
+            resident_backend_requested="native",
+            total_transition_count=2500,
+            mapping=[[(0, q, 0) for q in range(16)]],
+        )
+        predicate = ResidentPlacer._use_bounded_deep_serial_gate_domain
+        self.assertTrue(predicate(placer, True, 2))
+        self.assertFalse(predicate(placer, True, 3))
+        self.assertFalse(predicate(placer, True, 2, force_complete=True))
+        placer.total_transition_count = 2499
+        self.assertFalse(predicate(placer, True, 2))
+        placer.total_transition_count = 2500
+        placer.mapping = [[(0, q, 0) for q in range(17)]]
+        self.assertFalse(predicate(placer, True, 2))
+
+    def test_deep_serial_native_domain_is_bounded_and_ghost_safe(self):
+        # Force the predicate on a short schedule so the integration test
+        # exercises the actual local-menu DTO without constructing thousands
+        # of layers.  The predicate boundaries are tested independently above.
+        schedule = [
+            [[0, 1]], [[1, 2]], [[0, 2]], [[0, 1]], [[1, 2]],
+        ]
+        for horizon in (decay_lookahead_spec(0), decay_lookahead_spec(8)):
+            with self.subTest(horizon=maximum_lookahead_horizon(horizon)):
+                with mock.patch.object(
+                        ResidentPlacer,
+                        "_use_bounded_deep_serial_gate_domain",
+                        return_value=True):
+                    placer = run(
+                        schedule, backend="native", horizon=horizon, seed=23)
+                self.assertEqual(len(schedule), len(placer.decision_log))
+                self.assertEqual(0, getattr(placer, "ghost_hits", 0))
+                rich_rows = [
+                    row for row in placer.decision_log
+                    if "rich_search" in row
+                ]
+                self.assertEqual(len(schedule) - 1, len(rich_rows))
+                for row in rich_rows:
+                    rich = row["rich_search"]
+                    self.assertTrue(rich["bounded_long_depth_domain"])
+                    self.assertTrue(rich["gate_domain_sizes"])
+                    self.assertLessEqual(max(rich["gate_domain_sizes"]), 8)
+
     def assertNativeRunContract(self, schedule, *, horizon, seed):
         first_run = run(
             schedule, backend="native", horizon=horizon, seed=seed)
@@ -546,6 +594,11 @@ class TestNativeResidentIntegration(unittest.TestCase):
             row["rich_search"]["native_future_layers"] == 0
             for row in first_run.decision_log[:-1]
             if configured == 0))
+        if configured == 0:
+            self.assertTrue(all(
+                row["forecast_objective"][
+                    "weighted_negative_log_fidelity"] == 0.0
+                for row in first_run.decision_log[:-1]))
         if configured > 0:
             self.assertTrue(any(
                 row["rich_search"]["native_future_layers"] > 0

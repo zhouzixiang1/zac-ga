@@ -31,7 +31,11 @@ def architecture():
     return value
 
 
-def placer(initial, *, horizon: int, seed: int = 0):
+def placer(initial, *, horizon: int, seed: int = 0,
+           h0_reentry_value_weight: float = 0.0,
+           h0_reentry_value_min_interaction_mass: int = 0,
+           h0_reentry_value_min_circuit_median_interactions: int = 0,
+           h0_reentry_value_scale_by_interaction_ratio: bool = False):
     return ResidentPlacer(
         initial,
         seed=seed,
@@ -49,6 +53,13 @@ def placer(initial, *, horizon: int, seed: int = 0):
         neighbor_sample_size=8,
         direct_enumeration_limit=512,
         max_unique_evaluations=256,
+        h0_reentry_value_weight=h0_reentry_value_weight,
+        h0_reentry_value_min_interaction_mass=(
+            h0_reentry_value_min_interaction_mass),
+        h0_reentry_value_min_circuit_median_interactions=(
+            h0_reentry_value_min_circuit_median_interactions),
+        h0_reentry_value_scale_by_interaction_ratio=(
+            h0_reentry_value_scale_by_interaction_ratio),
     )
 
 
@@ -159,6 +170,97 @@ class TestResidentPhysicalLedgers(unittest.TestCase):
         self.assertAlmostEqual(
             guards[0]["stay_coherence_increment_nll"],
             expected_coherence, places=15)
+
+    def test_h0_soft_reentry_value_is_depth_zero_not_future(self):
+        schedule = (
+            ((0, 1),),
+            ((2, 3),),
+            ((0, 2),),
+        )
+        initial = [(0, 0, q) for q in range(4)]
+        reads = []
+        provider = CachedForecastLayerProvider(
+            len(schedule),
+            lambda layer: (reads.append(layer), schedule[layer])[1],
+            max_cached_layers=2)
+        kernel = ResidentTransitionKernel(
+            placer(initial, horizon=0, h0_reentry_value_weight=0.5),
+            self.arch, initial, provider)
+        first = kernel.advance()
+        self.assertNotIn(2, reads)
+        self.assertGreater(first.decision_log["h0_reentry_value_terms"], 0)
+        objective = first.decision_log["forecast_objective"]
+        self.assertEqual(objective["weighted_negative_log_fidelity"], 0.0)
+        self.assertGreaterEqual(
+            objective["state_potential_negative_log_fidelity"], 0.0)
+        self.assertGreater(
+            first.decision_log["rich_search"]["forecast_terms"], 0)
+
+    def test_h0_soft_reentry_value_can_select_by_current_static_mass(self):
+        schedule = (
+            ((0, 1),),
+            ((2, 3),),
+            ((0, 2),),
+        )
+        initial = [(0, 0, q) for q in range(4)]
+        reads = []
+        provider = CachedForecastLayerProvider(
+            len(schedule),
+            lambda layer: (reads.append(layer), schedule[layer])[1],
+            max_cached_layers=2)
+        kernel = ResidentTransitionKernel(
+            placer(
+                initial,
+                horizon=0,
+                h0_reentry_value_weight=1.0,
+                h0_reentry_value_min_interaction_mass=2,
+                h0_reentry_value_scale_by_interaction_ratio=True,
+            ),
+            self.arch,
+            initial,
+            provider,
+        )
+        first = kernel.advance()
+        self.assertNotIn(2, reads)
+        self.assertEqual(first.decision_log["h0_reentry_value_terms"], 0)
+        guards = first.decision_log["rent_guard"]
+        self.assertTrue(guards)
+        self.assertTrue(all(
+            row["h0_target_interaction_mass"] < 2 for row in guards))
+        self.assertTrue(all(
+            not row["h0_reentry_value_selected"] for row in guards))
+
+    def test_h0_soft_reentry_circuit_gate_uses_order_free_graph(self):
+        schedule = (
+            ((0, 1),),
+            ((2, 3),),
+            ((0, 2),),
+        )
+        initial = [(0, 0, q) for q in range(4)]
+        provider = CachedForecastLayerProvider(
+            len(schedule), lambda layer: schedule[layer], max_cached_layers=2)
+        kernel = ResidentTransitionKernel(
+            placer(
+                initial,
+                horizon=0,
+                h0_reentry_value_weight=1.0,
+                h0_reentry_value_min_circuit_median_interactions=3,
+            ),
+            self.arch,
+            initial,
+            provider,
+        )
+        first = kernel.advance()
+        self.assertEqual(first.decision_log["h0_reentry_value_terms"], 0)
+        # The streaming provider intentionally exposes no full interaction
+        # inventory.  The order-free gate therefore fails closed at zero
+        # rather than reading later layers to reconstruct one.
+        self.assertEqual(
+            first.decision_log["h0_static_interaction_median"], 0.0)
+        self.assertTrue(all(
+            not row["h0_reentry_value_selected"]
+            for row in first.decision_log["rent_guard"]))
+        self.assertNotIn(2, provider.cached_layers)
 
     def test_m4_no_visible_reuse_is_recommended_not_hard_masked(self):
         schedule = (
@@ -382,6 +484,7 @@ cz q[0],q[6];
             expected_tail = list(stream)
             actual_tail = list(resumed)
             timing = {"horizon_selection_ns", "search_kernel_ns",
+                      "problem_preparation_ns", "result_commit_ns",
                       "marshal_ns", "backend_search_kernel_ns",
                       "fitness_ns", "backend_selection_ns"}
 

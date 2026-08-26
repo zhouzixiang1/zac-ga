@@ -2150,7 +2150,9 @@ def _evaluate_rich_assignment_cohort(
         geometry = _rich_geometry(
             problem, option_indices, assignments, reseats,
             participant_parkings)
-        if geometry.violations:
+        if (geometry.violations
+                and (not geometry.ghost_violations
+                     or config.enforce_single_leg_ghost)):
             error = ("unresolved current single-leg ghost hit"
                      if geometry.ghost_violations
                      else "unresolved current gate occupancy")
@@ -2403,9 +2405,13 @@ def _guard_rich_forecast_gate_projection(
         "current_gate_projection_evaluated": 0,
     }
     active = (
-        config.max_horizon != 0
-        and config.alpha_lookahead > 0.0
-        and bool(problem.forecast_terms or problem.future_layers)
+        (config.max_horizon == 0
+         and any(problem.recommended_stay_mask))
+        or
+        (config.max_horizon != 0
+         and (bool(problem.future_layers)
+              or (config.alpha_lookahead > 0.0
+                  and bool(problem.forecast_terms))))
     )
     if not active:
         return provisional, inactive

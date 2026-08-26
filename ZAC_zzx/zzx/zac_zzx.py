@@ -140,6 +140,13 @@ class ZAC_zzx(ZAC):
                     "h0_state_potential_weight_policy",
                     "h0_uncertain_stay_weight",
                     "h0_uncertain_stay_policy",
+                    "h0_opportunity_stay_weight",
+                    "h0_history_gap_weight",
+                    "h0_reentry_value_weight",
+                    "h0_reentry_value_min_interaction_mass",
+                    "h0_reentry_value_min_interaction_ratio",
+                    "h0_reentry_value_min_circuit_median_interactions",
+                    "h0_reentry_value_scale_by_interaction_ratio",
                     "h0_state_anchor_policy",
                     "h0_anchor_pull_radius_um",
                     "m3_search_budget_policy", "m3_pin_radius_policy",
@@ -411,7 +418,12 @@ class ZAC_zzx(ZAC):
                 placer.backend_timing_log)
             if placer.scheduler_reference is None:
                 raise RuntimeError("resident placement produced no scheduler state")
+            approximate_ultra_deep_current = bool(
+                placer.total_transition_count >= 5000
+                and len(placer.mapping[0]) <= 16
+                and placer.resident_backend_requested == "native")
             self.zzx_placement_scheduler_snapshot = (
+                None if approximate_ultra_deep_current else
                 placer.scheduler_reference.scheduler_snapshot.to_dict())
 
     # ------------------------------------------------------------ 路由接线

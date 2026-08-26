@@ -317,6 +317,14 @@ class UnifiedEvaluationGate:
         if not isinstance(decision_log, list):
             decision_log = []
         counts = Counter()
+        compact_summary = payload.get("decision_summary", {})
+        if (payload.get("decision_log_compacted") is True
+                and isinstance(compact_summary, Mapping)):
+            for key in ("stay_count", "return_count", "reseat_count",
+                        "ghost_repairs"):
+                value = compact_summary.get(key, 0)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    counts[key] = int(value)
         repairs: list[int] = []
         for row in decision_log:
             if not isinstance(row, Mapping):
@@ -330,7 +338,8 @@ class UnifiedEvaluationGate:
             repair = row.get("ghost_fix")
             if isinstance(repair, (int, float)):
                 repairs.append(int(repair))
-        counts["ghost_repairs"] = sum(repairs)
+        if not payload.get("decision_log_compacted"):
+            counts["ghost_repairs"] = sum(repairs)
         splits = payload.get("ghost_splits", 0)
         if isinstance(splits, (int, float)):
             counts["ghost_splits"] = int(splits)

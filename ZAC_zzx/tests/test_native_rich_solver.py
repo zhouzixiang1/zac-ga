@@ -533,6 +533,31 @@ class TestNativeRichSolver(unittest.TestCase):
                 self.assertEqual(reference.current_gate_guard_branch,
                                  native.current_gate_guard_branch)
 
+    def test_h0_round_trip_stay_guard_uses_no_future_terms(self):
+        base = toy_problem(terms=(), horizon=0)
+        protected = replace(base, recommended_stay_mask=(True,))
+        config = RichSearchConfig(
+            operator_profile="exact",
+            max_horizon=0,
+            alpha_lookahead=0.0,
+            direct_enumeration_limit=512,
+            max_unique_evaluations=64,
+        )
+        state = random.Random(20260826).getstate()
+        reference = solve_rich_exact_reference(protected, config, state)
+        native = NativeResidentBackend(
+            protected.architecture).solve_rich_boundary(
+                protected, config, state)
+        self.assertEqual((0, 0), native.winner.chromosome)
+        self.assertEqual(reference.winner, native.winner)
+        self.assertEqual(
+            "trust-region-round-trip-stay",
+            native.current_gate_guard_branch)
+        self.assertEqual(
+            reference.current_gate_guard_branch,
+            native.current_gate_guard_branch)
+        self.assertEqual(0, native.forecast_terms_applied)
+
     def test_round_trip_stay_guard_relaxes_for_joint_ghost(self):
         arch, problem = stay_blocker_problem()
         config = RichSearchConfig(
@@ -943,6 +968,55 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertTrue(math.isfinite(
             native.search_negative_log_fidelity))
         self.assertEqual(0.0, native.forecast_nll)
+
+    def test_h0_current_recovery_restores_depth_zero_value_term(self):
+        points = tuple(Point(*value) for value in (
+            (0, 0), (0, 1), (1, 1),
+            (2, 2), (3, 2), (4, 4), (5, 4)))
+        arch = ArchitectureSnapshot(3, points)
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(points[0], points[1], points[2]),
+            participants=(0, 1),
+            gate_domains=((
+                RichGateOption(70, 0, 1, points[3], points[4]),
+                RichGateOption(71, 0, 1, points[5], points[6]),
+                RichGateOption(72, 0, 1, points[0], points[1]),
+            ),),
+            static_ghosts=(),
+            eligible=(),
+            min_returns=0,
+            eviction_order_indices=(),
+            forced_return_mask=(),
+            return_domains=(),
+            matched_gate_genes=(0,),
+            forecast_terms=(RichForecastTerm(
+                0, "constant", "terminal", 0.25),),
+            selected_horizon=0,
+            boundary_id="h0-current-recovery-depth-zero-value",
+        )
+        config = RichSearchConfig(
+            operator_profile="tuned",
+            population_size=1,
+            iterations=1,
+            max_unique_evaluations=1,
+            direct_enumeration_limit=1,
+            max_horizon=0,
+        )
+        native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, random.Random(0).getstate())
+        oracle = evaluate_decay_forecast(
+            problem, config, native.winner.chromosome,
+            native.gate_option_indices, native.return_assignments)
+        self.assertIn("current-recovery", native.search_mode)
+        self.assertEqual((2,), native.gate_option_indices)
+        self.assertEqual(0.25, oracle[0])
+        self.assertEqual(oracle[0], native.forecast_nll)
+        self.assertEqual(oracle[1], native.forecast_by_depth)
+        self.assertEqual(oracle[2], native.forecast_breakdown)
+        self.assertEqual(
+            native.winner.negative_log_fidelity + oracle[0],
+            native.search_negative_log_fidelity)
 
     def test_gate_target_blocker_is_reseated_before_candidate_scoring(self):
         arch = ArchitectureSnapshot.from_coordinates(

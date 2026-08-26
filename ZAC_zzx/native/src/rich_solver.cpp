@@ -879,7 +879,19 @@ class RichSolver {
       const auto recovered = recover_infeasible_current_gate_projection(winner);
       if (recovered.has_value()) {
         winner = recovered->fitness.chromosome;
-        guarded_final_value_ = *recovered;
+        auto completed_recovery = *recovered;
+        if (!problem_.forecast_terms.empty() &&
+            problem_.future_layers.empty()) {
+          // Current-feasibility recovery intentionally scores gate geometry
+          // without a forecast.  Precomputed terms, unlike a physical future
+          // rollout, cannot become geometrically infeasible and must be
+          // restored before the recovered candidate is published.  This is
+          // especially important for M3's depth-zero value terms: returning
+          // the current-only recovery silently changed their objective to
+          // zero on the exact large-boundary path.
+          apply_forecast(completed_recovery, winner);
+        }
+        guarded_final_value_ = std::move(completed_recovery);
         search_mode += "-current-recovery";
       }
     }
@@ -987,10 +999,18 @@ class RichSolver {
 
  private:
   bool forecast_gate_guard_active() const noexcept {
-    // Keep H=0 byte-for-byte on the established path.  In particular, the
-    // short-circuit prevents an H=0 solve from consulting either future
-    // representation merely to decide whether the guard exists.
-    if (config_.max_horizon == 0) return false;
+    // H=0 never consults either future representation.  It may nevertheless
+    // activate the same exact-current projection guard when the caller's
+    // one-rent-vs-round-trip audit recommends STAY.  Without this branch the
+    // mask was only injected as a GA seed and the current one-way RETURN cost
+    // could still win, immediately paying the omitted re-entry on the next
+    // boundary.
+    if (config_.max_horizon == 0) {
+      return std::any_of(
+          problem_.recommended_stay_mask.begin(),
+          problem_.recommended_stay_mask.end(),
+          [](const auto value) { return value; });
+    }
     // Native rollout's endpoint Phi(s_H) is independent of alpha. A visible
     // native future therefore still needs the complete gate guard at alpha=0;
     // only legacy precomputed terms disappear with alpha.
@@ -3629,7 +3649,9 @@ class RichSolver {
       }
     }
     const auto& geometry = participant_parking_repair.geometry;
-    if (geometry.violations != 0) {
+    if (geometry.violations != 0 &&
+        (geometry.ghost_violations == 0 ||
+         config_.enforce_single_leg_ghost)) {
       result.fitness = infeasible_fitness(
           chromosome,
           geometry.ghost_violations != 0

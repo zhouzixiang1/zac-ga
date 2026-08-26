@@ -86,6 +86,27 @@ def _transition_decisions(compiler) -> list[dict]:
     ]
 
 
+def _decision_summary(decisions: list[dict]) -> Dict[str, int]:
+    """Retain aggregate placement evidence when deep logs are compacted."""
+    summary = {
+        "stay_count": 0,
+        "return_count": 0,
+        "reseat_count": 0,
+        "ghost_repairs": 0,
+    }
+    for row in decisions:
+        if not isinstance(row, Mapping):
+            continue
+        for source, destination in (("stay", "stay_count"),
+                                    ("return", "return_count"),
+                                    ("reseat", "reseat_count"),
+                                    ("ghost_fix", "ghost_repairs")):
+            value = row.get(source, 0)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                summary[destination] += int(value)
+    return summary
+
+
 def _observed_zac_transition_layer_ledger(compiler) -> Dict[str, Any]:
     """Read the realised ZAC schedule, never the canonical-input receipt.
 
@@ -118,16 +139,51 @@ def _zac_stage_timing(compiler, method: str, full_compile_ns: int) -> Dict[str, 
     decisions = _transition_decisions(compiler)
     backend_timings = list(
         getattr(compiler, "zzx_backend_timing_log", []) or [])
+    decision_search = [
+        int(row.get("search_kernel_ns", 0) or 0)
+        for row in decisions if "search_kernel_ns" in row]
     result = {
         "transition_decision_ns": int(precise.get(
             "transition_decision_ns",
             _seconds_to_ns(runtime.get("intermediate placement", 0.0)))),
-        "search_kernel_ns": sum(int(row.get("search_kernel_ns", 0) or 0)
-                                for row in backend_timings),
+        # This is the wall-clock search/orchestration interval measured around
+        # every boundary in Python.  Native-only wall time is reported below;
+        # using the C++ accumulated fitness counter here used to overstate a
+        # 38 s compilation as more than 1,000 s on repetitive circuits.
+        "search_kernel_ns": (
+            sum(decision_search) if decision_search else
+            sum(int(row.get("search_kernel_ns", 0) or 0)
+                for row in backend_timings)),
+        "problem_preparation_ns": sum(
+            int(row.get("problem_preparation_ns", 0) or 0)
+            for row in decisions),
+        "result_commit_ns": sum(
+            int(row.get("result_commit_ns", 0) or 0)
+            for row in decisions),
         "marshal_ns": sum(int(row.get("marshal_ns", 0) or 0)
                           for row in backend_timings),
+        "python_marshal_ns": sum(
+            int(row.get("python_marshal_ns", 0) or 0)
+            for row in backend_timings),
+        "native_call_wall_ns": sum(
+            int(row.get("native_call_wall_ns", 0) or 0)
+            for row in backend_timings),
+        "native_search_wall_ns": sum(
+            int(row.get("native_search_wall_ns", 0) or 0)
+            for row in backend_timings),
         "fitness_ns": sum(int(row.get("fitness_ns", 0) or 0)
                           for row in backend_timings),
+        "normalize_ns": sum(int(row.get("normalize_ns", 0) or 0)
+                            for row in backend_timings),
+        "decode_ns": sum(int(row.get("decode_ns", 0) or 0)
+                         for row in backend_timings),
+        "return_match_ns": sum(
+            int(row.get("return_match_ns", 0) or 0)
+            for row in backend_timings),
+        "forecast_ns": sum(int(row.get("forecast_ns", 0) or 0)
+                           for row in backend_timings),
+        "selection_ns": sum(int(row.get("selection_ns", 0) or 0)
+                            for row in backend_timings),
         "native_parse_ns": sum(int(row.get("native_parse_ns", 0) or 0)
                                for row in backend_timings),
         "native_serialize_ns": sum(
@@ -146,7 +202,11 @@ def _zac_stage_timing(compiler, method: str, full_compile_ns: int) -> Dict[str, 
     if method == "M1":
         result.update(search_kernel_ns=0, marshal_ns=0,
                       fitness_ns=0, native_parse_ns=0,
-                      native_serialize_ns=0, horizon_selection_ns=0)
+                      native_serialize_ns=0, horizon_selection_ns=0,
+                      problem_preparation_ns=0, result_commit_ns=0,
+                      python_marshal_ns=0, native_call_wall_ns=0,
+                      native_search_wall_ns=0, normalize_ns=0, decode_ns=0,
+                      return_match_ns=0, forecast_ns=0, selection_ns=0)
     return result
 
 
@@ -224,6 +284,13 @@ def _forecast_summary(decisions: list[dict],
         weighted_nll += float(row.get("weighted_negative_log_fidelity", 0.0))
         state_potential_nll += float(
             row.get("state_potential_negative_log_fidelity", 0.0))
+    if int(spec["max_horizon"]) == 0:
+        # This aggregate is future-only.  Depth-zero state-potential terms are
+        # accumulated separately above, and a H=0 method cannot consume a
+        # future heuristic by definition.  Force the serialized contract value
+        # to exact zero so long-run floating-point cancellation cannot turn a
+        # valid M3 compilation into a scorer error.
+        weighted_nll = 0.0
     if offset_weights is None:
         # Empty schedules have no boundary rows, but their registered window is
         # still reconstructible without reading a future layer.
@@ -416,6 +483,14 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
     _write_json(output / "trace.zair.json", native_payload)
     decisions = list(getattr(compiler, "zzx_decision_log", []) or [])
     transition_decisions = _transition_decisions(compiler)
+    route_log = getattr(compiler, "zzx_route_log", []) or []
+    # Per-boundary nested audit objects are useful on ordinary circuits but
+    # become hundreds of megabytes on the upper QMAP tail.  The independent
+    # native trace remains complete and is still replayed by the verifier and
+    # scorer.  For deep circuits retain the exact aggregate counters and
+    # forecast contract, not a redundant second per-layer trace.
+    compact_deep_audit = len(transition_decisions) >= 5_000
+    decision_summary = _decision_summary(decisions)
     observed_layer_ledger = _observed_zac_transition_layer_ledger(compiler)
     forecast_summary = (
         _forecast_summary(transition_decisions, setting)
@@ -426,8 +501,12 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
         "python_version": sys.version.split()[0],
         "qubits": compiler.n_q,
         "gates_2q": compiler.n_g,
-        "decision_log": decisions,
-        "route_log": getattr(compiler, "zzx_route_log", []),
+        "decision_log": [] if compact_deep_audit else decisions,
+        "route_log": [] if compact_deep_audit else route_log,
+        "decision_log_compacted": compact_deep_audit,
+        "decision_log_count": len(decisions),
+        "route_log_count": len(route_log),
+        "decision_summary": decision_summary,
         "ghost_splits": getattr(compiler, "zzx_ghost_splits", 0),
         "run_kind": run_kind or "unregistered",
         "ablation_variant": ablation_variant or None,
@@ -458,6 +537,16 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
             {} if forecast_summary else
             _selected_horizon_counts(transition_decisions)),
         "forecast_summary": forecast_summary,
+        "stage_timing": stage_timing,
+        "backend_timing_summary": {
+            key: int(stage_timing.get(key, 0) or 0)
+            for key in (
+                "python_marshal_ns", "native_call_wall_ns",
+                "native_search_wall_ns", "native_parse_ns",
+                "native_serialize_ns", "normalize_ns", "decode_ns",
+                "return_match_ns", "fitness_ns", "forecast_ns",
+                "selection_ns")
+        },
         "transition_count": len(transition_decisions),
         # A formal M3/M4 attempt is fail-closed: no Python/reference fallback
         # is permitted after the native backend was requested.

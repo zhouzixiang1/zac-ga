@@ -220,6 +220,31 @@ class PlanFixture:
 
 
 class TestCliPlan(unittest.TestCase):
+    def test_h0_forecast_summary_serializes_exact_zero_future_cost(self):
+        from experiments_v2.method_driver import _forecast_summary
+
+        setting = algorithm_config("ours_nl", 0)
+        rows = [{
+            "configured_lookahead_horizon": setting["lookahead_horizon"],
+            "forecast_objective": {
+                "configured_depth": 0,
+                "effective_depth": 0,
+                "visible_depth": 0,
+                "rho": 0.6,
+                "epsilon": 0.05,
+                "alpha_lookahead": 0.1,
+                "offset_weights": [],
+                # Simulate cancellation residue from a depth-zero Phi_0 term.
+                "weighted_negative_log_fidelity": 1e-9,
+                "state_potential_negative_log_fidelity": 0.25,
+            },
+        }]
+        summary = _forecast_summary(rows, setting)
+        self.assertEqual(
+            summary["weighted_negative_log_fidelity_total"], 0.0)
+        self.assertEqual(
+            summary["state_potential_negative_log_fidelity_total"], 0.25)
+
     @mock.patch("experiments_v2.cli._atomic_json")
     @mock.patch("experiments_v2.cli._run_matrix")
     @mock.patch("experiments_v2.cli._assert_formal_selection_gates")
@@ -418,6 +443,27 @@ class TestCliPlan(unittest.TestCase):
             self.assertEqual(effective_zac_setting(m3)["seed"], 1)
             self.assertEqual(effective_zac_setting(m4)["seed"], 1)
             plan.validate_resolved_pair(1)
+
+    def test_resolved_config_is_atomic_across_parallel_workers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = PlanFixture(Path(directory))
+            plan = load_experiment_plan(fixture.plan_path)
+            errors = []
+
+            def resolve() -> None:
+                try:
+                    plan.resolved_config("M3", 0)
+                except BaseException as error:  # pragma: no cover - assertion aid
+                    errors.append(error)
+
+            workers = [threading.Thread(target=resolve) for _ in range(12)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join()
+            self.assertEqual(errors, [])
+            payload = json.loads(plan.resolved_config("M3", 0).read_text())
+            self.assertEqual(effective_zac_setting(payload)["seed"], 0)
 
     def test_run_main_resume_skips_exact_frozen_attempt_identity(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -821,6 +867,29 @@ class TestUnifiedEvaluationGate(unittest.TestCase):
             counters = UnifiedEvaluationGate._compiler_counters(artifact)
             self.assertEqual(counters["ghost_repairs"], 5)
             self.assertEqual(counters["ghost_splits"], 2)
+
+    def test_compacted_deep_audit_preserves_compiler_counters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory)
+            (artifact / "compiler_stats.json").write_text(json.dumps({
+                "decision_log": [],
+                "decision_log_compacted": True,
+                "decision_summary": {
+                    "stay_count": 17,
+                    "return_count": 11,
+                    "reseat_count": 3,
+                    "ghost_repairs": 2,
+                },
+                "ghost_splits": 5,
+            }), encoding="utf-8")
+            counters = UnifiedEvaluationGate._compiler_counters(artifact)
+            self.assertEqual(counters, {
+                "stay_count": 17,
+                "return_count": 11,
+                "reseat_count": 3,
+                "ghost_repairs": 2,
+                "ghost_splits": 5,
+            })
 
     def test_m2_native_ghost_is_recorded_without_repair(self):
         with tempfile.TemporaryDirectory() as directory:

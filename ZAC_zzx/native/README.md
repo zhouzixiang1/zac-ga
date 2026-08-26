@@ -18,7 +18,10 @@ each candidate's real post-boundary positions, selects future gate pairs,
 parks endpoint and single-leg ghost blockers, replays the phases, performs
 scores transfer, idle excitation and coherence, and closes the visible window
 with a cleanup potential weighted on the last visible layer's decay scale.
-M3 adds neither future rollout nor a depth-zero terminal proxy. M4 costs use
+M3 never receives a future layer.  Its selected quality configuration may
+carry depth-zero, current-state re-entry value terms derived only from the
+frozen order-free interaction graph; those terms are already scaled in the
+problem DTO and read no future schedule. M4 costs use
 `alpha_lookahead * rho ** (offset - 1)` and stop when the bare decay factor
 falls below epsilon. A target-final marker suppresses fictitious post-circuit
 cleanup without exposing any future gate content to M3. Python no longer
@@ -77,7 +80,10 @@ decayed forecast.  ZAC18 has at most 109 transitions and therefore stays on
 the complete quality path.
 
 The old forecast-term bitset path remains only for differential regression
-fixtures.  ABI8 runs use raw future layers, carry the resumable ASAP scheduler
+fixtures and M3's explicitly registered depth-zero current-state value terms.
+If exact current-feasibility recovery changes a gate option, those algebraic
+terms are reapplied to the recovered winner; only an infeasible physical future
+rollout may fall back to current physics. ABI8 M4 runs use raw future layers, carry the resumable ASAP scheduler
 snapshot and every atom's absolute-idle prior, and fail if raw layers and
 precomputed terms are mixed.
 

@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 from experiments_v2.contracts import RunManifest, RunStatus  # noqa: E402
 from experiments_v2.final_results import (  # noqa: E402
     OVERALL_LABEL,
+    OURS_TIMING_METRICS,
     SHEET_NAMES,
     aggregate_final_results,
     write_final_results,
@@ -73,6 +74,7 @@ class FinalFixture:
         self._counter += 1
         timed = run_kind == "timing"
         native = method in {"M3", "M4"}
+        stage_ns = int(transition_ns or 0)
         return RunManifest(
             run_id=f"formal-{self._counter:04d}", dataset=dataset,
             circuit=circuit, method=method, seed=seed, repetition=repetition,
@@ -95,6 +97,21 @@ class FinalFixture:
             rng_version=FORMAL_NATIVE_RNG_VERSION if native else "",
             compiler_time_ns=full_compile_ns or 1_000_000_000,
             transition_decision_ns=transition_ns if timed else None,
+            problem_preparation_ns=(stage_ns // 10 if timed and native else None),
+            search_kernel_ns=(stage_ns * 6 // 10 if timed and native else None),
+            result_commit_ns=(stage_ns * 2 // 10 if timed and native else None),
+            python_marshal_ns=(stage_ns * 2 // 100 if timed and native else None),
+            native_call_wall_ns=(stage_ns * 5 // 10 if timed and native else None),
+            native_search_wall_ns=(stage_ns * 45 // 100 if timed and native else None),
+            fitness_ns=(stage_ns * 4 // 10 if timed and native else None),
+            normalize_ns=(stage_ns // 100 if timed and native else None),
+            decode_ns=(stage_ns // 100 if timed and native else None),
+            return_match_ns=(stage_ns // 100 if timed and native else None),
+            forecast_ns=(stage_ns // 100 if timed and native else None),
+            selection_ns=(stage_ns // 100 if timed and native else None),
+            native_parse_ns=(stage_ns // 100 if timed and native else None),
+            native_serialize_ns=(stage_ns // 100 if timed and native else None),
+            horizon_selection_ns=(stage_ns // 100 if timed and native else None),
             initial_placement_ns=100 if timed else None,
             routing_ns=200 if timed else None,
             full_compile_ns=full_compile_ns if timed else None,
@@ -336,6 +353,13 @@ class TestFinalResults(unittest.TestCase):
         self.assertEqual(zac["M4__valid_over_N"], "3/3")
         # Front-sheet stage time comes from the independent three-repeat timing run.
         self.assertEqual(zac["M2__transition_decision_s"], 3.0)
+        self.assertEqual(zac["M3__problem_preparation_s"], 0.2)
+        self.assertEqual(zac["M3__search_kernel_s"], 1.2)
+        self.assertEqual(zac["M3__result_commit_s"], 0.4)
+        self.assertEqual(zac["M3__transition_residual_s"], 0.2)
+        self.assertEqual(zac["M3__native_call_wall_s"], 1.0)
+        self.assertEqual(zac["M3__native_search_wall_s"], 0.9)
+        self.assertEqual(zac["M3__full_compile_s"], 12.0)
 
         zac_overall = result["rows"]["ZAC18"][1]
         self.assertEqual(zac_overall["circuit"], OVERALL_LABEL)
@@ -348,25 +372,32 @@ class TestFinalResults(unittest.TestCase):
         self.assertEqual(contract["exact_sheet_count"], 2)
         self.assertEqual(contract["sheet_names"], ["ZAC18", "QMAP154"])
         self.assertNotIn("Runtime", contract["sheet_names"])
-        expected_labels = [
+        core_labels = [
             "Fidelity", "Move批次", "Move时间 (us)",
             "逐层放置时间 (s)", "valid/N",
         ]
         for sheet in contract["sheets"]:
             columns = sheet["columns"]
-            self.assertEqual(len(columns), 1 + 4 * len(expected_labels))
+            self.assertEqual(
+                len(columns),
+                1 + 4 * len(core_labels) + 2 * len(OURS_TIMING_METRICS),
+            )
             self.assertEqual(columns[0]["key"], "circuit")
             self.assertEqual(columns[0]["label"], "电路")
             self.assertIsNone(columns[0]["group"])
+            cursor = 1
             for method_index, method in enumerate(("M1", "M2", "M3", "M4")):
-                start = 1 + method_index * len(expected_labels)
-                group = columns[start:start + len(expected_labels)]
+                width = len(core_labels) + (
+                    len(OURS_TIMING_METRICS) if method in {"M3", "M4"} else 0)
+                group = columns[cursor:cursor + width]
                 self.assertEqual([column["group"] for column in group],
-                                 [method] * len(expected_labels))
-                self.assertEqual([column["label"] for column in group],
-                                 expected_labels)
+                                 [method] * width)
+                expected_labels = core_labels + (
+                    [label for _suffix, _field, label in OURS_TIMING_METRICS]
+                    if method in {"M3", "M4"} else [])
+                self.assertEqual([column["label"] for column in group], expected_labels)
                 self.assertEqual(
-                    [column["key"] for column in group],
+                    [column["key"] for column in group[:len(core_labels)]],
                     [
                         f"{method}__fidelity",
                         f"{method}__move_batches",
@@ -375,11 +406,22 @@ class TestFinalResults(unittest.TestCase):
                         f"{method}__valid_over_N",
                     ],
                 )
+                if method in {"M3", "M4"}:
+                    self.assertEqual(
+                        [column["key"] for column in group[len(core_labels):]],
+                        [f"{method}__{suffix}"
+                         for suffix, _field, _label in OURS_TIMING_METRICS],
+                    )
+                cursor += width
+            self.assertEqual(cursor, len(columns))
             forbidden = ("speedup", "full_compile", "_q1", "_q3", "_iqr")
+            # Runtime stays embedded in the two dataset sheets.  Q1/Q3/IQR and
+            # speedup columns remain excluded; M3/M4 full compile is an explicit
+            # user-requested timing component.
             self.assertFalse(any(
-                any(token in column["key"] for token in forbidden)
-                for column in columns
-            ))
+                any(token in column["key"] for token in
+                    ("speedup", "_q1", "_q3", "_iqr"))
+                for column in columns))
 
     def test_timing_failure_blanks_dataset_stage_time(self):
         fixture = FinalFixture()

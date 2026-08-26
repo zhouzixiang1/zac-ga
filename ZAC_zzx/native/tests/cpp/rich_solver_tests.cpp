@@ -346,6 +346,20 @@ int main() {
          "unresolved current single-leg ghost hit");
   ++tests;
 
+  // The orchestration layer may request a relaxed C++ incumbent only after a
+  // strict full-domain solve proves infeasible.  The returned candidate is
+  // never committed directly: Python deterministically RESEATs the blocker,
+  // replays the production router, and requires zero final ghost hits.  The
+  // relaxed solve must therefore expose a scored native incumbent instead of
+  // repeating the strict geometry rejection.
+  auto relaxed_current_config = exact_config();
+  relaxed_current_config.enforce_single_leg_ghost = false;
+  const auto participant_parking_relaxed = solve_rich_h0(
+      no_participant_parking_architecture, participant_parking,
+      relaxed_current_config, rng_fixture());
+  assert(participant_parking_relaxed.winner.feasible);
+  ++tests;
+
   ArchitectureSnapshot moving_endpoint_architecture(
       2, {{0.0, 0.0}, {2.0, 0.0}});
   RichH0Problem moving_endpoint;
@@ -748,6 +762,31 @@ int main() {
   assert(recovered.current_gate_projection_source ==
          "infeasible-single-gate-full-domain");
   assert(recovered.current_gate_projection_evaluated == 3);
+  ++tests;
+
+  // The current-feasibility recovery is evaluated without forecast so that
+  // an impossible physical rollout cannot erase a safe boundary.  A bounded
+  // precomputed term is different: it is an algebraic value function and must
+  // be restored on the recovered winner.  M3 uses this exact depth-zero path.
+  auto recovery_h0_value_problem = recovery_problem;
+  recovery_h0_value_problem.forecast_terms = {{
+      0, RichForecastKind::kConstant,
+      RichForecastCategory::kTerminal, -1, -1, -1, 0.25}};
+  const auto recovered_h0_value = solve_rich_h0(
+      recovery_architecture, recovery_h0_value_problem,
+      recovery_config, rng_fixture());
+  assert(recovered_h0_value.winner.feasible);
+  assert(recovered_h0_value.gate_option_indices ==
+         std::vector<std::size_t>({2}));
+  assert(recovered_h0_value.search_mode.find("current-recovery") !=
+         std::string::npos);
+  assert(recovered_h0_value.forecast_nll == 0.25);
+  assert(recovered_h0_value.forecast_by_depth ==
+         std::vector<double>({0.25}));
+  assert(recovered_h0_value.forecast_terminal_nll == 0.25);
+  assert(recovered_h0_value.search_negative_log_fidelity ==
+         recovered_h0_value.winner.negative_log_fidelity + 0.25);
+  assert(recovered_h0_value.stats.forecast_terms_applied > 0);
   ++tests;
 
   // Forecast is advisory to current executability.  With no registered

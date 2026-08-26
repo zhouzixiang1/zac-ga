@@ -43,6 +43,7 @@ import copy
 import json
 import os
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
@@ -379,13 +380,21 @@ class ExperimentPlan:
 
 def _atomic_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    with open(temporary, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    # Several circuit workers resolve the same method/seed concurrently.
+    # A fixed ``.tmp`` pathname lets one worker rename another's file.  Give
+    # every writer a private file, then retain the same atomic replace.
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def load_experiment_plan(path: str | Path) -> ExperimentPlan:

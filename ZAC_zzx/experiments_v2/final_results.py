@@ -47,6 +47,35 @@ QUALITY_NUMERATOR = {
 TIMING_REPETITIONS = FORMAL_TIMING_REPETITIONS
 OVERALL_LABEL = "整体汇总"
 
+# M3/M4 expose both mutually exclusive wall-clock stages and nested kernel
+# diagnostics.  Keeping the mapping in one place makes the CSV/XLSX contract
+# explicit and prevents a new native counter from being silently dropped.
+# ``problem_preparation/search_kernel/result_commit/transition_residual`` are
+# the additive transition-decision decomposition.  The remaining counters are
+# nested inside those wall-clock stages and therefore must not be summed with
+# them.
+OURS_TIMING_METRICS = (
+    ("initial_placement_s", "initial_placement_ns", "初始布局 (s)"),
+    ("problem_preparation_s", "problem_preparation_ns", "问题构造 (s)"),
+    ("search_kernel_s", "search_kernel_ns", "搜索阶段墙钟 (s)"),
+    ("result_commit_s", "result_commit_ns", "结果提交 (s)"),
+    ("transition_residual_s", None, "逐层决策其余开销 (s)"),
+    ("python_marshal_s", "python_marshal_ns", "Python/C++转换 (s)"),
+    ("native_call_wall_s", "native_call_wall_ns", "C++调用墙钟 (s)"),
+    ("native_parse_s", "native_parse_ns", "C++解析 (s)"),
+    ("native_search_wall_s", "native_search_wall_ns", "C++搜索墙钟 (s)"),
+    ("native_serialize_s", "native_serialize_ns", "C++序列化 (s)"),
+    ("fitness_s", "fitness_ns", "Fitness累计 (s)"),
+    ("normalize_s", "normalize_ns", "染色体规范化 (s)"),
+    ("decode_s", "decode_ns", "染色体解码 (s)"),
+    ("return_match_s", "return_match_ns", "RETURN匹配 (s)"),
+    ("forecast_s", "forecast_ns", "前瞻计算 (s)"),
+    ("selection_s", "selection_ns", "选择排序 (s)"),
+    ("horizon_selection_s", "horizon_selection_ns", "前瞻深度选择 (s)"),
+    ("routing_s", "routing_ns", "最终路由 (s)"),
+    ("full_compile_s", "full_compile_ns", "完整编译 (s)"),
+)
+
 
 ManifestInput = RunManifest | str | os.PathLike[str]
 
@@ -318,7 +347,11 @@ def _overall_quality_row(
         dataset: str, circuits: Sequence[str]) -> dict[str, Any]:
     row: dict[str, Any] = {"circuit": OVERALL_LABEL}
     for method in METHODS:
-        for suffix in ("fidelity", "transition_decision_s"):
+        geometric_suffixes = ["fidelity", "transition_decision_s"]
+        if method in {"M3", "M4"}:
+            geometric_suffixes.extend(
+                suffix for suffix, _field, _label in OURS_TIMING_METRICS)
+        for suffix in geometric_suffixes:
             row[f"{method}__{suffix}"] = _complete_geometric_mean(
                 item.get(f"{method}__{suffix}") for item in circuit_rows)
         for suffix in ("move_batches", "move_time_us"):
@@ -423,7 +456,7 @@ def _timing_summary(runs: Sequence[RunManifest]) -> dict[str, Any]:
             if run.full_compile_ns is not None]
     q1, q3 = _quartiles(stage)
     median_stage = _median(stage)
-    return {
+    result = {
         "valid": len(successful),
         "N": TIMING_REPETITIONS,
         "valid_over_N": f"{len(successful)}/{TIMING_REPETITIONS}",
@@ -434,6 +467,34 @@ def _timing_summary(runs: Sequence[RunManifest]) -> dict[str, Any]:
             _seconds(q3 - q1) if q1 is not None and q3 is not None else None),
         "full_compile_s_median": _seconds(_median(full)),
     }
+    for suffix, manifest_field, _label in OURS_TIMING_METRICS:
+        if manifest_field is None:
+            values = []
+            for run in successful:
+                components = (
+                    run.problem_preparation_ns,
+                    run.search_kernel_ns,
+                    run.result_commit_ns,
+                )
+                if run.transition_decision_ns is None or any(
+                        value is None for value in components):
+                    values.append(None)
+                    continue
+                residual = int(run.transition_decision_ns) - sum(
+                    int(value) for value in components if value is not None)
+                # A negative residual means one of the supposedly exclusive
+                # stage counters overlaps another.  Do not conceal that timing
+                # contract violation by clamping it to zero.
+                values.append(residual if residual >= 0 else None)
+        else:
+            values = [getattr(run, manifest_field) for run in successful]
+        result[f"{suffix}_median"] = (
+            _seconds(_median(values))
+            if len(values) == len(successful)
+            and all(value is not None and int(value) >= 0 for value in values)
+            else None
+        )
+    return result
 
 
 def _ledger_comparability(
@@ -525,6 +586,15 @@ def _quality_columns() -> list[dict[str, Any]]:
                 "type": "text" if suffix == "valid_over_N" else "number",
                 "number_format": number_format,
             })
+        if method in {"M3", "M4"}:
+            for suffix, _manifest_field, label in OURS_TIMING_METRICS:
+                columns.append({
+                    "key": f"{method}__{suffix}",
+                    "label": label,
+                    "group": method,
+                    "type": "number",
+                    "number_format": "0.000000",
+                })
     return columns
 
 
@@ -621,6 +691,12 @@ def aggregate_final_results(
                     f"{method}__valid_over_N":
                         f"{len(successful_quality)}/{QUALITY_NUMERATOR[method]}",
                 })
+                if method in {"M3", "M4"}:
+                    for suffix, _manifest_field, _label in OURS_TIMING_METRICS:
+                        row[f"{method}__{suffix}"] = (
+                            timing_summary[f"{suffix}_median"]
+                            if timing_complete else None
+                        )
             rows[sheet].append(row)
             dataset_quality_rows.append(row)
 
@@ -642,6 +718,12 @@ def aggregate_final_results(
                 "if any required successful seed is outside the linear coherence "
                 "model, Fidelity is blank; valid/N remains compiler coverage"),
             "quality_stage_time": "median of the three separate timing repetitions",
+            "ours_timing_breakdown": (
+                "problem preparation + search stage wall + result commit + "
+                "transition residual is the additive transition-decision split; "
+                "Python/C++ conversion, native call/parse/search/serialize, fitness, "
+                "normalize/decode/RETURN/forecast/selection are nested diagnostics "
+                "and must not be added to the wall-clock split"),
             "runtime_primary_metric": "transition_decision_ns",
             "speedup_definition": "M2 median / ours median; values above 1 are faster",
             "overall_row": (

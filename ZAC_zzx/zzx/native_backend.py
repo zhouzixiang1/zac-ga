@@ -490,6 +490,9 @@ class NativeResidentBackend:
                     "search_ns": elapsed,
                     "search_kernel_ns": elapsed,
                     "marshal_ns": 0,
+                    "python_marshal_ns": 0,
+                    "native_call_wall_ns": 0,
+                    "native_search_wall_ns": 0,
                     "native_parse_ns": 0,
                     "native_serialize_ns": 0,
                 }
@@ -505,6 +508,7 @@ class NativeResidentBackend:
             cached_value = (None if cached_winner is None else
                             tuple(int(value) for value in cached_winner))
             marshal_in_stopped = perf_counter_ns()
+            native_call_started = perf_counter_ns()
             value = self._module.solve_rich_boundary(
                 self._architecture,
                 buffers,
@@ -512,6 +516,7 @@ class NativeResidentBackend:
                 rng_state,
                 cached_value,
             )
+            native_call_stopped = perf_counter_ns()
             marshal_out_started = perf_counter_ns()
             winner = FitnessResult.from_wire(dict(value["winner"]))
             if not winner.feasible:
@@ -524,12 +529,27 @@ class NativeResidentBackend:
             }
             marshal_out_stopped = perf_counter_ns()
             timing = dict(native_timing)
-            timing["search_kernel_ns"] = int(native_timing["search_ns"])
-            timing["marshal_ns"] = (
+            python_marshal_ns = (
                 marshal_in_stopped - marshal_started
-                + marshal_out_stopped - marshal_out_started
-                + int(native_timing.get("native_parse_ns", 0))
-                + int(native_timing.get("native_serialize_ns", 0))
+                + marshal_out_stopped - marshal_out_started)
+            native_call_wall_ns = native_call_stopped - native_call_started
+            native_envelope_ns = (
+                int(native_timing.get("native_parse_ns", 0))
+                + int(native_timing.get("native_serialize_ns", 0)))
+            # The wall interval around the pybind call is the authoritative
+            # native-stage timer.  Several internal counters deliberately sum
+            # nested fitness operations and therefore are useful profiles but
+            # not mutually exclusive wall-clock components.
+            native_search_wall_ns = max(
+                0, native_call_wall_ns - native_envelope_ns)
+            timing["native_internal_search_ns"] = int(
+                native_timing["search_ns"])
+            timing["search_kernel_ns"] = native_search_wall_ns
+            timing["python_marshal_ns"] = python_marshal_ns
+            timing["native_call_wall_ns"] = native_call_wall_ns
+            timing["native_search_wall_ns"] = native_search_wall_ns
+            timing["marshal_ns"] = (
+                python_marshal_ns + native_envelope_ns
             )
             result = RichH0Result(
                 winner=winner,
