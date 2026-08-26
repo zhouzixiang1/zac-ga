@@ -1,0 +1,862 @@
+{
+  "charts": false,
+  "contract_id": "native-ga-v1-two-sheet-results-v1",
+  "exact_sheet_count": 2,
+  "experiment_schema": 2,
+  "notes": {
+    "aggregate_scope": "all four methods verified-success with positive in-domain linear fidelity; all four metrics use the same paired circuit cohort",
+    "algorithm_time": "implementation-level compiler_time_ns; M3/M4 stage columns provide the requested internal decomposition",
+    "baseline_policy": "actual original-method runs selected by fixed source priority; no ghost modification and no paper-number copying",
+    "fidelity": "geometric mean; higher is better",
+    "move_and_time": "arithmetic mean; lower is better",
+    "timing_additivity": "initial placement, transition decision and final routing are major pipeline stages; problem/search/commit/residual split transition; RETURN and forecast counters are nested diagnostics and are not added"
+  },
+  "sheet_names": [
+    "ZAC18",
+    "QMAP154"
+  ],
+  "sheets": [
+    {
+      "columns": [
+        {
+          "group": null,
+          "key": "circuit",
+          "label": "电路",
+          "type": "text"
+        },
+        {
+          "group": null,
+          "key": "qubits",
+          "label": "量子比特",
+          "number_format": "0",
+          "type": "number"
+        },
+        {
+          "group": null,
+          "key": "gates_1q",
+          "label": "1Q门数",
+          "number_format": "0",
+          "type": "number"
+        },
+        {
+          "group": null,
+          "key": "gates_2q",
+          "label": "2Q门数",
+          "number_format": "0",
+          "type": "number"
+        },
+        {
+          "group": "M1",
+          "key": "M1__fidelity",
+          "label": "Fidelity（线性模型）",
+          "number_format": "0.000000E+00",
+          "type": "number"
+        },
+        {
+          "group": "M1",
+          "key": "M1__move_batches",
+          "label": "Move批次",
+          "number_format": "0.00",
+          "type": "number"
+        },
+        {
+          "group": "M1",
+          "key": "M1__move_time_ms",
+          "label": "Move时间 (ms)",
+          "number_format": "0.000",
+          "type": "number"
+        },
+        {
+          "group": "M1",
+          "key": "M1__algorithm_time_s",
+          "label": "算法时间 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M1",
+          "key": "M1__valid_over_N",
+          "label": "valid/N",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M1",
+          "key": "M1__status",
+          "label": "状态",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M2",
+          "key": "M2__fidelity",
+          "label": "Fidelity（线性模型）",
+          "number_format": "0.000000E+00",
+          "type": "number"
+        },
+        {
+          "group": "M2",
+          "key": "M2__move_batches",
+          "label": "Move批次",
+          "number_format": "0.00",
+          "type": "number"
+        },
+        {
+          "group": "M2",
+          "key": "M2__move_time_ms",
+          "label": "Move时间 (ms)",
+          "number_format": "0.000",
+          "type": "number"
+        },
+        {
+          "group": "M2",
+          "key": "M2__algorithm_time_s",
+          "label": "算法时间 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M2",
+          "key": "M2__valid_over_N",
+          "label": "valid/N",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M2",
+          "key": "M2__status",
+          "label": "状态",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M3",
+          "key": "M3__fidelity",
+          "label": "Fidelity（线性模型）",
+          "number_format": "0.000000E+00",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__move_batches",
+          "label": "Move批次",
+          "number_format": "0.00",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__move_time_ms",
+          "label": "Move时间 (ms)",
+          "number_format": "0.000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__algorithm_time_s",
+          "label": "算法时间 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__valid_over_N",
+          "label": "valid/N",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M3",
+          "key": "M3__status",
+          "label": "状态",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M4",
+          "key": "M4__fidelity",
+          "label": "Fidelity（线性模型）",
+          "number_format": "0.000000E+00",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__move_batches",
+          "label": "Move批次",
+          "number_format": "0.00",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__move_time_ms",
+          "label": "Move时间 (ms)",
+          "number_format": "0.000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__algorithm_time_s",
+          "label": "算法时间 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__valid_over_N",
+          "label": "valid/N",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M4",
+          "key": "M4__status",
+          "label": "状态",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M3",
+          "key": "M3__initial_placement_s",
+          "label": "初始布局 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__transition_decision_s",
+          "label": "逐层决策总计 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__problem_preparation_s",
+          "label": "问题构造 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__search_kernel_s",
+          "label": "搜索阶段墙钟 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__result_commit_s",
+          "label": "结果提交 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__transition_residual_s",
+          "label": "决策其余开销 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__routing_s",
+          "label": "最终路由 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__return_match_s",
+          "label": "RETURN匹配累计·嵌套 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__forecast_s",
+          "label": "前瞻累计·嵌套 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__initial_placement_s",
+          "label": "初始布局 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__transition_decision_s",
+          "label": "逐层决策总计 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__problem_preparation_s",
+          "label": "问题构造 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__search_kernel_s",
+          "label": "搜索阶段墙钟 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__result_commit_s",
+          "label": "结果提交 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__transition_residual_s",
+          "label": "决策其余开销 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__routing_s",
+          "label": "最终路由 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__return_match_s",
+          "label": "RETURN匹配累计·嵌套 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__forecast_s",
+          "label": "前瞻累计·嵌套 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        }
+      ],
+      "detail_preview_first_column": "AC",
+      "detail_preview_last_column": "AT",
+      "freeze_columns": 4,
+      "frozen_row_order": [
+        "整体汇总",
+        "bv_n14",
+        "bv_n19",
+        "bv_n30",
+        "bv_n70",
+        "cat_n22",
+        "cat_n35",
+        "ghz_n23",
+        "ghz_n40",
+        "ghz_n78",
+        "ising_n42",
+        "ising_n98",
+        "knn_n31",
+        "multiply_n13",
+        "qft_n18",
+        "qft_n29",
+        "seca_n11",
+        "swap_test_n25",
+        "wstate_n27"
+      ],
+      "header_rows": 2,
+      "name": "ZAC18",
+      "preview_last_column": "AB",
+      "source_csv": "zac18.csv"
+    },
+    {
+      "columns": [
+        {
+          "group": null,
+          "key": "circuit",
+          "label": "电路",
+          "type": "text"
+        },
+        {
+          "group": null,
+          "key": "qubits",
+          "label": "量子比特",
+          "number_format": "0",
+          "type": "number"
+        },
+        {
+          "group": null,
+          "key": "gates_1q",
+          "label": "1Q门数",
+          "number_format": "0",
+          "type": "number"
+        },
+        {
+          "group": null,
+          "key": "gates_2q",
+          "label": "2Q门数",
+          "number_format": "0",
+          "type": "number"
+        },
+        {
+          "group": "M1",
+          "key": "M1__fidelity",
+          "label": "Fidelity（线性模型）",
+          "number_format": "0.000000E+00",
+          "type": "number"
+        },
+        {
+          "group": "M1",
+          "key": "M1__move_batches",
+          "label": "Move批次",
+          "number_format": "0.00",
+          "type": "number"
+        },
+        {
+          "group": "M1",
+          "key": "M1__move_time_ms",
+          "label": "Move时间 (ms)",
+          "number_format": "0.000",
+          "type": "number"
+        },
+        {
+          "group": "M1",
+          "key": "M1__algorithm_time_s",
+          "label": "算法时间 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M1",
+          "key": "M1__valid_over_N",
+          "label": "valid/N",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M1",
+          "key": "M1__status",
+          "label": "状态",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M2",
+          "key": "M2__fidelity",
+          "label": "Fidelity（线性模型）",
+          "number_format": "0.000000E+00",
+          "type": "number"
+        },
+        {
+          "group": "M2",
+          "key": "M2__move_batches",
+          "label": "Move批次",
+          "number_format": "0.00",
+          "type": "number"
+        },
+        {
+          "group": "M2",
+          "key": "M2__move_time_ms",
+          "label": "Move时间 (ms)",
+          "number_format": "0.000",
+          "type": "number"
+        },
+        {
+          "group": "M2",
+          "key": "M2__algorithm_time_s",
+          "label": "算法时间 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M2",
+          "key": "M2__valid_over_N",
+          "label": "valid/N",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M2",
+          "key": "M2__status",
+          "label": "状态",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M3",
+          "key": "M3__fidelity",
+          "label": "Fidelity（线性模型）",
+          "number_format": "0.000000E+00",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__move_batches",
+          "label": "Move批次",
+          "number_format": "0.00",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__move_time_ms",
+          "label": "Move时间 (ms)",
+          "number_format": "0.000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__algorithm_time_s",
+          "label": "算法时间 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__valid_over_N",
+          "label": "valid/N",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M3",
+          "key": "M3__status",
+          "label": "状态",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M4",
+          "key": "M4__fidelity",
+          "label": "Fidelity（线性模型）",
+          "number_format": "0.000000E+00",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__move_batches",
+          "label": "Move批次",
+          "number_format": "0.00",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__move_time_ms",
+          "label": "Move时间 (ms)",
+          "number_format": "0.000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__algorithm_time_s",
+          "label": "算法时间 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__valid_over_N",
+          "label": "valid/N",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M4",
+          "key": "M4__status",
+          "label": "状态",
+          "number_format": "text",
+          "type": "text"
+        },
+        {
+          "group": "M3",
+          "key": "M3__initial_placement_s",
+          "label": "初始布局 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__transition_decision_s",
+          "label": "逐层决策总计 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__problem_preparation_s",
+          "label": "问题构造 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__search_kernel_s",
+          "label": "搜索阶段墙钟 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__result_commit_s",
+          "label": "结果提交 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__transition_residual_s",
+          "label": "决策其余开销 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__routing_s",
+          "label": "最终路由 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__return_match_s",
+          "label": "RETURN匹配累计·嵌套 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M3",
+          "key": "M3__forecast_s",
+          "label": "前瞻累计·嵌套 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__initial_placement_s",
+          "label": "初始布局 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__transition_decision_s",
+          "label": "逐层决策总计 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__problem_preparation_s",
+          "label": "问题构造 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__search_kernel_s",
+          "label": "搜索阶段墙钟 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__result_commit_s",
+          "label": "结果提交 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__transition_residual_s",
+          "label": "决策其余开销 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__routing_s",
+          "label": "最终路由 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__return_match_s",
+          "label": "RETURN匹配累计·嵌套 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        },
+        {
+          "group": "M4",
+          "key": "M4__forecast_s",
+          "label": "前瞻累计·嵌套 (s)",
+          "number_format": "0.000000",
+          "type": "number"
+        }
+      ],
+      "detail_preview_first_column": "AC",
+      "detail_preview_last_column": "AT",
+      "freeze_columns": 4,
+      "frozen_row_order": [
+        "整体汇总",
+        "0410184_169",
+        "3_17_13",
+        "4_49_16",
+        "4gt10-v1_81",
+        "4gt11_82",
+        "4gt11_83",
+        "4gt11_84",
+        "4gt12-v0_86",
+        "4gt12-v0_87",
+        "4gt12-v0_88",
+        "4gt12-v1_89",
+        "4gt13-v1_93",
+        "4gt13_90",
+        "4gt13_91",
+        "4gt13_92",
+        "4gt4-v0_72",
+        "4gt4-v0_73",
+        "4gt4-v0_78",
+        "4gt4-v0_79",
+        "4gt4-v0_80",
+        "4gt4-v1_74",
+        "4gt5_75",
+        "4gt5_76",
+        "4gt5_77",
+        "4mod5-bdd_287",
+        "4mod5-v0_18",
+        "4mod5-v0_19",
+        "4mod5-v0_20",
+        "4mod5-v1_22",
+        "4mod5-v1_23",
+        "4mod5-v1_24",
+        "4mod7-v0_94",
+        "4mod7-v1_96",
+        "9symml_195",
+        "C17_204",
+        "adr4_197",
+        "aj-e11_165",
+        "alu-bdd_288",
+        "alu-v0_26",
+        "alu-v0_27",
+        "alu-v1_28",
+        "alu-v1_29",
+        "alu-v2_30",
+        "alu-v2_31",
+        "alu-v2_32",
+        "alu-v2_33",
+        "alu-v3_34",
+        "alu-v3_35",
+        "alu-v4_36",
+        "alu-v4_37",
+        "clip_206",
+        "cm152a_212",
+        "cm42a_207",
+        "cm82a_208",
+        "cm85a_209",
+        "cnt3-5_179",
+        "cnt3-5_180",
+        "co14_215",
+        "con1_216",
+        "cycle10_2_110",
+        "dc1_220",
+        "dc2_222",
+        "dist_223",
+        "ex-1_166",
+        "ex1_226",
+        "ex2_227",
+        "ex3_229",
+        "f2_232",
+        "graycode6_47",
+        "ground_state_estimation_10",
+        "ham15_107",
+        "ham3_102",
+        "ham7_104",
+        "hwb4_49",
+        "hwb5_53",
+        "hwb6_56",
+        "hwb7_59",
+        "hwb8_113",
+        "hwb9_119",
+        "inc_237",
+        "ising_model_10",
+        "ising_model_13",
+        "ising_model_16",
+        "life_238",
+        "majority_239",
+        "max46_240",
+        "miller_11",
+        "mini-alu_167",
+        "mini_alu_305",
+        "misex1_241",
+        "mlp4_245",
+        "mod10_171",
+        "mod10_176",
+        "mod5adder_127",
+        "mod5d1_63",
+        "mod5d2_64",
+        "mod5mils_65",
+        "mod8-10_177",
+        "mod8-10_178",
+        "one-two-three-v0_97",
+        "one-two-three-v0_98",
+        "one-two-three-v1_99",
+        "one-two-three-v2_100",
+        "one-two-three-v3_101",
+        "plus63mod4096_163",
+        "plus63mod8192_164",
+        "pm1_249",
+        "qe_qft_4",
+        "qe_qft_5",
+        "qft_10",
+        "qft_16",
+        "radd_250",
+        "rd32-v0_66",
+        "rd32-v1_68",
+        "rd32_270",
+        "rd53_130",
+        "rd53_131",
+        "rd53_133",
+        "rd53_135",
+        "rd53_138",
+        "rd53_251",
+        "rd53_311",
+        "rd73_140",
+        "rd73_252",
+        "rd84_142",
+        "rd84_253",
+        "root_255",
+        "sao2_257",
+        "sf_274",
+        "sf_276",
+        "sqn_258",
+        "sqrt8_260",
+        "squar5_261",
+        "square_root_7",
+        "sym10_262",
+        "sym6_145",
+        "sym6_316",
+        "sym9_146",
+        "sym9_148",
+        "sym9_193",
+        "sys6-v0_111",
+        "urf1_149",
+        "urf1_278",
+        "urf2_152",
+        "urf2_277",
+        "urf3_155",
+        "urf3_279",
+        "urf4_187",
+        "urf5_158",
+        "urf5_280",
+        "urf6_160",
+        "wim_266",
+        "xor5_254",
+        "z4_268"
+      ],
+      "header_rows": 2,
+      "name": "QMAP154",
+      "preview_last_column": "AB",
+      "source_csv": "qmap154.csv"
+    }
+  ]
+}
