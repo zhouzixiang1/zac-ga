@@ -1232,12 +1232,29 @@ class ResidentPlacer(VertexMatchingPlacer):
         partner_sets = {}
         interaction_counts = {}
         # A forward-only streaming facade must not be scanned: doing so would
-        # both evict layer zero and violate the H=0 read firewall.  The current
-        # ZAC18/QMAP154 batch path supplies a frozen list/tuple and can reuse
-        # the graph that the initial placer already materialised.
-        has_frozen_interaction_graph = isinstance(
-            gate_scheduling, (list, tuple))
-        if has_frozen_interaction_graph:
+        # both evict layer zero and violate the H=0 read firewall.  The SQLite
+        # first pass instead exposes the same order-free interaction inventory
+        # used by initial placement.  Batch runs continue to derive it from
+        # their already materialised list/tuple.
+        frozen_graph = getattr(
+            gate_scheduling, "frozen_interaction_graph", None)
+        has_frozen_interaction_graph = (
+            isinstance(gate_scheduling, (list, tuple))
+            or frozen_graph is not None)
+        if frozen_graph is not None:
+            for raw_q0, raw_q1, raw_weight in frozen_graph:
+                q0, q1, weight = (
+                    int(raw_q0), int(raw_q1), int(raw_weight))
+                if q0 == q1 or weight <= 0:
+                    raise ValueError(
+                        "frozen interaction graph contains an invalid edge")
+                partner_sets.setdefault(q0, set()).add(q1)
+                partner_sets.setdefault(q1, set()).add(q0)
+                interaction_counts[(q0, q1)] = (
+                    interaction_counts.get((q0, q1), 0) + weight)
+                interaction_counts[(q1, q0)] = (
+                    interaction_counts.get((q1, q0), 0) + weight)
+        elif has_frozen_interaction_graph:
             for gates in gate_scheduling:
                 for gate in gates:
                     if len(gate) < 2:

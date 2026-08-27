@@ -49,6 +49,51 @@ from .zair_instruction_stream import IncrementalZairNormalizer
 
 
 _ZERO_HASH = "0" * 64
+_DECISION_TIMING_KEYS = (
+    "horizon_selection_ns",
+    "problem_preparation_ns",
+    "search_kernel_ns",
+    "result_commit_ns",
+)
+_BACKEND_TIMING_KEYS = (
+    "python_marshal_ns",
+    "native_call_wall_ns",
+    "native_search_wall_ns",
+    "fitness_ns",
+    "normalize_ns",
+    "decode_ns",
+    "return_match_ns",
+    "forecast_ns",
+    "selection_ns",
+    "native_parse_ns",
+    "native_serialize_ns",
+)
+
+
+def _empty_timing_breakdown(initial_placement_ns: int = 0) -> dict[str, int]:
+    return {
+        "initial_placement_ns": int(initial_placement_ns),
+        "placement_transition_ns": 0,
+        "routing_ns": 0,
+        **{key: 0 for key in _DECISION_TIMING_KEYS},
+        **{key: 0 for key in _BACKEND_TIMING_KEYS},
+    }
+
+
+def _accumulate_timing(
+    destination: dict[str, int], source: Mapping[str, Any] | None,
+    keys: Iterable[str],
+) -> None:
+    if source is None:
+        return
+    for key in keys:
+        raw = source.get(key, 0)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ValueError(f"invalid formal Large timing {key}: {raw!r}")
+        value = int(raw)
+        if value < 0:
+            raise ValueError(f"negative formal Large timing {key}: {value}")
+        destination[key] += value
 
 
 def _sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
@@ -255,6 +300,7 @@ class FormalLargeZacResult:
     full_circuit: bool
     support_claim_eligible: bool
     compiler_core_ns: int
+    timing_breakdown_ns: Mapping[str, int]
     end_to_end_ns: int
     peak_rss_bytes: int
     native_instructions: int
@@ -331,6 +377,7 @@ def compile_formal_large_zac(
 
     end_to_end_start = time.perf_counter_ns()
     core_ns = 0
+    timing_breakdown = _empty_timing_breakdown()
     prior_end_to_end_ns = 0
     native_writer: _GzipJsonlWriter | None = None
     canonical_writer: _GzipJsonlWriter | None = None
@@ -414,6 +461,20 @@ def compile_formal_large_zac(
                     raise ValueError("resume full-circuit flag is inconsistent")
                 stages_completed = restored.next_layer
                 core_ns = int(counters["compiler_core_ns"])
+                raw_timing = counters.get("timing_breakdown_ns")
+                if not isinstance(raw_timing, Mapping):
+                    raise ValueError(
+                        "formal Large checkpoint lacks timing_breakdown_ns")
+                timing_breakdown = _empty_timing_breakdown()
+                if set(raw_timing) != set(timing_breakdown):
+                    raise ValueError(
+                        "formal Large checkpoint timing key mismatch")
+                for key, raw in raw_timing.items():
+                    value = int(raw)
+                    if value < 0:
+                        raise ValueError(
+                            f"negative checkpoint timing {key}: {value}")
+                    timing_breakdown[key] = value
                 prior_end_to_end_ns = int(counters["end_to_end_active_ns"])
                 normalizer = IncrementalZairNormalizer.from_state(
                     counters["normalizer"], architecture=architecture_spec)
@@ -430,6 +491,8 @@ def compile_formal_large_zac(
                     temporary / "route.jsonl.gz", writer_states["route"])
             else:
                 core_ns = initial_placement_ns
+                timing_breakdown = _empty_timing_breakdown(
+                    initial_placement_ns)
                 placement = FormalZacPlacementStream(
                     method=method,
                     architecture=architecture,
@@ -530,6 +593,7 @@ def compile_formal_large_zac(
                     "stage_limit": stage_limit,
                     "full_circuit": full_circuit,
                     "compiler_core_ns": core_ns,
+                    "timing_breakdown_ns": dict(timing_breakdown),
                     "end_to_end_active_ns": active_end_to_end_ns,
                     "normalizer": normalizer.state_dict(),
                     "pipeline": pipeline.state_dict(),
@@ -556,11 +620,20 @@ def compile_formal_large_zac(
 
             iterator = iter(placement)
             for expected_layer in range(stages_completed, stage_limit):
-                core_start = time.perf_counter_ns()
+                placement_start = time.perf_counter_ns()
                 row = next(iterator)
+                placement_ns = time.perf_counter_ns() - placement_start
+                timing_breakdown["placement_transition_ns"] += placement_ns
+                _accumulate_timing(
+                    timing_breakdown, row.decision_log,
+                    _DECISION_TIMING_KEYS)
+                _accumulate_timing(
+                    timing_breakdown, row.backend_timing,
+                    _BACKEND_TIMING_KEYS)
                 if row.layer != expected_layer:
                     raise AssertionError(
                         f"placement emitted stage {row.layer}, expected {expected_layer}")
+                route_start = time.perf_counter_ns()
                 route = router.route_layer(
                     row.layer,
                     row.b_l,
@@ -570,17 +643,19 @@ def compile_formal_large_zac(
                     row.gate_ids,
                     row.parent_one_qubit_gates,
                 )
-                core_ns += time.perf_counter_ns() - core_start
+                routing_ns = time.perf_counter_ns() - route_start
+                timing_breakdown["routing_ns"] += routing_ns
+                core_ns += placement_ns + routing_ns
 
                 consume_native(route.instructions)
                 if row.decision_log is not None:
-                    # Wall-clock samples are aggregated in compiler_core_ns.  They
-                    # are deliberately excluded from the deterministic decision
-                    # ledger so checkpoint/resume remains byte-identical to an
-                    # uninterrupted compile.
+                    # Wall-clock samples are aggregated in the manifest timing
+                    # ledger.  They are deliberately excluded from the
+                    # deterministic decision stream so checkpoint/resume remains
+                    # byte-identical to an uninterrupted compile.
                     decision_writer.write({
                         key: value for key, value in row.decision_log.items()
-                        if key not in {"horizon_selection_ns", "search_kernel_ns"}
+                        if not key.endswith("_ns")
                     })
                 for entry in route.route_log:
                     route_writer.write(entry)
@@ -653,6 +728,7 @@ def compile_formal_large_zac(
                 full_circuit=full_circuit,
                 support_claim_eligible=support_claim_eligible,
                 compiler_core_ns=core_ns,
+                timing_breakdown_ns=dict(timing_breakdown),
                 end_to_end_ns=end_to_end_ns,
                 peak_rss_bytes=_peak_rss_bytes(),
                 native_instructions=native_writer.count,
@@ -696,6 +772,17 @@ def compile_formal_large_zac(
                     "stage_capacity": capacity,
                 },
                 "model": physical_model.to_dict(),
+                "runtime_definition": {
+                    "compiler_core_ns": (
+                        "initial placement plus each exact placement transition "
+                        "and production routing call; input preparation, event "
+                        "normalization, validation, scoring and file I/O excluded"
+                    ),
+                    "timing_breakdown_ns": (
+                        "requested M3/M4 component ledger; native sub-timers may "
+                        "overlap placement_transition_ns and are not additive"
+                    ),
+                },
                 "setting": resolved,
                 "setting_sha256": (
                     None if resolved is None else _canonical_hash(resolved)),

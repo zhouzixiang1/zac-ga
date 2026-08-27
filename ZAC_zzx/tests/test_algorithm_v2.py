@@ -43,7 +43,7 @@ def semantic_decision_log(rows):
     """Drop deliberately volatile wall-clock evidence from semantic equality."""
     return [
         {key: value for key, value in row.items()
-         if key not in {"horizon_selection_ns", "search_kernel_ns"}}
+         if not key.endswith("_ns")}
         for row in rows
     ]
 
@@ -619,12 +619,18 @@ class TestResidentDecisionMechanics(unittest.TestCase):
         self.assertEqual(
             len(compiler.zzx_backend_timing_log), len(schedule))
         for row in compiler.zzx_backend_timing_log:
-            self.assertEqual(
-                set(row), {
-                    "layer", "backend", "marshal_ns", "search_kernel_ns",
-                    "fitness_ns", "selection_ns", "native_parse_ns",
-                    "native_serialize_ns", "calls", "candidates",
-                })
+            required = {
+                "layer", "backend", "marshal_ns", "search_kernel_ns",
+                "fitness_ns", "selection_ns", "native_parse_ns",
+                "native_serialize_ns", "calls", "candidates",
+            }
+            allowed = required | {
+                "python_marshal_ns", "native_call_wall_ns",
+                "native_search_wall_ns", "normalize_ns", "decode_ns",
+                "return_match_ns", "forecast_ns",
+            }
+            self.assertLessEqual(required, set(row))
+            self.assertLessEqual(set(row), allowed)
 
     def test_return_matching_uses_the_selected_subset(self):
         initial = [(0, i, 0) for i in range(4)]

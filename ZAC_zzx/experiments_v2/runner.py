@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import gzip
+import hashlib
 import json
 import math
 import os
@@ -35,6 +36,21 @@ _ARCHIVE_ARTIFACTS = (
     "trace.na.raw",
     "compiler_stats.json",
 )
+
+_TRANSIENT_QASMBENCH_ARTIFACTS = (
+    "trace.zair.json",
+    "trace.zair.json.gz",
+    "trace.na",
+    "trace.na.gz",
+    "trace.na.raw",
+    "trace.na.raw.gz",
+    "canonical_trace.jsonl.gz",
+    "compiler_stats.json",
+    "compiler_stats.json.gz",
+    "compiler_timing.json",
+    "fidelity.json",
+)
+_EVENT_HASH_PROTOCOL = "sha256-uncompressed-canonical-jsonl-v1"
 
 
 def _gzip_artifact(path: Path) -> Path:
@@ -68,6 +84,34 @@ def _archive_attempt_artifacts(directory: Path) -> list[str]:
     return archived
 
 
+def _sha256_uncompressed_gzip(path: Path) -> str:
+    digest = hashlib.sha256()
+    with gzip.open(path, "rb") as handle:
+        while block := handle.read(1 << 20):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _discard_qasmbench_artifacts(
+        directory: Path, manifest: RunManifest) -> None:
+    """Hash and discard replay artifacts after verification and scoring."""
+    hashes: dict[str, str] = {}
+    canonical = directory / "canonical_trace.jsonl.gz"
+    if manifest.status == RunStatus.SUCCESS.value:
+        if not canonical.is_file():
+            raise FileNotFoundError(
+                "successful QASMBench attempt lacks canonical_trace.jsonl.gz")
+        manifest.event_stream_sha256 = _sha256_uncompressed_gzip(canonical)
+        manifest.event_stream_hash_protocol = _EVENT_HASH_PROTOCOL
+    for name in _TRANSIENT_QASMBENCH_ARTIFACTS:
+        path = directory / name
+        if path.is_file():
+            hashes[name] = sha256_file(path)
+            path.unlink()
+    manifest.transient_artifact_sha256 = dict(sorted(hashes.items()))
+    manifest.trace_retained = False
+
+
 @dataclass(frozen=True)
 class AttemptSpec:
     dataset: str
@@ -85,6 +129,14 @@ class AttemptSpec:
     run_kind: str = "smoke"
     ablation_variant: str = ""
     experiment_id: str = ""
+    benchmark_scale: str = ""
+    benchmark_directory: str = ""
+    upstream_git_blob: str = ""
+    input_selection_reason: str = ""
+    canonical_profile: str = ""
+    trace_retained: bool = True
+    concurrency_limit: Optional[int] = None
+    implementation_status: str = ""
     qubits: Optional[int] = None
     expected_gates_1q: Optional[int] = None
     expected_gates_2q: Optional[int] = None
@@ -110,7 +162,7 @@ class AttemptSpec:
                 raise FileNotFoundError(f"{label} file does not exist: {path}")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout must be positive")
-        if self.run_kind not in {"coverage", "main", "timing", "ablation", "large", "smoke"}:
+        if self.run_kind not in {"coverage", "main", "timing", "ablation", "large", "qasmbench", "smoke"}:
             raise ValueError(f"invalid run_kind: {self.run_kind}")
         if self.run_kind == "ablation":
             if not self.ablation_variant:
@@ -178,6 +230,7 @@ def _apply_metrics(manifest: RunManifest, metrics: Mapping[str, Any]) -> None:
         "log_fidelity": "log_fidelity", "fidelity": "fidelity",
         "fidelity_components": "fidelity_components",
         "move_batches": "move_batches", "move_time_us": "move_time_us",
+        "transfers": "transfers", "transfer_count": "transfers",
         "compiler_time_ns": "compiler_time_ns", "cpu_time_ns": "cpu_time_ns",
         "stay_count": "stay_count", "return_count": "return_count",
         "reseat_count": "reseat_count", "idle_exposures": "idle_exposures",
@@ -224,7 +277,17 @@ def _apply_metrics(manifest: RunManifest, metrics: Mapping[str, Any]) -> None:
     }
     for source, destination in aliases.items():
         if source in metrics:
-            setattr(manifest, destination, metrics[source])
+            value = metrics[source]
+            if destination == "transfers":
+                if (isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(float(value))
+                        or float(value) < 0
+                        or not float(value).is_integer()):
+                    raise ValueError(
+                        f"scorer returned invalid integral transfers: {value!r}")
+                value = int(value)
+            setattr(manifest, destination, value)
     warnings = metrics.get("warnings", [])
     if isinstance(warnings, list):
         manifest.warnings.extend(str(item) for item in warnings)
@@ -262,6 +325,14 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
         repetition=spec.repetition, run_kind=spec.run_kind,
         ablation_variant=spec.ablation_variant,
         experiment_id=spec.experiment_id,
+        benchmark_scale=spec.benchmark_scale,
+        benchmark_directory=spec.benchmark_directory,
+        upstream_git_blob=spec.upstream_git_blob,
+        input_selection_reason=spec.input_selection_reason,
+        canonical_profile=spec.canonical_profile,
+        trace_retained=spec.trace_retained,
+        concurrency_limit=spec.concurrency_limit,
+        implementation_status=spec.implementation_status,
         command=[str(item) for item in spec.command],
         timeout_seconds=spec.timeout_seconds,
         input_sha256=sha256_file(spec.input_path),
@@ -269,6 +340,8 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
         architecture_sha256=sha256_file(spec.architecture_path),
         model_sha256=sha256_file(spec.model_path),
         package_versions=dict(spec.package_versions), artifact_dir=str(final),
+        rss_limit_bytes=spec.rss_limit_bytes,
+        minimum_free_bytes=spec.minimum_free_bytes,
         qubits=spec.qubits, expected_gates_1q=spec.expected_gates_1q,
         expected_gates_2q=spec.expected_gates_2q,
         expected_gate_ledger_sha256=spec.expected_gate_ledger_sha256,
@@ -508,7 +581,8 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
                     formal_native = (
                         config.get("backend") == "native" or
                         manifest.run_kind in {
-                            "coverage", "main", "timing", "ablation", "large"
+                            "coverage", "main", "timing", "ablation", "large",
+                            "qasmbench",
                         })
                     if not formal_native:
                         config = None
@@ -545,9 +619,11 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
                         raise ValueError(
                             f"M3/M4 fail-closed native identity mismatch: "
                             f"{identity_drift}")
+                    manifest.python_fallback = False
                     reported_transition_count = stats.get("transition_count")
                     if manifest.run_kind in {
-                            "coverage", "main", "timing", "ablation", "large"}:
+                            "coverage", "main", "timing", "ablation", "large",
+                            "qasmbench"}:
                         if not manifest.canonical_input_layer_ledger_sha256:
                             raise ValueError(
                                 "M3/M4 is missing the canonical-input "
@@ -660,21 +736,31 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
         manifest.status = RunStatus.SCORER_ERROR.value
         manifest.error = "compiler protocol error: missing compiler_stats.json"
 
+    # Verification, unified scoring, and package extraction have consumed the
+    # raw compiler outputs.  The ordinary experiment archives them; QASMBench
+    # hashes and discards them before atomic promotion.
+    try:
+        if spec.trace_retained:
+            _archive_attempt_artifacts(temporary)
+        else:
+            _discard_qasmbench_artifacts(temporary, manifest)
+    except BaseException as error:
+        if manifest.status == RunStatus.SUCCESS.value:
+            manifest.status = RunStatus.SCORER_ERROR.value
+            manifest.error = (
+                "transient artifact finalization failed: "
+                f"{type(error).__name__}: {error}")
+        else:
+            manifest.warnings.append(
+                "transient artifact finalization failed: "
+                f"{type(error).__name__}: {error}")
+
     if manifest.status == RunStatus.SUCCESS.value:
         try:
             manifest.validate(require_success_metrics=True)
         except ValueError as error:
             manifest.status = RunStatus.SCORER_ERROR.value
             manifest.error = f"incomplete success contract: {error}"
-
-    # Verification, unified scoring, and package extraction have consumed the
-    # raw compiler outputs.  Archive them before atomic promotion so every
-    # terminal attempt is compact but remains independently replayable.
-    try:
-        _archive_attempt_artifacts(temporary)
-    except BaseException as error:
-        manifest.warnings.append(
-            f"artifact archival failed: {type(error).__name__}: {error}")
 
     manifest.end_to_end_time_ns = time.perf_counter_ns() - start_wall
     manifest.ended_at_utc = _utc_now()

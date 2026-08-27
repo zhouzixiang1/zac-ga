@@ -373,6 +373,7 @@ class UnifiedEvaluationGate:
             "fidelity_components": components,
             "move_batches": result.move_batches,
             "move_time_us": result.move_time_us,
+            "transfers": result.transfers,
             "idle_exposures": result.idle_excitations,
             "fidelity_ood": result.ood,
             "exponential_sensitivity_fidelity": result.exponential_sensitivity_fidelity,
@@ -1988,6 +1989,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir", type=Path,
         help=("delivery directory; defaults to the JSON path without its suffix; "
               "writes CSV/Markdown/LaTeX, verified XLSX, and PDF/SVG/PNG figures"))
+
+    prepare_qasmbench = subparsers.add_parser("prepare-qasmbench")
+    prepare_qasmbench.add_argument("--checkout", required=True, type=Path)
+    prepare_qasmbench.add_argument("--output-dir", required=True, type=Path)
+
+    run_qasmbench = subparsers.add_parser("run-qasmbench")
+    run_qasmbench.add_argument("--plan", required=True, type=Path)
+    run_qasmbench.add_argument("--source-manifest", required=True, type=Path)
+    run_qasmbench.add_argument("--output-root", type=Path)
+    run_qasmbench.add_argument(
+        "--scales", nargs="+", choices=("small", "medium", "large"),
+        default=("small", "medium", "large"))
+    run_qasmbench.add_argument(
+        "--methods", nargs="+", choices=("M1", "M2", "M3", "M4"),
+        default=("M1", "M2", "M3", "M4"))
+    run_qasmbench.add_argument(
+        "--stage", choices=("seed0", "retry", "followup", "all"),
+        default="seed0")
+    run_qasmbench.add_argument("--resume", action="store_true")
+    run_qasmbench.add_argument("--dry-run", action="store_true")
+    run_qasmbench.add_argument(
+        "--retry-missing", action="store_true",
+        help="during --stage all, add one six-hour retry after seed 0")
+
+    aggregate_qasmbench = subparsers.add_parser("aggregate-qasmbench")
+    aggregate_qasmbench.add_argument(
+        "--source-manifest", required=True, type=Path)
+    aggregate_qasmbench.add_argument("--run-root", required=True, type=Path)
+    aggregate_qasmbench.add_argument("--output-dir", required=True, type=Path)
+    aggregate_qasmbench.add_argument(
+        "--allow-incomplete-source", action="store_true")
     return parser
 
 
@@ -1995,6 +2027,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "prepare-qasmbench":
+            from .qasmbench_inputs import prepare_qasmbench_inputs
+
+            inventory = prepare_qasmbench_inputs(
+                args.checkout, args.output_dir)
+            manifest = args.output_dir.resolve() / "source_manifest.json"
+            result = {
+                "source_manifest": str(manifest),
+                "source_manifest_sha256": sha256_file(manifest),
+                "counts": inventory.to_dict()["counts"],
+            }
+            _print_json(result)
+            return 0
+        if args.command == "aggregate-qasmbench":
+            from .qasmbench_aggregate import (
+                aggregate_qasmbench, write_qasmbench_aggregation,
+            )
+
+            payload = aggregate_qasmbench(
+                args.source_manifest,
+                args.run_root,
+                require_complete_source=not args.allow_incomplete_source,
+            )
+            result = write_qasmbench_aggregation(payload, args.output_dir)
+            _print_json(result)
+            return 0
         plan = load_experiment_plan(args.plan)
         if (args.command == "canonicalize-suite" and
                 os.path.abspath(sys.executable) != os.path.abspath(plan.python) and
@@ -2055,6 +2113,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = command_aggregate(
                 plan, args.dataset, args.phase, args.output,
                 args.output_dir)
+        elif args.command == "run-qasmbench":
+            from .qasmbench_runner import command_run_qasmbench
+
+            result = command_run_qasmbench(
+                plan,
+                args.source_manifest,
+                output_root=args.output_root,
+                scales=args.scales,
+                methods=args.methods,
+                stage=args.stage,
+                resume=args.resume,
+                dry_run=args.dry_run,
+                retry_missing=args.retry_missing,
+            )
         else:  # pragma: no cover - argparse exhaustiveness guard
             parser.error(f"unknown command: {args.command}")
             return 2

@@ -39,6 +39,11 @@ class ProviderScheduleView(Sequence[tuple[tuple[int, int], ...]]):
     def __len__(self) -> int:
         return self.provider.layer_count
 
+    @property
+    def frozen_interaction_graph(self):
+        """Return an optional order-free ``(q0,q1,weight)`` inventory."""
+        return getattr(self.provider, "frozen_interaction_graph", None)
+
     def __getitem__(self, index):
         if isinstance(index, slice):
             return [self.provider.read_layer(i)
@@ -86,6 +91,7 @@ class ResidentBoundaryTransition:
     boundary_mapping: FrozenMapping
     target_gate_mapping: FrozenMapping | None
     decision_log: dict
+    backend_timing: dict
 
 
 class ResidentTransitionKernel:
@@ -165,20 +171,30 @@ class ResidentTransitionKernel:
         source_layer = self.current_layer
         source = _freeze_mapping(self.placer.mapping[-1])
         log_count = len(self.placer.decision_log)
+        timing_count = len(self.placer.backend_timing_log)
         self.placer._ga_step_v2(source_layer)
         if len(self.placer.decision_log) != log_count + 1:
             raise AssertionError("resident transition did not append exactly one decision")
+        if len(self.placer.backend_timing_log) != timing_count + 1:
+            raise AssertionError(
+                "resident transition did not append exactly one backend timing row")
         boundary = _freeze_mapping(self.placer.mapping[-2])
         target = _freeze_mapping(self.placer.mapping[-1])
         decision = deepcopy(self.placer.decision_log[-1])
+        backend_timing = deepcopy(self.placer.backend_timing_log[-1])
         self.current_layer += 1
         self._compact(target)
+        # The aggregate is consumed by the formal compiler immediately.  Keep
+        # only the most recent row so Large compilation remains bounded in the
+        # number of physical stages.
+        self.placer.backend_timing_log = [deepcopy(backend_timing)]
         return ResidentBoundaryTransition(
             source_layer=source_layer,
             source_gate_mapping=source,
             boundary_mapping=boundary,
             target_gate_mapping=target,
             decision_log=decision,
+            backend_timing=backend_timing,
         )
 
     def finish(self) -> ResidentBoundaryTransition:
@@ -191,19 +207,26 @@ class ResidentTransitionKernel:
         source_layer = self.current_layer
         source = _freeze_mapping(self.placer.mapping[-1])
         log_count = len(self.placer.decision_log)
+        timing_count = len(self.placer.backend_timing_log)
         self.placer._finish_terminal_boundary(source_layer)
         if len(self.placer.decision_log) != log_count + 1:
             raise AssertionError("terminal transition did not append exactly one decision")
+        if len(self.placer.backend_timing_log) != timing_count + 1:
+            raise AssertionError(
+                "terminal transition did not append exactly one backend timing row")
         boundary = _freeze_mapping(self.placer.mapping[-1])
         decision = deepcopy(self.placer.decision_log[-1])
+        backend_timing = deepcopy(self.placer.backend_timing_log[-1])
         self.finished = True
         self._compact(boundary)
+        self.placer.backend_timing_log = [deepcopy(backend_timing)]
         return ResidentBoundaryTransition(
             source_layer=source_layer,
             source_gate_mapping=source,
             boundary_mapping=boundary,
             target_gate_mapping=None,
             decision_log=decision,
+            backend_timing=backend_timing,
         )
 
 

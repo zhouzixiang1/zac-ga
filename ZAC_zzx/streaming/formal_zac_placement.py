@@ -30,7 +30,7 @@ from .zac_stage_provider import LayerStoreZacStageProvider
 
 Location = tuple[int, int, int]
 FrozenMapping = tuple[Location, ...]
-PLACEMENT_STATE_FORMAT = "formal-zac-placement-state-v2"
+PLACEMENT_STATE_FORMAT = "formal-zac-placement-state-v3"
 
 
 def _freeze_mapping(mapping: Sequence[Sequence[int]]) -> FrozenMapping:
@@ -52,6 +52,7 @@ class FormalZacStagePlacement:
     parent_one_qubit_gates: tuple[tuple[str, int], ...]
     selected_reuse_qubits: tuple[int, ...] = ()
     decision_log: Mapping[str, Any] | None = None
+    backend_timing: Mapping[str, Any] | None = None
 
     @property
     def gates(self) -> tuple[tuple[int, int], ...]:
@@ -205,6 +206,7 @@ class FormalZacPlacementStream:
                 b_l_plus_1=transition.boundary_mapping,
                 parent_one_qubit_gates=self._one_qubit_for_stage(stage),
                 decision_log=transition.decision_log,
+                backend_timing=transition.backend_timing,
             )
         self._resident_boundary = transition.boundary_mapping
         self._next_layer += 1
@@ -275,7 +277,7 @@ class FormalZacPlacementStream:
             for name in cache_names
         }
         return {
-            "format": "resident-transition-state-v2",
+            "format": "resident-transition-state-v3",
             "current_layer": kernel.current_layer,
             "finished": kernel.finished,
             "mapping": deepcopy(placer.mapping),
@@ -307,6 +309,14 @@ class FormalZacPlacementStream:
             "decision_log": deepcopy(placer.decision_log[-1:]),
             "search_time": float(placer.search_time),
             "ghost_fixes": int(getattr(placer, "ghost_fixes", 0)),
+            "h0_history": {
+                "last_use_layer": deepcopy(placer.h0_last_use_layer),
+                "gap_ewma": deepcopy(placer.h0_gap_ewma),
+                "gap_samples": deepcopy(placer.h0_gap_samples),
+                "observed_layer": int(placer.h0_history_observed_layer),
+                "participant_cycle_split_transfer_time_us": float(getattr(
+                    placer, "_h0_participant_cycle_split_transfer_time_us", 0.0)),
+            },
             "scheduler_reference": placer.scheduler_reference.state_dict(),
             "expected_scheduler_prefix_sha256":
                 placer.expected_scheduler_prefix_sha256,
@@ -414,8 +424,31 @@ class FormalZacPlacementStream:
         *,
         take_cache_ownership: bool = False,
     ) -> ResidentTransitionKernel:
-        if state.get("format") != "resident-transition-state-v2":
+        if state.get("format") != "resident-transition-state-v3":
             raise ValueError("unsupported resident transition state")
+        # Recreate every static, topology-derived policy through the same
+        # initialization path used by a continuous run.  The temporary
+        # provider starts at layer zero and exposes only the order-free frozen
+        # interaction graph plus the current first stage; the real resumed
+        # provider below still starts exactly at the checkpoint boundary.
+        bootstrap_provider = LayerStoreZacStageProvider(
+            self.store, self.max_gates_per_stage,
+            max_cached_stages=maximum_lookahead_horizon(
+                placer.lookahead_horizon_config) + 2,
+            start_stage=0,
+        )
+        bootstrap_schedule = ProviderScheduleView(bootstrap_provider)
+        initialized_layers = placer._initialize_run_state(
+            self.architecture,
+            [list(self.initial_mapping)],
+            bootstrap_schedule,
+            forecast_source=bootstrap_provider,
+            leading_one_qubit_gates=self.leading_one_qubit_gates,
+            one_qubit_gates_by_layer=ProviderOneQView(bootstrap_provider),
+        )
+        if initialized_layers != self.stage_count:
+            raise ValueError(
+                "checkpoint bootstrap schedule differs from stored stage count")
         kernel = ResidentTransitionKernel.__new__(ResidentTransitionKernel)
         kernel.placer = placer
         kernel.provider = self.provider
@@ -545,6 +578,31 @@ class FormalZacPlacementStream:
             raise ValueError("checkpoint resident decision log is unbounded")
         placer.search_time = float(state["search_time"])
         placer.ghost_fixes = int(state["ghost_fixes"])
+        history = state.get("h0_history")
+        if not isinstance(history, Mapping):
+            raise ValueError("checkpoint resident state lacks H=0 history")
+        placer.h0_last_use_layer = [
+            None if value is None else int(value)
+            for value in history["last_use_layer"]]
+        placer.h0_gap_ewma = [
+            None if value is None else float(value)
+            for value in history["gap_ewma"]]
+        placer.h0_gap_samples = [int(value) for value in history["gap_samples"]]
+        placer.h0_history_observed_layer = int(history["observed_layer"])
+        placer._h0_participant_cycle_split_transfer_time_us = float(
+            history["participant_cycle_split_transfer_time_us"])
+        width = len(self.initial_mapping)
+        if not (
+            len(placer.h0_last_use_layer)
+            == len(placer.h0_gap_ewma)
+            == len(placer.h0_gap_samples)
+            == width
+        ):
+            raise ValueError("checkpoint H=0 history width mismatch")
+        if (placer.h0_history_observed_layer < 0
+                or any(value < 0 for value in placer.h0_gap_samples)
+                or placer._h0_participant_cycle_split_transfer_time_us < 0.0):
+            raise ValueError("checkpoint H=0 history is invalid")
 
         expected_current = (None if self.stage_count == 0 else
                             (self.stage_count - 1 if kernel.finished

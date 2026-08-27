@@ -145,6 +145,11 @@ class LayerStoreZacStageProvider(SequentialZacStageProvider):
                  max_cached_stages: int = 4, start_stage: int = 0):
         self.store = store
         self.max_gates = int(max_gates)
+        # This order-free graph is produced during the canonical first pass and
+        # is the same inventory used by the shared initial placer.  It contains
+        # no layer or next-use order, so exposing it does not weaken the H=0
+        # future-read firewall.
+        self.frozen_interaction_graph = tuple(store.interaction_matrix())
         stage_count = count_zac_stages(store, self.max_gates)
         start_stage = int(start_stage)
         super().__init__(

@@ -1,0 +1,49 @@
+{
+  "experiment_schema": 2,
+  "repo_root": "../../..",
+  "output_root": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/native-ga-v1/qasmbench-v1",
+  "architecture": "../../hardware_spec/full_architecture.json",
+  "model": "../../evaluation/fidelity_model_zac.json",
+  "python": "/Users/zhouzixiang/Desktop/zac/ZAC/.venv/bin/python",
+  "qmap_python": "/Users/zhouzixiang/Desktop/zac/.venv_qmap32/bin/python3",
+  "timeout_seconds": 600,
+  "rss_limit_bytes": 23622320128,
+  "large_timeout_seconds": 3600,
+  "large_rss_limit_bytes": 23622320128,
+  "minimum_free_bytes": 4294967296,
+  "methods": {
+    "M1": {
+      "config": "../zac_m1_v2.json"
+    },
+    "M2": {
+      "config": "../iccad_m2_v2.json",
+      "python": "/Users/zhouzixiang/Desktop/zac/.venv_qmap32/bin/python3"
+    },
+    "M3": {
+      "config": "ours_nl_independent.json"
+    },
+    "M4": {
+      "config": "ours_lk_independent.json"
+    }
+  },
+  "datasets": {
+    "qasmbench": {
+      "kind": "main",
+      "sources": [
+        "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/qasmbench-upstream"
+      ],
+      "canonical_directory": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/native-ga-v1/qasmbench-v1/canonical",
+      "recursive": true
+    }
+  },
+  "reproduction": {},
+  "package_versions": {
+    "canonicalizer": "qasmbench-standard-expander-v1",
+    "canonical_qiskit": "not-used",
+    "mqt_core_m2": "3.1.0",
+    "mqt_qmap_m2": "3.2.0",
+    "qasmbench_commit": "357b942396d5c2b7cbc1c229c585a6ef5ccaebac"
+  },
+  "bootstrap_iterations": 10000,
+  "bootstrap_seed": 0
+}

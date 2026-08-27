@@ -102,6 +102,20 @@ class TestFormalLargeZacCompiler(unittest.TestCase):
                     self.assertEqual(result.validation["one_qubit_gates"], 4)
                     self.assertEqual(result.validation["two_qubit_gates"], 4)
                     self.assertEqual(result.validation["ghost_hits"], 0)
+                    self.assertGreater(
+                        result.timing_breakdown_ns["initial_placement_ns"], 0)
+                    self.assertGreater(
+                        result.timing_breakdown_ns["routing_ns"], 0)
+                    self.assertGreaterEqual(
+                        result.timing_breakdown_ns["problem_preparation_ns"], 0)
+                    self.assertGreaterEqual(
+                        result.timing_breakdown_ns["native_search_wall_ns"], 0)
+                    self.assertGreaterEqual(
+                        result.timing_breakdown_ns["return_match_ns"], 0)
+                    self.assertGreaterEqual(
+                        result.timing_breakdown_ns["forecast_ns"], 0)
+                    self.assertGreaterEqual(
+                        result.timing_breakdown_ns["result_commit_ns"], 0)
                     self.assertEqual(result.fidelity["counts"]["one_qubit_gates"], 4)
                     self.assertEqual(result.fidelity["counts"]["two_qubit_gates"], 4)
                     self.assertEqual(len(_jsonl(output / "native.jsonl.gz")),
@@ -114,6 +128,12 @@ class TestFormalLargeZacCompiler(unittest.TestCase):
                         manifest["result"]["canonical_chain_sha256"],
                         result.canonical_chain_sha256,
                     )
+                    self.assertEqual(
+                        manifest["result"]["timing_breakdown_ns"],
+                        result.timing_breakdown_ns,
+                    )
+                    for row in _jsonl(output / "decisions.jsonl.gz"):
+                        self.assertFalse(any(key.endswith("_ns") for key in row))
 
     def test_prefix_is_valid_but_never_support_eligible(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -26,7 +26,7 @@ from zzx.zplacer import ResidentPlacer  # noqa: E402
 def semantic_decision_log(rows):
     return [
         {key: value for key, value in row.items()
-         if key not in {"horizon_selection_ns", "search_kernel_ns"}}
+         if not key.endswith("_ns")}
         for row in rows
     ]
 

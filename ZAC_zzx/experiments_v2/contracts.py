@@ -34,6 +34,11 @@ class RunStatus(str, enum.Enum):
     SCORER_ERROR = "scorer_error"
 
 
+QASMBENCH_SCALES = frozenset(("small", "medium", "large"))
+QASMBENCH_CANONICAL_PROFILE = "qasmbench_standard_expand_v1"
+FORBIDDEN_QASMBENCH_IMPLEMENTATION = "development_streaming_proxy_v1"
+
+
 def sha256_file(path: os.PathLike[str] | str, chunk_size: int = 1 << 20) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -155,6 +160,18 @@ class CanonicalCircuitManifest:
                     "Large canonical input requires expansion-only level=0, seed=0")
             if self.upstream_commit != "357b942396d5c2b7cbc1c229c585a6ef5ccaebac":
                 raise ValueError("Large canonical input has the wrong QASMBench commit")
+        elif self.canonical_profile == QASMBENCH_CANONICAL_PROFILE:
+            if (self.qiskit_version != "not-used" or
+                    self.canonicalizer_version !=
+                    "qasmbench-standard-expander-v1"):
+                raise ValueError(
+                    "QASMBench input requires the frozen standard expander")
+            if self.optimization_level != 0 or self.seed_transpiler != 0:
+                raise ValueError(
+                    "QASMBench input requires expansion-only level=0, seed=0")
+            if self.upstream_commit != \
+                    "357b942396d5c2b7cbc1c229c585a6ef5ccaebac":
+                raise ValueError("QASMBench input has the wrong upstream commit")
         else:
             raise ValueError(f"unknown canonical profile: {self.canonical_profile}")
         for label, value in (("source", self.source_sha256),
@@ -178,6 +195,11 @@ class RunManifest:
     run_kind: str = ""
     ablation_variant: str = ""
     experiment_id: str = ""
+    benchmark_scale: str = ""
+    benchmark_directory: str = ""
+    upstream_git_blob: str = ""
+    input_selection_reason: str = ""
+    canonical_profile: str = ""
     status: str = RunStatus.COMPILER_ERROR.value
     git_commit: str = "unknown"
     git_dirty: bool = True
@@ -204,6 +226,9 @@ class RunManifest:
     end_to_end_time_ns: Optional[int] = None
     cpu_time_ns: Optional[int] = None
     peak_rss_bytes: Optional[int] = None
+    rss_limit_bytes: Optional[int] = None
+    minimum_free_bytes: Optional[int] = None
+    concurrency_limit: Optional[int] = None
     transition_decision_ns: Optional[int] = None
     search_kernel_ns: Optional[int] = None
     problem_preparation_ns: Optional[int] = None
@@ -254,6 +279,7 @@ class RunManifest:
     observed_gate_ledger_sha256: str = ""
     move_batches: Optional[int] = None
     move_time_us: Optional[float] = None
+    transfers: Optional[int] = None
     stay_count: Optional[int] = None
     return_count: Optional[int] = None
     reseat_count: Optional[int] = None
@@ -261,6 +287,12 @@ class RunManifest:
     ghost_repairs: Optional[int] = None
     ghost_splits: Optional[int] = None
     ghost_hits: Optional[int] = None
+    python_fallback: Optional[bool] = None
+    implementation_status: str = ""
+    trace_retained: bool = True
+    event_stream_sha256: str = ""
+    event_stream_hash_protocol: str = ""
+    transient_artifact_sha256: Dict[str, str] = field(default_factory=dict)
     trace_protocol: str = ""
     ghost_policy: str = ""
     physicalization_policy: str = ""
@@ -284,9 +316,9 @@ class RunManifest:
             raise ValueError(f"unknown run status: {self.status}")
         if not self.run_id or not self.dataset or not self.circuit or not self.method:
             raise ValueError("run identity fields may not be empty")
-        if self.run_kind and self.run_kind not in {"coverage", "main", "timing", "ablation", "large", "smoke"}:
+        if self.run_kind and self.run_kind not in {"coverage", "main", "timing", "ablation", "large", "qasmbench", "smoke"}:
             raise ValueError(f"unknown run_kind: {self.run_kind}")
-        if self.run_kind in {"coverage", "main", "timing", "ablation", "large"}:
+        if self.run_kind in {"coverage", "main", "timing", "ablation", "large", "qasmbench"}:
             if not self.experiment_id:
                 raise ValueError("formal run is missing its frozen experiment_id")
         if self.run_kind == "ablation":
@@ -295,7 +327,7 @@ class RunManifest:
         elif self.ablation_variant:
             raise ValueError("ablation_variant is forbidden outside ablation runs")
         if self.method in BASELINE_METHODS | OURS_METHODS and (
-                self.run_kind in {"coverage", "main", "timing", "ablation", "large"}
+                self.run_kind in {"coverage", "main", "timing", "ablation", "large", "qasmbench"}
                 or self.trace_protocol or self.ghost_policy
                 or self.physicalization_policy):
             expected_trace = trace_protocol_for_method(self.method)
@@ -311,6 +343,32 @@ class RunManifest:
                 raise ValueError(
                     f"{self.method} requires physicalization_policy="
                     f"{expected_physicalization}")
+        if self.run_kind == "qasmbench":
+            if self.benchmark_scale not in QASMBENCH_SCALES:
+                raise ValueError(
+                    f"invalid QASMBench scale: {self.benchmark_scale!r}")
+            if not self.benchmark_directory:
+                raise ValueError("QASMBench run is missing benchmark_directory")
+            if (len(self.upstream_git_blob) not in (40, 64) or any(
+                    ch not in "0123456789abcdef"
+                    for ch in self.upstream_git_blob)):
+                raise ValueError("QASMBench run has an invalid upstream Git blob")
+            if not self.input_selection_reason:
+                raise ValueError("QASMBench run is missing its input selection reason")
+            if self.canonical_profile != QASMBENCH_CANONICAL_PROFILE:
+                raise ValueError(
+                    "QASMBench run requires canonical_profile="
+                    f"{QASMBENCH_CANONICAL_PROFILE}")
+            if self.trace_retained:
+                raise ValueError("QASMBench runs may not retain transient traces")
+            if self.implementation_status == FORBIDDEN_QASMBENCH_IMPLEMENTATION:
+                raise ValueError("development QASMBench streaming proxy is forbidden")
+            if (self.rss_limit_bytes != 22 * (1 << 30)
+                    or self.minimum_free_bytes != 4 * (1 << 30)):
+                raise ValueError("QASMBench resource contract drift")
+            expected_concurrency = {"small": 4, "medium": 2, "large": 1}
+            if self.concurrency_limit != expected_concurrency[self.benchmark_scale]:
+                raise ValueError("QASMBench concurrency contract drift")
         if self.backend == "native":
             if (not isinstance(self.native_abi_version, int)
                     or isinstance(self.native_abi_version, bool)
@@ -424,6 +482,9 @@ class RunManifest:
                         self.ghost_repairs, self.ghost_splits, self.ghost_hits)
             if any(item is None for item in required):
                 raise ValueError("successful run is missing a primary metric")
+            if self.run_kind == "qasmbench" and self.transfers is None:
+                raise ValueError(
+                    "successful QASMBench run is missing atom transfers")
             if self.verifier_ok is not True:
                 raise ValueError("successful run must pass method-policy verification")
             if ((self.expected_gates_1q, self.expected_gates_2q) !=
@@ -434,6 +495,21 @@ class RunManifest:
                 raise ValueError("successful run has a logical gate-ledger mismatch")
             if self.method in OURS_METHODS and self.ghost_hits != 0:
                 raise ValueError("successful M3/M4 run must have ghost_hits=0")
+            if self.run_kind == "qasmbench":
+                if (not self.event_stream_sha256
+                        or len(self.event_stream_sha256) != 64
+                        or any(ch not in "0123456789abcdef"
+                               for ch in self.event_stream_sha256)):
+                    raise ValueError(
+                        "successful QASMBench run is missing its event-stream hash")
+                if (self.event_stream_hash_protocol !=
+                        "sha256-uncompressed-canonical-jsonl-v1"):
+                    raise ValueError(
+                        "successful QASMBench run has the wrong event hash protocol")
+                if self.method in OURS_METHODS and (
+                        self.backend != "native" or self.python_fallback is not False):
+                    raise ValueError(
+                        "successful QASMBench M3/M4 must be native without fallback")
             if self.method in BASELINE_METHODS and any(
                     value not in (None, 0)
                     for value in (self.ghost_repairs, self.ghost_splits)):
@@ -515,6 +591,8 @@ class RunManifest:
                 "ghost_splits": self.ghost_splits,
                 "ghost_hits": self.ghost_hits,
             }
+            if self.run_kind == "qasmbench":
+                integer_counts["transfers"] = self.transfers
             for label, value in integer_counts.items():
                 if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                     raise ValueError(f"successful run has invalid {label}")
@@ -572,7 +650,9 @@ def load_run_manifest(path: os.PathLike[str] | str,
 
 
 __all__ = [
-    "CanonicalCircuitManifest", "RunManifest", "RunStatus", "SCHEMA_VERSION",
+    "CanonicalCircuitManifest", "FORBIDDEN_QASMBENCH_IMPLEMENTATION",
+    "QASMBENCH_CANONICAL_PROFILE", "QASMBENCH_SCALES", "RunManifest",
+    "RunStatus", "SCHEMA_VERSION",
     "load_run_manifest", "machine_snapshot", "repository_snapshot",
     "sha256_file", "stable_sha256",
 ]
