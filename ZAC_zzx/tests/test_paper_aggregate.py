@@ -13,6 +13,7 @@ from experiments_v2.contracts import RunManifest, RunStatus, sha256_file
 from experiments_v2.paper_aggregate import (
     FIG6_DERIVED_OUTPUTS,
     FIG6_RAW_EXPORTS,
+    METHODS,
     _exact_matrix,
     _figure_ablation_rows,
     _ga_applicable_count,
@@ -277,6 +278,66 @@ def test_runtime_reports_median_and_iqr_without_nested_sum() -> None:
     assert summary["methods"]["M4"]["median_of_circuit_medians_s"] == 20.0
     assert summary["methods"]["M4"]["median_of_circuit_iqrs_s"] == 10.0
     assert summary["methods"]["M4"]["iqr_of_circuit_medians_s"] == 0.0
+    assert summary["cohort_N"] == 1
+    assert summary["methods"]["M4"]["cohort_N"] == 1
+
+
+def test_runtime_macros_report_method_coverage_and_verifier_failure() -> None:
+    identities = [("zac18", f"circuit_{index}") for index in range(12)]
+    timing: list[RunManifest] = []
+    for dataset, circuit in identities:
+        for method in METHODS:
+            for repetition in range(3):
+                status = (
+                    RunStatus.VERIFIER_FAIL.value
+                    if method == "M1" and circuit == "circuit_11"
+                    else RunStatus.SUCCESS.value)
+                timing.append(_run(
+                    dataset, circuit, method, 0, -0.8,
+                    status=status, repetition=repetition))
+    report = aggregate_paper(
+        _complete_main(),
+        frozen_suites={"zac18": ["zac_c"], "qmap154": ["qmap_c"]},
+        timing_manifest_inputs=timing,
+        timing_identities=identities,
+        bootstrap_iterations=20)
+    runtime = report["runtime_summary"]
+    assert runtime["cohort_N"] == 12
+    assert runtime["methods"]["M1"]["circuit_N"] == 11
+    assert runtime["methods"]["M1"]["verifier_fail_circuit_N"] == 1
+    assert runtime["methods"]["M1"]["incomplete_status_counts"] == {
+        RunStatus.VERIFIER_FAIL.value: 3}
+    assert runtime["methods"]["M2"]["circuit_N"] == 12
+    macros = report["paper_values"]["macros"]
+    assert macros["StrictMOneV"] == "11/12"
+    assert macros["StrictMTwoV"] == "12/12"
+    assert macros["StrictMThreeV"] == "12/12"
+    assert macros["StrictMFourV"] == "12/12"
+    assert "M1 20.000s（有效11/12，1个电路验证失败）" in (
+        macros["StrictRuntimeStatement"])
+
+
+def test_ablation_label_macros_name_the_controlled_m4_variants() -> None:
+    ablation: list[RunManifest] = []
+    for seed in (0, 1, 2):
+        ablation.append(_run(
+            "zac18", "zac_c", "M4", seed, -0.9, variant="H0"))
+        ablation.append(_run(
+            "zac18", "zac_c", "M4", seed, -0.7, variant="H8"))
+    ablation.append(_run(
+        "zac18", "zac_c", "M4", 0, -0.8,
+        variant="greedy_only"))
+    report = aggregate_paper(
+        _complete_main(),
+        frozen_suites={"zac18": ["zac_c"], "qmap154": ["qmap_c"]},
+        ablation_manifest_inputs=ablation,
+        ablation_identities=[("zac18", "zac_c")],
+        bootstrap_iterations=20)
+    macros = report["paper_values"]["macros"]
+    assert macros["AblationHZero"] == "M4-H0"
+    assert macros["AblationHMulti"] == "M4-H8"
+    assert macros["AblationGA"] == "M4-GA"
+    assert macros["AblationGreedy"] == "M4-greedy"
 
 
 def test_runtime_partial_repetitions_do_not_enter_strict_summary_or_ratio() -> None:
@@ -591,6 +652,8 @@ def test_aggregate_writes_csv_json_and_tex_but_not_xlsx(tmp_path: Path) -> None:
     assert "\\newcommand{\\ZACMFourRobustTen}" in tex
     assert "\\newcommand{\\ZACMFourDeltaTransfer}" in tex
     assert "\\newcommand{\\StrictMFourIQR}" in tex
+    assert "\\newcommand{\\StrictMOneV}" in tex
+    assert "\\newcommand{\\StrictMFourV}" in tex
     assert "\\newcommand{\\SensitivityStatement}" in tex
     assert "RETURN匹配和前瞻时间嵌套于搜索核" in tex
     assert render_results_values_tex(report["paper_values"]) == tex

@@ -1056,7 +1056,13 @@ def summarize_runtime(
             "duplicate_repetitions": duplicate_repetitions,
             "unexpected_repetitions": unexpected_repetitions,
         })
-    summary: dict[str, Any] = {"available": bool(manifests), "methods": {}}
+    identities = sorted({(str(row["dataset"]), str(row["circuit"]))
+                         for row in rows})
+    summary: dict[str, Any] = {
+        "available": bool(manifests),
+        "cohort_N": len(identities),
+        "methods": {},
+    }
     for method in METHODS:
         method_rows = [row for row in rows if row["method"] == method]
         method_times = [float(row["algorithm_time_median_s"])
@@ -1067,8 +1073,24 @@ def summarize_runtime(
                                for row in method_rows
                                if row["strict_complete"] and
                                row["algorithm_time_iqr_s"] is not None]
+        incomplete_rows = [row for row in method_rows
+                           if not row["strict_complete"]]
+        incomplete_status_counts: Counter[str] = Counter()
+        verifier_fail_circuits: list[str] = []
+        for row in incomplete_rows:
+            status_counts = json.loads(str(row["status_counts"]))
+            incomplete_status_counts.update(status_counts)
+            if status_counts.get(RunStatus.VERIFIER_FAIL.value, 0):
+                verifier_fail_circuits.append(
+                    f"{row['dataset']}/{row['circuit']}")
         summary["methods"][method] = {
             "circuit_N": len(method_times),
+            "cohort_N": len(identities),
+            "incomplete_circuit_N": len(incomplete_rows),
+            "incomplete_status_counts": dict(sorted(
+                incomplete_status_counts.items())),
+            "verifier_fail_circuit_N": len(verifier_fail_circuits),
+            "verifier_fail_circuits": verifier_fail_circuits,
             "median_of_circuit_medians_s": (
                 statistics.median(method_times) if method_times else None),
             "median_of_circuit_iqrs_s": (
@@ -1082,8 +1104,6 @@ def summarize_runtime(
         for row in rows
     }
     paired_ratios: dict[str, Any] = {}
-    identities = sorted({(str(row["dataset"]), str(row["circuit"]))
-                         for row in rows})
     for method in ("M3", "M4"):
         log_ratios: list[float] = []
         paired_circuits: list[str] = []
@@ -1412,10 +1432,8 @@ def build_paper_values(
         ga = ablation_summary["GA_vs_greedy"]
         h_wilcoxon = lookahead.get("wilcoxon") or {}
         ga_wilcoxon = ga.get("wilcoxon") or {}
-        macros["AblationHZero"] = "共享参数对照"
-        macros["AblationHMulti"] = (
-            f"Fidelity比{lookahead['geometric_mean_ratio']:.4f}"
-            if lookahead["geometric_mean_ratio"] is not None else r"\textemdash{}")
+        macros["AblationHZero"] = "M4-H0"
+        macros["AblationHMulti"] = "M4-H8"
         macros["AblationHN"] = str(lookahead.get("N", 0))
         macros["AblationHRatio"] = _format_number(
             lookahead.get("geometric_mean_ratio"), digits=4)
@@ -1444,10 +1462,8 @@ def build_paper_values(
         macros["AblationHMoveTimeDelta"] = _format_number(
             float(h_move_delta) / 1000.0 if h_move_delta is not None else None,
             digits=3)
-        macros["AblationGreedy"] = "同目标确定性贪心"
-        macros["AblationGA"] = (
-            f"Fidelity比{ga['geometric_mean_ratio']:.4f}"
-            if ga["geometric_mean_ratio"] is not None else r"\textemdash{}")
+        macros["AblationGreedy"] = "M4-greedy"
+        macros["AblationGA"] = "M4-GA"
         macros["AblationGAN"] = str(ga.get("N", 0))
         applicable = ablation_summary.get("ga_applicable_circuit_N")
         macros["AblationGAApplicableN"] = (
@@ -1498,16 +1514,30 @@ def build_paper_values(
     runtime = runtime_summary or {}
     if runtime.get("available"):
         strict_parts: list[str] = []
+        cohort_n = int(runtime.get("cohort_N", 0))
         for method in METHODS:
             suffix = _macro(method)
             method_runtime = runtime.get("methods", {}).get(method, {})
+            circuit_n = int(method_runtime.get("circuit_N", 0))
+            macros[f"Strict{suffix}V"] = (
+                f"{circuit_n}/{cohort_n}"
+                if cohort_n else r"\textemdash{}")
             macros[f"Strict{suffix}Time"] = _format_number(
                 method_runtime.get("median_of_circuit_medians_s"), digits=3)
             macros[f"Strict{suffix}IQR"] = _format_number(
                 method_runtime.get("median_of_circuit_iqrs_s"), digits=3)
-            if method_runtime.get("median_of_circuit_medians_s") is not None:
-                strict_parts.append(
-                    f"{method} {float(method_runtime['median_of_circuit_medians_s']):.3f}s")
+            median_time = method_runtime.get("median_of_circuit_medians_s")
+            time_text = (f"{float(median_time):.3f}s"
+                         if median_time is not None else "时间不可用")
+            coverage_parts = [
+                f"有效{circuit_n}/{cohort_n}"
+                if cohort_n else "有效电路数不可用"]
+            verifier_fail_n = int(
+                method_runtime.get("verifier_fail_circuit_N", 0))
+            if verifier_fail_n:
+                coverage_parts.append(f"{verifier_fail_n}个电路验证失败")
+            strict_parts.append(
+                f"{method} {time_text}（{'，'.join(coverage_parts)}）")
         ratios = runtime.get("paired_ratios", {})
         macros["StrictMThreeVsMTwo"] = _format_number(
             ratios.get("M3_vs_M2", {}).get("geometric_mean_time_ratio"),
@@ -1519,6 +1549,7 @@ def build_paper_values(
     else:
         for method in METHODS:
             suffix = _macro(method)
+            macros[f"Strict{suffix}V"] = r"\textemdash{}"
             macros[f"Strict{suffix}Time"] = r"\textemdash{}"
             macros[f"Strict{suffix}IQR"] = r"\textemdash{}"
         macros["StrictMThreeVsMTwo"] = r"\textemdash{}"
