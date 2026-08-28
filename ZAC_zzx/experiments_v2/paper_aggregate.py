@@ -23,6 +23,9 @@ import json
 import math
 import random
 import statistics
+import subprocess
+import sys
+import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
@@ -50,6 +53,20 @@ TIME_FIELDS = (
 NESTED_TIME_FIELDS = frozenset(("return_match_ns", "forecast_ns"))
 FIDELITY_COMPONENTS = (
     "log_atom_transfer", "log_idle_excitation", "log_coherence_linear",
+)
+FIG6_RAW_EXPORTS = (
+    "fig6_fidelity_gain.csv",
+    "fig6_mechanism.csv",
+    "fig6_ablation.csv",
+    "fig6_m4_stage_time.csv",
+)
+FIG6_DERIVED_OUTPUTS = (
+    "fig6_zac_fidelity.dat",
+    "fig6_qmap_fidelity.dat",
+    "fig6_mechanism.dat",
+    "fig6_ablation.dat",
+    "fig6_stage_time.dat",
+    "fig6_meta.tex",
 )
 
 ManifestInput = RunManifest | str | Path
@@ -1754,6 +1771,136 @@ def _require_exact_manifest_count(
             f"expected={expected}, found={len(paths)}")
 
 
+def _validate_timing_warmup_matrix(
+        manifests: Sequence[RunManifest], *,
+        allowed_identities: Sequence[tuple[str, str]]) -> dict[str, Any]:
+    """Verify the eight non-statistical timing warmups exactly once."""
+    terminal_statuses = {item.value for item in RunStatus}
+    invalid_statuses = sorted({run.status for run in manifests
+                               if run.status not in terminal_statuses})
+    if invalid_statuses:
+        raise ValueError(
+            f"paper timing warmup has non-terminal statuses: {invalid_statuses}")
+    status_counts = dict(sorted(Counter(
+        run.status for run in manifests).items()))
+    if status_counts != {RunStatus.SUCCESS.value: len(manifests)}:
+        raise ValueError(
+            "paper timing warmup requires eight successful compilations: "
+            f"status_counts={status_counts}")
+    allowed = set(allowed_identities)
+    warmup_circuits: dict[str, str] = {}
+    for dataset in DATASETS:
+        circuits = {run.circuit for run in manifests
+                    if run.dataset == dataset}
+        if len(circuits) != 1:
+            raise ValueError(
+                "paper timing warmup must use one circuit per dataset: "
+                f"{dataset}={sorted(circuits)}")
+        circuit = next(iter(circuits))
+        if (dataset, circuit) not in allowed:
+            raise ValueError(
+                "paper timing warmup circuit is outside the frozen cohort: "
+                f"{dataset}/{circuit}")
+        warmup_circuits[dataset] = circuit
+    expected = {
+        (dataset, circuit, method, 0, 0, "timing", "")
+        for dataset, circuit in warmup_circuits.items()
+        for method in METHODS
+    }
+    _exact_matrix(
+        "timing warmup", manifests, expected,
+        key=lambda run: (run.dataset, run.circuit, run.method, run.seed,
+                         run.repetition, run.run_kind,
+                         run.ablation_variant))
+    return {
+        "manifest_count": len(manifests),
+        "status_counts": status_counts,
+        "circuits": warmup_circuits,
+        "excluded_from_runtime_statistics": True,
+    }
+
+
+def _publish_paper_fig6_data(delivery: Path, paper: Path) -> dict[str, Any]:
+    """Generate, validate, atomically publish, and hash Fig. 6 inputs.
+
+    The manuscript owns the renderer-specific converter while this repository
+    owns its aggregate CSV inputs.  Running the checked-in converter here keeps
+    both sides synchronized and makes ``aggregate-paper`` fail closed instead
+    of silently leaving stale plot data in the manuscript tree.
+    """
+    converter = paper / "figures" / "prepare_experimental_summary.py"
+    if not converter.is_file():
+        raise FileNotFoundError(
+            f"paper Fig. 6 converter is missing: {converter}")
+    raw_inputs = {name: delivery / name for name in FIG6_RAW_EXPORTS}
+    missing_raw = sorted(name for name, path in raw_inputs.items()
+                         if not path.is_file() or path.stat().st_size == 0)
+    if missing_raw:
+        raise FileNotFoundError(
+            f"paper Fig. 6 raw aggregate inputs are missing/empty: {missing_raw}")
+
+    figures_root = paper / "figures"
+    figures_root.mkdir(parents=True, exist_ok=True)
+    published_root = figures_root / "data"
+    published_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+            prefix=".fig6-derived-", dir=figures_root) as temporary:
+        staging = Path(temporary)
+        command = [
+            sys.executable, str(converter),
+            "--input-root", str(delivery),
+            "--output-root", str(staging),
+        ]
+        try:
+            completed = subprocess.run(
+                command, capture_output=True, text=True, timeout=60,
+                check=False)
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                "paper Fig. 6 converter exceeded the 60-second limit") from error
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()[-4000:]
+            raise RuntimeError(
+                f"paper Fig. 6 converter failed with exit code "
+                f"{completed.returncode}: {detail}")
+
+        observed = {path.name for path in staging.iterdir() if path.is_file()}
+        expected = set(FIG6_DERIVED_OUTPUTS)
+        if observed != expected:
+            raise ValueError(
+                "paper Fig. 6 derived output set drift: "
+                f"missing={sorted(expected - observed)}, "
+                f"extra={sorted(observed - expected)}")
+        empty = sorted(name for name in expected
+                       if (staging / name).stat().st_size == 0)
+        if empty:
+            raise ValueError(
+                f"paper Fig. 6 derived outputs are empty: {empty}")
+        for name in FIG6_DERIVED_OUTPUTS:
+            (staging / name).replace(published_root / name)
+
+    return {
+        "protocol": "paper-fig6-derived-v1",
+        "converter": {
+            "path": str(converter.resolve()),
+            "sha256": sha256_file(converter),
+        },
+        "raw_inputs": {
+            name: {"path": str(path.resolve()),
+                   "sha256": sha256_file(path),
+                   "bytes": path.stat().st_size}
+            for name, path in sorted(raw_inputs.items())
+        },
+        "output_root": str(published_root.resolve()),
+        "files": {
+            name: {"path": str((published_root / name).resolve()),
+                   "sha256": sha256_file(published_root / name),
+                   "bytes": (published_root / name).stat().st_size}
+            for name in FIG6_DERIVED_OUTPUTS
+        },
+    }
+
+
 def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
                             artifact_root: str | Path,
                             output_root: str | Path,
@@ -1761,7 +1908,7 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
     """Integration entry used by ``paper_cli aggregate-paper``.
 
     The function verifies the frozen quality-source hashes, enumerates only the
-    four registered paper run roots (never QASMBench/Large), and copies the
+    five registered paper run roots (never QASMBench/Large), and copies the
     generated macro file into the Chinese IEEE manuscript directory.
     """
     from .paper_protocol import (PAPER_ABLATION_VARIANTS,
@@ -1797,6 +1944,7 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
     ablation_paths = _track_manifests(artifacts, "ablation")
     sensitivity_paths = _track_manifests(artifacts, "sensitivity")
     timing_paths = _track_manifests(artifacts, "timing")
+    timing_warmup_paths = _track_manifests(artifacts, "timing-warmup")
     sensitivity_variants = [f"paper_sensitivity_{profile}"
                             for profile in SENSITIVITY_PROFILE_IDS]
     circuit_count = sum(len(rows) for rows in frozen_suites.values())
@@ -1808,10 +1956,13 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
         len(twelve_identities) * len(sensitivity_variants))
     _require_exact_manifest_count(
         "timing", timing_paths, len(twelve_identities) * 4 * 3)
+    _require_exact_manifest_count(
+        "timing warmup", timing_warmup_paths, len(DATASETS) * len(METHODS))
     quality_runs = _load_manifests(quality_paths)
     ablation_runs = _load_manifests(ablation_paths)
     sensitivity_runs = _load_manifests(sensitivity_paths)
     timing_runs = _load_manifests(timing_paths)
+    timing_warmup_runs = _load_manifests(timing_warmup_paths)
     quality_expected = {
         (dataset, circuit, method, seed, 0)
         for dataset, circuits in frozen_suites.items() for circuit in circuits
@@ -1852,6 +2003,8 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
         "timing", timing_runs, timing_expected,
         key=lambda run: (run.dataset, run.circuit, run.method, run.seed,
                          run.repetition, run.run_kind))
+    timing_warmup = _validate_timing_warmup_matrix(
+        timing_warmup_runs, allowed_identities=twelve_identities)
 
     frozen_inputs = {
         dataset: {str(circuit): str(digest) for circuit, digest in
@@ -1876,6 +2029,10 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
         "timing": _validate_frozen_evidence(
             "timing", timing_runs, frozen_inputs=frozen_inputs,
             expected_native_abi=8,
+            expected_native_wheel_sha256=abi8_wheel_sha),
+        "timing_warmup": _validate_frozen_evidence(
+            "timing warmup", timing_warmup_runs,
+            frozen_inputs=frozen_inputs, expected_native_abi=8,
             expected_native_wheel_sha256=abi8_wheel_sha),
     }
     abi9_wheels = (set(evidence["ablation"]["native_wheel_sha256"]) |
@@ -1910,6 +2067,7 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
     workbook_result = export_paper_workbook(
         destination, workbook_path,
         qa_directory=destination / "paper_workbook_qa")
+    fig6_data = _publish_paper_fig6_data(destination, paper)
 
     final_path = destination / "final_manifest.json"
     final_payload = json.loads(final_path.read_text(encoding="utf-8"))
@@ -1926,7 +2084,19 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
         "input_manifest_counts": {
             "main": len(quality_paths), "ablation": len(ablation_paths),
             "sensitivity": len(sensitivity_paths), "timing": len(timing_paths),
+            "timing_warmup": len(timing_warmup_paths),
         },
+        "git_commit_sets": {
+            "main": sorted({str(run.git_commit) for run in quality_runs}),
+            "ablation": sorted({str(run.git_commit)
+                                for run in ablation_runs}),
+            "sensitivity": sorted({str(run.git_commit)
+                                   for run in sensitivity_runs}),
+            "timing": sorted({str(run.git_commit) for run in timing_runs}),
+            "timing_warmup": sorted({str(run.git_commit)
+                                     for run in timing_warmup_runs}),
+        },
+        "timing_warmup": timing_warmup,
         "paper_macro_target": {"path": str(macro_target.resolve()),
                                "sha256": sha256_file(macro_target)},
         "paper_run_reports": reports,
@@ -1941,6 +2111,7 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
             "sheet_names": workbook_result["sheet_names"],
             "row_counts": workbook_result["row_counts"],
             "column_count": workbook_result["column_count"],
+            "freeze_panes": workbook_result["freeze_panes"],
             "qa_path": workbook_result["qa_path"],
             "qa_sha256": sha256_file(workbook_result["qa_path"]),
             "qa_artifact_sha256": {
@@ -1953,6 +2124,7 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
                 for path in workbook_result["preview_paths"]
             },
         },
+        "paper_fig6_data": fig6_data,
         "plan_path": str(getattr(plan, "path", "")),
     })
     final_payload["files"][workbook_path.name] = {
@@ -1967,6 +2139,7 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
         "results_values_zh_tex": str(macro_target.resolve()),
         "final_manifest": str(final_path.resolve()),
         "four_methods_results_xlsx": str(workbook_path.resolve()),
+        "paper_fig6_data": fig6_data,
         "input_manifest_counts": final_payload["input_manifest_counts"],
         "strict_common_linear_N": {
             dataset: report["main_summary"]["datasets"][dataset][

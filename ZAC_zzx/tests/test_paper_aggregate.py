@@ -11,10 +11,13 @@ import pytest
 
 from experiments_v2.contracts import RunManifest, RunStatus, sha256_file
 from experiments_v2.paper_aggregate import (
+    FIG6_DERIVED_OUTPUTS,
+    FIG6_RAW_EXPORTS,
     _exact_matrix,
     _figure_ablation_rows,
     _ga_applicable_count,
     _legacy_seed0_fallback_exception,
+    _publish_paper_fig6_data,
     _validate_frozen_evidence,
     aggregate_paper,
     build_main_rows,
@@ -87,6 +90,26 @@ def _run(dataset: str, circuit: str, method: str, seed: int, log_f: float,
         ghost_hits=0 if success else None,
         artifact_dir=artifact_dir,
     )
+
+
+def _write_fake_fig6_converter(
+        paper: Path, outputs: tuple[str, ...] = FIG6_DERIVED_OUTPUTS) -> Path:
+    figures = paper / "figures"
+    figures.mkdir(parents=True, exist_ok=True)
+    converter = figures / "prepare_experimental_summary.py"
+    converter.write_text(
+        "import argparse\n"
+        "from pathlib import Path\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--input-root', type=Path, required=True)\n"
+        "parser.add_argument('--output-root', type=Path, required=True)\n"
+        "args = parser.parse_args()\n"
+        f"outputs = {list(outputs)!r}\n"
+        "args.output_root.mkdir(parents=True, exist_ok=True)\n"
+        "for name in outputs:\n"
+        "    (args.output_root / name).write_text(name + '\\n', encoding='utf-8')\n",
+        encoding="utf-8")
+    return converter
 
 
 def _complete_main() -> list[RunManifest]:
@@ -517,6 +540,32 @@ def test_aggregate_writes_csv_json_and_tex_but_not_xlsx(tmp_path: Path) -> None:
     assert zac_stage["return_match_and_forecast_nested_in_search_kernel"] == "True"
 
 
+def test_publish_fig6_data_fails_closed_then_hashes_all_outputs(
+        tmp_path: Path) -> None:
+    delivery = tmp_path / "delivery"
+    paper = tmp_path / "paper"
+    delivery.mkdir()
+    for name in FIG6_RAW_EXPORTS:
+        (delivery / name).write_text(f"source={name}\n", encoding="utf-8")
+
+    _write_fake_fig6_converter(paper, FIG6_DERIVED_OUTPUTS[:-1])
+    with pytest.raises(ValueError, match="derived output set drift"):
+        _publish_paper_fig6_data(delivery, paper)
+    published = paper / "figures" / "data"
+    assert not list(published.iterdir())
+
+    converter = _write_fake_fig6_converter(paper)
+    result = _publish_paper_fig6_data(delivery, paper)
+    assert result["protocol"] == "paper-fig6-derived-v1"
+    assert result["converter"]["sha256"] == sha256_file(converter)
+    assert set(result["raw_inputs"]) == set(FIG6_RAW_EXPORTS)
+    assert set(result["files"]) == set(FIG6_DERIVED_OUTPUTS)
+    for name, row in result["files"].items():
+        path = published / name
+        assert row["sha256"] == sha256_file(path)
+        assert row["bytes"] == path.stat().st_size
+
+
 def test_command_aggregate_paper_integrates_frozen_sources(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     artifact = tmp_path / "artifacts"
@@ -547,7 +596,9 @@ def test_command_aggregate_paper_integrates_frozen_sources(
         json.dumps(source), encoding="utf-8")
 
     def add_track(track: str, run: RunManifest) -> None:
-        run.run_kind = "timing" if track == "timing" else "ablation"
+        run.run_kind = (
+            "timing" if track in {"timing", "timing-warmup"}
+            else "ablation")
         path = artifact / "runs" / track / run.run_id / "manifest.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(run.run_id, encoding="utf-8")
@@ -563,15 +614,17 @@ def test_command_aggregate_paper_integrates_frozen_sources(
     add_track("ablation", _run(
         "zac18", "zac_c", "M4", 0, -0.85,
         variant=PAPER_ABLATION_VARIANTS["greedy"]))
-    for profile in SENSITIVITY_PROFILE_IDS:
-        variant = f"paper_sensitivity_{profile}"
-        add_track("sensitivity", _run(
-            "zac18", "zac_c", "M4", 0, -0.8, variant=variant))
-    for method in ("M1", "M2", "M3", "M4"):
-        for repetition in range(3):
-            add_track("timing", _run(
-                "zac18", "zac_c", method, 0, -0.8,
-                repetition=repetition))
+    for dataset, circuit in (("zac18", "zac_c"),
+                             ("qmap154", "qmap_c")):
+        for profile in SENSITIVITY_PROFILE_IDS:
+            variant = f"paper_sensitivity_{profile}"
+            add_track("sensitivity", _run(
+                dataset, circuit, "M4", 0, -0.8, variant=variant))
+        for method in ("M1", "M2", "M3", "M4"):
+            for repetition in range(3):
+                add_track("timing", _run(
+                    dataset, circuit, method, 0, -0.8,
+                    repetition=repetition))
     hidden = artifact / "runs" / "timing" / ".incomplete.tmp" / "manifest.json"
     hidden.parent.mkdir(parents=True, exist_ok=True)
     hidden.write_text("must be ignored", encoding="utf-8")
@@ -584,7 +637,8 @@ def test_command_aggregate_paper_integrates_frozen_sources(
             "qmap154": {"canonical_inputs": {"qmap_c": "b" * 64}},
         },
         "ablation_cohort": {"identities": [["zac18", "zac_c"]]},
-        "parity_timing_cohort": {"identities": [["zac18", "zac_c"]]},
+        "parity_timing_cohort": {"identities": [
+            ["zac18", "zac_c"], ["qmap154", "qmap_c"]]},
     }
     monkeypatch.setattr(
         "experiments_v2.paper_protocol.load_paper_freeze",
@@ -611,27 +665,74 @@ def test_command_aggregate_paper_integrates_frozen_sources(
             "sheet_names": ["ZAC18", "QMAP154"],
             "row_counts": {"ZAC18": 18, "QMAP154": 154},
             "column_count": 52,
+            "freeze_panes": {
+                "rows": 14, "columns": 4, "top_left_cell": "E15",
+                "verified": True,
+            },
         }
 
     monkeypatch.setattr(
         "experiments_v2.paper_workbook.export_paper_workbook", fake_workbook)
-    result = command_aggregate_paper(
+    converter = _write_fake_fig6_converter(paper)
+    call = dict(
         plan=SimpleNamespace(path=tmp_path / "plan.json"),
         freeze_path=freeze_path, artifact_root=artifact,
         output_root=delivery, paper_directory=paper)
+    with pytest.raises(
+            ValueError, match=r"timing warmup.*expected=8, found=0"):
+        command_aggregate_paper(**call)
+
+    warmups = [
+        _run(dataset, circuit, method, 0, -0.8)
+        for dataset, circuit in (("zac18", "zac_c"),
+                                 ("qmap154", "qmap_c"))
+        for method in ("M1", "M2", "M3", "M4")
+    ]
+    for run in warmups[:7]:
+        add_track("timing-warmup", run)
+    with pytest.raises(
+            ValueError, match=r"timing warmup.*expected=8, found=7"):
+        command_aggregate_paper(**call)
+    failed_warmup = _run(
+        "qmap154", "qmap_c", "M4", 0, -0.8,
+        status=RunStatus.TIMEOUT.value)
+    add_track("timing-warmup", failed_warmup)
+    with pytest.raises(
+            ValueError, match=r"requires eight successful compilations"):
+        command_aggregate_paper(**call)
+    add_track("timing-warmup", warmups[7])
+    result = command_aggregate_paper(
+        **call)
     assert result["strict_common_linear_N"] == {"zac18": 1, "qmap154": 1}
     assert (paper / "results_values_zh.tex").is_file()
     assert (delivery / "four_methods_results.xlsx").is_file()
     final = json.loads((delivery / "final_manifest.json").read_text())
     assert final["input_manifest_counts"]["main"] == 16
+    assert final["input_manifest_counts"]["timing"] == 24
+    assert final["input_manifest_counts"]["timing_warmup"] == 8
+    assert final["timing_warmup"] == {
+        "manifest_count": 8,
+        "status_counts": {"success": 8},
+        "circuits": {"zac18": "zac_c", "qmap154": "qmap_c"},
+        "excluded_from_runtime_statistics": True,
+    }
+    assert set(final["git_commit_sets"]) == {
+        "main", "ablation", "sensitivity", "timing", "timing_warmup"}
     assert final["xlsx_generated_here"] is True
     assert final["paper_workbook"]["sheet_names"] == ["ZAC18", "QMAP154"]
+    assert final["paper_workbook"]["freeze_panes"]["verified"] is True
     assert final["paper_workbook"]["qa_artifact_sha256"] == {
         "workbook_qa.json": sha256_file(
             Path(final["paper_workbook"]["qa_path"]))
     }
     assert final["evidence_validation"]["quality"][
         "canonical_inputs_verified"] is True
+    fig6 = final["paper_fig6_data"]
+    assert fig6["converter"]["sha256"] == sha256_file(converter)
+    assert set(fig6["files"]) == set(FIG6_DERIVED_OUTPUTS)
+    assert result["paper_fig6_data"] == fig6
+    for row in fig6["files"].values():
+        assert row["sha256"] == sha256_file(Path(row["path"]))
 
     source["freeze_id"] = "0" * 64
     (artifact / "quality_source_manifest.json").write_text(

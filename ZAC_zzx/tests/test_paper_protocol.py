@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from experiments_v2.contracts import CanonicalCircuitManifest, sha256_file
 from experiments_v2.paper_cli import _parser
@@ -14,6 +16,8 @@ from experiments_v2.paper_protocol import (
     _resolved_main_config,
     build_sensitivity_configs,
     build_shared_lookahead_configs,
+    command_run_paper_sensitivity,
+    command_run_paper_timing,
     select_paper_ablation,
     select_paper_twelve,
 )
@@ -111,6 +115,151 @@ class PaperConfigTests(unittest.TestCase):
         self.assertEqual(
             effective_zac_setting(configs["return_10_8"])
             ["return_assignment_k"], 8)
+
+    def test_sensitivity_replaces_stale_raw_configs_and_wrappers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            wheel = root / "native.whl"
+            wheel.write_bytes(b"new registered wheel")
+            requested_sha = sha256_file(wheel)
+            raw_root = root / "configs" / "sensitivity"
+            wrapper_root = root / "configs" / "sensitivity-wrappers"
+            raw_root.mkdir(parents=True)
+            wrapper_root.mkdir(parents=True)
+            for profile in SENSITIVITY_PROFILE_IDS:
+                (raw_root / f"{profile}.json").write_text(
+                    json.dumps({"native_wheel_sha256": "0" * 64}),
+                    encoding="utf-8")
+                (wrapper_root / f"{profile}.json").write_text(
+                    json.dumps({"base_config": {
+                        "native_wheel_sha256": "0" * 64}}),
+                    encoding="utf-8")
+
+            freeze = {
+                "freeze_id": "f" * 64,
+                "configs": {"M4": {"path": str(M4_CONFIG)}},
+            }
+            config_calls: list[Path] = []
+
+            def fake_spec(*args, **_kwargs):
+                config_calls.append(Path(args[9]))
+                return SimpleNamespace()
+
+            def fake_execute(_plan, jobs, *, workers, resume, dry_run):
+                self.assertEqual(workers, 4)
+                self.assertFalse(resume)
+                self.assertTrue(dry_run)
+                return {"planned": len(jobs), "commands": [],
+                        "attempted": [], "skipped_existing": []}
+
+            native_identity = {
+                "paper_native_python_path": "/isolated/bin/python",
+                "paper_native_abi_version": "9",
+                "paper_native_backend": "cpp-native-v9",
+                "paper_native_version": "0.5.34",
+            }
+            with patch(
+                    "experiments_v2.paper_protocol.load_paper_freeze",
+                    return_value=freeze), patch(
+                    "experiments_v2.paper_protocol._suite_map",
+                    return_value=_suites()), patch(
+                    "experiments_v2.paper_protocol._historical_heavy",
+                    return_value=set()), patch(
+                    "experiments_v2.paper_protocol.paper_native_python_identity",
+                    return_value=native_identity), patch(
+                    "experiments_v2.paper_protocol._paper_spec",
+                    side_effect=fake_spec), patch(
+                    "experiments_v2.paper_protocol.execute_paper_jobs",
+                    side_effect=fake_execute):
+                report = command_run_paper_sensitivity(
+                    SimpleNamespace(), root / "freeze.json",
+                    output_root=root, native_wheel=wheel,
+                    native_abi_version=9,
+                    native_python=root / "abi9" / "bin" / "python",
+                    workers=4, resume=False, dry_run=True)
+
+            self.assertEqual(report["execution"]["planned"], 108)
+            self.assertEqual(len(config_calls), 108)
+            for profile in SENSITIVITY_PROFILE_IDS:
+                raw = json.loads(
+                    (raw_root / f"{profile}.json").read_text(encoding="utf-8"))
+                wrapper = json.loads(
+                    (wrapper_root / f"{profile}.json").read_text(
+                        encoding="utf-8"))
+                self.assertEqual(
+                    effective_zac_setting(raw)["native_wheel_sha256"],
+                    requested_sha)
+                self.assertEqual(
+                    effective_zac_setting(
+                        wrapper["base_config"])["native_wheel_sha256"],
+                    requested_sha)
+            self.assertEqual(
+                {path.resolve() for path in config_calls},
+                {(wrapper_root / f"{profile}.json").resolve()
+                 for profile in SENSITIVITY_PROFILE_IDS})
+
+    def test_failed_warmup_prevents_formal_timing_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            freeze = {
+                "freeze_id": "f" * 64,
+                "configs": {
+                    "M1": {"path": str(
+                        ROOT / "exp_setting" / "zac_m1_v2.json")},
+                    "M2": {"path": str(
+                        ROOT / "exp_setting" / "iccad_m2_v2.json")},
+                    "M3": {"path": str(M3_CONFIG)},
+                    "M4": {"path": str(M4_CONFIG)},
+                },
+            }
+            execute_calls: list[int] = []
+
+            def fake_spec(*_args, **_kwargs):
+                return SimpleNamespace()
+
+            def fake_execute(_plan, jobs, *, workers, resume, dry_run):
+                execute_calls.append(len(jobs))
+                self.assertEqual(workers, 1)
+                self.assertFalse(resume)
+                self.assertFalse(dry_run)
+                statuses = ["timeout", *("success" for _ in range(7))]
+                return {
+                    "planned": len(jobs), "workers": 1,
+                    "attempted": [{"status": status}
+                                  for status in statuses],
+                    "skipped_existing": [], "commands": [],
+                    "status_counts": {"success": 7, "timeout": 1},
+                }
+
+            with patch(
+                    "experiments_v2.paper_protocol.load_paper_freeze",
+                    return_value=freeze), patch(
+                    "experiments_v2.paper_protocol._suite_map",
+                    return_value=_suites()), patch(
+                    "experiments_v2.paper_protocol._paper_spec",
+                    side_effect=fake_spec), patch(
+                    "experiments_v2.paper_protocol.execute_paper_jobs",
+                    side_effect=fake_execute):
+                with self.assertRaisesRegex(
+                        RuntimeError,
+                        "formal 144-attempt schedule was not started"):
+                    command_run_paper_timing(
+                        SimpleNamespace(), root / "freeze.json",
+                        output_root=root, resume=False, dry_run=False)
+
+            self.assertEqual(execute_calls, [8])
+            report = json.loads(
+                (root / "reports" / "run-paper-timing.json").read_text(
+                    encoding="utf-8"))
+            self.assertFalse(report["formal_execution_started"])
+            self.assertFalse(report["warmup_gate"]["passed"])
+            self.assertEqual(
+                report["warmup_gate"]["status_counts"],
+                {"success": 7, "timeout": 1})
+            self.assertEqual(
+                report["execution"]["not_started_reason"],
+                "warmup_gate_failed")
+            self.assertEqual(report["execution"]["planned"], 144)
 
     def test_seed0_resolved_config_is_byte_identical_to_freeze(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1289,30 +1289,33 @@ def command_run_paper_sensitivity(
         _read_json(freeze["configs"]["M4"]["path"]),
         native_abi_version=native_abi_version,
         native_wheel_sha256=wheel_sha)
-    config_paths: dict[str, Path] = {}
+    wrapper_paths: dict[str, Path] = {}
     for profile, payload in configs.items():
         destination = root / "configs" / "sensitivity" / f"{profile}.json"
         _atomic_json(destination, payload)
-        config_paths[profile] = destination
+        variant = f"paper_sensitivity_{profile}"
+        wrapper = _paper_ablation_wrapper(
+            payload, method="M4", variant=variant,
+            horizon=int(effective_zac_setting(
+                payload)["lookahead_horizon"]["max_horizon"]),
+            search_policy="ga")
+        wrapper_path = (root / "configs" / "sensitivity-wrappers" /
+                        f"{profile}.json")
+        # Planning is idempotent but the registered wheel is not implicit:
+        # replace every wrapper atomically so a prior ABI9 run cannot leave a
+        # stale native_wheel_sha256 behind.
+        _atomic_json(wrapper_path, wrapper)
+        wrapper_paths[profile] = wrapper_path
 
     jobs = []
     for dataset, canonical in cohort:
         circuit = _circuit_id(canonical)
         for profile in SENSITIVITY_PROFILE_IDS:
             variant = f"paper_sensitivity_{profile}"
-            wrapper = _paper_ablation_wrapper(
-                configs[profile], method="M4", variant=variant,
-                horizon=int(effective_zac_setting(
-                    configs[profile])["lookahead_horizon"]["max_horizon"]),
-                search_policy="ga")
-            wrapper_path = (root / "configs" / "sensitivity-wrappers" /
-                            f"{profile}.json")
-            if not wrapper_path.exists():
-                _atomic_json(wrapper_path, wrapper)
             spec = _paper_spec(
                 plan, freeze, dataset, canonical, "M4", 0, 0,
                 "ablation", root / "runs" / "sensitivity" / dataset,
-                wrapper_path, track="paper-sensitivity",
+                wrapper_paths[profile], track="paper-sensitivity",
                 ablation_variant=variant, search_policy="ga",
                 concurrency_limit=workers,
                 native_python_identity=native_identity)
@@ -1373,6 +1376,48 @@ def command_run_paper_timing(
             warmup_jobs.append(PaperJob(spec, canonical, False))
     warmup = execute_paper_jobs(
         plan, warmup_jobs, workers=1, resume=resume, dry_run=dry_run)
+    warmup_rows = [*warmup["attempted"], *warmup["skipped_existing"]]
+    warmup_status_counts = dict(sorted(Counter(
+        str(row["status"]) for row in warmup_rows).items()))
+    warmup_gate = {
+        "expected": len(warmup_jobs),
+        "observed_terminal": len(warmup_rows),
+        "status_counts": warmup_status_counts,
+        "passed": (None if dry_run else
+                   len(warmup_rows) == len(warmup_jobs) and
+                   all(row["status"] == RunStatus.SUCCESS.value
+                       for row in warmup_rows)),
+        "required_status": RunStatus.SUCCESS.value,
+        "excluded_from_runtime_statistics": True,
+    }
+    if not dry_run and warmup_gate["passed"] is not True:
+        failure_report = {
+            "protocol_id": PAPER_PROTOCOL_ID,
+            "freeze_id": freeze["freeze_id"],
+            "phase": "paper-timing", "dry_run": False,
+            "cohort": cohort_report,
+            "schedule_seed": int(schedule_seed),
+            "schedule_sha256": None,
+            "schedule": [],
+            "warmup": warmup,
+            "warmup_gate": warmup_gate,
+            "formal_execution_started": False,
+            "execution": {
+                "planned": len(cohort) * len(PAPER_METHODS) *
+                           PAPER_TIMING_REPETITIONS,
+                "workers": 1,
+                "attempted": [], "skipped_existing": [], "commands": [],
+                "status_counts": {},
+                "not_started_reason": "warmup_gate_failed",
+            },
+        }
+        _atomic_json(root / "reports" / "run-paper-timing.json",
+                     failure_report)
+        raise RuntimeError(
+            "paper timing warmup gate failed; the formal 144-attempt "
+            "schedule was not started: "
+            f"observed={len(warmup_rows)}/{len(warmup_jobs)}, "
+            f"status_counts={warmup_status_counts}")
 
     matrix: list[tuple[str, CanonicalCircuitManifest, str, int]] = []
     for dataset, canonical in cohort:
@@ -1414,6 +1459,8 @@ def command_run_paper_timing(
         "schedule_sha256": schedule_sha,
         "schedule": schedule,
         "warmup": warmup,
+        "warmup_gate": warmup_gate,
+        "formal_execution_started": not dry_run,
         "execution": execution,
     }
     if not dry_run:

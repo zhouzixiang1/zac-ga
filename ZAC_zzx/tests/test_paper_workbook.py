@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import zipfile
 from pathlib import Path
@@ -125,7 +126,21 @@ def test_artifact_tool_workbook_has_exact_two_sheets_and_52_columns(
     }
     assert not list(tmp_path.glob("*.inspect.ndjson"))
     qa_payload = json.loads(Path(result["qa_path"]).read_text(encoding="utf-8"))
+    assert qa_payload["output_xlsx"] == str(output.resolve())
+    assert qa_payload["freeze_panes"] == result["freeze_panes"]
+    assert result["freeze_panes"] == {
+        "rows": 14,
+        "columns": 4,
+        "top_left_cell": "E15",
+        "verified": True,
+        "worksheets": {
+            "ZAC18": "xl/worksheets/sheet1.xml",
+            "QMAP154": "xl/worksheets/sheet2.xml",
+        },
+    }
     assert "M1/M2 seed0一次；M3/M4三种子中位数" in qa_payload["sheets"][0][
+        "inspection_ndjson"]
+    assert "上述六项总体均值均在" in qa_payload["sheets"][0][
         "inspection_ndjson"]
     assert "中位比" in qa_payload["sheets"][0]["inspection_ndjson"]
     assert "去前10" in qa_payload["sheets"][0]["inspection_ndjson"]
@@ -134,6 +149,18 @@ def test_artifact_tool_workbook_has_exact_two_sheets_and_52_columns(
         namespace = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
         names = [node.attrib["name"] for node in workbook.findall(".//x:sheet", namespace)]
         assert names == ["ZAC18", "QMAP154"]
+        for worksheet_name in ("xl/worksheets/sheet1.xml",
+                               "xl/worksheets/sheet2.xml"):
+            worksheet = ElementTree.fromstring(archive.read(worksheet_name))
+            pane = worksheet.find(".//x:pane", namespace)
+            assert pane is not None
+            assert pane.attrib == {
+                "xSplit": "4", "ySplit": "14", "topLeftCell": "E15",
+                "activePane": "bottomRight", "state": "frozen",
+            }
+    first_sha256 = hashlib.sha256(output.read_bytes()).hexdigest()
+    export_paper_workbook(aggregate, output, qa_directory=qa)
+    assert hashlib.sha256(output.read_bytes()).hexdigest() == first_sha256
 
 
 def test_renderer_is_artifact_tool_only() -> None:
@@ -143,8 +170,6 @@ def test_renderer_is_artifact_tool_only() -> None:
     assert "@oai/artifact-tool" in source
     assert "openpyxl" not in source
     assert "xlsxwriter" not in source
-    assert "freezeRows(14)" in source
-    assert "freezeColumns(4)" in source
 
 
 def test_workbook_rejects_summary_coverage_drift(tmp_path: Path) -> None:

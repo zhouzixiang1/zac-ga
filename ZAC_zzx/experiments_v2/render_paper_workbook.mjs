@@ -248,7 +248,7 @@ async function buildSheet(workbook, spec, records, datasetSummary, index, qa) {
   ]];
   sheet.getRange("A2:AZ2").merge();
   sheet.getRange("A2").values = [[
-    "Fidelity仅在M1/M2各一次成功、M3/M4三种子完整且线性模型有效的严格共同集合上聚合；覆盖率独立报告。RETURN匹配与前瞻均嵌套在搜索核时间中，不得重复相加。",
+    "上述六项总体均值均在M1/M2各一次成功、M3/M4三种子完整且线性模型有效的严格共同集合上聚合：Fidelity取几何均值，其余五项取算术均值；覆盖率独立报告。RETURN匹配与前瞻均嵌套在搜索核时间中，不得重复相加。",
   ]];
   sheet.getRange("A3:E3").values = [["指标", ...METHODS.map((method) => METHOD_LABELS[method])]];
   sheet.getRange("A4:E11").values = summaryRows(datasetSummary);
