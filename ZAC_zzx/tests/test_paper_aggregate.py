@@ -397,7 +397,40 @@ def test_result_statement_uses_directional_non_significance_wording(
         bootstrap_iterations=20)
     statement = report["paper_values"]["macros"]["ResultStatement"]
     assert wording in statement
+    assert "点估计" in statement
+    assert "严格共同集合$N=" in statement
+    assert "中位比" in statement
+    assert "胜/平/负" in statement
     assert "提高-" not in statement
+    assert "显著" not in statement
+    coverage = report["paper_values"]["macros"]["ZACCoverageStatement"]
+    assert "M3 成功1/1（完整种子1/1）" in coverage
+
+
+def test_result_statement_labels_long_tail_instead_of_majority_improvement() -> None:
+    suites = {
+        "zac18": [f"zac_{index}" for index in range(11)],
+        "qmap154": [f"qmap_{index}" for index in range(11)],
+    }
+    manifests: list[RunManifest] = []
+    for dataset, circuits in suites.items():
+        for index, circuit in enumerate(circuits):
+            manifests.extend((
+                _run(dataset, circuit, "M1", 0, -3.0),
+                _run(dataset, circuit, "M2", 0, -3.0),
+            ))
+            manifests.extend(
+                _run(dataset, circuit, "M3", seed, -2.99)
+                for seed in (0, 1, 2))
+            m4_log = -1.0 if index == 0 else -3.1
+            manifests.extend(
+                _run(dataset, circuit, "M4", seed, m4_log)
+                for seed in (0, 1, 2))
+    report = aggregate_paper(
+        manifests, frozen_suites=suites, bootstrap_iterations=20)
+    statement = report["paper_values"]["macros"]["ResultStatement"]
+    assert "中位比和胜负分布不支持多数电路改善" in statement
+    assert "去长尾后总体增益不再保持" in statement
     assert "显著" not in statement
 
 

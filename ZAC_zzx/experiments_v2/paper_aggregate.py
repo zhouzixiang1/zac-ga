@@ -1044,8 +1044,12 @@ def build_paper_values(
             macros[f"{prefix}{suffix}V"] = (
                 f"{coverage['success_circuits']}/{coverage['N']}")
         macros[f"{prefix}CoverageStatement"] = "，".join(
-            f"{method} {dataset_summary['methods'][method]['coverage']['success_circuits']}"
+            f"{method} 成功"
+            f"{dataset_summary['methods'][method]['coverage']['success_circuits']}"
             f"/{dataset_summary['methods'][method]['coverage']['N']}"
+            f"（完整种子"
+            f"{dataset_summary['methods'][method]['coverage']['complete_seed_circuits']}"
+            f"/{dataset_summary['methods'][method]['coverage']['N']}）"
             for method in METHODS)
 
         for method in ("M3", "M4"):
@@ -1098,15 +1102,43 @@ def build_paper_values(
         if ratio is not None:
             change = float(ratio) - 1.0
             if abs(change) < 5e-5:
-                direction = "Fidelity几何均值基本持平"
+                direction = "Fidelity几何均值点估计基本持平"
             elif change > 0:
-                direction = f"Fidelity几何均值提高{change * 100.0:.2f}\\%"
+                direction = f"Fidelity几何均值点估计提高{change * 100.0:.2f}\\%"
             else:
-                direction = f"Fidelity几何均值降低{-change * 100.0:.2f}\\%"
-            statements.append(
-                f"在{label}严格共同集合上，完整方法相对逐电路最强基线的"
-                f"{direction}"
-                f"（{comparison['wins']}/{comparison['ties']}/{comparison['losses']} 胜/平/负）")
+                direction = f"Fidelity几何均值点估计降低{-change * 100.0:.2f}\\%"
+            bootstrap = comparison.get("bootstrap", {})
+            low = bootstrap.get("ci95_low")
+            high = bootstrap.get("ci95_high")
+            median = comparison.get("median_per_circuit_ratio")
+            robust_ten = comparison.get("robustness", {}).get(
+                "remove_top_10", {}).get("geometric_mean_ratio")
+            evidence = [
+                f"严格共同集合$N={comparison['strict_common_linear_N']}$",
+                (f"95\\% CI [{float(low):.4f}, {float(high):.4f}]"
+                 if low is not None and high is not None else "95\\% CI不可用"),
+                (f"中位比{float(median):.4f}"
+                 if median is not None else "中位比不可用"),
+                f"{comparison['wins']}/{comparison['ties']}/{comparison['losses']} 胜/平/负",
+                (f"去除最大10项收益后比值{float(robust_ten):.4f}"
+                 if robust_ten is not None else "去长尾比值不可用"),
+            ]
+            limits: list[str] = []
+            if (low is not None and high is not None and
+                    float(low) <= 1.0 <= float(high)):
+                limits.append("置信区间跨1")
+            if (median is not None and
+                    (float(median) <= 1.0 or
+                     comparison["wins"] <= comparison["losses"])):
+                limits.append("中位比和胜负分布不支持多数电路改善")
+            if robust_ten is not None and float(robust_ten) <= 1.0:
+                limits.append("去长尾后总体增益不再保持")
+            statement = (
+                f"在{label}上，完整方法相对逐电路最强基线的{direction}"
+                f"（{'，'.join(evidence)}）")
+            if limits:
+                statement += f"；{'，'.join(limits)}"
+            statements.append(statement)
     macros["ResultStatement"] = "；".join(statements) + "。" if statements else r"\textemdash{}"
 
     if ablation_summary.get("available"):

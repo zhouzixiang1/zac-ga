@@ -6,6 +6,8 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
 
+import pytest
+
 from experiments_v2.paper_workbook import export_paper_workbook
 
 
@@ -84,9 +86,15 @@ def _write_fixture(root: Path) -> None:
         for method, ratio in (("M3", 1.01), ("M4", 1.04)):
             comparisons[f"{method}_vs_Bstar"] = {
                 "geometric_mean_ratio": ratio,
+                "median_per_circuit_ratio": ratio - 0.005,
                 "bootstrap": {"ci95_low": ratio - 0.01, "ci95_high": ratio + 0.01},
                 "wins": count - 2, "ties": 1, "losses": 1,
                 "strict_common_linear_N": count,
+                "robustness": {
+                    "remove_top_1": {"geometric_mean_ratio": ratio - 0.001},
+                    "remove_top_5": {"geometric_mean_ratio": ratio - 0.005},
+                    "remove_top_10": {"geometric_mean_ratio": ratio - 0.010},
+                },
             }
         summary["datasets"][dataset] = {
             "circuit_N": count,
@@ -119,6 +127,8 @@ def test_artifact_tool_workbook_has_exact_two_sheets_and_52_columns(
     qa_payload = json.loads(Path(result["qa_path"]).read_text(encoding="utf-8"))
     assert "M1/M2 seed0一次；M3/M4三种子中位数" in qa_payload["sheets"][0][
         "inspection_ndjson"]
+    assert "中位比" in qa_payload["sheets"][0]["inspection_ndjson"]
+    assert "去前10" in qa_payload["sheets"][0]["inspection_ndjson"]
     with zipfile.ZipFile(output) as archive:
         workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
         namespace = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
@@ -135,3 +145,17 @@ def test_renderer_is_artifact_tool_only() -> None:
     assert "xlsxwriter" not in source
     assert "freezeRows(14)" in source
     assert "freezeColumns(4)" in source
+
+
+def test_workbook_rejects_summary_coverage_drift(tmp_path: Path) -> None:
+    aggregate = tmp_path / "aggregate"
+    aggregate.mkdir()
+    _write_fixture(aggregate)
+    summary_path = aggregate / "main_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["datasets"]["qmap154"]["methods"]["M4"]["coverage"][
+        "success_circuits"] -= 1
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="coverage success drift"):
+        export_paper_workbook(
+            aggregate, tmp_path / "bad.xlsx", qa_directory=tmp_path / "qa")

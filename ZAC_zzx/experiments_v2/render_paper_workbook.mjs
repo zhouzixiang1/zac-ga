@@ -135,6 +135,9 @@ function validateRecords(spec, records, summary) {
     throw new Error(`${spec.name} summary circuit_N differs from CSV`);
   }
   const seen = new Set();
+  const observedCoverage = Object.fromEntries(
+    METHODS.map((method) => [method, { success: 0, complete: 0 }]),
+  );
   for (const record of records) {
     if (record.dataset !== spec.dataset) throw new Error(`${spec.name} dataset drift`);
     const circuit = textOrEmpty(record.circuit);
@@ -150,6 +153,8 @@ function validateRecords(spec, records, summary) {
       if (textOrEmpty(record[`${method}__valid_over_N`]) !== `${valid}/${n}`) {
         throw new Error(`${spec.name}/${circuit} ${method} valid_over_N drift`);
       }
+      if (valid > 0) observedCoverage[method].success += 1;
+      if (valid === n) observedCoverage[method].complete += 1;
       const fidelity = numberOrNull(record[`${method}__fidelity`], `${method} Fidelity`);
       if (fidelity !== null && (fidelity < 0 || fidelity > 1)) {
         throw new Error(`${spec.name}/${circuit} ${method} Fidelity outside [0,1]`);
@@ -157,8 +162,15 @@ function validateRecords(spec, records, summary) {
     }
   }
   for (const method of METHODS) {
-    if (summary.methods[method].coverage.N !== spec.rows) {
+    const coverage = summary.methods[method].coverage;
+    if (coverage.N !== spec.rows) {
       throw new Error(`${spec.name} ${method} coverage N drift`);
+    }
+    if (coverage.success_circuits !== observedCoverage[method].success) {
+      throw new Error(`${spec.name} ${method} coverage success drift`);
+    }
+    if (coverage.complete_seed_circuits !== observedCoverage[method].complete) {
+      throw new Error(`${spec.name} ${method} complete-seed coverage drift`);
     }
   }
 }
@@ -241,18 +253,23 @@ async function buildSheet(workbook, spec, records, datasetSummary, index, qa) {
   sheet.getRange("A3:E3").values = [["指标", ...METHODS.map((method) => METHOD_LABELS[method])]];
   sheet.getRange("A4:E11").values = summaryRows(datasetSummary);
 
-  sheet.getRange("G3:M3").values = [[
-    "方法", "Fidelity比", "收益", "CI下界", "CI上界", "胜/平/负", "严格N",
+  sheet.getRange("G3:Q3").values = [[
+    "方法", "Fidelity比", "收益", "中位比", "CI下界", "CI上界", "胜/平/负", "严格N",
+    "去前1", "去前5", "去前10",
   ]];
   const comparisonRows = ["M3", "M4"].map((method) => {
     const comparison = datasetSummary.comparisons[`${method}_vs_Bstar`];
     const bootstrap = comparison.bootstrap;
     return [METHOD_LABELS[method], comparison.geometric_mean_ratio, null,
+      comparison.median_per_circuit_ratio,
       bootstrap.ci95_low, bootstrap.ci95_high,
       `${comparison.wins}/${comparison.ties}/${comparison.losses}`,
-      comparison.strict_common_linear_N];
+      comparison.strict_common_linear_N,
+      comparison.robustness.remove_top_1.geometric_mean_ratio,
+      comparison.robustness.remove_top_5.geometric_mean_ratio,
+      comparison.robustness.remove_top_10.geometric_mean_ratio];
   });
-  sheet.getRange("G4:M5").values = comparisonRows;
+  sheet.getRange("G4:Q5").values = comparisonRows;
   sheet.getRange("I4:I5").formulas = [['=IF(H4="","",H4-1)'], ['=IF(H5="","",H5-1)']];
   sheet.getRange("A12:AZ12").merge();
   sheet.getRange("A12").values = [[
@@ -307,17 +324,19 @@ async function buildSheet(workbook, spec, records, datasetSummary, index, qa) {
   sheet.getRange("B5:E8").format.numberFormat = "#,##0.00";
   sheet.getRange("B9:E9").format.numberFormat = "#,##0.000";
   sheet.getRange("B4:E11").format.horizontalAlignment = "right";
-  sheet.getRange("G3:M3").format = {
+  sheet.getRange("G3:Q3").format = {
     fill: "#5B7088", font: { name: "Aptos Display", size: 10, bold: true, color: "#FFFFFF" },
     horizontalAlignment: "center", verticalAlignment: "center",
   };
-  sheet.getRange("G4:M5").format = {
+  sheet.getRange("G4:Q5").format = {
     fill: "#F7F9FC", font: { name: "Aptos", size: 10, color: "#1F2937" },
     borders: { insideHorizontal: { style: "thin", color: "#D8E0EA" } },
   };
   sheet.getRange("H4:H5").format.numberFormat = '0.0000"x"';
   sheet.getRange("I4:I5").format.numberFormat = "0.00%";
-  sheet.getRange("J4:K5").format.numberFormat = "0.0000";
+  sheet.getRange("J4:L5").format.numberFormat = "0.0000";
+  sheet.getRange("N4:N5").format.numberFormat = "0";
+  sheet.getRange("O4:Q5").format.numberFormat = '0.0000"x"';
   sheet.getRange("I4:I5").conditionalFormats.add("cellIs", {
     operator: "greaterThanOrEqual", formula: 0,
     format: { fill: "#E2F0D9", font: { color: "#2E5D22", bold: true } },
