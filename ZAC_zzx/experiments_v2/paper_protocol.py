@@ -27,6 +27,7 @@ import random
 import subprocess
 import tempfile
 import threading
+import zipfile
 from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -547,6 +548,156 @@ def paper_native_python_identity(
         "paper_native_backend": str(value["backend"]),
         "paper_native_version": str(value["version"]),
     }
+
+
+def paper_abi8_timing_identity(
+        plan: ExperimentPlan, freeze: Mapping[str, Any],
+        ) -> Mapping[str, str]:
+    """Bind timing M3/M4 to the exact frozen ABI8 source and extension.
+
+    The paper orchestration code now carries ABI9 DTOs for the controlled
+    ablations.  The accepted main-table M3/M4 results, however, were produced
+    by the detached ABI8 snapshot recorded in the paper freeze.  Merely using
+    the ABI8 virtual environment is insufficient because the current
+    ``PYTHONPATH`` would pair ABI9 Python modules with an ABI8 extension.
+    This probe therefore verifies both halves of the frozen runtime before a
+    warm-up or formal timing attempt can be planned.
+    """
+    repository = freeze.get("repository", {})
+    source_repo = Path(str(repository.get("root", ""))).resolve()
+    expected_commit = str(repository.get("commit", ""))
+    live_repository = repository_snapshot(source_repo)
+    if (not source_repo.is_dir() or live_repository.get("dirty") is not False
+            or live_repository.get("commit") != expected_commit):
+        raise RuntimeError(
+            "paper ABI8 timing source no longer matches the frozen clean "
+            f"repository: expected={expected_commit!r}, live={live_repository!r}")
+    package_root = (source_repo / "ZAC_zzx").resolve()
+    expected_files = {
+        "paper_abi8_method_driver":
+            package_root / "experiments_v2" / "method_driver.py",
+        "paper_abi8_boundary_problem":
+            package_root / "zzx" / "boundary_problem.py",
+        "paper_abi8_native_backend":
+            package_root / "zzx" / "native_backend.py",
+    }
+    if any(not path.is_file() for path in expected_files.values()):
+        raise FileNotFoundError(
+            f"paper ABI8 timing source is incomplete: {package_root}")
+    python_paths = {
+        os.path.abspath(os.fspath(Path(plan.methods[method].python).expanduser()))
+        for method in PAPER_OURS
+    }
+    if len(python_paths) != 1:
+        raise RuntimeError(
+            f"paper M3/M4 do not share one ABI8 interpreter: {python_paths}")
+    executable = Path(next(iter(python_paths)))
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise FileNotFoundError(
+            f"paper ABI8 Python is missing or not executable: {executable}")
+    wheel = Path(str(freeze.get("abi8_wheel", {}).get("path", ""))).resolve()
+    wheel_sha = str(freeze.get("abi8_wheel", {}).get("sha256", ""))
+    if not wheel.is_file() or not _is_sha256(wheel_sha) or \
+            sha256_file(wheel) != wheel_sha:
+        raise RuntimeError("paper ABI8 timing wheel no longer matches the freeze")
+    probe = (
+        "import json\n"
+        "import experiments_v2.method_driver as d\n"
+        "import zzx.boundary_problem as b\n"
+        "import zzx.native_backend as p\n"
+        "import zac_native_core as n\n"
+        "i=dict(n.build_info())\n"
+        "print(json.dumps(dict(driver=d.__file__, boundary=b.__file__, "
+        "native_backend_py=p.__file__, python_abi=int(b.NATIVE_ABI_VERSION), "
+        "extension_abi=int(n.NATIVE_ABI_VERSION), extension=n.__file__, "
+        "backend=str(i.get('backend','')), version=str(i.get('version','')))))\n"
+    )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(package_root)
+    environment.pop("PYTHONHOME", None)
+    try:
+        raw = subprocess.check_output(
+            [str(executable), "-c", probe], text=True,
+            stderr=subprocess.STDOUT, env=environment,
+            cwd=str(source_repo)).strip()
+        value = json.loads(raw)
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError,
+            TypeError, ValueError) as error:
+        details = getattr(error, "output", "") or str(error)
+        raise RuntimeError(
+            f"cannot verify paper ABI8 timing runtime: {details}") from error
+    observed_files = {
+        "paper_abi8_method_driver": Path(str(value.get("driver", ""))).resolve(),
+        "paper_abi8_boundary_problem":
+            Path(str(value.get("boundary", ""))).resolve(),
+        "paper_abi8_native_backend":
+            Path(str(value.get("native_backend_py", ""))).resolve(),
+    }
+    if observed_files != {key: path.resolve()
+                          for key, path in expected_files.items()}:
+        raise RuntimeError(
+            "paper ABI8 timing imported modules outside the frozen source: "
+            f"{observed_files!r}")
+    if (value.get("python_abi") != 8 or value.get("extension_abi") != 8
+            or value.get("backend") != "cpp-native-v8"
+            or value.get("version") != "0.5.32"):
+        raise RuntimeError(
+            f"paper ABI8 timing runtime identity is invalid: {value!r}")
+    extension = Path(str(value.get("extension", ""))).resolve()
+    if not extension.is_file():
+        raise FileNotFoundError(
+            f"paper ABI8 timing extension is missing: {extension}")
+    with zipfile.ZipFile(wheel) as archive:
+        extension_members = [
+            name for name in archive.namelist()
+            if Path(name).name.startswith("zac_native_core") and
+            Path(name).suffix == ".so"
+        ]
+        if len(extension_members) != 1:
+            raise RuntimeError(
+                "paper ABI8 wheel must contain exactly one native extension: "
+                f"{extension_members}")
+        wheel_extension_sha = hashlib.sha256(
+            archive.read(extension_members[0])).hexdigest()
+    installed_extension_sha = sha256_file(extension)
+    if installed_extension_sha != wheel_extension_sha:
+        raise RuntimeError(
+            "installed paper ABI8 extension differs from the frozen wheel: "
+            f"{installed_extension_sha} != {wheel_extension_sha}")
+    return {
+        "paper_abi8_python_path": str(executable),
+        "paper_abi8_source_repo": str(source_repo),
+        "paper_abi8_package_root": str(package_root),
+        "paper_abi8_source_commit": expected_commit,
+        "paper_abi8_source_dirty": "false",
+        "paper_abi8_wheel_path": str(wheel),
+        "paper_abi8_wheel_sha256": wheel_sha,
+        "paper_abi8_extension_path": str(extension),
+        "paper_abi8_extension_sha256": installed_extension_sha,
+        "paper_abi8_wheel_extension_sha256": wheel_extension_sha,
+        "paper_abi8_backend": str(value["backend"]),
+        "paper_abi8_version": str(value["version"]),
+        **{f"{key}_sha256": sha256_file(path)
+           for key, path in expected_files.items()},
+    }
+
+
+def _bind_abi8_timing_source(
+        spec: AttemptSpec, identity: Mapping[str, str]) -> AttemptSpec:
+    """Return a timing spec whose child imports only the frozen ABI8 code."""
+    if spec.run_kind != "timing" or spec.method not in PAPER_OURS:
+        raise ValueError(
+            "the frozen ABI8 source binding is restricted to M3/M4 timing")
+    environment = dict(spec.environment)
+    environment["PYTHONPATH"] = identity["paper_abi8_package_root"]
+    command = list(spec.command)
+    command[0] = identity["paper_abi8_python_path"]
+    return replace(
+        spec, command=command,
+        cwd=Path(identity["paper_abi8_source_repo"]),
+        environment=environment,
+        package_versions={**spec.package_versions, **dict(identity)},
+    )
 
 
 def _paper_spec(
@@ -1347,6 +1498,7 @@ def command_run_paper_timing(
     """Run 8 excluded warmups then the fixed serial 144-attempt schedule."""
     freeze = load_paper_freeze(freeze_path)
     root = Path(output_root).resolve()
+    abi8_timing_identity = paper_abi8_timing_identity(plan, freeze)
     suites = _suite_map(plan)
     cohort, cohort_report = select_paper_twelve(suites)
     by_dataset: dict[str, list[CanonicalCircuitManifest]] = {
@@ -1373,6 +1525,9 @@ def command_run_paper_timing(
                 plan, freeze, dataset, canonical, method, 0, 0, "timing",
                 root / "runs" / "timing-warmup" / dataset,
                 configs[method], track="paper-timing-warmup")
+            if method in PAPER_OURS:
+                spec = _bind_abi8_timing_source(
+                    spec, abi8_timing_identity)
             warmup_jobs.append(PaperJob(spec, canonical, False))
     warmup = execute_paper_jobs(
         plan, warmup_jobs, workers=1, resume=resume, dry_run=dry_run)
@@ -1442,6 +1597,8 @@ def command_run_paper_timing(
             "timing", root / "runs" / "timing" / dataset,
             configs[method], track="paper-timing",
             concurrency_limit=1)
+        if method in PAPER_OURS:
+            spec = _bind_abi8_timing_source(spec, abi8_timing_identity)
         spec = replace(spec, package_versions={
             **spec.package_versions,
             "paper_timing_schedule_sha256": schedule_sha,
@@ -1476,6 +1633,7 @@ __all__ = [
     "command_run_paper_ablation", "command_run_paper_main",
     "command_run_paper_sensitivity", "command_run_paper_timing",
     "compare_seed0_parity", "execute_paper_jobs", "load_paper_freeze",
-    "paper_native_python_identity", "select_paper_ablation",
+    "paper_abi8_timing_identity", "paper_native_python_identity",
+    "select_paper_ablation",
     "select_paper_twelve",
 ]

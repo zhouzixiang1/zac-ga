@@ -402,6 +402,90 @@ def test_sensitivity_uses_log_fidelity_without_linear_underflow() -> None:
         "fidelity_geometric_mean"] == 0.0
 
 
+def test_sensitivity_pairs_every_setting_to_default_and_drives_wording() -> None:
+    fidelity_ratios = {
+        "default": 1.0,
+        "budget_192": 1.0012,
+        "budget_1152": 1.0,
+        "return_4_2": 1.0011,
+        "return_10_8": 0.9994,
+        "horizon_2": 0.984,
+        "horizon_4": 0.99955,
+        "decay_0p2_0p5": 0.96,
+        "decay_0p35_0p6": 0.989,
+    }
+    time_ratios = {
+        "default": 1.0,
+        "budget_192": 0.81,
+        "budget_1152": 1.14,
+        "return_4_2": 0.80,
+        "return_10_8": 1.34,
+        "horizon_2": 0.91,
+        "horizon_4": 0.95,
+        "decay_0p2_0p5": 1.0,
+        "decay_0p35_0p6": 0.98,
+    }
+    identities = [
+        ("zac18" if index < 6 else "qmap154", f"sensitivity_{index}")
+        for index in range(12)
+    ]
+    manifests: list[RunManifest] = []
+    settings = [f"paper_sensitivity_{profile}"
+                for profile in fidelity_ratios]
+    for index, (dataset, circuit) in enumerate(identities):
+        default_log = -1.0 - 0.1 * index
+        for profile, fidelity_ratio in fidelity_ratios.items():
+            run = _run(
+                dataset, circuit, "M4", 0,
+                default_log + math.log(fidelity_ratio),
+                variant=f"paper_sensitivity_{profile}")
+            run.full_compile_ns = round(
+                20_000_000_000 * time_ratios[profile])
+            manifests.append(run)
+
+    sensitivity, rows = summarize_sensitivity(
+        manifests, expected_identities=identities,
+        expected_settings=settings)
+    assert sensitivity["cohort_N"] == 12
+    assert len(rows) == 108
+    low = sensitivity["settings"]["paper_sensitivity_budget_192"]
+    assert low["paired_vs_default"][
+        "fidelity_geometric_mean_ratio"] == pytest.approx(1.0012)
+    assert low["paired_vs_default"][
+        "algorithm_time_geometric_mean_ratio"] == pytest.approx(0.81)
+    assert low["paired_vs_default_by_dataset"]["zac18"][
+        "fidelity_N"] == 6
+    assert low["paired_vs_default_by_dataset"]["qmap154"][
+        "fidelity_N"] == 6
+    low_rows = [row for row in rows
+                if row["setting"] == "paper_sensitivity_budget_192"]
+    assert all(row["paired_fidelity_ratio_vs_default"] == pytest.approx(1.0012)
+               for row in low_rows)
+    assert all(row["paired_algorithm_time_ratio_vs_default"] ==
+               pytest.approx(0.81) for row in low_rows)
+
+    report = aggregate_paper(
+        _complete_main(),
+        frozen_suites={"zac18": ["zac_c"], "qmap154": ["qmap_c"]},
+        sensitivity_manifest_inputs=manifests,
+        sensitivity_identities=identities,
+        sensitivity_settings=settings,
+        bootstrap_iterations=20)
+    macros = report["paper_values"]["macros"]
+    statement = macros["SensitivityStatement"]
+    assert "共12个电路、9组单因素设置" in statement
+    assert "低预算192/RETURN 4/2均略优且更快" in statement
+    assert "Fidelity +0.12\\%/+0.11\\%" in statement
+    assert "高预算1152/RETURN 10/8质量近似但更慢" in statement
+    assert (r"$H_{\max}=2$及衰减$(0.2,0.5)/(0.35,0.6)$的Fidelity分别"
+            in statement)
+    assert r"下降1.60\%/4.00\%/1.10\%" in statement
+    assert r"$H_{\max}=4$近似不变（Fidelity -0.04\%" in statement
+    assert macros["SensitivityBudgetLowFidelityRatio"] == "1.0012"
+    assert macros["SensitivityBudgetLowTimeRatio"] == "0.8100"
+    assert macros["SensitivityHorizonFourFidelityRatio"] == "0.9996"
+
+
 @pytest.mark.parametrize(
     ("m4_logs", "wording"),
     [((-1.07, -1.05, -1.03), "降低"),

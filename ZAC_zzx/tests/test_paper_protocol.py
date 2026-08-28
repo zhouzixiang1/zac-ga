@@ -238,6 +238,14 @@ class PaperConfigTests(unittest.TestCase):
                     return_value=_suites()), patch(
                     "experiments_v2.paper_protocol._paper_spec",
                     side_effect=fake_spec), patch(
+                    "experiments_v2.paper_protocol.paper_abi8_timing_identity",
+                    return_value={
+                        "paper_abi8_package_root": str(ROOT),
+                        "paper_abi8_python_path": "/isolated/bin/python",
+                        "paper_abi8_source_repo": str(ROOT.parent),
+                    }), patch(
+                    "experiments_v2.paper_protocol._bind_abi8_timing_source",
+                    side_effect=lambda spec, _identity: spec), patch(
                     "experiments_v2.paper_protocol.execute_paper_jobs",
                     side_effect=fake_execute):
                 with self.assertRaisesRegex(

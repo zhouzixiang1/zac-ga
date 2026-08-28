@@ -861,6 +861,84 @@ def summarize_sensitivity(
                     })
     summaries: dict[str, Any] = {}
     labels = (set(grouped) | set(expected_settings or ()))
+    setting_cells: dict[str, dict[tuple[str, str], RunManifest]] = {}
+    for label in labels:
+        cells: dict[tuple[str, str], RunManifest] = {}
+        for run in grouped.get(label, ()):
+            identity = (run.dataset, run.circuit)
+            if identity in cells:
+                raise ValueError(
+                    "duplicate paper sensitivity identity for "
+                    f"{label}: {run.dataset}/{run.circuit}")
+            cells[identity] = run
+        setting_cells[label] = cells
+
+    default_labels = sorted(
+        label for label in labels
+        if label == "default" or label.endswith("_default"))
+    if len(default_labels) > 1:
+        raise ValueError(
+            f"multiple paper sensitivity default settings: {default_labels}")
+    default_label = default_labels[0] if default_labels else None
+    default_cells = setting_cells.get(default_label, {}) if default_label else {}
+
+    def paired_vs_default(
+            cells: Mapping[tuple[str, str], RunManifest], *,
+            dataset: str | None = None) -> dict[str, Any]:
+        identities = sorted(set(default_cells) & set(cells))
+        if dataset is not None:
+            identities = [identity for identity in identities
+                          if identity[0] == dataset]
+        fidelity_deltas: list[float] = []
+        time_ratios: list[float] = []
+        wins = ties = losses = 0
+        for identity in identities:
+            reference, current = default_cells[identity], cells[identity]
+            if (reference.status == RunStatus.SUCCESS.value and
+                    current.status == RunStatus.SUCCESS.value and
+                    not reference.fidelity_ood and not current.fidelity_ood and
+                    reference.log_fidelity is not None and
+                    current.log_fidelity is not None):
+                delta = float(current.log_fidelity) - float(reference.log_fidelity)
+                fidelity_deltas.append(delta)
+                if abs(delta) <= 1e-12:
+                    ties += 1
+                elif delta > 0.0:
+                    wins += 1
+                else:
+                    losses += 1
+            reference_ns, current_ns = _runtime_ns(reference), _runtime_ns(current)
+            if (reference.status == RunStatus.SUCCESS.value and
+                    current.status == RunStatus.SUCCESS.value and
+                    reference_ns is not None and current_ns is not None and
+                    reference_ns > 0 and current_ns > 0):
+                time_ratios.append(float(current_ns) / float(reference_ns))
+        fidelity_ratio = (
+            math.exp(statistics.fmean(fidelity_deltas))
+            if fidelity_deltas else None)
+        time_ratio = (
+            math.exp(statistics.fmean(math.log(value)
+                                      for value in time_ratios))
+            if time_ratios else None)
+        return {
+            "default_setting": default_label,
+            "paired_identity_N": len(identities),
+            "fidelity_N": len(fidelity_deltas),
+            "fidelity_geometric_mean_ratio": fidelity_ratio,
+            "fidelity_percent_change": (
+                (fidelity_ratio - 1.0) * 100.0
+                if fidelity_ratio is not None else None),
+            "fidelity_wins": wins,
+            "fidelity_ties": ties,
+            "fidelity_losses": losses,
+            "algorithm_time_N": len(time_ratios),
+            "algorithm_time_geometric_mean_ratio": time_ratio,
+            "algorithm_time_percent_change": (
+                (time_ratio - 1.0) * 100.0 if time_ratio is not None else None),
+        }
+
+    datasets = sorted({run.dataset for run in manifests} |
+                      {dataset for dataset, _circuit in expected_identities or ()})
     for label in sorted(labels):
         setting_rows = [row for row in rows if row["setting"] == label]
         successful = [row for row in setting_rows
@@ -871,6 +949,7 @@ def summarize_sensitivity(
             not run.fidelity_ood and run.log_fidelity is not None
         ]
         summaries[label] = {
+            "profile_id": label.removeprefix("paper_sensitivity_"),
             "valid": len(successful), "N": len(setting_rows),
             "fidelity_geometric_mean": _geometric_mean_logs(
                 linear_logs),
@@ -878,8 +957,48 @@ def summarize_sensitivity(
             "move_time_us_mean": _mean(row["move_time_us"] for row in successful),
             "algorithm_time_s_mean": _mean(
                 row["algorithm_time_s"] for row in successful),
+            "paired_vs_default": paired_vs_default(setting_cells[label]),
+            "paired_vs_default_by_dataset": {
+                dataset: paired_vs_default(
+                    setting_cells[label], dataset=dataset)
+                for dataset in datasets
+            },
         }
-    return ({"available": bool(manifests), "settings": summaries}, rows)
+
+    for row in rows:
+        identity = (row["dataset"], row["circuit"])
+        current = setting_cells.get(row["setting"], {}).get(identity)
+        reference = default_cells.get(identity)
+        row["paired_fidelity_ratio_vs_default"] = None
+        row["paired_algorithm_time_ratio_vs_default"] = None
+        if current is None or reference is None:
+            continue
+        if (current.status == RunStatus.SUCCESS.value and
+                reference.status == RunStatus.SUCCESS.value and
+                not current.fidelity_ood and not reference.fidelity_ood and
+                current.log_fidelity is not None and
+                reference.log_fidelity is not None):
+            row["paired_fidelity_ratio_vs_default"] = math.exp(
+                float(current.log_fidelity) - float(reference.log_fidelity))
+        current_ns, reference_ns = _runtime_ns(current), _runtime_ns(reference)
+        if (current.status == RunStatus.SUCCESS.value and
+                reference.status == RunStatus.SUCCESS.value and
+                current_ns is not None and reference_ns is not None and
+                current_ns > 0 and reference_ns > 0):
+            row["paired_algorithm_time_ratio_vs_default"] = (
+                float(current_ns) / float(reference_ns))
+
+    cohort = set(default_cells)
+    return ({
+        "available": bool(manifests),
+        "default_setting": default_label,
+        "cohort_N": len(cohort),
+        "settings": summaries,
+        "narrative_thresholds_percent": {
+            "fidelity_near_equal": 0.1,
+            "algorithm_time_near_equal": 1.0,
+        },
+    }, rows)
 
 
 def _iqr(values: Sequence[float]) -> float | None:
@@ -1031,6 +1150,130 @@ def _format_number(value: float | int | None, *, digits: int = 3,
 
 def _macro(method: str) -> str:
     return {"M1": "MOne", "M2": "MTwo", "M3": "MThree", "M4": "MFour"}[method]
+
+
+SENSITIVITY_PAPER_PROFILES = (
+    ("budget_192", "低预算192", "BudgetLow"),
+    ("budget_1152", "高预算1152", "BudgetHigh"),
+    ("return_4_2", "RETURN 4/2", "ReturnSmall"),
+    ("return_10_8", "RETURN 10/8", "ReturnLarge"),
+    ("horizon_2", r"$H_{\max}=2$", "HorizonTwo"),
+    ("horizon_4", r"$H_{\max}=4$", "HorizonFour"),
+    ("decay_0p2_0p5", "衰减$(0.2,0.5)$", "DecayWeak"),
+    ("decay_0p35_0p6", "衰减$(0.35,0.6)$", "DecayMiddle"),
+)
+
+
+def _sensitivity_profiles(
+        settings: Mapping[str, Mapping[str, Any]],
+        ) -> dict[str, Mapping[str, Any]]:
+    return {
+        str(value.get("profile_id") or
+            str(label).removeprefix("paper_sensitivity_")): value
+        for label, value in settings.items()
+    }
+
+
+def _sensitivity_fidelity_phrase(change: float | None, *,
+                                 near_equal: float) -> str:
+    if change is None:
+        return "Fidelity配对不可用"
+    if abs(change) <= near_equal:
+        return f"Fidelity近似不变（{change:+.2f}\\%）"
+    if change > 0.0:
+        verb = "略优" if change <= 1.0 else "提高"
+        return f"Fidelity{verb}{change:.2f}\\%"
+    return f"Fidelity下降{-change:.2f}\\%"
+
+
+def _sensitivity_time_phrase(change: float | None, *,
+                             near_equal: float) -> str:
+    if change is None:
+        return "完整编译时间配对不可用"
+    if abs(change) <= near_equal:
+        return f"完整编译时间近似不变（{change:+.2f}\\%）"
+    if change < 0.0:
+        return f"更快（完整编译时间降低{-change:.2f}\\%）"
+    return f"更慢（完整编译时间增加{change:.2f}\\%）"
+
+
+def _sensitivity_statement(sensitivity: Mapping[str, Any]) -> str:
+    settings = sensitivity.get("settings", {})
+    profiles = _sensitivity_profiles(settings)
+    thresholds = sensitivity.get("narrative_thresholds_percent", {})
+    fidelity_threshold = float(thresholds.get("fidelity_near_equal", 0.1))
+    time_threshold = float(thresholds.get("algorithm_time_near_equal", 1.0))
+    def change(profile: str, field: str) -> float | None:
+        value = profiles.get(profile, {}).get(
+            "paired_vs_default", {}).get(field)
+        return float(value) if value is not None else None
+
+    fidelity = {
+        profile: change(profile, "fidelity_percent_change")
+        for profile, _label, _macro_suffix in SENSITIVITY_PAPER_PROFILES
+    }
+    runtime = {
+        profile: change(profile, "algorithm_time_percent_change")
+        for profile, _label, _macro_suffix in SENSITIVITY_PAPER_PROFILES
+    }
+    if not any(value is not None for value in (*fidelity.values(),
+                                                *runtime.values())):
+        return r"\textemdash{}"
+    default = profiles.get("default", {}).get("paired_vs_default", {})
+    fidelity_n = default.get("fidelity_N")
+    time_n = default.get("algorithm_time_N")
+    cohort_n = sensitivity.get("cohort_N")
+    evidence = (
+        f"共{cohort_n}个电路、{len(settings)}组单因素设置相对默认值同电路配对"
+        f"（Fidelity有效$N={fidelity_n}$，时间$N={time_n}$）")
+    # The registered one-factor design is always represented by structured
+    # ratios above.  Keep the prose macro compact by grouping settings only
+    # when their data-derived qualitative relations actually agree.
+    low_profiles = ("budget_192", "return_4_2")
+    slow_profiles = ("budget_1152", "return_10_8")
+    degraded_profiles = (
+        "horizon_2", "decay_0p2_0p5", "decay_0p35_0p6")
+    expected_pattern = (
+        all(fidelity[p] is not None and fidelity[p] > fidelity_threshold and
+            runtime[p] is not None and runtime[p] < -time_threshold
+            for p in low_profiles) and
+        all(fidelity[p] is not None and
+            abs(fidelity[p]) <= fidelity_threshold and
+            runtime[p] is not None and runtime[p] > time_threshold
+            for p in slow_profiles) and
+        all(fidelity[p] is not None and fidelity[p] < -fidelity_threshold
+            for p in degraded_profiles) and
+        fidelity["horizon_4"] is not None and
+        abs(fidelity["horizon_4"]) <= fidelity_threshold and
+        runtime["horizon_4"] is not None)
+    if expected_pattern:
+        parts = [
+            ("低预算192/RETURN 4/2均略优且更快"
+             f"（Fidelity {fidelity['budget_192']:+.2f}\\%/"
+             f"{fidelity['return_4_2']:+.2f}\\%，完整编译时间"
+             f"{runtime['budget_192']:+.2f}\\%/"
+             f"{runtime['return_4_2']:+.2f}\\%）"),
+            ("高预算1152/RETURN 10/8质量近似但更慢"
+             f"（完整编译时间{runtime['budget_1152']:+.2f}\\%/"
+             f"{runtime['return_10_8']:+.2f}\\%）"),
+            (r"$H_{\max}=2$及衰减$(0.2,0.5)/(0.35,0.6)$的Fidelity分别"
+             f"下降{-fidelity['horizon_2']:.2f}\\%/"
+             f"{-fidelity['decay_0p2_0p5']:.2f}\\%/"
+             f"{-fidelity['decay_0p35_0p6']:.2f}\\%"),
+            (r"$H_{\max}=4$近似不变"
+             f"（Fidelity {fidelity['horizon_4']:+.2f}\\%，完整编译时间"
+             f"{runtime['horizon_4']:+.2f}\\%）"),
+        ]
+    else:
+        parts = []
+        for profile, label, _macro_suffix in SENSITIVITY_PAPER_PROFILES:
+            if fidelity[profile] is None and runtime[profile] is None:
+                continue
+            parts.append(
+                f"{label}："
+                f"{_sensitivity_fidelity_phrase(fidelity[profile], near_equal=fidelity_threshold)}，"
+                f"{_sensitivity_time_phrase(runtime[profile], near_equal=time_threshold)}")
+    return evidence + "；" + "；".join(parts) + "。"
 
 
 def build_paper_values(
@@ -1279,20 +1522,29 @@ def build_paper_values(
     sensitivity = sensitivity_summary or {}
     sensitivity_settings = sensitivity.get("settings", {})
     if sensitivity.get("available") and sensitivity_settings:
-        fidelities = [float(value["fidelity_geometric_mean"])
-                      for value in sensitivity_settings.values()
-                      if value.get("fidelity_geometric_mean") is not None]
-        times = [float(value["algorithm_time_s_mean"])
-                 for value in sensitivity_settings.values()
-                 if value.get("algorithm_time_s_mean") is not None]
-        components = [f"{len(sensitivity_settings)}组设置"]
-        if fidelities:
-            components.append(
-                f"Fidelity几何均值范围{min(fidelities):.3e}--{max(fidelities):.3e}")
-        if times:
-            components.append(f"算法时间范围{min(times):.3f}--{max(times):.3f}s")
-        macros["SensitivityStatement"] = "，".join(components)
+        profiles = _sensitivity_profiles(sensitivity_settings)
+        default_comparison = profiles.get("default", {}).get(
+            "paired_vs_default", {})
+        macros["SensitivityCircuitN"] = str(sensitivity.get("cohort_N", 0))
+        macros["SensitivityFidelityN"] = str(
+            default_comparison.get("fidelity_N", 0))
+        macros["SensitivityTimeN"] = str(
+            default_comparison.get("algorithm_time_N", 0))
+        for profile, _label, macro_suffix in SENSITIVITY_PAPER_PROFILES:
+            comparison = profiles.get(profile, {}).get(
+                "paired_vs_default", {})
+            macros[f"Sensitivity{macro_suffix}FidelityRatio"] = _format_number(
+                comparison.get("fidelity_geometric_mean_ratio"), digits=4)
+            macros[f"Sensitivity{macro_suffix}TimeRatio"] = _format_number(
+                comparison.get("algorithm_time_geometric_mean_ratio"), digits=4)
+        macros["SensitivityStatement"] = _sensitivity_statement(sensitivity)
     else:
+        macros["SensitivityCircuitN"] = "0"
+        macros["SensitivityFidelityN"] = "0"
+        macros["SensitivityTimeN"] = "0"
+        for _profile, _label, macro_suffix in SENSITIVITY_PAPER_PROFILES:
+            macros[f"Sensitivity{macro_suffix}FidelityRatio"] = r"\textemdash{}"
+            macros[f"Sensitivity{macro_suffix}TimeRatio"] = r"\textemdash{}"
         macros["SensitivityStatement"] = r"\textemdash{}"
 
     for method in METHODS:
