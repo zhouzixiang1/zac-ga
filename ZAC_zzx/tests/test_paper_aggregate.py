@@ -169,6 +169,10 @@ def test_partial_seed_is_coverage_but_not_strict_fidelity() -> None:
         manifests, frozen_suites=suites,
         bootstrap_iterations=20)["paper_values"]["macros"]
     assert values["TimeFullCompile"] == "21.000"
+    assert values["QMAPMOneV"] == "1/1"
+    assert values["QMAPMTwoV"] == "1/1"
+    assert values["QMAPMThreeV"] == "1/1"
+    assert values["QMAPMFourV"] == "0/1"
 
 
 def test_ood_seed_is_complete_coverage_but_excluded_from_strict_fidelity() -> None:
@@ -226,7 +230,7 @@ def test_partial_ablation_seed_is_not_used_in_controlled_comparison(
     manifests = []
     for seed in (0, 1, 2):
         manifests.append(_run(
-            "zac18", "c", "M3", seed, -0.9, variant="H0",
+            "zac18", "c", "M4", seed, -0.9, variant="H0",
             artifact_dir=str(artifact)))
         manifests.append(_run(
             "zac18", "c", "M4", seed, -0.7,
@@ -474,7 +478,7 @@ def test_sensitivity_pairs_every_setting_to_default_and_drives_wording() -> None
     macros = report["paper_values"]["macros"]
     statement = macros["SensitivityStatement"]
     assert "共12个电路、9组单因素设置" in statement
-    assert "低预算192/RETURN 4/2均略优且更快" in statement
+    assert "低预算192/RETURN 4/2的Fidelity近似持平且更快" in statement
     assert "Fidelity +0.12\\%/+0.11\\%" in statement
     assert "高预算1152/RETURN 10/8质量近似但更慢" in statement
     assert (r"$H_{\max}=2$及衰减$(0.2,0.5)/(0.35,0.6)$的Fidelity分别"
@@ -484,6 +488,7 @@ def test_sensitivity_pairs_every_setting_to_default_and_drives_wording() -> None
     assert macros["SensitivityBudgetLowFidelityRatio"] == "1.0012"
     assert macros["SensitivityBudgetLowTimeRatio"] == "0.8100"
     assert macros["SensitivityHorizonFourFidelityRatio"] == "0.9996"
+    assert not statement.endswith("。")
 
 
 @pytest.mark.parametrize(
@@ -510,6 +515,7 @@ def test_result_statement_uses_directional_non_significance_wording(
     assert "胜/平/负" in statement
     assert "提高-" not in statement
     assert "显著" not in statement
+    assert not statement.endswith("。")
     coverage = report["paper_values"]["macros"]["ZACCoverageStatement"]
     assert "M3 成功1/1（完整种子1/1）" in coverage
 
@@ -546,7 +552,7 @@ def test_aggregate_writes_csv_json_and_tex_but_not_xlsx(tmp_path: Path) -> None:
     ablation = []
     for seed in (0, 1, 2):
         ablation.append(_run(
-            "zac18", "zac_c", "M3", seed, -0.9,
+            "zac18", "zac_c", "M4", seed, -0.9,
             variant="H0"))
         ablation.append(_run(
             "zac18", "zac_c", "M4", seed, -0.7,
@@ -690,7 +696,7 @@ def test_command_aggregate_paper_integrates_frozen_sources(
 
     for seed in (0, 1, 2):
         add_track("ablation", _run(
-            "zac18", "zac_c", "M3", seed, -0.9,
+            "zac18", "zac_c", "M4", seed, -0.9,
             variant=PAPER_ABLATION_VARIANTS["h0"]))
         add_track("ablation", _run(
             "zac18", "zac_c", "M4", seed, -0.8,

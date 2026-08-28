@@ -995,7 +995,7 @@ def summarize_sensitivity(
         "cohort_N": len(cohort),
         "settings": summaries,
         "narrative_thresholds_percent": {
-            "fidelity_near_equal": 0.1,
+            "fidelity_near_equal": 0.2,
             "algorithm_time_near_equal": 1.0,
         },
     }, rows)
@@ -1201,7 +1201,7 @@ def _sensitivity_statement(sensitivity: Mapping[str, Any]) -> str:
     settings = sensitivity.get("settings", {})
     profiles = _sensitivity_profiles(settings)
     thresholds = sensitivity.get("narrative_thresholds_percent", {})
-    fidelity_threshold = float(thresholds.get("fidelity_near_equal", 0.1))
+    fidelity_threshold = float(thresholds.get("fidelity_near_equal", 0.2))
     time_threshold = float(thresholds.get("algorithm_time_near_equal", 1.0))
     def change(profile: str, field: str) -> float | None:
         value = profiles.get(profile, {}).get(
@@ -1234,7 +1234,8 @@ def _sensitivity_statement(sensitivity: Mapping[str, Any]) -> str:
     degraded_profiles = (
         "horizon_2", "decay_0p2_0p5", "decay_0p35_0p6")
     expected_pattern = (
-        all(fidelity[p] is not None and fidelity[p] > fidelity_threshold and
+        all(fidelity[p] is not None and
+            abs(fidelity[p]) <= fidelity_threshold and
             runtime[p] is not None and runtime[p] < -time_threshold
             for p in low_profiles) and
         all(fidelity[p] is not None and
@@ -1248,7 +1249,7 @@ def _sensitivity_statement(sensitivity: Mapping[str, Any]) -> str:
         runtime["horizon_4"] is not None)
     if expected_pattern:
         parts = [
-            ("低预算192/RETURN 4/2均略优且更快"
+            ("低预算192/RETURN 4/2的Fidelity近似持平且更快"
              f"（Fidelity {fidelity['budget_192']:+.2f}\\%/"
              f"{fidelity['return_4_2']:+.2f}\\%，完整编译时间"
              f"{runtime['budget_192']:+.2f}\\%/"
@@ -1273,7 +1274,7 @@ def _sensitivity_statement(sensitivity: Mapping[str, Any]) -> str:
                 f"{label}："
                 f"{_sensitivity_fidelity_phrase(fidelity[profile], near_equal=fidelity_threshold)}，"
                 f"{_sensitivity_time_phrase(runtime[profile], near_equal=time_threshold)}")
-    return evidence + "；" + "；".join(parts) + "。"
+    return evidence + "；" + "；".join(parts)
 
 
 def build_paper_values(
@@ -1301,8 +1302,12 @@ def build_paper_values(
             macros[f"{prefix}{suffix}C"] = _format_number(
                 method_summary["algorithm_time_s_arithmetic_mean"], digits=3)
             coverage = method_summary["coverage"]
+            coverage_count = (
+                coverage["complete_seed_circuits"]
+                if method in {"M3", "M4"}
+                else coverage["success_circuits"])
             macros[f"{prefix}{suffix}V"] = (
-                f"{coverage['success_circuits']}/{coverage['N']}")
+                f"{coverage_count}/{coverage['N']}")
         macros[f"{prefix}CoverageStatement"] = "，".join(
             f"{method} 成功"
             f"{dataset_summary['methods'][method]['coverage']['success_circuits']}"
@@ -1399,7 +1404,8 @@ def build_paper_values(
             if limits:
                 statement += f"；{'，'.join(limits)}"
             statements.append(statement)
-    macros["ResultStatement"] = "；".join(statements) + "。" if statements else r"\textemdash{}"
+    macros["ResultStatement"] = (
+        "；".join(statements) if statements else r"\textemdash{}")
 
     if ablation_summary.get("available"):
         lookahead = ablation_summary["lookahead_H8_vs_H0"]
@@ -2228,7 +2234,7 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
         (dataset, circuit, variant, method, seed, 0, "ablation")
         for dataset, circuit in ablation_identities
         for variant, method, seeds in (
-            (PAPER_ABLATION_VARIANTS["h0"], "M3", (0, 1, 2)),
+            (PAPER_ABLATION_VARIANTS["h0"], "M4", (0, 1, 2)),
             (PAPER_ABLATION_VARIANTS["h8"], "M4", (0, 1, 2)),
             (PAPER_ABLATION_VARIANTS["greedy"], "M4", (0,)))
         for seed in seeds

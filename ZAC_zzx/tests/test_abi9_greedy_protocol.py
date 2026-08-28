@@ -57,7 +57,7 @@ class Abi9GreedyProtocolTests(unittest.TestCase):
 
     def test_protocol2_registers_h0_h8_greedy_and_sensitivity(self) -> None:
         cases = (
-            ("paper_h0_ga", "M3", 0, "ga", M3_CONFIG),
+            ("paper_h0_ga", "M4", 0, "ga", M4_CONFIG),
             ("paper_h8_ga", "M4", 8, "ga", M4_CONFIG),
             ("paper_h8_greedy_only", "M4", 8, "greedy_only", M4_CONFIG),
             ("paper_sensitivity_horizon_2", "M4", 2, "ga", M4_CONFIG),
@@ -91,16 +91,20 @@ class Abi9GreedyProtocolTests(unittest.TestCase):
             validate_ablation_config(unknown)
 
     def test_parser_accepts_abi9_only_through_internal_paper_contract(self) -> None:
-        setting = _abi9_base(M4_CONFIG, horizon=2)["zac_setting"][0]
-        with self.assertRaises(ValueError):
-            ZAC_zzx().parse_setting(setting)
-        compiler = ZAC_zzx()
-        compiler._paper_ablation_contract = {
-            "native_abi_version": 9, "max_horizon": 2}
-        compiler.parse_setting(setting)
-        self.assertEqual(compiler.zzx_params["native_abi_version"], 9)
-        self.assertEqual(
-            compiler.zzx_params["lookahead_horizon"]["max_horizon"], 2)
+        for horizon in (0, 2):
+            with self.subTest(horizon=horizon):
+                setting = _abi9_base(
+                    M4_CONFIG, horizon=horizon)["zac_setting"][0]
+                with self.assertRaises(ValueError):
+                    ZAC_zzx().parse_setting(setting)
+                compiler = ZAC_zzx()
+                compiler._paper_ablation_contract = {
+                    "native_abi_version": 9, "max_horizon": horizon}
+                compiler.parse_setting(setting)
+                self.assertEqual(compiler.zzx_params["native_abi_version"], 9)
+                self.assertEqual(
+                    compiler.zzx_params["lookahead_horizon"]["max_horizon"],
+                    horizon)
 
     def test_h0_oracle_never_reads_future_provider(self) -> None:
         provider = _RecordingProvider()

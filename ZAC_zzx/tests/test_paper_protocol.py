@@ -16,6 +16,7 @@ from experiments_v2.paper_protocol import (
     _resolved_main_config,
     build_sensitivity_configs,
     build_shared_lookahead_configs,
+    command_run_paper_ablation,
     command_run_paper_sensitivity,
     command_run_paper_timing,
     select_paper_ablation,
@@ -90,17 +91,92 @@ class PaperConfigTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.m4 = json.loads(M4_CONFIG.read_text(encoding="utf-8"))
 
-    def test_shared_pair_diff_is_only_identity_directory_and_horizon(self) -> None:
+    def test_shared_pair_diff_is_only_directory_and_horizon(self) -> None:
         h0, h8, audit = build_shared_lookahead_configs(
             self.m4, native_abi_version=9,
             native_wheel_sha256="a" * 64, seed=2)
         self.assertEqual(
-            set(audit["differences"]), {"dir", "lookahead_horizon", "method_id"})
-        self.assertEqual(effective_zac_setting(h0)["method_id"], "ours_nl")
+            set(audit["differences"]), {"dir", "lookahead_horizon"})
+        self.assertEqual(effective_zac_setting(h0)["method_id"], "ours_lk")
+        self.assertEqual(effective_zac_setting(h8)["method_id"], "ours_lk")
         self.assertEqual(
             effective_zac_setting(h0)["lookahead_horizon"]["max_horizon"], 0)
         self.assertEqual(
             effective_zac_setting(h8)["lookahead_horizon"]["max_horizon"], 8)
+
+        h0_setting = effective_zac_setting(h0)
+        h8_setting = effective_zac_setting(h8)
+        comparable_h0 = {
+            key: value for key, value in h0_setting.items()
+            if key not in {"dir", "lookahead_horizon"}}
+        comparable_h8 = {
+            key: value for key, value in h8_setting.items()
+            if key not in {"dir", "lookahead_horizon"}}
+        self.assertEqual(comparable_h0, comparable_h8)
+
+        wrapper = _paper_ablation_wrapper(
+            h0, method="M4", variant=PAPER_ABLATION_VARIANTS["h0"],
+            horizon=0, search_policy="ga")
+        _config, controls, depth = _native_setting_contract(
+            wrapper, method="M4", run_kind="ablation",
+            package_versions={"paper_search_policy": "ga"})
+        self.assertEqual(depth, 0)
+        self.assertEqual(controls["lookahead_horizon"], 0)
+
+    def test_lookahead_jobs_use_m4_for_both_h0_and_h8(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            wheel = root / "native.whl"
+            wheel.write_bytes(b"registered ABI9 wheel")
+            freeze = {
+                "freeze_id": "f" * 64,
+                "configs": {"M4": {"path": str(M4_CONFIG)}},
+            }
+            planned: list[tuple[str, str]] = []
+
+            def fake_spec(*args, **kwargs):
+                planned.append((str(args[4]), str(kwargs["ablation_variant"])))
+                return SimpleNamespace()
+
+            def fake_execute(_plan, jobs, *, workers, resume, dry_run):
+                self.assertEqual(workers, 4)
+                self.assertFalse(resume)
+                self.assertTrue(dry_run)
+                return {"planned": len(jobs), "commands": [],
+                        "attempted": [], "skipped_existing": []}
+
+            with patch(
+                    "experiments_v2.paper_protocol.load_paper_freeze",
+                    return_value=freeze), patch(
+                    "experiments_v2.paper_protocol._suite_map",
+                    return_value=_suites()), patch(
+                    "experiments_v2.paper_protocol._historical_heavy",
+                    return_value=set()), patch(
+                    "experiments_v2.paper_protocol.paper_native_python_identity",
+                    return_value={
+                        "paper_native_python_path": "/isolated/bin/python",
+                        "paper_native_abi_version": "9",
+                        "paper_native_backend": "cpp-native-v9",
+                        "paper_native_version": "0.5.34",
+                    }), patch(
+                    "experiments_v2.paper_protocol._paper_spec",
+                    side_effect=fake_spec), patch(
+                    "experiments_v2.paper_protocol.execute_paper_jobs",
+                    side_effect=fake_execute):
+                report = command_run_paper_ablation(
+                    SimpleNamespace(), root / "freeze.json",
+                    output_root=root, abi9_wheel=wheel,
+                    native_python=root / "abi9" / "bin" / "python",
+                    workers=4, resume=False, dry_run=True,
+                    components=("lookahead",))
+
+            self.assertEqual(report["execution"]["planned"], 288)
+            self.assertEqual(len(planned), 288)
+            self.assertEqual({method for method, _variant in planned}, {"M4"})
+            self.assertEqual(
+                {variant for _method, variant in planned},
+                {PAPER_ABLATION_VARIANTS["h0"],
+                 PAPER_ABLATION_VARIANTS["h8"]})
 
     def test_sensitivity_design_contains_nine_unique_one_factor_settings(self) -> None:
         configs = build_sensitivity_configs(

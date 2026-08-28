@@ -1175,6 +1175,14 @@ def _validate_paper_native_setting(setting: Mapping[str, Any]) -> None:
         if not _is_sha256(validation_copy.get("native_wheel_sha256")):
             raise ValueError("ABI9 paper config lacks a native wheel SHA256")
         validation_copy["native_abi_version"] = 8
+    lookahead = validation_copy.get("lookahead_horizon")
+    if (validation_copy.get("method_id") == "ours_lk" and
+            isinstance(lookahead, Mapping) and
+            lookahead.get("max_horizon") in {0, 2, 4}):
+        # The public Schema-2 M4 contract remains H=8.  Registered paper
+        # controls reuse every other M4 field while overriding only the
+        # visible horizon; normalize that one dimension for base validation.
+        validation_copy["lookahead_horizon"]["max_horizon"] = 8
     validate_schema2_setting(validation_copy)
 
 
@@ -1212,7 +1220,6 @@ def build_shared_lookahead_configs(
 
     h0 = copy.deepcopy(h8)
     h0_setting = effective_zac_setting(h0)
-    h0_setting["method_id"] = "ours_nl"
     h0_setting["dir"] = "results/paper_zh_v1/ablation/h0/"
     h0_setting["lookahead_horizon"] = {
         **copy.deepcopy(h8_setting["lookahead_horizon"]),
@@ -1224,7 +1231,10 @@ def build_shared_lookahead_configs(
         h0 = h0_setting
     _validate_paper_native_setting(h0_setting)
 
-    ignored = {"method_id", "dir", "lookahead_horizon"}
+    # H0 is a horizon-only control of the complete M4 implementation.  Keep
+    # the M4/ours_lk identity on both sides so method-dependent search seeds,
+    # budgets, pinning, and long-circuit caps cannot confound the comparison.
+    ignored = {"dir", "lookahead_horizon"}
     left = {key: value for key, value in h0_setting.items() if key not in ignored}
     right = {key: value for key, value in h8_setting.items() if key not in ignored}
     if left != right:
@@ -1301,7 +1311,7 @@ def command_run_paper_ablation(
         diff_reports[str(seed)] = diff
         wrappers = {
             "h0": _paper_ablation_wrapper(
-                h0, method="M3", variant=PAPER_ABLATION_VARIANTS["h0"],
+                h0, method="M4", variant=PAPER_ABLATION_VARIANTS["h0"],
                 horizon=0, search_policy="ga"),
             "h8": _paper_ablation_wrapper(
                 h8, method="M4", variant=PAPER_ABLATION_VARIANTS["h8"],
@@ -1327,7 +1337,7 @@ def command_run_paper_ablation(
     for dataset, canonical in cohort:
         circuit = _circuit_id(canonical)
         if "lookahead" in requested:
-            for name, method in (("h0", "M3"), ("h8", "M4")):
+            for name, method in (("h0", "M4"), ("h8", "M4")):
                 for seed in PAPER_MAIN_SEEDS:
                     spec = _paper_spec(
                         plan, freeze, dataset, canonical, method, seed, 0,

@@ -100,7 +100,9 @@ PAPER_SENSITIVITY_HORIZONS: Mapping[str, int] = {
 
 PAPER_ABLATION_VARIANTS: Mapping[str, PaperAblationVariant] = {
     item.name: item for item in (
-        PaperAblationVariant("paper_h0_ga", "M3", 0, "ga"),
+        # This is deliberately M4/ours_lk at H=0.  It is a horizon-only
+        # control; the legacy protocol-1 ``h0`` variant above remains M3.
+        PaperAblationVariant("paper_h0_ga", "M4", 0, "ga"),
         PaperAblationVariant("paper_h8_ga", "M4", 8, "ga"),
         PaperAblationVariant(
             "paper_h8_greedy_only", "M4", 8, "greedy_only"),
