@@ -593,6 +593,10 @@ def test_command_aggregate_paper_integrates_frozen_sources(
     assert final["input_manifest_counts"]["main"] == 16
     assert final["xlsx_generated_here"] is True
     assert final["paper_workbook"]["sheet_names"] == ["ZAC18", "QMAP154"]
+    assert final["paper_workbook"]["qa_artifact_sha256"] == {
+        "workbook_qa.json": sha256_file(
+            Path(final["paper_workbook"]["qa_path"]))
+    }
     assert final["evidence_validation"]["quality"][
         "canonical_inputs_verified"] is True
 

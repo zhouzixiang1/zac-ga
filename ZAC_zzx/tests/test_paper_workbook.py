@@ -112,6 +112,10 @@ def test_artifact_tool_workbook_has_exact_two_sheets_and_52_columns(
     assert result["column_count"] == 52
     assert output.is_file()
     assert len(result["preview_paths"]) == 4
+    assert {Path(path).name for path in result["qa_artifact_paths"]} == {
+        "workbook_qa.json", "workbook_export.inspect.ndjson",
+    }
+    assert not list(tmp_path.glob("*.inspect.ndjson"))
     qa_payload = json.loads(Path(result["qa_path"]).read_text(encoding="utf-8"))
     assert "M1/M2 seed0一次；M3/M4三种子中位数" in qa_payload["sheets"][0][
         "inspection_ndjson"]

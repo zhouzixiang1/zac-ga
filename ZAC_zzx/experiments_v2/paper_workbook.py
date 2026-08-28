@@ -48,7 +48,11 @@ def export_paper_workbook(
     destination.parent.mkdir(parents=True, exist_ok=True)
     qa.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.stem + ".tmp" + destination.suffix)
+    sidecar = Path(str(temporary) + ".inspect.ndjson")
+    qa_sidecar = qa / "workbook_export.inspect.ndjson"
     temporary.unlink(missing_ok=True)
+    sidecar.unlink(missing_ok=True)
+    qa_sidecar.unlink(missing_ok=True)
     command = [
         str(node_path), str(renderer), str(source), str(temporary), str(qa),
         str(modules_path),
@@ -59,10 +63,12 @@ def export_paper_workbook(
             timeout=timeout_seconds)
     except subprocess.TimeoutExpired as error:
         temporary.unlink(missing_ok=True)
+        sidecar.unlink(missing_ok=True)
         raise RuntimeError(
             f"paper XLSX rendering exceeded {timeout_seconds:g} seconds") from error
     if result.returncode != 0:
         temporary.unlink(missing_ok=True)
+        sidecar.unlink(missing_ok=True)
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(
             f"paper XLSX renderer failed with exit code {result.returncode}: {detail}")
@@ -70,6 +76,8 @@ def export_paper_workbook(
         raise RuntimeError("paper XLSX renderer returned no workbook")
     os.replace(temporary, destination)
     _normalize_xlsx(destination)
+    if sidecar.is_file():
+        os.replace(sidecar, qa_sidecar)
     qa_path = qa / "workbook_qa.json"
     if not qa_path.is_file():
         raise RuntimeError("paper XLSX renderer omitted workbook_qa.json")
@@ -90,6 +98,9 @@ def export_paper_workbook(
     return {
         "xlsx_path": str(destination),
         "qa_path": str(qa_path),
+        "qa_artifact_paths": [
+            str(path) for path in (qa_path, qa_sidecar) if path.is_file()
+        ],
         "preview_paths": [str(path) for path in previews],
         "sheet_names": list(names),
         "row_counts": row_counts,

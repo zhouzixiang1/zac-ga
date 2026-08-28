@@ -1911,6 +1911,11 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
             "column_count": workbook_result["column_count"],
             "qa_path": workbook_result["qa_path"],
             "qa_sha256": sha256_file(workbook_result["qa_path"]),
+            "qa_artifact_sha256": {
+                Path(path).name: sha256_file(path)
+                for path in workbook_result.get(
+                    "qa_artifact_paths", [workbook_result["qa_path"]])
+            },
             "preview_sha256": {
                 Path(path).name: sha256_file(path)
                 for path in workbook_result["preview_paths"]
