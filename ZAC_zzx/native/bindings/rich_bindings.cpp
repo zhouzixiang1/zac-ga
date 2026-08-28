@@ -453,6 +453,7 @@ RichSearchConfig parse_search_config(const py::dict& value) {
   } else {
     throw std::invalid_argument("rich operator_profile must be exact or tuned");
   }
+  config.search_policy = py::cast<std::string>(value["search_policy"]);
   config.population_size = py::cast<std::size_t>(value["population_size"]);
   config.iterations = py::cast<std::size_t>(value["iterations"]);
   config.neighbors_per_solution =

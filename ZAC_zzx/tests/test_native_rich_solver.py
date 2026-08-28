@@ -711,6 +711,29 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertEqual(256, native.unique_evaluations)
         self.assertEqual(reference.winner, native.winner)
 
+        greedy_direct = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, replace(config, search_policy="greedy_only"), state)
+        self.assertEqual("enumerate", greedy_direct.search_mode)
+        self.assertEqual(native.winner, greedy_direct.winner)
+
+        greedy_config = RichSearchConfig(
+            operator_profile="tuned", search_policy="greedy_only",
+            direct_enumeration_limit=1, max_unique_evaluations=128,
+            local_polish_sweeps=2)
+        first_state = random.Random(1).getstate()
+        second_state = random.Random(999).getstate()
+        first = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, greedy_config, first_state)
+        second = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, greedy_config, second_state)
+        self.assertEqual("greedy-only", first.search_mode)
+        self.assertEqual("greedy-only", second.search_mode)
+        self.assertEqual(first.winner, second.winner)
+        self.assertEqual(first.gate_option_indices, second.gate_option_indices)
+        self.assertEqual(0, first.generations)
+        self.assertEqual(first_state, first.rng_state)
+        self.assertEqual(second_state, second.rng_state)
+
     def test_k_best_return_chooses_second_site_when_nearest_has_ghost(self):
         arch, problem = ghost_sensitive_return_problem()
         result = NativeResidentBackend(arch).solve_rich_h0(

@@ -19,6 +19,7 @@ from .contracts import CanonicalCircuitManifest, stable_sha256
 
 
 ABLATION_PROTOCOL_VERSION = 1
+PAPER_ABLATION_PROTOCOL_VERSION = 2
 QMAP_STRATA = (
     ("le_300", 0, 300),
     ("301_1500", 301, 1500),
@@ -44,6 +45,26 @@ class AblationVariant:
         }
 
 
+@dataclass(frozen=True)
+class PaperAblationVariant:
+    """One registered paper-only ABI9 search or sensitivity control."""
+
+    name: str
+    base_method: str
+    lookahead_horizon: int
+    search_policy: str
+    protocol_version: int = PAPER_ABLATION_PROTOCOL_VERSION
+
+    def controls(self) -> dict[str, Any]:
+        return {
+            "lookahead_horizon": self.lookahead_horizon,
+            "decision_policy": "optimize",
+            "fitness_phase_mode": "phase",
+            "routing_batcher": "coloring",
+            "search_policy": self.search_policy,
+        }
+
+
 # ``decay_phase_coloring`` is the complete formal M4 reference.  Its registered
 # maximum is eight and the shared geometric cutoff determines the effective
 # depth; no formal ablation revives the legacy adaptive H=0/1/2 selector.
@@ -64,11 +85,44 @@ ABLATION_VARIANTS: Mapping[str, AblationVariant] = {
 }
 
 
+PAPER_SENSITIVITY_HORIZONS: Mapping[str, int] = {
+    "default": 8,
+    "budget_192": 8,
+    "budget_1152": 8,
+    "return_4_2": 8,
+    "return_10_8": 8,
+    "horizon_2": 2,
+    "horizon_4": 4,
+    "decay_0p2_0p5": 8,
+    "decay_0p35_0p6": 8,
+}
+
+
+PAPER_ABLATION_VARIANTS: Mapping[str, PaperAblationVariant] = {
+    item.name: item for item in (
+        PaperAblationVariant("paper_h0_ga", "M3", 0, "ga"),
+        PaperAblationVariant("paper_h8_ga", "M4", 8, "ga"),
+        PaperAblationVariant(
+            "paper_h8_greedy_only", "M4", 8, "greedy_only"),
+        *(PaperAblationVariant(
+            f"paper_sensitivity_{profile}", "M4", horizon, "ga")
+          for profile, horizon in PAPER_SENSITIVITY_HORIZONS.items()),
+    )
+}
+
+
 def registered_variant(name: str) -> AblationVariant:
     try:
         return ABLATION_VARIANTS[name]
     except KeyError as error:
         raise ValueError(f"unknown ablation variant: {name!r}") from error
+
+
+def registered_paper_variant(name: str) -> PaperAblationVariant:
+    try:
+        return PAPER_ABLATION_VARIANTS[name]
+    except KeyError as error:
+        raise ValueError(f"unknown paper ablation variant: {name!r}") from error
 
 
 def _effective_setting(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -109,10 +163,87 @@ def build_ablation_config(variant_name: str,
     return payload
 
 
+def _validate_paper_ablation_config(
+        payload: Mapping[str, Any], *, expected_variant: str | None,
+        expected_method: str | None,
+        ) -> tuple[dict[str, Any], PaperAblationVariant]:
+    required = {
+        "experiment_schema", "run_kind", "ablation_protocol",
+        "ablation_variant", "base_method", "base_config", "controls",
+        "search_policy",
+    }
+    if set(payload) != required:
+        raise ValueError(
+            "paper ablation config fields differ from the registered wrapper: "
+            f"missing={sorted(required - set(payload))}, "
+            f"extra={sorted(set(payload) - required)}")
+    if (payload.get("experiment_schema") != 2 or
+            payload.get("run_kind") != "ablation" or
+            payload.get("ablation_protocol") !=
+            PAPER_ABLATION_PROTOCOL_VERSION):
+        raise ValueError(
+            "paper ablation wrapper requires Schema 2, run_kind=ablation, "
+            "and protocol 2")
+    name = payload.get("ablation_variant")
+    if not isinstance(name, str):
+        raise ValueError("paper ablation_variant must be a string")
+    variant = registered_paper_variant(name)
+    if expected_variant is not None and name != expected_variant:
+        raise ValueError(
+            f"ablation argument/config mismatch: {expected_variant!r} != "
+            f"{name!r}")
+    if payload.get("base_method") != variant.base_method:
+        raise ValueError("paper ablation base_method differs from the registry")
+    if expected_method is not None and variant.base_method != expected_method:
+        raise ValueError(
+            f"ablation method/config mismatch: {expected_method!r} != "
+            f"{variant.base_method!r}")
+    controls = payload.get("controls")
+    if controls != variant.controls():
+        raise ValueError(
+            "paper ablation controls differ from registry: "
+            f"{controls!r} != {variant.controls()!r}")
+    if payload.get("search_policy") != variant.search_policy:
+        raise ValueError(
+            "paper ablation top-level search_policy differs from controls")
+    base = payload.get("base_config")
+    if not isinstance(base, Mapping):
+        raise ValueError("paper ablation base_config must be an object")
+    setting = _effective_setting(base)
+    expected_id = "ours_nl" if variant.base_method == "M3" else "ours_lk"
+    lookahead = setting.get("lookahead_horizon")
+    if (setting.get("method_id") != expected_id or
+            not isinstance(lookahead, Mapping) or
+            maximum_lookahead_horizon(lookahead) !=
+            variant.lookahead_horizon):
+        raise ValueError("paper ablation base config identity/horizon mismatch")
+    if setting.get("native_abi_version") != 9:
+        raise ValueError("paper ablation base config requires native ABI9")
+
+    # The accepted main-table contract remains ABI8 with the fixed H0/H8
+    # method identities.  Paper protocol 2 deliberately changes only the
+    # native ABI and, for two sensitivity profiles, M4's maximum visible
+    # depth.  Normalize those registered dimensions solely for reuse of the
+    # otherwise strict Schema-2 validator, then retain the actual ABI9 setting.
+    validation_copy = copy.deepcopy(setting)
+    validation_copy["native_abi_version"] = 8
+    if expected_id == "ours_lk":
+        validation_copy["lookahead_horizon"]["max_horizon"] = 8
+    validate_schema2_setting(validation_copy)
+    return copy.deepcopy(dict(base)), variant
+
+
 def validate_ablation_config(payload: Mapping[str, Any], *,
                              expected_variant: str | None = None,
                              expected_method: str | None = None
-                             ) -> tuple[dict[str, Any], AblationVariant]:
+                             ) -> tuple[
+                                 dict[str, Any],
+                                 AblationVariant | PaperAblationVariant,
+                             ]:
+    if payload.get("ablation_protocol") == PAPER_ABLATION_PROTOCOL_VERSION:
+        return _validate_paper_ablation_config(
+            payload, expected_variant=expected_variant,
+            expected_method=expected_method)
     required = {
         "experiment_schema", "run_kind", "ablation_protocol",
         "ablation_variant", "base_method", "base_config", "controls",
@@ -234,7 +365,10 @@ def ablation_experiment_id(base_experiment_id: str, dataset_name: str,
 
 __all__ = [
     "ABLATION_PROTOCOL_VERSION", "ABLATION_VARIANTS", "AblationVariant",
+    "PAPER_ABLATION_PROTOCOL_VERSION", "PAPER_ABLATION_VARIANTS",
+    "PAPER_SENSITIVITY_HORIZONS", "PaperAblationVariant",
     "QMAP_STRATA", "ablation_experiment_id", "build_ablation_config",
-    "registered_variant", "select_ablation_cohort",
+    "registered_paper_variant", "registered_variant",
+    "select_ablation_cohort",
     "validate_ablation_config",
 ]

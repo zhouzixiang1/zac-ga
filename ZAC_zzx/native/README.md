@@ -105,9 +105,14 @@ ctest --test-dir /tmp/zac-native-ctest --output-on-failure
 ```
 
 The primary build intentionally uses neither OpenMP nor fast-math.  The public
-ABI version is `8`, flat scorer wire is `1`, rich-boundary wire is `7`, backend
-identity is `cpp-native-v8`, and RNG semantics are
+ABI version is `9`, flat scorer wire is `1`, rich-boundary wire is `7`, backend
+identity is `cpp-native-v9`, and RNG semantics are
 `python-random-mt19937-v1`.
+
+ABI9 adds the paper-only `ga|greedy_only` search-policy field.  Exact/direct
+enumeration is identical for both policies; `greedy_only` replaces only the
+large-space evolutionary loop and still uses the same deterministic greedy
+seed, local polish, physical guard, ghost replay, and final serialization.
 
 ## Formal build freeze
 

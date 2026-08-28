@@ -886,6 +886,7 @@ class ResidentPlacer(VertexMatchingPlacer):
         self.forecast_gate_candidate_budget: int = int(
             params.get("forecast_gate_candidate_budget", 4))
         self.operator_profile: str = params.get("operator_profile", "exact")
+        self.search_policy: str = str(params.get("search_policy", "ga"))
         if not 1 <= self.elite_count <= self.population_size:
             raise ValueError("elite_count must be in [1, population_size]")
         if self.early_stop_patience < 0:
@@ -983,6 +984,8 @@ class ResidentPlacer(VertexMatchingPlacer):
                 "forecast_gate_candidate_budget must be one of {1, 2, 4}")
         if self.operator_profile not in {"exact", "tuned"}:
             raise ValueError("operator_profile must be 'exact' or 'tuned'")
+        if self.search_policy not in {"ga", "greedy_only"}:
+            raise ValueError("search_policy must be 'ga' or 'greedy_only'")
         self.experiment_schema: int = params.get("experiment_schema", 1)
         self.method_id: str = params.get("method_id", "legacy")
         self.objective: str = params.get("objective", "legacy")
@@ -4749,6 +4752,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             lookahead_spec = self.lookahead_horizon_config
             rich_config = RichSearchConfig(
                 operator_profile=self.operator_profile,
+                search_policy=self.search_policy,
                 forecast_mode="decay",
                 forecast_policy=str(lookahead_spec["policy"]),
                 decay_kind=str(lookahead_spec["decay"]),
@@ -7342,6 +7346,7 @@ class ResidentPlacer(VertexMatchingPlacer):
             "ablation_policy": self.ablation_policy,
             "fitness_phase_mode": self.ablation_fitness_mode,
             "search_mode": search_mode,
+            "search_policy": self.search_policy,
             "rich_search": rich_search_stats,
             "return_assignments": selected_return_audit,
             "participant_parking_assignments":

@@ -753,100 +753,114 @@ class RichSolver {
         stats_.early_stop_reason = search_mode;
       } else {
         auto greedy = greedy_seed();
-        auto population = seed_population(greedy, cached_winner);
-        auto scored = score_unique(population, false);
-        if (scored.empty()) throw std::runtime_error("initial population is empty");
-        if (scored.size() > config_.population_size) {
-          scored.resize(config_.population_size);
-        }
-        auto prior_best = scored.front();
-        std::size_t stale = 0;
-        bool budget_stop = false;
-        for (std::size_t generation = 0; generation < config_.iterations;
-             ++generation) {
-          std::vector<std::vector<std::int64_t>> offspring;
-          for (const auto& parent : scored) {
-            std::vector<std::vector<std::int64_t>> neighbors;
-            neighbors.reserve(config_.neighbor_sample_size);
-            for (std::size_t sample = 0; sample < config_.neighbor_sample_size;
-                 ++sample) {
-              if (config_.operator_profile == RichOperatorProfile::kTuned &&
-                  scored.size() > 1 &&
-                  rng_.random() < config_.crossover_rate) {
-                auto mate_index = rng_.randbelow(scored.size() - 1);
-                const auto parent_index = static_cast<std::size_t>(
-                    &parent - scored.data());
-                if (mate_index >= parent_index) ++mate_index;
-                neighbors.push_back(partitioned_crossover(
-                    parent.fitness.chromosome,
-                    scored[mate_index].fitness.chromosome));
-              } else {
-                neighbors.push_back(neighbor(parent.fitness.chromosome));
-              }
-            }
-            auto pool = score_top_k_lazy(
-                neighbors, true, config_.neighbors_per_solution);
-            const auto take = std::min(config_.neighbors_per_solution, pool.size());
-            for (std::size_t index = 0; index < take; ++index) {
-              offspring.push_back(pool[index].fitness.chromosome);
-            }
-            if (stats_.unique_evaluations >= stats_.stochastic_budget) {
-              budget_stop = true;
-              break;
-            }
+        if (config_.search_policy == "greedy_only") {
+          winner = greedy;
+          if (config_.operator_profile == RichOperatorProfile::kTuned &&
+              config_.local_polish_sweeps != 0) {
+            winner = local_polish(winner);
           }
-          std::vector<std::vector<std::int64_t>> next_raw;
-          // The registered Python/reference GA carries every current parent.
-          // The tuned profile deliberately uses the configured elite count.
-          const auto elites = config_.operator_profile == RichOperatorProfile::kExact
-                                  ? scored.size()
-                                  : std::min(config_.elite_count, scored.size());
-          for (std::size_t index = 0; index < elites; ++index) {
-            next_raw.push_back(scored[index].fitness.chromosome);
+          search_mode = "greedy-only";
+          stats_.early_stop_reason = "greedy-only";
+        } else {
+          auto population = seed_population(greedy, cached_winner);
+          auto scored = score_unique(population, false);
+          if (scored.empty()) {
+            throw std::runtime_error("initial population is empty");
           }
-          next_raw.insert(next_raw.end(), offspring.begin(), offspring.end());
-          // Keep already-evaluated, distinct parents available when offspring
-          // collapse to duplicate chromosomes.  This preserves diversity
-          // without spending additional fitness evaluations.
-          next_raw.reserve(next_raw.size() + scored.size());
-          for (const auto& parent : scored) {
-            next_raw.push_back(parent.fitness.chromosome);
-          }
-          auto next = score_top_k_lazy(
-              next_raw, false, config_.population_size);
-          if (!next.empty()) scored = std::move(next);
           if (scored.size() > config_.population_size) {
             scored.resize(config_.population_size);
           }
-          ++stats_.generations;
-          if (evaluated_less(scored.front(), prior_best)) {
-            prior_best = scored.front();
-            stale = 0;
-          } else {
-            ++stale;
+          auto prior_best = scored.front();
+          std::size_t stale = 0;
+          bool budget_stop = false;
+          for (std::size_t generation = 0; generation < config_.iterations;
+               ++generation) {
+            std::vector<std::vector<std::int64_t>> offspring;
+            for (const auto& parent : scored) {
+              std::vector<std::vector<std::int64_t>> neighbors;
+              neighbors.reserve(config_.neighbor_sample_size);
+              for (std::size_t sample = 0;
+                   sample < config_.neighbor_sample_size; ++sample) {
+                if (config_.operator_profile == RichOperatorProfile::kTuned &&
+                    scored.size() > 1 &&
+                    rng_.random() < config_.crossover_rate) {
+                  auto mate_index = rng_.randbelow(scored.size() - 1);
+                  const auto parent_index = static_cast<std::size_t>(
+                      &parent - scored.data());
+                  if (mate_index >= parent_index) ++mate_index;
+                  neighbors.push_back(partitioned_crossover(
+                      parent.fitness.chromosome,
+                      scored[mate_index].fitness.chromosome));
+                } else {
+                  neighbors.push_back(neighbor(parent.fitness.chromosome));
+                }
+              }
+              auto pool = score_top_k_lazy(
+                  neighbors, true, config_.neighbors_per_solution);
+              const auto take =
+                  std::min(config_.neighbors_per_solution, pool.size());
+              for (std::size_t index = 0; index < take; ++index) {
+                offspring.push_back(pool[index].fitness.chromosome);
+              }
+              if (stats_.unique_evaluations >= stats_.stochastic_budget) {
+                budget_stop = true;
+                break;
+              }
+            }
+            std::vector<std::vector<std::int64_t>> next_raw;
+            // The registered Python/reference GA carries every current parent.
+            // The tuned profile deliberately uses the configured elite count.
+            const auto elites =
+                config_.operator_profile == RichOperatorProfile::kExact
+                    ? scored.size()
+                    : std::min(config_.elite_count, scored.size());
+            for (std::size_t index = 0; index < elites; ++index) {
+              next_raw.push_back(scored[index].fitness.chromosome);
+            }
+            next_raw.insert(next_raw.end(), offspring.begin(), offspring.end());
+            // Keep already-evaluated, distinct parents available when offspring
+            // collapse to duplicate chromosomes.  This preserves diversity
+            // without spending additional fitness evaluations.
+            next_raw.reserve(next_raw.size() + scored.size());
+            for (const auto& parent : scored) {
+              next_raw.push_back(parent.fitness.chromosome);
+            }
+            auto next = score_top_k_lazy(
+                next_raw, false, config_.population_size);
+            if (!next.empty()) scored = std::move(next);
+            if (scored.size() > config_.population_size) {
+              scored.resize(config_.population_size);
+            }
+            ++stats_.generations;
+            if (evaluated_less(scored.front(), prior_best)) {
+              prior_best = scored.front();
+              stale = 0;
+            } else {
+              ++stale;
+            }
+            if (config_.early_stop_patience != 0 &&
+                stale >= config_.early_stop_patience) {
+              stats_.early_stopped = true;
+              stats_.early_stop_reason = "patience";
+              break;
+            }
+            if (budget_stop) {
+              stats_.early_stop_reason = "unique-budget";
+              break;
+            }
           }
-          if (config_.early_stop_patience != 0 &&
-              stale >= config_.early_stop_patience) {
-            stats_.early_stopped = true;
-            stats_.early_stop_reason = "patience";
-            break;
+          winner = scored.front().fitness.chromosome;
+          if (config_.operator_profile == RichOperatorProfile::kTuned &&
+              config_.local_polish_sweeps != 0) {
+            winner = local_polish(winner);
           }
-          if (budget_stop) {
-            stats_.early_stop_reason = "unique-budget";
-            break;
+          search_mode = (stats_.unique_evaluations >=
+                                 stats_.stochastic_budget
+                             ? "ga-budget"
+                             : (stats_.early_stopped ? "ga-early-stop" : "ga"));
+          if (stats_.early_stop_reason == "not-started") {
+            stats_.early_stop_reason = "iterations-completed";
           }
-        }
-        winner = scored.front().fitness.chromosome;
-        if (config_.operator_profile == RichOperatorProfile::kTuned &&
-            config_.local_polish_sweeps != 0) {
-          winner = local_polish(winner);
-        }
-        search_mode = (stats_.unique_evaluations >=
-                               stats_.stochastic_budget
-                           ? "ga-budget"
-                           : (stats_.early_stopped ? "ga-early-stop" : "ga"));
-        if (stats_.early_stop_reason == "not-started") {
-          stats_.early_stop_reason = "iterations-completed";
         }
       }
     }
@@ -1785,9 +1799,11 @@ class RichSolver {
                !problem_.target_one_qubit_atoms.empty() ||
                problem_.scheduler_trace_end_us != 0.0 ||
                problem_.scheduler_one_qubit_end_us != 0.0) {
-      throw std::invalid_argument("partial ABI8 scheduler snapshot is forbidden");
+      throw std::invalid_argument("partial scheduler snapshot is forbidden");
     }
-    if (config_.population_size == 0 || config_.iterations == 0 ||
+    if ((config_.search_policy != "ga" &&
+         config_.search_policy != "greedy_only") ||
+        config_.population_size == 0 || config_.iterations == 0 ||
         config_.neighbors_per_solution == 0 ||
         config_.neighbor_sample_size == 0 || config_.elite_count == 0 ||
         config_.elite_count > config_.population_size ||

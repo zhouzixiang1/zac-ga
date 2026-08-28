@@ -14,7 +14,7 @@ from math import dist, isclose, isfinite
 from typing import Iterable, Mapping, Sequence
 
 
-NATIVE_ABI_VERSION = 8
+NATIVE_ABI_VERSION = 9
 RNG_VERSION = "python-random-mt19937-v1"
 
 
@@ -581,6 +581,7 @@ class RichForecastTerm:
 class RichSearchConfig:
     # Required on purpose: parity and formal tuned runs must never be confused.
     operator_profile: str
+    search_policy: str = "ga"
     forecast_mode: str = "decay"
     forecast_policy: str = "physical_terminal_decay_v1"
     decay_kind: str = "geometric"
@@ -608,6 +609,8 @@ class RichSearchConfig:
     def __post_init__(self) -> None:
         if self.operator_profile not in {"exact", "tuned"}:
             raise ValueError("operator_profile must be 'exact' or 'tuned'")
+        if self.search_policy not in {"ga", "greedy_only"}:
+            raise ValueError("search_policy must be 'ga' or 'greedy_only'")
         if self.forecast_mode != "decay":
             raise ValueError("forecast_mode must be 'decay'")
         if self.forecast_policy != "physical_terminal_decay_v1":
@@ -670,6 +673,7 @@ class RichSearchConfig:
     def to_wire(self) -> dict:
         return {
             "operator_profile": self.operator_profile,
+            "search_policy": self.search_policy,
             "forecast_mode": self.forecast_mode,
             "forecast_policy": self.forecast_policy,
             "decay_kind": self.decay_kind,

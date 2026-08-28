@@ -515,6 +515,42 @@ int main() {
   assert(enumerated.winner.chromosome == std::vector<std::int64_t>({0}));
   ++tests;
 
+  // search_policy=greedy_only is a paper-only large-space ablation.  It must
+  // leave the exact-enumeration path untouched and consume no random draws
+  // once the same deterministic greedy seed and local polish are selected.
+  auto greedy_direct_config = enum_config;
+  greedy_direct_config.search_policy = "greedy_only";
+  const auto greedy_direct = solve_rich_h0(
+      enum_architecture, enum_problem, greedy_direct_config, rng_fixture());
+  assert(greedy_direct.search_mode == "enumerate");
+  assert(greedy_direct.winner.chromosome == enumerated.winner.chromosome);
+
+  auto greedy_only_config = exact_config();
+  greedy_only_config.operator_profile = RichOperatorProfile::kTuned;
+  greedy_only_config.search_policy = "greedy_only";
+  greedy_only_config.direct_enumeration_limit = 1;
+  greedy_only_config.max_unique_evaluations = 128;
+  greedy_only_config.local_polish_sweeps = 2;
+  const auto first_greedy_rng = rng_fixture();
+  auto second_greedy_rng = first_greedy_rng;
+  second_greedy_rng.words[0] ^= 0x13579bdfU;
+  const auto first_greedy = solve_rich_h0(
+      enum_architecture, enum_problem, greedy_only_config, first_greedy_rng);
+  const auto second_greedy = solve_rich_h0(
+      enum_architecture, enum_problem, greedy_only_config, second_greedy_rng);
+  assert(first_greedy.search_mode == "greedy-only");
+  assert(second_greedy.search_mode == "greedy-only");
+  assert(first_greedy.winner.chromosome == second_greedy.winner.chromosome);
+  assert(first_greedy.gate_option_indices == second_greedy.gate_option_indices);
+  assert(first_greedy.return_assignments == second_greedy.return_assignments);
+  assert(first_greedy.stats.generations == 0);
+  assert(first_greedy.stats.early_stop_reason == "greedy-only");
+  assert(first_greedy.rng_state.words == first_greedy_rng.words &&
+         first_greedy.rng_state.index == first_greedy_rng.index);
+  assert(second_greedy.rng_state.words == second_greedy_rng.words &&
+         second_greedy.rng_state.index == second_greedy_rng.index);
+  ++tests;
+
   RichH0Problem pruned_problem;
   pruned_problem.n_atoms = 2;
   pruned_problem.current_points = {{0.0, 0.0}, {1.0, 0.0}};

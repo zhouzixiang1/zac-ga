@@ -306,7 +306,7 @@ PYBIND11_MODULE(zac_native_core, module) {
     value["openmp"] = false;
     value["fast_math"] = false;
     value["rng_version"] = "python-random-mt19937-v1";
-    value["backend"] = "cpp-native-v8";
+    value["backend"] = "cpp-native-v9";
     return value;
   });
 

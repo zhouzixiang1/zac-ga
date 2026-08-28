@@ -502,15 +502,31 @@ def _ga_applicable_count(runs: Sequence[RunManifest]) -> tuple[int | None, str]:
                 statistics_payload = json.load(handle)
         except (OSError, ValueError, TypeError):
             continue
+        explicit = None
+        for source in (statistics_payload,
+                       statistics_payload.get("decision_summary", {})):
+            if not isinstance(source, Mapping):
+                continue
+            for key in keys:
+                value = source.get(key)
+                if value is not None:
+                    explicit = int(value)
+                    break
+            if explicit is not None:
+                break
+        if explicit is not None:
+            derived.append(explicit)
+            continue
         decisions = statistics_payload.get("decision_log", [])
         if not isinstance(decisions, list):
             continue
         derived.append(sum(
             isinstance(decision, Mapping) and
-            str(decision.get("search_mode", "")).startswith("ga")
+            (str(decision.get("search_mode", "")).startswith("ga") or
+             str(decision.get("search_mode", "")).startswith("greedy-only"))
             for decision in decisions))
     if derived:
-        return max(derived), "artifact.compiler_stats.decision_log.search_mode"
+        return max(derived), "artifact.compiler_stats.ga_applicable_boundaries"
     return None, "unavailable"
 
 
@@ -788,15 +804,51 @@ def summarize_runtime(
         })
     summary: dict[str, Any] = {"available": bool(manifests), "methods": {}}
     for method in METHODS:
-        method_times = [float(row["algorithm_time_median_s"]) for row in rows
-                        if row["method"] == method and
-                        row["algorithm_time_median_s"] is not None]
+        method_rows = [row for row in rows if row["method"] == method]
+        method_times = [float(row["algorithm_time_median_s"])
+                        for row in method_rows
+                        if row["algorithm_time_median_s"] is not None]
+        within_circuit_iqrs = [float(row["algorithm_time_iqr_s"])
+                               for row in method_rows
+                               if row["algorithm_time_iqr_s"] is not None]
         summary["methods"][method] = {
             "circuit_N": len(method_times),
             "median_of_circuit_medians_s": (
                 statistics.median(method_times) if method_times else None),
+            "median_of_circuit_iqrs_s": (
+                statistics.median(within_circuit_iqrs)
+                if within_circuit_iqrs else None),
+            "iqr_of_circuit_medians_s": _iqr(method_times),
             "arithmetic_mean_of_circuit_medians_s": _mean(method_times),
         }
+    by_identity = {
+        (str(row["dataset"]), str(row["circuit"]), str(row["method"])): row
+        for row in rows
+    }
+    paired_ratios: dict[str, Any] = {}
+    identities = sorted({(str(row["dataset"]), str(row["circuit"]))
+                         for row in rows})
+    for method in ("M3", "M4"):
+        log_ratios: list[float] = []
+        paired_circuits: list[str] = []
+        for dataset, circuit in identities:
+            current = by_identity.get((dataset, circuit, method), {})
+            reference = by_identity.get((dataset, circuit, "M2"), {})
+            current_time = current.get("algorithm_time_median_s")
+            reference_time = reference.get("algorithm_time_median_s")
+            if (current_time is None or reference_time is None or
+                    float(current_time) <= 0.0 or float(reference_time) <= 0.0):
+                continue
+            log_ratios.append(math.log(float(current_time) / float(reference_time)))
+            paired_circuits.append(f"{dataset}/{circuit}")
+        paired_ratios[f"{method}_vs_M2"] = {
+            "N": len(log_ratios),
+            "geometric_mean_time_ratio": (
+                math.exp(statistics.fmean(log_ratios)) if log_ratios else None),
+            "circuits": paired_circuits,
+            "semantics": "method full-compile median divided by M2 full-compile median",
+        }
+    summary["paired_ratios"] = paired_ratios
     return summary, rows
 
 
@@ -845,10 +897,14 @@ def _macro(method: str) -> str:
 def build_paper_values(
         main_summary: Mapping[str, Any],
         ablation_summary: Mapping[str, Any],
-        main_rows: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, Any]:
+        main_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+        sensitivity_summary: Mapping[str, Any] | None = None,
+        runtime_summary: Mapping[str, Any] | None = None) -> dict[str, Any]:
     macros: dict[str, str] = {}
     for dataset, prefix in (("zac18", "ZAC"), ("qmap154", "QMAP")):
         dataset_summary = main_summary["datasets"][dataset]
+        macros[f"{prefix}StrictN"] = str(
+            dataset_summary["strict_common_linear_N"])
         for method in METHODS:
             method_summary = dataset_summary["methods"][method]
             suffix = _macro(method)
@@ -865,6 +921,53 @@ def build_paper_values(
             coverage = method_summary["coverage"]
             macros[f"{prefix}{suffix}V"] = (
                 f"{coverage['success_circuits']}/{coverage['N']}")
+        macros[f"{prefix}CoverageStatement"] = "，".join(
+            f"{method} {dataset_summary['methods'][method]['coverage']['success_circuits']}"
+            f"/{dataset_summary['methods'][method]['coverage']['N']}"
+            for method in METHODS)
+
+        for method in ("M3", "M4"):
+            suffix = _macro(method)
+            comparison = dataset_summary["comparisons"][f"{method}_vs_Bstar"]
+            bootstrap = comparison["bootstrap"]
+            wilcoxon = comparison.get("wilcoxon") or {}
+            macros[f"{prefix}{suffix}Ratio"] = _format_number(
+                comparison.get("geometric_mean_ratio"), digits=4)
+            low = bootstrap.get("ci95_low")
+            high = bootstrap.get("ci95_high")
+            macros[f"{prefix}{suffix}CI"] = (
+                f"[{float(low):.4f}, {float(high):.4f}]"
+                if low is not None and high is not None else r"\textemdash{}")
+            macros[f"{prefix}{suffix}Median"] = _format_number(
+                comparison.get("median_per_circuit_ratio"), digits=4)
+            macros[f"{prefix}{suffix}WTL"] = (
+                f"{comparison['wins']}/{comparison['ties']}/{comparison['losses']}")
+            # M4 and H8 are members of the pre-registered Holm family.  M3 is
+            # an exploratory diagnostic and therefore retains its raw p-value.
+            p_value = (wilcoxon.get("paper_holm_adjusted_p_value")
+                       if method == "M4" else wilcoxon.get("p_value"))
+            macros[f"{prefix}{suffix}P"] = _format_number(p_value, digits=4)
+            macros[f"{prefix}{suffix}Effect"] = _format_number(
+                wilcoxon.get("rank_biserial"), digits=3)
+            for count, name in ((1, "One"), (5, "Five"), (10, "Ten")):
+                robust = comparison["robustness"][f"remove_top_{count}"]
+                macros[f"{prefix}{suffix}Robust{name}"] = _format_number(
+                    robust.get("geometric_mean_ratio"), digits=4)
+
+        mechanism_delta = dataset_summary[
+            "mechanism_delta_vs_strongest_baseline"]["M4"]
+        macros[f"{prefix}MFourDeltaTransfer"] = _format_number(
+            mechanism_delta.get("transfers_mean_delta"), digits=2)
+        macros[f"{prefix}MFourDeltaIdle"] = _format_number(
+            mechanism_delta.get("idle_exposures_mean_delta"), digits=2)
+        macros[f"{prefix}MFourDeltaCoherence"] = _format_number(
+            mechanism_delta.get("log_coherence_linear_mean_delta"), digits=4)
+        macros[f"{prefix}MFourDeltaBatch"] = _format_number(
+            mechanism_delta.get("move_batches_mean_delta"), digits=2)
+        move_delta = mechanism_delta.get("move_time_us_mean_delta")
+        macros[f"{prefix}MFourDeltaMoveTime"] = _format_number(
+            float(move_delta) / 1000.0 if move_delta is not None else None,
+            digits=3)
 
     statements: list[str] = []
     for dataset, label in (("zac18", "ZAC18"), ("qmap154", "QMAP154")):
@@ -880,17 +983,70 @@ def build_paper_values(
     if ablation_summary.get("available"):
         lookahead = ablation_summary["lookahead_H8_vs_H0"]
         ga = ablation_summary["GA_vs_greedy"]
+        h_wilcoxon = lookahead.get("wilcoxon") or {}
+        ga_wilcoxon = ga.get("wilcoxon") or {}
         macros["AblationHZero"] = "共享参数对照"
         macros["AblationHMulti"] = (
             f"Fidelity比{lookahead['geometric_mean_ratio']:.4f}"
             if lookahead["geometric_mean_ratio"] is not None else r"\textemdash{}")
+        macros["AblationHN"] = str(lookahead.get("N", 0))
+        macros["AblationHRatio"] = _format_number(
+            lookahead.get("geometric_mean_ratio"), digits=4)
+        h_bootstrap = lookahead.get("bootstrap", {})
+        macros["AblationHCI"] = (
+            f"[{float(h_bootstrap['ci95_low']):.4f}, "
+            f"{float(h_bootstrap['ci95_high']):.4f}]"
+            if h_bootstrap.get("ci95_low") is not None and
+            h_bootstrap.get("ci95_high") is not None else r"\textemdash{}")
+        macros["AblationHWTL"] = (
+            f"{lookahead['wins']}/{lookahead['ties']}/{lookahead['losses']}")
+        macros["AblationHP"] = _format_number(
+            h_wilcoxon.get("paper_holm_adjusted_p_value"), digits=4)
+        deltas = lookahead.get("mechanism_deltas", {})
+        macros["AblationHPredictionHit"] = _format_number(
+            (float(deltas["H8_prediction_hit_rate"]) * 100.0
+             if deltas.get("H8_prediction_hit_rate") is not None else None),
+            digits=2)
+        for macro_name, field in (
+                ("AblationHTransferDelta", "transfers"),
+                ("AblationHIdleDelta", "idle_exposures"),
+                ("AblationHCoherenceDelta", "log_coherence_linear")):
+            macros[macro_name] = _format_number(
+                deltas.get(field, {}).get("mean_H8_minus_H0"), digits=3)
+        h_move_delta = deltas.get("move_time_us", {}).get("mean_H8_minus_H0")
+        macros["AblationHMoveTimeDelta"] = _format_number(
+            float(h_move_delta) / 1000.0 if h_move_delta is not None else None,
+            digits=3)
         macros["AblationGreedy"] = "同目标确定性贪心"
         macros["AblationGA"] = (
             f"Fidelity比{ga['geometric_mean_ratio']:.4f}"
             if ga["geometric_mean_ratio"] is not None else r"\textemdash{}")
+        macros["AblationGAN"] = str(ga.get("N", 0))
+        applicable = ablation_summary.get("ga_applicable_circuit_N")
+        macros["AblationGAApplicableN"] = (
+            str(applicable) if applicable is not None else r"\textemdash{}")
+        macros["AblationGARatio"] = _format_number(
+            ga.get("geometric_mean_ratio"), digits=4)
+        ga_bootstrap = ga.get("bootstrap", {})
+        macros["AblationGACI"] = (
+            f"[{float(ga_bootstrap['ci95_low']):.4f}, "
+            f"{float(ga_bootstrap['ci95_high']):.4f}]"
+            if ga_bootstrap.get("ci95_low") is not None and
+            ga_bootstrap.get("ci95_high") is not None else r"\textemdash{}")
+        macros["AblationGAWTL"] = (
+            f"{ga['wins']}/{ga['ties']}/{ga['losses']}")
+        macros["AblationGAP"] = _format_number(
+            ga_wilcoxon.get("p_value"), digits=4)
     else:
-        for name in ("AblationHZero", "AblationHMulti",
-                     "AblationGreedy", "AblationGA"):
+        for name in (
+                "AblationHZero", "AblationHMulti", "AblationHN",
+                "AblationHRatio", "AblationHCI", "AblationHWTL",
+                "AblationHP", "AblationHPredictionHit",
+                "AblationHTransferDelta", "AblationHIdleDelta",
+                "AblationHCoherenceDelta", "AblationHMoveTimeDelta",
+                "AblationGreedy", "AblationGA", "AblationGAN",
+                "AblationGAApplicableN", "AblationGARatio",
+                "AblationGACI", "AblationGAWTL", "AblationGAP"):
             macros[name] = r"\textemdash{}"
 
     m4_cells = [row["M4"] for dataset in DATASETS for row in main_rows[dataset]
@@ -909,6 +1065,55 @@ def build_paper_values(
             _mean(cell[field] for cell in m4_cells), digits=3)
     macros["TimeFullCompile"] = _format_number(
         _mean(cell["algorithm_time_s"] for cell in m4_cells), digits=3)
+
+    runtime = runtime_summary or {}
+    if runtime.get("available"):
+        strict_parts: list[str] = []
+        for method in METHODS:
+            suffix = _macro(method)
+            method_runtime = runtime.get("methods", {}).get(method, {})
+            macros[f"Strict{suffix}Time"] = _format_number(
+                method_runtime.get("median_of_circuit_medians_s"), digits=3)
+            macros[f"Strict{suffix}IQR"] = _format_number(
+                method_runtime.get("median_of_circuit_iqrs_s"), digits=3)
+            if method_runtime.get("median_of_circuit_medians_s") is not None:
+                strict_parts.append(
+                    f"{method} {float(method_runtime['median_of_circuit_medians_s']):.3f}s")
+        ratios = runtime.get("paired_ratios", {})
+        macros["StrictMThreeVsMTwo"] = _format_number(
+            ratios.get("M3_vs_M2", {}).get("geometric_mean_time_ratio"),
+            digits=3)
+        macros["StrictMFourVsMTwo"] = _format_number(
+            ratios.get("M4_vs_M2", {}).get("geometric_mean_time_ratio"),
+            digits=3)
+        macros["StrictRuntimeStatement"] = "，".join(strict_parts)
+    else:
+        for method in METHODS:
+            suffix = _macro(method)
+            macros[f"Strict{suffix}Time"] = r"\textemdash{}"
+            macros[f"Strict{suffix}IQR"] = r"\textemdash{}"
+        macros["StrictMThreeVsMTwo"] = r"\textemdash{}"
+        macros["StrictMFourVsMTwo"] = r"\textemdash{}"
+        macros["StrictRuntimeStatement"] = r"\textemdash{}"
+
+    sensitivity = sensitivity_summary or {}
+    sensitivity_settings = sensitivity.get("settings", {})
+    if sensitivity.get("available") and sensitivity_settings:
+        fidelities = [float(value["fidelity_geometric_mean"])
+                      for value in sensitivity_settings.values()
+                      if value.get("fidelity_geometric_mean") is not None]
+        times = [float(value["algorithm_time_s_mean"])
+                 for value in sensitivity_settings.values()
+                 if value.get("algorithm_time_s_mean") is not None]
+        components = [f"{len(sensitivity_settings)}组设置"]
+        if fidelities:
+            components.append(
+                f"Fidelity几何均值范围{min(fidelities):.3e}--{max(fidelities):.3e}")
+        if times:
+            components.append(f"算法时间范围{min(times):.3f}--{max(times):.3f}s")
+        macros["SensitivityStatement"] = "，".join(components)
+    else:
+        macros["SensitivityStatement"] = r"\textemdash{}"
 
     for method in METHODS:
         method_cells = [
@@ -1019,7 +1224,10 @@ def aggregate_paper(
             "M4 versus strongest baseline in each dataset plus shared-config "
             "H8 versus H0 when available"),
     }
-    paper_values = build_paper_values(main_summary, ablation_summary, main_rows)
+    paper_values = build_paper_values(
+        main_summary, ablation_summary, main_rows,
+        sensitivity_summary=sensitivity_summary,
+        runtime_summary=runtime_summary)
     report: dict[str, Any] = {
         "protocol": "paper-zh-v1-aggregate-v1",
         "main_summary": main_summary,

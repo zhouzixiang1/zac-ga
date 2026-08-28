@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
+from .ablation import validate_ablation_config
 from .contracts import RunManifest, RunStatus, sha256_file, stable_sha256
 from .plan import effective_zac_setting
 from .protocol import (ghost_policy_for_method,
@@ -306,16 +307,11 @@ def _native_setting_contract(
     """
     controls: Mapping[str, Any] | None = None
     if run_kind == "ablation":
-        base_config = config_payload.get("base_config")
-        raw_controls = config_payload.get("controls")
-        if (not isinstance(base_config, Mapping) or
-                not isinstance(raw_controls, Mapping)):
-            raise TypeError(
-                "ablation configuration lacks base_config/controls")
-        if config_payload.get("base_method") != method:
-            raise ValueError(
-                "ablation wrapper base_method differs from manifest")
-        controls = raw_controls
+        base_config, variant = validate_ablation_config(
+            config_payload,
+            expected_variant=str(config_payload.get("ablation_variant", "")),
+            expected_method=method)
+        controls = variant.controls()
         config = effective_zac_setting(base_config)
         declared_policy = controls.get("search_policy", "ga")
         wrapper_policy = config_payload.get("search_policy", declared_policy)
@@ -424,6 +420,8 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
     environment["ZAC_RUN_ID"] = run_id
     environment["ZAC_RUN_KIND"] = spec.run_kind
     environment["ZAC_ABLATION_VARIANT"] = spec.ablation_variant
+    environment["ZAC_SEARCH_POLICY"] = str(
+        spec.package_versions.get("paper_search_policy", "ga"))
     stdout_path = temporary / manifest.stdout_path
     stderr_path = temporary / manifest.stderr_path
     start_wall = time.perf_counter_ns()
@@ -674,6 +672,10 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
                         "openmp": (flags.get("openmp"), False),
                         "fast_math": (flags.get("fast_math"), False),
                     }
+                    if ablation_controls is not None:
+                        native_identity["search_policy"] = (
+                            stats.get("search_policy"),
+                            ablation_controls.get("search_policy", "ga"))
                     identity_drift = {
                         key: value for key, value in native_identity.items()
                         if value[0] != value[1]

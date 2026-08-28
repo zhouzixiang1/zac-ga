@@ -10,7 +10,7 @@
 
 namespace zac_native {
 
-inline constexpr int kNativeAbiVersion = 8;
+inline constexpr int kNativeAbiVersion = 9;
 
 struct Point {
   double x{};

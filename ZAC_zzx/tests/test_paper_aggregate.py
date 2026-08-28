@@ -10,6 +10,7 @@ import pytest
 
 from experiments_v2.contracts import RunManifest, RunStatus
 from experiments_v2.paper_aggregate import (
+    _ga_applicable_count,
     aggregate_paper,
     build_main_rows,
     command_aggregate_paper,
@@ -140,7 +141,7 @@ def test_ga_applicability_is_derived_from_compiler_stats(tmp_path: Path) -> None
     artifact = tmp_path / "attempt"
     artifact.mkdir()
     with gzip.open(artifact / "compiler_stats.json.gz", "wt", encoding="utf-8") as handle:
-        json.dump({"decision_log": [
+        json.dump({"ga_applicable_boundaries": 3, "decision_log": [
             {"search_mode": "enumerate"},
             {"search_mode": "ga"},
             {"search_mode": "ga-early-stop"},
@@ -164,8 +165,23 @@ def test_ga_applicability_is_derived_from_compiler_stats(tmp_path: Path) -> None
     assert summary["lookahead_H8_vs_H0"]["geometric_mean_ratio"] == pytest.approx(
         math.exp(0.2))
     h8_row = next(row for row in rows if row["variant"] == "H8")
-    assert h8_row["ga_applicable_boundaries"] == 2
+    assert h8_row["ga_applicable_boundaries"] == 3
     assert h8_row["ga_applicability_source"].startswith("artifact.compiler_stats")
+
+
+def test_ga_applicability_fallback_recognizes_greedy_only(tmp_path: Path) -> None:
+    artifact = tmp_path / "attempt"
+    artifact.mkdir()
+    with gzip.open(artifact / "compiler_stats.json.gz", "wt", encoding="utf-8") as handle:
+        json.dump({"decision_log": [
+            {"search_mode": "enumerate"},
+            {"search_mode": "greedy-only"},
+            {"search_mode": "greedy-only-current-recovery"},
+        ]}, handle)
+    run = _run("zac18", "c", "M4", 0, -0.8, artifact_dir=str(artifact))
+    count, source = _ga_applicable_count([run])
+    assert count == 2
+    assert source.startswith("artifact.compiler_stats")
 
 
 def test_runtime_reports_median_and_iqr_without_nested_sum() -> None:
@@ -177,6 +193,9 @@ def test_runtime_reports_median_and_iqr_without_nested_sum() -> None:
     assert summary["available"] is True
     assert rows[0]["algorithm_time_median_s"] == 20.0
     assert rows[0]["algorithm_time_iqr_s"] == 10.0
+    assert summary["methods"]["M4"]["median_of_circuit_medians_s"] == 20.0
+    assert summary["methods"]["M4"]["median_of_circuit_iqrs_s"] == 10.0
+    assert summary["methods"]["M4"]["iqr_of_circuit_medians_s"] == 0.0
 
 
 def test_aggregate_writes_csv_json_and_tex_but_not_xlsx(tmp_path: Path) -> None:
@@ -194,6 +213,11 @@ def test_aggregate_writes_csv_json_and_tex_but_not_xlsx(tmp_path: Path) -> None:
     tex = (tmp_path / "results_values_zh.tex").read_text(encoding="utf-8")
     assert "ResultTODO" not in tex
     assert "\\newcommand{\\ZACMFourF}" in tex
+    assert "\\newcommand{\\ZACMFourRatio}" in tex
+    assert "\\newcommand{\\ZACMFourRobustTen}" in tex
+    assert "\\newcommand{\\ZACMFourDeltaTransfer}" in tex
+    assert "\\newcommand{\\StrictMFourIQR}" in tex
+    assert "\\newcommand{\\SensitivityStatement}" in tex
     assert "RETURN匹配和前瞻时间嵌套于搜索核" in tex
     assert render_results_values_tex(report["paper_values"]) == tex
     manifest = json.loads((tmp_path / "final_manifest.json").read_text())

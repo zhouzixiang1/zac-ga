@@ -24,6 +24,7 @@ import json
 import math
 import os
 import random
+import subprocess
 import tempfile
 import threading
 from collections import Counter
@@ -495,12 +496,66 @@ def _paper_experiment_id(freeze: Mapping[str, Any], dataset: str,
     })
 
 
+def paper_native_python_identity(
+        python_path: str | Path, *, expected_abi: int = 9,
+        ) -> Mapping[str, str]:
+    """Fail closed unless an isolated interpreter loads the ABI9 extension."""
+    # Keep the venv entry-point path itself.  Resolving its symlink to the base
+    # interpreter would discard the virtual-environment prefix and could load
+    # the accepted ABI8 site-packages instead of the isolated ABI9 wheel.
+    executable = Path(os.path.abspath(
+        os.fspath(Path(python_path).expanduser())))
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise FileNotFoundError(
+            f"paper native Python is missing or not executable: {executable}")
+    probe = (
+        "import json,zac_native_core as n\n"
+        "i=dict(n.build_info())\n"
+        "print(json.dumps(dict(abi=int(n.NATIVE_ABI_VERSION), "
+        "backend=str(i.get('backend','')), version=str(i.get('version','')), "
+        "extension_path=str(n.__file__))))\n"
+    )
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    try:
+        raw = subprocess.check_output(
+            [str(executable), "-c", probe], text=True,
+            stderr=subprocess.STDOUT, env=environment).strip()
+        value = json.loads(raw)
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError,
+            TypeError, ValueError) as error:
+        details = getattr(error, "output", "") or str(error)
+        raise RuntimeError(
+            f"cannot verify paper native Python: {details}") from error
+    if (value.get("abi") != expected_abi or
+            value.get("backend") != f"cpp-native-v{expected_abi}" or
+            value.get("version") != "0.5.33"):
+        raise RuntimeError(
+            "paper native Python does not load the registered ABI9 backend: "
+            f"{value!r}")
+    extension = Path(str(value.get("extension_path", ""))).resolve()
+    if not extension.is_file():
+        raise RuntimeError(
+            f"paper native extension path is missing: {extension}")
+    return {
+        "paper_native_python_path": str(executable),
+        "paper_native_python_sha256": sha256_file(executable),
+        "paper_native_extension_path": str(extension),
+        "paper_native_extension_sha256": sha256_file(extension),
+        "paper_native_abi_version": str(expected_abi),
+        "paper_native_backend": str(value["backend"]),
+        "paper_native_version": str(value["version"]),
+    }
+
+
 def _paper_spec(
         plan: ExperimentPlan, freeze: Mapping[str, Any], dataset: str,
         canonical: CanonicalCircuitManifest, method: str, seed: int,
         repetition: int, run_kind: str, output_root: Path,
         config_path: Path, *, track: str, ablation_variant: str = "",
         search_policy: str = "ga", concurrency_limit: int = 1,
+        native_python_identity: Mapping[str, str] | None = None,
         ) -> AttemptSpec:
     if search_policy not in {"ga", "greedy_only"}:
         raise ValueError(f"unknown paper search policy: {search_policy}")
@@ -517,6 +572,10 @@ def _paper_spec(
     )
     command = list(spec.command)
     if run_kind == "ablation":
+        if native_python_identity is None:
+            raise ValueError(
+                "paper ablation requires an audited ABI9 Python interpreter")
+        command[0] = native_python_identity["paper_native_python_path"]
         command.extend(("--search-policy", search_policy))
     return replace(
         spec, output_root=output_root, command=command,
@@ -526,6 +585,7 @@ def _paper_spec(
             "paper_protocol_id": PAPER_PROTOCOL_ID,
             "paper_freeze_id": str(freeze["freeze_id"]),
             "paper_search_policy": search_policy,
+            **dict(native_python_identity or {}),
         },
     )
 
@@ -957,11 +1017,23 @@ def _set_setting(payload: dict[str, Any], **updates: Any) -> dict[str, Any]:
     return result
 
 
+def _validate_paper_native_setting(setting: Mapping[str, Any]) -> None:
+    """Reuse the frozen Schema-2 contract for a registered ABI9 paper base."""
+    validation_copy = copy.deepcopy(dict(setting))
+    if validation_copy.get("native_abi_version") == 9:
+        if not _is_sha256(validation_copy.get("native_wheel_sha256")):
+            raise ValueError("ABI9 paper config lacks a native wheel SHA256")
+        validation_copy["native_abi_version"] = 8
+    validate_schema2_setting(validation_copy)
+
+
 def build_shared_lookahead_configs(
         m4_payload: Mapping[str, Any], *, native_abi_version: int,
         native_wheel_sha256: str, seed: int,
         ) -> tuple[dict[str, Any], dict[str, Any], Mapping[str, Any]]:
     """Build a causal H0/H8 pair from one M4 base and audit the exact diff."""
+    if native_abi_version != 9:
+        raise ValueError("paper controlled ablations require native ABI9")
     if not _is_sha256(native_wheel_sha256):
         raise ValueError("native wheel digest must be a SHA256")
     base = copy.deepcopy(dict(m4_payload))
@@ -985,7 +1057,7 @@ def build_shared_lookahead_configs(
         h8["zac_setting"][0] = h8_setting
     else:
         h8 = h8_setting
-    validate_schema2_setting(h8_setting)
+    _validate_paper_native_setting(h8_setting)
 
     h0 = copy.deepcopy(h8)
     h0_setting = effective_zac_setting(h0)
@@ -999,7 +1071,7 @@ def build_shared_lookahead_configs(
         h0["zac_setting"][0] = h0_setting
     else:
         h0 = h0_setting
-    validate_schema2_setting(h0_setting)
+    _validate_paper_native_setting(h0_setting)
 
     ignored = {"method_id", "dir", "lookahead_horizon"}
     left = {key: value for key, value in h0_setting.items() if key not in ignored}
@@ -1049,6 +1121,7 @@ def _paper_ablation_wrapper(base: Mapping[str, Any], *, method: str,
 def command_run_paper_ablation(
         plan: ExperimentPlan, freeze_path: str | Path, *,
         output_root: str | Path, abi9_wheel: str | Path,
+        native_python: str | Path,
         workers: int = PAPER_WORKERS, resume: bool = False,
         dry_run: bool = False,
         components: Sequence[str] = ("lookahead", "greedy"),
@@ -1061,6 +1134,7 @@ def command_run_paper_ablation(
     if not wheel.is_file():
         raise FileNotFoundError(f"ABI9 wheel is missing: {wheel}")
     wheel_sha = sha256_file(wheel)
+    native_identity = paper_native_python_identity(native_python)
     root = Path(output_root).resolve()
     suites = _suite_map(plan)
     cohort, cohort_report = select_paper_ablation(suites)
@@ -1109,7 +1183,8 @@ def command_run_paper_ablation(
                         "ablation", root / "runs" / "ablation" / dataset,
                         configs[(name, seed)], track="paper-ablation",
                         ablation_variant=PAPER_ABLATION_VARIANTS[name],
-                        search_policy="ga", concurrency_limit=workers)
+                        search_policy="ga", concurrency_limit=workers,
+                        native_python_identity=native_identity)
                     jobs.append(PaperJob(
                         spec, canonical, (dataset, circuit, method) in heavy))
         if "greedy" in requested:
@@ -1118,7 +1193,8 @@ def command_run_paper_ablation(
                 "ablation", root / "runs" / "ablation" / dataset,
                 configs[("greedy", 0)], track="paper-ablation",
                 ablation_variant=PAPER_ABLATION_VARIANTS["greedy"],
-                search_policy="greedy_only", concurrency_limit=workers)
+                search_policy="greedy_only", concurrency_limit=workers,
+                native_python_identity=native_identity)
             jobs.append(PaperJob(
                 spec, canonical, (dataset, circuit, "M4") in heavy))
     execution = execute_paper_jobs(
@@ -1129,6 +1205,7 @@ def command_run_paper_ablation(
         "phase": "paper-ablation", "dry_run": dry_run,
         "components": list(requested), "cohort": cohort_report,
         "abi9_wheel": {"path": str(wheel), "sha256": wheel_sha},
+        "native_python": dict(native_identity),
         "shared_config_diff": str(
             (root / "reports" / "shared_config_diff.json").resolve()),
         "execution": execution,
@@ -1149,6 +1226,8 @@ def build_sensitivity_configs(
         m4_payload: Mapping[str, Any], *, native_abi_version: int,
         native_wheel_sha256: str) -> Mapping[str, dict[str, Any]]:
     """Return the nine unique settings in the registered one-factor design."""
+    if native_abi_version != 9:
+        raise ValueError("paper sensitivity requires native ABI9")
     base = _set_setting(
         copy.deepcopy(dict(m4_payload)), seed=0,
         native_abi_version=int(native_abi_version),
@@ -1193,13 +1272,15 @@ def build_sensitivity_configs(
 def command_run_paper_sensitivity(
         plan: ExperimentPlan, freeze_path: str | Path, *,
         output_root: str | Path, native_wheel: str | Path,
-        native_abi_version: int, workers: int = PAPER_WORKERS,
+        native_abi_version: int, native_python: str | Path,
+        workers: int = PAPER_WORKERS,
         resume: bool = False, dry_run: bool = False) -> Mapping[str, Any]:
     freeze = load_paper_freeze(freeze_path)
     wheel = Path(native_wheel).resolve()
     if not wheel.is_file():
         raise FileNotFoundError(f"native wheel is missing: {wheel}")
     wheel_sha = sha256_file(wheel)
+    native_identity = paper_native_python_identity(native_python)
     root = Path(output_root).resolve()
     suites = _suite_map(plan)
     cohort, cohort_report = select_paper_twelve(suites)
@@ -1233,7 +1314,8 @@ def command_run_paper_sensitivity(
                 "ablation", root / "runs" / "sensitivity" / dataset,
                 wrapper_path, track="paper-sensitivity",
                 ablation_variant=variant, search_policy="ga",
-                concurrency_limit=workers)
+                concurrency_limit=workers,
+                native_python_identity=native_identity)
             jobs.append(PaperJob(
                 spec, canonical, (dataset, circuit, "M4") in heavy))
     execution = execute_paper_jobs(
@@ -1246,6 +1328,7 @@ def command_run_paper_sensitivity(
         "profiles": list(SENSITIVITY_PROFILE_IDS),
         "native_wheel": {"path": str(wheel), "sha256": wheel_sha,
                          "abi": int(native_abi_version)},
+        "native_python": dict(native_identity),
         "execution": execution,
     }
     if not dry_run:
@@ -1346,5 +1429,6 @@ __all__ = [
     "command_run_paper_ablation", "command_run_paper_main",
     "command_run_paper_sensitivity", "command_run_paper_timing",
     "compare_seed0_parity", "execute_paper_jobs", "load_paper_freeze",
-    "select_paper_ablation", "select_paper_twelve",
+    "paper_native_python_identity", "select_paper_ablation",
+    "select_paper_twelve",
 ]

@@ -194,7 +194,7 @@ def register_native_wheel(wheel_path: str | Path) -> dict:
 class NativeResidentBackend:
     """One persistent architecture object and one native call per boundary."""
 
-    name = "cpp-native-v8"
+    name = "cpp-native-v9"
 
     def __init__(self, architecture, *, flat_buffers: bool = True,
                  require_registered_wheel: bool = False,

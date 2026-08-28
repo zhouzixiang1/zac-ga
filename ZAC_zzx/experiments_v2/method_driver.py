@@ -93,6 +93,7 @@ def _decision_summary(decisions: list[dict]) -> Dict[str, int]:
         "return_count": 0,
         "reseat_count": 0,
         "ghost_repairs": 0,
+        "ga_applicable_boundaries": 0,
     }
     for row in decisions:
         if not isinstance(row, Mapping):
@@ -104,6 +105,10 @@ def _decision_summary(decisions: list[dict]) -> Dict[str, int]:
             value = row.get(source, 0)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 summary[destination] += int(value)
+        search_mode = str(row.get("search_mode", ""))
+        if (search_mode.startswith("ga") or
+                search_mode.startswith("greedy-only")):
+            summary["ga_applicable_boundaries"] += 1
     return summary
 
 
@@ -354,7 +359,8 @@ def _instrument_m1_transition_timing(compiler) -> None:
 
 
 def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
-                method: str, *, run_kind: str = "", ablation_variant: str = "") -> None:
+                method: str, *, run_kind: str = "", ablation_variant: str = "",
+                search_policy: str = "ga") -> None:
     import qiskit
 
     if method not in ("M1", "M3", "M4"):
@@ -391,6 +397,7 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
     architecture.preprocessing()
     user_config = _load(config_path)
     ablation_controls: Dict[str, Any] | None = None
+    paper_ablation = False
     if run_kind == "ablation":
         if method not in ("M3", "M4") or not ablation_variant:
             raise ValueError("ablation attempts require M3/M4 and a registered variant")
@@ -398,8 +405,14 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
             user_config, expected_variant=ablation_variant,
             expected_method=method)
         ablation_controls = variant.controls()
+        paper_ablation = getattr(variant, "protocol_version", 1) == 2
+        if search_policy != ablation_controls.get("search_policy", "ga"):
+            raise ValueError(
+                "search-policy argument differs from ablation wrapper")
     elif ablation_variant or user_config.get("run_kind") == "ablation":
         raise ValueError("ablation controls are forbidden outside run_kind=ablation")
+    elif search_policy != "ga":
+        raise ValueError("greedy_only is allowed only for ablation attempts")
     if "zac_setting" in user_config:
         settings = user_config["zac_setting"]
         if not isinstance(settings, list) or len(settings) != 1:
@@ -442,13 +455,20 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
         setting.update(placer="resident", routing_strategy="coloring")
         setting.update(user_config)
         expected_id = "ours_nl" if method == "M3" else "ours_lk"
-        expected = SCHEMA2_METHOD_HORIZON[expected_id]["max_horizon"]
+        expected = (
+            int(ablation_controls["lookahead_horizon"])
+            if paper_ablation and ablation_controls is not None
+            else SCHEMA2_METHOD_HORIZON[expected_id]["max_horizon"])
         validate_decay_lookahead_spec(
             setting.get("lookahead_horizon"),
             expected_max_horizon=expected)
         if setting.get("method_id") != expected_id:
             raise ValueError(f"method_id/config mismatch for {method}")
-        validate_schema2_setting(setting)
+        if paper_ablation:
+            if setting.get("native_abi_version") != 9:
+                raise ValueError("paper ablation requires native ABI9")
+        else:
+            validate_schema2_setting(setting)
 
     # Provenance fields in the frozen config are validated above, but an
     # attempt may never escape its unique runner directory or substitute a
@@ -457,6 +477,11 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
     setting["dir"] = str(output) + os.sep
     setting["arch_spec"] = str(architecture_path.resolve())
 
+    if paper_ablation:
+        compiler._paper_ablation_contract = {
+            "native_abi_version": 9,
+            "max_horizon": expected,
+        }
     compiler.parse_setting(setting)
     if ablation_controls is not None:
         # Inject only after the immutable main setting passed Schema-2 validation.
@@ -464,6 +489,7 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
         compiler.zzx_params["ablation_policy"] = ablation_controls["decision_policy"]
         compiler.zzx_params["ablation_fitness_mode"] = \
             ablation_controls["fitness_phase_mode"]
+        compiler.zzx_params["search_policy"] = search_policy
         compiler.routing_strategy = ablation_controls["routing_batcher"]
     compiler.set_architecture_spec_path(str(architecture_path.resolve()))
     compiler.set_architecture(architecture)
@@ -511,6 +537,9 @@ def compile_zac(input_path: Path, config_path: Path, architecture_path: Path,
         "run_kind": run_kind or "unregistered",
         "ablation_variant": ablation_variant or None,
         "ablation_controls": ablation_controls,
+        "search_policy": search_policy,
+        "ga_applicable_boundaries": decision_summary[
+            "ga_applicable_boundaries"],
         "routing_strategy": compiler.routing_strategy,
         "compiler_module": type(compiler).__module__,
         "compiler_source_file": str(
@@ -712,9 +741,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--architecture", required=True, type=Path)
     parser.add_argument("--run-kind", default="")
     parser.add_argument("--ablation-variant", default="")
+    parser.add_argument(
+        "--search-policy", choices=("ga", "greedy_only"), default="ga")
     args = parser.parse_args(argv)
     environment_kind = os.environ.get("ZAC_RUN_KIND", "")
     environment_variant = os.environ.get("ZAC_ABLATION_VARIANT", "")
+    environment_policy = os.environ.get("ZAC_SEARCH_POLICY", "")
     if environment_kind and args.run_kind != environment_kind:
         raise ValueError(
             f"run-kind argument/environment mismatch: {args.run_kind!r} != "
@@ -723,8 +755,15 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError(
             "ablation variant argument/environment mismatch: "
             f"{args.ablation_variant!r} != {environment_variant!r}")
+    if environment_policy and args.search_policy != environment_policy:
+        raise ValueError(
+            "search-policy argument/environment mismatch: "
+            f"{args.search_policy!r} != {environment_policy!r}")
+    if args.search_policy != "ga" and args.run_kind != "ablation":
+        raise ValueError("greedy_only is allowed only for run_kind=ablation")
     if args.method == "M2":
-        if args.run_kind == "ablation" or args.ablation_variant:
+        if (args.run_kind == "ablation" or args.ablation_variant or
+                args.search_policy != "ga"):
             raise ValueError("M2 is not an ablation implementation")
         compile_qmap(
             args.input, args.config, args.architecture,
@@ -732,7 +771,8 @@ def main(argv: list[str] | None = None) -> None:
     else:
         compile_zac(
             args.input, args.config, args.architecture, args.method,
-            run_kind=args.run_kind, ablation_variant=args.ablation_variant)
+            run_kind=args.run_kind, ablation_variant=args.ablation_variant,
+            search_policy=args.search_policy)
 
 
 if __name__ == "__main__":

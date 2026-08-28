@@ -23,7 +23,8 @@ from copy import deepcopy
 from zac.zac import ZAC
 
 
-from zzx.algorithm_v2 import validate_schema2_setting
+from zzx.algorithm_v2 import (maximum_lookahead_horizon,
+                              validate_schema2_setting)
 from zzx.ghost import ghost_hits
 from zzx.scheduler_ledger import PureSchedulerLedger
 from zzx.zcost import compatible_2d, greedy_phase_batches, phase_batches
@@ -133,6 +134,7 @@ class ZAC_zzx(ZAC):
                     "native_abi_version", "native_wheel_sha256",
                     "rng_version", "elite_count", "early_stop_patience",
                     "max_unique_evaluations", "operator_profile",
+                    "search_policy",
                     "direct_enumeration_limit", "crossover_rate",
                     "local_polish_sweeps", "return_candidate_limit",
                     "return_assignment_k", "return_anchor_policy",
@@ -328,7 +330,25 @@ class ZAC_zzx(ZAC):
         if schema is not None and schema != 2:
             raise ValueError(f"不支持的 experiment_schema: {schema!r}")
         if schema == 2:
-            validate_schema2_setting(setting)
+            paper_contract = getattr(
+                self, "_paper_ablation_contract", None)
+            if paper_contract is None:
+                validate_schema2_setting(setting)
+            else:
+                expected_horizon = int(paper_contract["max_horizon"])
+                actual_horizon = maximum_lookahead_horizon(
+                    setting.get("lookahead_horizon"))
+                if (paper_contract.get("native_abi_version") != 9 or
+                        setting.get("native_abi_version") != 9 or
+                        actual_horizon != expected_horizon):
+                    raise ValueError(
+                        "paper ablation parser contract differs from wrapper")
+                validation_copy = deepcopy(setting)
+                validation_copy["native_abi_version"] = 8
+                if validation_copy.get("method_id") == "ours_lk":
+                    validation_copy["lookahead_horizon"][
+                        "max_horizon"] = 8
+                validate_schema2_setting(validation_copy)
         super().parse_setting(setting)    # 先让 ZAC 原版解析它认识的字段
         self.placer_kind = setting.get("placer", "zac")
         self.zzx_params = {k: setting[k] for k in self.ZAC_ZZX_KEYS if k in setting}

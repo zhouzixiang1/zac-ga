@@ -80,6 +80,7 @@ def _parser() -> argparse.ArgumentParser:
     ablation.add_argument("--output-root", type=Path)
     ablation.add_argument("--freeze", type=Path)
     ablation.add_argument("--abi9-wheel", type=Path, required=True)
+    ablation.add_argument("--native-python", type=Path, required=True)
     ablation.add_argument(
         "--components", nargs="+", default=["lookahead", "greedy"],
         help="lookahead, greedy, or both")
@@ -93,6 +94,7 @@ def _parser() -> argparse.ArgumentParser:
     sensitivity.add_argument("--freeze", type=Path)
     sensitivity.add_argument("--native-wheel", type=Path, required=True)
     sensitivity.add_argument("--native-abi-version", type=int, required=True)
+    sensitivity.add_argument("--native-python", type=Path, required=True)
     sensitivity.add_argument("--workers", type=int, default=PAPER_WORKERS)
     sensitivity.add_argument("--resume", action="store_true")
     sensitivity.add_argument("--dry-run", action="store_true")
@@ -159,6 +161,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif args.command == "run-paper-ablation":
             result = command_run_paper_ablation(
                 plan, freeze, output_root=root, abi9_wheel=args.abi9_wheel,
+                native_python=args.native_python,
                 components=args.components, workers=args.workers,
                 resume=args.resume, dry_run=args.dry_run)
         elif args.command == "run-paper-sensitivity":
@@ -166,6 +169,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 plan, freeze, output_root=root,
                 native_wheel=args.native_wheel,
                 native_abi_version=args.native_abi_version,
+                native_python=args.native_python,
                 workers=args.workers, resume=args.resume,
                 dry_run=args.dry_run)
         elif args.command == "run-paper-timing":

@@ -133,6 +133,7 @@ struct RichH0Problem {
 
 struct RichSearchConfig {
   RichOperatorProfile operator_profile{RichOperatorProfile::kExact};
+  std::string search_policy{"ga"};
   std::size_t population_size{6};
   std::size_t iterations{8};
   std::size_t neighbors_per_solution{2};

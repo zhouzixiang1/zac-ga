@@ -10,6 +10,7 @@ from experiments_v2.paper_cli import _parser
 from experiments_v2.paper_protocol import (
     PAPER_ABLATION_VARIANTS,
     SENSITIVITY_PROFILE_IDS,
+    _paper_ablation_wrapper,
     _resolved_main_config,
     build_sensitivity_configs,
     build_shared_lookahead_configs,
@@ -23,9 +24,6 @@ from experiments_v2.runner import _native_setting_contract
 ROOT = Path(__file__).resolve().parents[1]
 M4_CONFIG = ROOT / "exp_setting" / "native_ga_v1" / "ours_lk_independent.json"
 M3_CONFIG = ROOT / "exp_setting" / "native_ga_v1" / "ours_nl_independent.json"
-WHEEL_SHA = "b9109e6556e032a8c148b33c9ca1f213eac4226c6801182e67e8ef4a577786b9"
-
-
 def _manifest(name: str, qubits: int, gates_2q: int, digest: int
               ) -> CanonicalCircuitManifest:
     value = f"{digest:064x}"
@@ -90,8 +88,8 @@ class PaperConfigTests(unittest.TestCase):
 
     def test_shared_pair_diff_is_only_identity_directory_and_horizon(self) -> None:
         h0, h8, audit = build_shared_lookahead_configs(
-            self.m4, native_abi_version=8,
-            native_wheel_sha256=WHEEL_SHA, seed=2)
+            self.m4, native_abi_version=9,
+            native_wheel_sha256="a" * 64, seed=2)
         self.assertEqual(
             set(audit["differences"]), {"dir", "lookahead_horizon", "method_id"})
         self.assertEqual(effective_zac_setting(h0)["method_id"], "ours_nl")
@@ -134,12 +132,10 @@ class PaperConfigTests(unittest.TestCase):
         sensitivity = build_sensitivity_configs(
             self.m4, native_abi_version=9,
             native_wheel_sha256="a" * 64)["horizon_2"]
-        wrapper = {
-            "base_method": "M4",
-            "base_config": sensitivity,
-            "controls": {"lookahead_horizon": 2, "search_policy": "ga"},
-            "search_policy": "ga",
-        }
+        wrapper = _paper_ablation_wrapper(
+            sensitivity, method="M4",
+            variant="paper_sensitivity_horizon_2", horizon=2,
+            search_policy="ga")
         _config, _controls, depth = _native_setting_contract(
             wrapper, method="M4", run_kind="ablation",
             package_versions={"paper_search_policy": "ga"})
@@ -160,9 +156,12 @@ class PaperCliTests(unittest.TestCase):
         arguments = {
             "paper-freeze": [],
             "run-paper-main": [],
-            "run-paper-ablation": ["--abi9-wheel", "wheel.whl"],
+            "run-paper-ablation": [
+                "--abi9-wheel", "wheel.whl",
+                "--native-python", "abi9/bin/python"],
             "run-paper-sensitivity": [
-                "--native-wheel", "wheel.whl", "--native-abi-version", "9"],
+                "--native-wheel", "wheel.whl", "--native-abi-version", "9",
+                "--native-python", "abi9/bin/python"],
             "run-paper-timing": [],
             "aggregate-paper": [],
         }
