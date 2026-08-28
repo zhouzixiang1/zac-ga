@@ -293,6 +293,65 @@ def _apply_metrics(manifest: RunManifest, metrics: Mapping[str, Any]) -> None:
         manifest.warnings.extend(str(item) for item in warnings)
 
 
+def _native_setting_contract(
+        config_payload: Mapping[str, Any], *, method: str, run_kind: str,
+        package_versions: Mapping[str, str],
+        ) -> tuple[Mapping[str, Any], Mapping[str, Any] | None, int]:
+    """Unwrap one native config and derive its registered maximum horizon.
+
+    Main-table identities remain fixed at M3/H0 and M4/H8.  Ablation and
+    sensitivity configurations instead declare their depth in both the
+    wrapper and the immutable base configuration.  This helper deliberately
+    does not infer depth from the method label.
+    """
+    controls: Mapping[str, Any] | None = None
+    if run_kind == "ablation":
+        base_config = config_payload.get("base_config")
+        raw_controls = config_payload.get("controls")
+        if (not isinstance(base_config, Mapping) or
+                not isinstance(raw_controls, Mapping)):
+            raise TypeError(
+                "ablation configuration lacks base_config/controls")
+        if config_payload.get("base_method") != method:
+            raise ValueError(
+                "ablation wrapper base_method differs from manifest")
+        controls = raw_controls
+        config = effective_zac_setting(base_config)
+        declared_policy = controls.get("search_policy", "ga")
+        wrapper_policy = config_payload.get("search_policy", declared_policy)
+        command_policy = package_versions.get(
+            "paper_search_policy", declared_policy)
+        if (declared_policy not in {"ga", "greedy_only"} or
+                wrapper_policy != declared_policy or
+                command_policy != declared_policy):
+            raise ValueError("ablation search_policy declarations differ")
+    else:
+        config = effective_zac_setting(config_payload)
+    lookahead = config.get("lookahead_horizon")
+    if not isinstance(lookahead, Mapping):
+        formal_kinds = {
+            "coverage", "main", "timing", "ablation", "large", "qasmbench"}
+        if config.get("backend") != "native" and run_kind not in formal_kinds:
+            return config, controls, -1
+        raise ValueError("formal lookahead spec must be an object")
+    configured_depth = lookahead.get("max_horizon")
+    if (isinstance(configured_depth, bool) or
+            not isinstance(configured_depth, int) or configured_depth < 0):
+        raise ValueError("formal lookahead max_horizon must be non-negative")
+    depth = int(configured_depth)
+    if run_kind == "main":
+        formal_main_depth = 0 if method == "M3" else 8
+        if depth != formal_main_depth:
+            raise ValueError(
+                "formal main horizon differs from the frozen method: "
+                f"{depth} != {formal_main_depth}")
+    if controls is not None and controls.get("lookahead_horizon") != depth:
+        raise ValueError(
+            "ablation wrapper horizon differs from base config: "
+            f"{controls.get('lookahead_horizon')} != {depth}")
+    return config, controls, depth
+
+
 def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
                 scorer: Optional[Scorer] = None) -> RunManifest:
     """Run exactly one compiler attempt and atomically seal all its evidence.
@@ -574,7 +633,11 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
                             Path(spec.config_path).read_text(encoding="utf-8"))
                         if not isinstance(config_payload, Mapping):
                             raise TypeError("native configuration must be an object")
-                        config = effective_zac_setting(config_payload)
+                        config, ablation_controls, configured_depth = (
+                            _native_setting_contract(
+                                config_payload, method=manifest.method,
+                                run_kind=manifest.run_kind,
+                                package_versions=manifest.package_versions))
                     except (OSError, TypeError, json.JSONDecodeError) as error:
                         raise ValueError(
                             f"cannot read frozen native configuration: {error}") from error
@@ -652,7 +715,7 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
                     lookahead = config.get("lookahead_horizon")
                     if not isinstance(lookahead, Mapping):
                         raise ValueError("formal lookahead spec must be an object")
-                    expected_depth = 0 if manifest.method == "M3" else 8
+                    expected_depth = int(configured_depth)
                     expected_forecast = {
                         "mode": lookahead.get("mode"),
                         "policy": lookahead.get("policy"),
@@ -721,10 +784,10 @@ def run_attempt(spec: AttemptSpec, *, verifier: Optional[Verifier] = None,
                             or not math.isfinite(float(weighted_total))
                             or float(weighted_total) < 0.0):
                         raise ValueError("invalid forecast weighted NLL total")
-                    if manifest.method == "M3" and not math.isclose(
+                    if expected_depth == 0 and not math.isclose(
                             float(weighted_total), 0.0,
                             rel_tol=0.0, abs_tol=1e-15):
-                        raise ValueError("M3 consumed non-zero future heuristic")
+                        raise ValueError("H0 consumed non-zero future heuristic")
         except (OSError, TypeError, ValueError, KeyError,
                 json.JSONDecodeError) as error:
             if manifest.status == RunStatus.SUCCESS.value:
