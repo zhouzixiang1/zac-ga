@@ -55,6 +55,11 @@ FIDELITY_COMPONENTS = (
 ManifestInput = RunManifest | str | Path
 
 
+def _is_sha256(value: object) -> bool:
+    return (isinstance(value, str) and len(value) == 64 and
+            all(character in "0123456789abcdef" for character in value))
+
+
 def _load_manifests(inputs: Iterable[ManifestInput]) -> list[RunManifest]:
     rows: list[RunManifest] = []
     for item in inputs:
@@ -63,6 +68,101 @@ def _load_manifests(inputs: Iterable[ManifestInput]) -> list[RunManifest]:
         else:
             rows.append(load_run_manifest(item, require_success_metrics=True))
     return rows
+
+
+def _exact_matrix(
+        label: str, manifests: Sequence[RunManifest],
+        expected: set[tuple[Any, ...]], *,
+        key: Any) -> None:
+    """Fail closed unless one terminal manifest exists for every planned cell."""
+    observed = [tuple(key(run)) for run in manifests]
+    counts = Counter(observed)
+    duplicates = sorted(identity for identity, count in counts.items() if count != 1)
+    observed_set = set(observed)
+    missing = sorted(expected - observed_set)
+    extra = sorted(observed_set - expected)
+    if duplicates or missing or extra or len(observed) != len(expected):
+        raise ValueError(
+            f"paper {label} identity matrix drift: expected={len(expected)}, "
+            f"observed={len(observed)}, missing={missing[:5]}, "
+            f"extra={extra[:5]}, duplicates={duplicates[:5]}")
+
+
+def _validate_frozen_evidence(
+        label: str, manifests: Sequence[RunManifest], *,
+        frozen_inputs: Mapping[str, Mapping[str, str]],
+        expected_native_abi: int | None,
+        expected_native_wheel_sha256: str | None = None,
+        legacy_unspecified_fallback: set[tuple[str, str, str, int, int]] = frozenset(),
+        ) -> dict[str, Any]:
+    """Validate canonical/ledger/native evidence before any paper statistic.
+
+    ``python_fallback=None`` is accepted only for the explicitly named frozen
+    seed-0 rows that passed the parity gate.  New runs and all ABI9 runs must
+    state ``False``; ``True`` is never accepted.
+    """
+    ledgers: MutableMapping[tuple[str, str], set[str]] = defaultdict(set)
+    legacy_used: list[tuple[str, str, str, int, int]] = []
+    native_wheels: set[str] = set()
+    for run in manifests:
+        identity = (run.dataset, run.circuit, run.method, run.seed, run.repetition)
+        try:
+            expected_input = frozen_inputs[run.dataset][run.circuit]
+        except KeyError as error:
+            raise ValueError(
+                f"paper {label} manifest is outside the frozen canonical suite: "
+                f"{identity}") from error
+        if run.input_sha256 != expected_input:
+            raise ValueError(
+                f"paper {label} input SHA drift for {identity}: "
+                f"{run.input_sha256} != {expected_input}")
+        if not run.expected_gate_ledger_sha256:
+            raise ValueError(f"paper {label} lacks expected gate ledger: {identity}")
+        ledgers[(run.dataset, run.circuit)].add(run.expected_gate_ledger_sha256)
+        if (run.status == RunStatus.SUCCESS.value and
+                run.observed_gate_ledger_sha256 !=
+                run.expected_gate_ledger_sha256):
+            raise ValueError(
+                f"paper {label} observed gate-ledger mismatch: {identity}")
+        if run.status != RunStatus.SUCCESS.value or run.method not in {"M3", "M4"}:
+            continue
+        if (run.backend != "native" or
+                run.native_abi_version != expected_native_abi or
+                run.verifier_ok is not True or run.ghost_hits != 0):
+            raise ValueError(
+                f"paper {label} native success evidence is invalid: {identity}")
+        if (not _is_sha256(run.native_wheel_sha256) or
+                (expected_native_wheel_sha256 is not None and
+                 run.native_wheel_sha256 != expected_native_wheel_sha256)):
+            raise ValueError(
+                f"paper {label} native wheel drift for {identity}")
+        native_wheels.add(run.native_wheel_sha256)
+        if run.python_fallback is True:
+            raise ValueError(f"paper {label} used Python fallback: {identity}")
+        if run.python_fallback is not False:
+            if identity not in legacy_unspecified_fallback:
+                raise ValueError(
+                    f"paper {label} lacks explicit no-fallback evidence: {identity}")
+            legacy_used.append(identity)
+    ledger_drift = {
+        f"{dataset}/{circuit}": sorted(values)
+        for (dataset, circuit), values in ledgers.items() if len(values) != 1
+    }
+    if ledger_drift:
+        raise ValueError(
+            f"paper {label} cross-method gate-ledger drift: {ledger_drift}")
+    return {
+        "manifest_N": len(manifests),
+        "canonical_inputs_verified": True,
+        "cross_method_gate_ledgers_verified": True,
+        "successful_observed_gate_ledgers_verified": True,
+        "expected_native_abi": expected_native_abi,
+        "native_wheel_sha256": sorted(native_wheels),
+        "native_successes_fail_closed": True,
+        "python_fallback_true_rejected": True,
+        "legacy_python_fallback_unspecified": [list(row) for row in sorted(legacy_used)],
+        "legacy_python_fallback_exception_N": len(legacy_used),
+    }
 
 
 def _median(values: Iterable[float | int | None]) -> float | None:
@@ -538,9 +638,14 @@ def _paired_variant_fidelity(
     circuits = sorted(set(current) & set(reference))
     if eligible is not None:
         circuits = [circuit for circuit in circuits if circuit in eligible]
-    circuits = [circuit for circuit in circuits
-                if current[circuit]["log_fidelity"] is not None and
-                reference[circuit]["log_fidelity"] is not None]
+    circuits = [
+        circuit for circuit in circuits
+        if all(
+            cell["log_fidelity"] is not None and
+            cell["valid"] == cell["N"] and
+            cell["fidelity_valid"] == cell["fidelity_N"]
+            for cell in (current[circuit], reference[circuit]))
+    ]
     differences = [float(current[circuit]["log_fidelity"]) -
                    float(reference[circuit]["log_fidelity"])
                    for circuit in circuits]
@@ -658,6 +763,10 @@ def summarize_ablation(
                 "move_batches": cell["move_batches"] if cell else None,
                 "move_time_us": cell["move_time_us"] if cell else None,
                 "algorithm_time_s": cell["algorithm_time_s"] if cell else None,
+                "valid": cell["valid"] if cell else 0,
+                "N": cell["N"] if cell else 0,
+                "fidelity_valid": cell["fidelity_valid"] if cell else 0,
+                "fidelity_N": cell["fidelity_N"] if cell else 0,
                 "valid_over_N": cell["valid_over_N"] if cell else "0/0",
                 "status": cell["status"] if cell else "missing",
                 "ga_applicable_boundaries": applicability.get(circuit),
@@ -739,8 +848,11 @@ def summarize_sensitivity(
         setting_rows = [row for row in rows if row["setting"] == label]
         successful = [row for row in setting_rows
                       if row["status"] == RunStatus.SUCCESS.value]
-        linear_logs = [math.log(float(row["fidelity"])) for row in successful
-                       if row["fidelity"] is not None and row["fidelity"] > 0]
+        linear_logs = [
+            float(run.log_fidelity) for run in grouped.get(label, ())
+            if run.status == RunStatus.SUCCESS.value and
+            not run.fidelity_ood and run.log_fidelity is not None
+        ]
         summaries[label] = {
             "valid": len(successful), "N": len(setting_rows),
             "fidelity_geometric_mean": _geometric_mean_logs(
@@ -781,6 +893,13 @@ def summarize_runtime(
         successful = [attempts[0] for repetition, attempts in by_repetition.items()
                       if len(attempts) == 1 and
                       attempts[0].status == RunStatus.SUCCESS.value]
+        duplicate_repetitions = sum(
+            max(0, len(attempts) - 1) for attempts in by_repetition.values())
+        unexpected_repetitions = sum(
+            run.repetition not in expected_repetitions for run in runs)
+        strict_complete = (
+            len(successful) == len(expected_repetitions) and
+            duplicate_repetitions == 0 and unexpected_repetitions == 0)
         times = [float(_runtime_ns(run)) / 1e9 for run in successful
                  if _runtime_ns(run) is not None]
         transition = [float(run.transition_decision_ns) / 1e9 for run in successful
@@ -794,23 +913,24 @@ def summarize_runtime(
             "transition_time_iqr_s": _iqr(transition),
             "valid": len(successful), "N": 3,
             "valid_over_N": f"{len(successful)}/3",
+            "strict_complete": strict_complete,
             "status_counts": json.dumps(dict(Counter(run.status for run in runs
                                                       if run.repetition in expected_repetitions)),
                                         sort_keys=True, separators=(",", ":")),
-            "duplicate_repetitions": sum(
-                max(0, len(attempts) - 1) for attempts in by_repetition.values()),
-            "unexpected_repetitions": sum(
-                run.repetition not in expected_repetitions for run in runs),
+            "duplicate_repetitions": duplicate_repetitions,
+            "unexpected_repetitions": unexpected_repetitions,
         })
     summary: dict[str, Any] = {"available": bool(manifests), "methods": {}}
     for method in METHODS:
         method_rows = [row for row in rows if row["method"] == method]
         method_times = [float(row["algorithm_time_median_s"])
                         for row in method_rows
-                        if row["algorithm_time_median_s"] is not None]
+                        if row["strict_complete"] and
+                        row["algorithm_time_median_s"] is not None]
         within_circuit_iqrs = [float(row["algorithm_time_iqr_s"])
                                for row in method_rows
-                               if row["algorithm_time_iqr_s"] is not None]
+                               if row["strict_complete"] and
+                               row["algorithm_time_iqr_s"] is not None]
         summary["methods"][method] = {
             "circuit_N": len(method_times),
             "median_of_circuit_medians_s": (
@@ -836,7 +956,9 @@ def summarize_runtime(
             reference = by_identity.get((dataset, circuit, "M2"), {})
             current_time = current.get("algorithm_time_median_s")
             reference_time = reference.get("algorithm_time_median_s")
-            if (current_time is None or reference_time is None or
+            if (not current.get("strict_complete") or
+                    not reference.get("strict_complete") or
+                    current_time is None or reference_time is None or
                     float(current_time) <= 0.0 or float(reference_time) <= 0.0):
                 continue
             log_ratios.append(math.log(float(current_time) / float(reference_time)))
@@ -942,7 +1064,7 @@ def build_paper_values(
                 comparison.get("median_per_circuit_ratio"), digits=4)
             macros[f"{prefix}{suffix}WTL"] = (
                 f"{comparison['wins']}/{comparison['ties']}/{comparison['losses']}")
-            # M4 and H8 are members of the pre-registered Holm family.  M3 is
+            # M4 and H8 are members of the frozen primary Holm family.  M3 is
             # an exploratory diagnostic and therefore retains its raw p-value.
             p_value = (wilcoxon.get("paper_holm_adjusted_p_value")
                        if method == "M4" else wilcoxon.get("p_value"))
@@ -974,9 +1096,16 @@ def build_paper_values(
         comparison = main_summary["datasets"][dataset]["comparisons"]["M4_vs_Bstar"]
         ratio = comparison["geometric_mean_ratio"]
         if ratio is not None:
+            change = float(ratio) - 1.0
+            if abs(change) < 5e-5:
+                direction = "Fidelity几何均值基本持平"
+            elif change > 0:
+                direction = f"Fidelity几何均值提高{change * 100.0:.2f}\\%"
+            else:
+                direction = f"Fidelity几何均值降低{-change * 100.0:.2f}\\%"
             statements.append(
                 f"在{label}严格共同集合上，完整方法相对逐电路最强基线的"
-                f"Fidelity几何均值提高{(float(ratio) - 1.0) * 100.0:.2f}\\%"
+                f"{direction}"
                 f"（{comparison['wins']}/{comparison['ties']}/{comparison['losses']} 胜/平/负）")
     macros["ResultStatement"] = "；".join(statements) + "。" if statements else r"\textemdash{}"
 
@@ -1049,8 +1178,10 @@ def build_paper_values(
                 "AblationGACI", "AblationGAWTL", "AblationGAP"):
             macros[name] = r"\textemdash{}"
 
-    m4_cells = [row["M4"] for dataset in DATASETS for row in main_rows[dataset]
-                if row["M4"]["valid"] > 0]
+    m4_cells = [
+        row["M4"] for dataset in DATASETS for row in main_rows[dataset]
+        if row["M4"]["valid"] == row["M4"]["N"]
+    ]
     time_macros = {
         "TimeInitial": "initial_placement_s",
         "TimePrepare": "problem_preparation_s",
@@ -1169,6 +1300,168 @@ def _flatten_main_row(row: Mapping[str, Any]) -> dict[str, Any]:
     return flat
 
 
+def _figure_main_rows(
+        main_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]],
+                   list[dict[str, Any]]]:
+    """Build plot-ready per-circuit main-result tables for manuscript figures.
+
+    The strongest baseline is selected by fidelity on the same circuit.  Rows
+    outside the strict all-four linear-model cohort are retained with an
+    explicit ``strict_paired=False`` marker and blank deltas, so a plotting
+    script cannot silently change the denominator by dropping failed runs.
+    """
+    fidelity_rows: list[dict[str, Any]] = []
+    mechanism_rows: list[dict[str, Any]] = []
+    stage_rows: list[dict[str, Any]] = []
+    mechanism_fields = (
+        "transfers", "idle_exposures", "move_batches", "move_time_us",
+        "log_atom_transfer", "log_idle_excitation", "log_coherence_linear",
+    )
+    for dataset in DATASETS:
+        for row in main_rows[dataset]:
+            strict = all(
+                row[method]["log_fidelity"] is not None and
+                row[method]["valid"] == row[method]["N"] and
+                row[method]["fidelity_valid"] == row[method]["fidelity_N"]
+                for method in METHODS)
+            m1_log = row["M1"]["log_fidelity"]
+            m2_log = row["M2"]["log_fidelity"]
+            baseline_method = None
+            if m1_log is not None and m2_log is not None:
+                baseline_method = (
+                    "M1" if float(m1_log) >= float(m2_log) else "M2")
+            baseline = row[baseline_method] if baseline_method else None
+            m4 = row["M4"]
+            delta_log = (
+                float(m4["log_fidelity"]) - float(baseline["log_fidelity"])
+                if strict and baseline is not None else None)
+            fidelity_rows.append({
+                "dataset": dataset,
+                "circuit": row["circuit"],
+                "strict_paired": strict,
+                "baseline_method": baseline_method,
+                "baseline_log_fidelity": (
+                    baseline["log_fidelity"] if baseline else None),
+                "baseline_fidelity": baseline["fidelity"] if baseline else None,
+                "M4_log_fidelity": m4["log_fidelity"],
+                "M4_fidelity": m4["fidelity"],
+                "M4_minus_Bstar_delta_logF": delta_log,
+                "M4_over_Bstar_ratio": (
+                    math.exp(delta_log) if delta_log is not None else None),
+                "M4_valid_over_N": m4["valid_over_N"],
+            })
+
+            mechanism: dict[str, Any] = {
+                "dataset": dataset,
+                "circuit": row["circuit"],
+                "strict_paired": strict,
+                "baseline_method": baseline_method,
+                "count_delta_semantics": (
+                    "M4 minus strongest-fidelity baseline; negative favorable"),
+                "log_component_delta_semantics": (
+                    "M4 minus strongest-fidelity baseline; positive favorable"),
+            }
+            for field in mechanism_fields:
+                reference = baseline.get(field) if baseline else None
+                current = m4.get(field)
+                mechanism[f"Bstar_{field}"] = reference
+                mechanism[f"M4_{field}"] = current
+                mechanism[f"M4_minus_Bstar_{field}"] = (
+                    float(current) - float(reference)
+                    if strict and current is not None and reference is not None
+                    else None)
+            mechanism_rows.append(mechanism)
+
+            stage_rows.append({
+                "dataset": dataset,
+                "circuit": row["circuit"],
+                "status": m4["status"],
+                "valid": m4["valid"],
+                "N": m4["N"],
+                "valid_over_N": m4["valid_over_N"],
+                "full_compile_s": m4["algorithm_time_s"],
+                "initial_placement_s": m4["initial_placement_s"],
+                "problem_preparation_s": m4["problem_preparation_s"],
+                "search_kernel_s": m4["search_kernel_s"],
+                "result_commit_s": m4["result_commit_s"],
+                "routing_s": m4["routing_s"],
+                "transition_decision_s": m4["transition_decision_s"],
+                "return_match_s": m4["return_match_s"],
+                "forecast_s": m4["forecast_s"],
+                "return_match_and_forecast_nested_in_search_kernel": True,
+            })
+    return fidelity_rows, mechanism_rows, stage_rows
+
+
+def _figure_ablation_rows(
+        rows: Sequence[Mapping[str, Any]], *, h0_variant: str,
+        h8_variant: str, greedy_variant: str) -> list[dict[str, Any]]:
+    """Return one plot-ready row per circuit and controlled comparison."""
+    grouped = {(str(row["dataset"]), str(row["circuit"]), str(row["variant"])):
+               row for row in rows}
+    identities = sorted({(key[0], key[1]) for key in grouped})
+    result: list[dict[str, Any]] = []
+    for dataset, circuit in identities:
+        h0 = grouped.get((dataset, circuit, h0_variant), {})
+        h8 = grouped.get((dataset, circuit, h8_variant), {})
+        greedy = grouped.get((dataset, circuit, greedy_variant), {})
+        comparisons = (
+            ("H8_vs_H0", h8, h0, True),
+            ("GA_vs_greedy", h8, greedy,
+             bool((h8.get("ga_applicable_boundaries") or 0) > 0)),
+        )
+        for comparison, current, reference, in_scope in comparisons:
+            current_fidelity = current.get("fidelity")
+            reference_fidelity = reference.get("fidelity")
+            current_complete = bool(
+                current.get("valid") == current.get("N") and
+                current.get("fidelity_valid") == current.get("fidelity_N") and
+                current.get("N") in {1, 3})
+            reference_complete = bool(
+                reference.get("valid") == reference.get("N") and
+                reference.get("fidelity_valid") == reference.get("fidelity_N") and
+                reference.get("N") in {1, 3})
+            paired = bool(
+                in_scope and current_complete and reference_complete and
+                current_fidelity is not None and
+                reference_fidelity is not None and
+                float(current_fidelity) > 0 and float(reference_fidelity) > 0)
+            delta_log = (
+                math.log(float(current_fidelity)) -
+                math.log(float(reference_fidelity)) if paired else None)
+            output: dict[str, Any] = {
+                "dataset": dataset,
+                "circuit": circuit,
+                "comparison": comparison,
+                "in_scope": in_scope,
+                "paired_valid": paired,
+                "current_variant": current.get("variant"),
+                "reference_variant": reference.get("variant"),
+                "current_fidelity": current_fidelity,
+                "reference_fidelity": reference_fidelity,
+                "delta_logF": delta_log,
+                "fidelity_ratio": (
+                    math.exp(delta_log) if delta_log is not None else None),
+                "current_valid_over_N": current.get("valid_over_N"),
+                "reference_valid_over_N": reference.get("valid_over_N"),
+                "ga_applicable_boundaries": h8.get(
+                    "ga_applicable_boundaries"),
+            }
+            for field in ("transfers", "idle_exposures",
+                          "log_coherence_linear", "move_batches",
+                          "move_time_us", "algorithm_time_s"):
+                left, right = current.get(field), reference.get(field)
+                output[f"current_{field}"] = left
+                output[f"reference_{field}"] = right
+                output[f"delta_{field}"] = (
+                    float(left) - float(right)
+                    if paired and left is not None and right is not None
+                    else None)
+            result.append(output)
+    return result
+
+
 def aggregate_paper(
         main_manifest_inputs: Iterable[ManifestInput], *,
         frozen_suites: Mapping[str, Sequence[str]],
@@ -1240,6 +1533,11 @@ def aggregate_paper(
     if output_dir is not None:
         destination = Path(output_dir)
         destination.mkdir(parents=True, exist_ok=True)
+        figure_fidelity, figure_mechanism, figure_stages = _figure_main_rows(
+            main_rows)
+        figure_ablation = _figure_ablation_rows(
+            ablation_rows, h0_variant=h0_variant, h8_variant=h8_variant,
+            greedy_variant=greedy_variant)
         _write_csv(destination / "zac18.csv",
                    [_flatten_main_row(row) for row in main_rows["zac18"]])
         _write_csv(destination / "qmap154.csv",
@@ -1247,6 +1545,10 @@ def aggregate_paper(
         _write_csv(destination / "ablation.csv", ablation_rows)
         _write_csv(destination / "sensitivity.csv", sensitivity_rows)
         _write_csv(destination / "runtime.csv", runtime_rows)
+        _write_csv(destination / "fig6_fidelity_gain.csv", figure_fidelity)
+        _write_csv(destination / "fig6_mechanism.csv", figure_mechanism)
+        _write_csv(destination / "fig6_ablation.csv", figure_ablation)
+        _write_csv(destination / "fig6_m4_stage_time.csv", figure_stages)
         _json_dump(destination / "main_summary.json", main_summary)
         _json_dump(destination / "paper_values.json", paper_values)
         (destination / "results_values_zh.tex").write_text(
@@ -1286,19 +1588,117 @@ def _quality_manifest_paths(source_path: Path) -> list[Path]:
             set(payload.get("ours", {})) != {"M3", "M4"}):
         raise ValueError("paper quality_source_manifest has an invalid method inventory")
     paths: list[Path] = []
+    manifests: list[RunManifest] = []
+    expected: set[tuple[str, str, str, int, int]] = set()
     for method in ("M1", "M2"):
         for identity, row in sorted(payload["baselines"][method].items()):
-            paths.append(_verified_manifest_path(
-                row, label=f"quality {method}/{identity}"))
+            dataset, circuit = identity.split("/", 1)
+            path = _verified_manifest_path(
+                row, label=f"quality {method}/{identity}")
+            run = load_run_manifest(path, require_success_metrics=True)
+            key = (dataset, circuit, method, 0, 0)
+            if ((run.dataset, run.circuit, run.method, run.seed, run.repetition)
+                    != key or run.status != row.get("status")):
+                raise ValueError(f"quality source identity/status drift: {key}")
+            paths.append(path)
+            manifests.append(run)
+            expected.add(key)
     for method in ("M3", "M4"):
         for identity, seeds in sorted(payload["ours"][method].items()):
             if set(seeds) != {"0", "1", "2"}:
                 raise ValueError(
                     f"quality {method}/{identity} does not contain seeds 0,1,2")
             for seed, row in sorted(seeds.items(), key=lambda item: int(item[0])):
-                paths.append(_verified_manifest_path(
-                    row, label=f"quality {method}/{identity}/seed{seed}"))
+                dataset, circuit = identity.split("/", 1)
+                path = _verified_manifest_path(
+                    row, label=f"quality {method}/{identity}/seed{seed}")
+                run = load_run_manifest(path, require_success_metrics=True)
+                key = (dataset, circuit, method, int(seed), 0)
+                if ((run.dataset, run.circuit, run.method, run.seed,
+                     run.repetition) != key or run.status != row.get("status")):
+                    raise ValueError(f"quality source identity/status drift: {key}")
+                paths.append(path)
+                manifests.append(run)
+                expected.add(key)
+    _exact_matrix(
+        "quality", manifests, expected,
+        key=lambda run: (run.dataset, run.circuit, run.method,
+                         run.seed, run.repetition))
     return paths
+
+
+def _legacy_seed0_fallback_exception(
+        quality_payload: Mapping[str, Any], freeze: Mapping[str, Any],
+        ) -> tuple[set[tuple[str, str, str, int, int]], Mapping[str, Any]]:
+    """Authorize the one historical missing-field exception after parity only."""
+    if quality_payload.get("accepted_old_seed0") is not True:
+        return set(), {
+            "enabled": False, "reason": "paper main reran seed0",
+            "scope": "none",
+        }
+    parity_path = Path(str(quality_payload.get("parity_report", ""))).resolve()
+    if not parity_path.is_file():
+        raise FileNotFoundError(
+            "accepted old seed0 requires the retained parity report")
+    parity = json.loads(parity_path.read_text(encoding="utf-8"))
+    frozen_source_path = Path(
+        str(freeze["seed0_source_manifest"]["path"])).resolve()
+    frozen_source_sha = freeze["seed0_source_manifest"].get("sha256")
+    if (not frozen_source_path.is_file() or
+            (_is_sha256(frozen_source_sha) and
+             sha256_file(frozen_source_path) != frozen_source_sha)):
+        raise ValueError("frozen seed0 source manifest hash drift")
+    frozen_source = json.loads(frozen_source_path.read_text(encoding="utf-8"))
+    expected_compared = len(freeze["parity_timing_cohort"]["identities"]) * 2
+    comparisons_payload = parity.get("comparisons", ())
+    comparisons = (comparisons_payload
+                   if isinstance(comparisons_payload, list) else [])
+    expected_parity = {
+        (str(dataset), str(circuit), method)
+        for dataset, circuit in freeze["parity_timing_cohort"]["identities"]
+        for method in ("M3", "M4")
+    }
+    observed_parity = [
+        (str(row.get("dataset")), str(row.get("circuit")),
+         str(row.get("method")))
+        for row in comparisons if isinstance(row, Mapping)
+    ]
+    parity_counts = Counter(observed_parity)
+    if (parity.get("freeze_id") != freeze.get("freeze_id") or
+            parity.get("passed") is not True or parity.get("status") != "passed" or
+            parity.get("compared") != expected_compared or
+            len(comparisons) != expected_compared or
+            set(observed_parity) != expected_parity or
+            any(count != 1 for count in parity_counts.values()) or
+            any(not isinstance(row, Mapping) or row.get("passed") is not True
+                for row in comparisons)):
+        raise ValueError("old seed0 fallback exception lacks a passed parity gate")
+    for row in comparisons:
+        identity = f"{row['dataset']}/{row['circuit']}"
+        expected_old = Path(
+            str(frozen_source[row["method"]][identity]["path"])).resolve()
+        if Path(str(row.get("old_manifest", ""))).resolve() != expected_old:
+            raise ValueError(
+                f"parity old-manifest identity drift: {row['method']}/{identity}")
+    allowed: set[tuple[str, str, str, int, int]] = set()
+    for method in ("M3", "M4"):
+        for identity, seeds in quality_payload["ours"][method].items():
+            if seeds["0"] != frozen_source[method][identity]:
+                raise ValueError(
+                    f"accepted old seed0 is not the frozen source: {method}/{identity}")
+            dataset, circuit = identity.split("/", 1)
+            allowed.add((dataset, circuit, method, 0, 0))
+    return allowed, {
+        "enabled": True,
+        "scope": "only frozen parity-passed M3/M4 seed0 manifests",
+        "reason": (
+            "historical ABI8 manifests predate the python_fallback field; "
+            "native ABI8, wheel, verifier, ledger and ghost evidence remain required"),
+        "parity_report": {"path": str(parity_path),
+                          "sha256": sha256_file(parity_path),
+                          "compared": expected_compared},
+        "allowed_identity_N": len(allowed),
+    }
 
 
 def _track_manifests(root: Path, track: str) -> list[Path]:
@@ -1345,6 +1745,11 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
     if not quality_source.is_file():
         raise FileNotFoundError(
             "paper main experiment has not produced quality_source_manifest.json")
+    quality_payload = json.loads(quality_source.read_text(encoding="utf-8"))
+    if (quality_payload.get("freeze_id") != freeze.get("freeze_id") or
+            quality_payload.get("protocol_id") != freeze.get("protocol_id")):
+        raise ValueError(
+            "paper quality_source_manifest does not belong to the loaded freeze")
     quality_paths = _quality_manifest_paths(quality_source)
     frozen_suites = {
         dataset: sorted(str(circuit) for circuit in
@@ -1371,13 +1776,88 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
         len(twelve_identities) * len(sensitivity_variants))
     _require_exact_manifest_count(
         "timing", timing_paths, len(twelve_identities) * 4 * 3)
+    quality_runs = _load_manifests(quality_paths)
+    ablation_runs = _load_manifests(ablation_paths)
+    sensitivity_runs = _load_manifests(sensitivity_paths)
+    timing_runs = _load_manifests(timing_paths)
+    quality_expected = {
+        (dataset, circuit, method, seed, 0)
+        for dataset, circuits in frozen_suites.items() for circuit in circuits
+        for method in METHODS for seed in EXPECTED_SEEDS[method]
+    }
+    _exact_matrix(
+        "quality", quality_runs, quality_expected,
+        key=lambda run: (run.dataset, run.circuit, run.method,
+                         run.seed, run.repetition))
+    ablation_expected = {
+        (dataset, circuit, variant, method, seed, 0, "ablation")
+        for dataset, circuit in ablation_identities
+        for variant, method, seeds in (
+            (PAPER_ABLATION_VARIANTS["h0"], "M3", (0, 1, 2)),
+            (PAPER_ABLATION_VARIANTS["h8"], "M4", (0, 1, 2)),
+            (PAPER_ABLATION_VARIANTS["greedy"], "M4", (0,)))
+        for seed in seeds
+    }
+    _exact_matrix(
+        "ablation", ablation_runs, ablation_expected,
+        key=lambda run: (run.dataset, run.circuit, run.ablation_variant,
+                         run.method, run.seed, run.repetition, run.run_kind))
+    sensitivity_expected = {
+        (dataset, circuit, variant, "M4", 0, 0, "ablation")
+        for dataset, circuit in twelve_identities
+        for variant in sensitivity_variants
+    }
+    _exact_matrix(
+        "sensitivity", sensitivity_runs, sensitivity_expected,
+        key=lambda run: (run.dataset, run.circuit, run.ablation_variant,
+                         run.method, run.seed, run.repetition, run.run_kind))
+    timing_expected = {
+        (dataset, circuit, method, 0, repetition, "timing")
+        for dataset, circuit in twelve_identities for method in METHODS
+        for repetition in range(3)
+    }
+    _exact_matrix(
+        "timing", timing_runs, timing_expected,
+        key=lambda run: (run.dataset, run.circuit, run.method, run.seed,
+                         run.repetition, run.run_kind))
+
+    frozen_inputs = {
+        dataset: {str(circuit): str(digest) for circuit, digest in
+                  freeze["canonical_suites"][dataset]["canonical_inputs"].items()}
+        for dataset in DATASETS
+    }
+    legacy_allowed, legacy_policy = _legacy_seed0_fallback_exception(
+        quality_payload, freeze)
+    abi8_wheel_sha = str(freeze["abi8_wheel"]["sha256"])
+    evidence = {
+        "quality": _validate_frozen_evidence(
+            "quality", quality_runs, frozen_inputs=frozen_inputs,
+            expected_native_abi=8,
+            expected_native_wheel_sha256=abi8_wheel_sha,
+            legacy_unspecified_fallback=legacy_allowed),
+        "ablation": _validate_frozen_evidence(
+            "ablation", ablation_runs, frozen_inputs=frozen_inputs,
+            expected_native_abi=9),
+        "sensitivity": _validate_frozen_evidence(
+            "sensitivity", sensitivity_runs, frozen_inputs=frozen_inputs,
+            expected_native_abi=9),
+        "timing": _validate_frozen_evidence(
+            "timing", timing_runs, frozen_inputs=frozen_inputs,
+            expected_native_abi=8,
+            expected_native_wheel_sha256=abi8_wheel_sha),
+    }
+    abi9_wheels = (set(evidence["ablation"]["native_wheel_sha256"]) |
+                   set(evidence["sensitivity"]["native_wheel_sha256"]))
+    if len(abi9_wheels) != 1:
+        raise ValueError(
+            f"paper ABI9 tracks do not share one frozen wheel: {sorted(abi9_wheels)}")
     report = aggregate_paper(
-        quality_paths,
+        quality_runs,
         frozen_suites=frozen_suites,
         output_dir=destination,
-        ablation_manifest_inputs=ablation_paths,
-        sensitivity_manifest_inputs=sensitivity_paths,
-        timing_manifest_inputs=timing_paths,
+        ablation_manifest_inputs=ablation_runs,
+        sensitivity_manifest_inputs=sensitivity_runs,
+        timing_manifest_inputs=timing_runs,
         ablation_identities=ablation_identities,
         sensitivity_identities=twelve_identities,
         sensitivity_settings=sensitivity_variants,
@@ -1392,6 +1872,12 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
     temporary = macro_target.with_name(f".{macro_target.name}.tmp")
     temporary.write_bytes(macro_source.read_bytes())
     temporary.replace(macro_target)
+
+    from .paper_workbook import export_paper_workbook
+    workbook_path = destination / "four_methods_results.xlsx"
+    workbook_result = export_paper_workbook(
+        destination, workbook_path,
+        qa_directory=destination / "paper_workbook_qa")
 
     final_path = destination / "final_manifest.json"
     final_payload = json.loads(final_path.read_text(encoding="utf-8"))
@@ -1412,8 +1898,30 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
         "paper_macro_target": {"path": str(macro_target.resolve()),
                                "sha256": sha256_file(macro_target)},
         "paper_run_reports": reports,
+        "evidence_validation": evidence,
+        "legacy_python_fallback_policy": legacy_policy,
+        "abi9_native_wheel_sha256": next(iter(abi9_wheels)),
+        "xlsx_generated_here": True,
+        "paper_workbook": {
+            "path": str(workbook_path.resolve()),
+            "sha256": sha256_file(workbook_path),
+            "bytes": workbook_path.stat().st_size,
+            "sheet_names": workbook_result["sheet_names"],
+            "row_counts": workbook_result["row_counts"],
+            "column_count": workbook_result["column_count"],
+            "qa_path": workbook_result["qa_path"],
+            "qa_sha256": sha256_file(workbook_result["qa_path"]),
+            "preview_sha256": {
+                Path(path).name: sha256_file(path)
+                for path in workbook_result["preview_paths"]
+            },
+        },
         "plan_path": str(getattr(plan, "path", "")),
     })
+    final_payload["files"][workbook_path.name] = {
+        "sha256": sha256_file(workbook_path),
+        "bytes": workbook_path.stat().st_size,
+    }
     _json_dump(final_path, final_payload)
     return {
         "protocol": report["protocol"],
@@ -1421,6 +1929,7 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
         "paper_values": str((destination / "paper_values.json").resolve()),
         "results_values_zh_tex": str(macro_target.resolve()),
         "final_manifest": str(final_path.resolve()),
+        "four_methods_results_xlsx": str(workbook_path.resolve()),
         "input_manifest_counts": final_payload["input_manifest_counts"],
         "strict_common_linear_N": {
             dataset: report["main_summary"]["datasets"][dataset][

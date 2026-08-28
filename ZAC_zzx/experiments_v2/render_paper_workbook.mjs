@@ -231,10 +231,12 @@ async function buildSheet(workbook, spec, records, datasetSummary, index, qa) {
   sheet.showGridLines = false;
   const lastRow = 14 + records.length;
   sheet.getRange("A1:AZ1").merge();
-  sheet.getRange("A1").values = [[`${spec.name} 四方法论文实验结果（三种子中位数）`]];
+  sheet.getRange("A1").values = [[
+    `${spec.name} 四方法论文实验结果（M1/M2 seed0一次；M3/M4三种子中位数）`,
+  ]];
   sheet.getRange("A2:AZ2").merge();
   sheet.getRange("A2").values = [[
-    "Fidelity仅在四方法三种子完整且线性模型有效的严格共同集合上聚合；覆盖率独立报告。RETURN匹配与前瞻均嵌套在搜索核时间中，不得重复相加。",
+    "Fidelity仅在M1/M2各一次成功、M3/M4三种子完整且线性模型有效的严格共同集合上聚合；覆盖率独立报告。RETURN匹配与前瞻均嵌套在搜索核时间中，不得重复相加。",
   ]];
   sheet.getRange("A3:E3").values = [["指标", ...METHODS.map((method) => METHOD_LABELS[method])]];
   sheet.getRange("A4:E11").values = summaryRows(datasetSummary);

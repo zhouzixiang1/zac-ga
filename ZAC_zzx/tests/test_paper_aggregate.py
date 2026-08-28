@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import gzip
 import json
 import math
@@ -8,9 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from experiments_v2.contracts import RunManifest, RunStatus
+from experiments_v2.contracts import RunManifest, RunStatus, sha256_file
 from experiments_v2.paper_aggregate import (
+    _exact_matrix,
+    _figure_ablation_rows,
     _ga_applicable_count,
+    _legacy_seed0_fallback_exception,
+    _validate_frozen_evidence,
     aggregate_paper,
     build_main_rows,
     command_aggregate_paper,
@@ -18,6 +23,7 @@ from experiments_v2.paper_aggregate import (
     summarize_ablation,
     summarize_main,
     summarize_runtime,
+    summarize_sensitivity,
 )
 from experiments_v2.paper_protocol import (
     PAPER_ABLATION_VARIANTS,
@@ -29,6 +35,7 @@ def _run(dataset: str, circuit: str, method: str, seed: int, log_f: float,
          *, status: str = RunStatus.SUCCESS.value, repetition: int = 0,
          variant: str = "", artifact_dir: str = "") -> RunManifest:
     success = status == RunStatus.SUCCESS.value
+    native_abi = 9 if variant else 8
     return RunManifest(
         run_id=f"{dataset}-{circuit}-{method}-s{seed}-r{repetition}-{variant or 'main'}",
         dataset=dataset,
@@ -40,8 +47,16 @@ def _run(dataset: str, circuit: str, method: str, seed: int, log_f: float,
         ablation_variant=variant,
         experiment_id="a" * 64,
         status=status,
+        backend="native" if method in {"M3", "M4"} and success else "",
+        native_abi_version=(
+            native_abi if method in {"M3", "M4"} and success else None),
+        native_wheel_sha256=(
+            str(native_abi) * 64
+            if method in {"M3", "M4"} and success else ""),
+        python_fallback=(False if method in {"M3", "M4"} and success else None),
         input_sha256="b" * 64,
         expected_gate_ledger_sha256="c" * 64,
+        observed_gate_ledger_sha256="c" * 64 if success else "",
         qubits=10,
         expected_gates_1q=20,
         expected_gates_2q=30,
@@ -68,6 +83,8 @@ def _run(dataset: str, circuit: str, method: str, seed: int, log_f: float,
         routing_ns=1_000_000_000 if success else None,
         return_match_ns=500_000_000 if success else None,
         forecast_ns=1_500_000_000 if success else None,
+        verifier_ok=True if success else None,
+        ghost_hits=0 if success else None,
         artifact_dir=artifact_dir,
     )
 
@@ -125,6 +142,10 @@ def test_partial_seed_is_coverage_but_not_strict_fidelity() -> None:
     assert qmap["methods"]["M4"]["coverage"]["complete_seed_circuits"] == 0
     assert qmap["strict_common_linear_N"] == 0
     assert qmap["comparisons"]["M4_vs_Bstar"]["strict_common_linear_N"] == 0
+    values = aggregate_paper(
+        manifests, frozen_suites=suites,
+        bootstrap_iterations=20)["paper_values"]["macros"]
+    assert values["TimeFullCompile"] == "21.000"
 
 
 def test_ood_seed_is_complete_coverage_but_excluded_from_strict_fidelity() -> None:
@@ -173,6 +194,35 @@ def test_ga_applicability_is_derived_from_compiler_stats(tmp_path: Path) -> None
     assert h8_row["ga_applicability_source"].startswith("artifact.compiler_stats")
 
 
+def test_partial_ablation_seed_is_not_used_in_controlled_comparison(
+        tmp_path: Path) -> None:
+    artifact = tmp_path / "attempt"
+    artifact.mkdir()
+    with gzip.open(artifact / "compiler_stats.json.gz", "wt", encoding="utf-8") as handle:
+        json.dump({"ga_applicable_boundaries": 2}, handle)
+    manifests = []
+    for seed in (0, 1, 2):
+        manifests.append(_run(
+            "zac18", "c", "M3", seed, -0.9, variant="H0",
+            artifact_dir=str(artifact)))
+        manifests.append(_run(
+            "zac18", "c", "M4", seed, -0.7,
+            status=(RunStatus.TIMEOUT.value if seed == 2 else
+                    RunStatus.SUCCESS.value),
+            variant="H8", artifact_dir=str(artifact)))
+    manifests.append(_run(
+        "zac18", "c", "M4", 0, -0.8, variant="greedy_only",
+        artifact_dir=str(artifact)))
+    summary, rows = summarize_ablation(
+        manifests, bootstrap_iterations=20, bootstrap_seed=3)
+    assert summary["lookahead_H8_vs_H0"]["N"] == 0
+    assert summary["GA_vs_greedy"]["N"] == 0
+    figure = _figure_ablation_rows(
+        rows, h0_variant="H0", h8_variant="H8",
+        greedy_variant="greedy_only")
+    assert all(row["paired_valid"] is False for row in figure)
+
+
 def test_ga_applicability_fallback_recognizes_greedy_only(tmp_path: Path) -> None:
     artifact = tmp_path / "attempt"
     artifact.mkdir()
@@ -202,15 +252,189 @@ def test_runtime_reports_median_and_iqr_without_nested_sum() -> None:
     assert summary["methods"]["M4"]["iqr_of_circuit_medians_s"] == 0.0
 
 
+def test_runtime_partial_repetitions_do_not_enter_strict_summary_or_ratio() -> None:
+    manifests = [
+        _run("zac18", "c", method, 0, -0.8, repetition=rep,
+             status=(RunStatus.TIMEOUT.value
+                     if method == "M4" and rep == 2 else
+                     RunStatus.SUCCESS.value))
+        for method in ("M2", "M4") for rep in range(3)
+    ]
+    summary, rows = summarize_runtime(
+        manifests, expected_identities=[("zac18", "c")])
+    m4 = next(row for row in rows if row["method"] == "M4")
+    assert m4["valid_over_N"] == "2/3"
+    assert m4["strict_complete"] is False
+    assert summary["methods"]["M4"]["circuit_N"] == 0
+    assert summary["paired_ratios"]["M4_vs_M2"]["N"] == 0
+
+
+def test_exact_matrix_rejects_duplicate_that_replaces_missing() -> None:
+    runs = [
+        _run("zac18", "a", "M4", 0, -0.8),
+        _run("zac18", "a", "M4", 0, -0.8),
+    ]
+    with pytest.raises(ValueError, match="identity matrix drift"):
+        _exact_matrix(
+            "test", runs,
+            {("zac18", "a", "M4", 0), ("zac18", "b", "M4", 0)},
+            key=lambda run: (run.dataset, run.circuit, run.method, run.seed))
+
+
+def test_legacy_unspecified_fallback_is_limited_to_named_seed0() -> None:
+    seed0 = _run("zac18", "c", "M4", 0, -0.8)
+    seed0.python_fallback = None
+    identity = ("zac18", "c", "M4", 0, 0)
+    evidence = _validate_frozen_evidence(
+        "quality", [seed0], frozen_inputs={"zac18": {"c": "b" * 64}},
+        expected_native_abi=8, expected_native_wheel_sha256="8" * 64,
+        legacy_unspecified_fallback={identity})
+    assert evidence["legacy_python_fallback_exception_N"] == 1
+    assert evidence["successful_observed_gate_ledgers_verified"] is True
+
+    with pytest.raises(ValueError, match="lacks explicit no-fallback"):
+        _validate_frozen_evidence(
+            "quality", [seed0],
+            frozen_inputs={"zac18": {"c": "b" * 64}},
+            expected_native_abi=8,
+            expected_native_wheel_sha256="8" * 64)
+    seed0.python_fallback = True
+    with pytest.raises(ValueError, match="used Python fallback"):
+        _validate_frozen_evidence(
+            "quality", [seed0],
+            frozen_inputs={"zac18": {"c": "b" * 64}},
+            expected_native_abi=8,
+            expected_native_wheel_sha256="8" * 64,
+            legacy_unspecified_fallback={identity})
+    seed0.python_fallback = False
+    seed0.observed_gate_ledger_sha256 = "d" * 64
+    with pytest.raises(ValueError, match="observed gate-ledger mismatch"):
+        _validate_frozen_evidence(
+            "quality", [seed0],
+            frozen_inputs={"zac18": {"c": "b" * 64}},
+            expected_native_abi=8,
+            expected_native_wheel_sha256="8" * 64)
+
+
+def test_legacy_fallback_exception_requires_exact_parity_matrix(
+        tmp_path: Path) -> None:
+    source = {"M3": {}, "M4": {}}
+    quality = {
+        "accepted_old_seed0": True,
+        "ours": {"M3": {}, "M4": {}},
+    }
+    comparisons = []
+    for method in ("M3", "M4"):
+        old_manifest = tmp_path / f"{method}-old.json"
+        old_manifest.write_text("{}\n", encoding="utf-8")
+        row = {
+            "path": str(old_manifest.resolve()),
+            "sha256": method.lower()[1] * 64,
+            "status": "success",
+        }
+        source[method]["zac18/c"] = row
+        quality["ours"][method]["zac18/c"] = {
+            "0": dict(row), "1": {}, "2": {}}
+        comparisons.append({
+            "dataset": "zac18", "circuit": "c", "method": method,
+            "old_manifest": str(old_manifest.resolve()), "passed": True,
+        })
+    source_path = tmp_path / "seed0.json"
+    source_path.write_text(json.dumps(source), encoding="utf-8")
+    parity_path = tmp_path / "parity.json"
+    quality["parity_report"] = str(parity_path.resolve())
+    freeze = {
+        "freeze_id": "f" * 64,
+        "seed0_source_manifest": {
+            "path": str(source_path.resolve()),
+            "sha256": sha256_file(source_path),
+        },
+        "parity_timing_cohort": {"identities": [["zac18", "c"]]},
+    }
+    parity = {
+        "freeze_id": freeze["freeze_id"], "passed": True, "status": "passed",
+        "compared": 2, "comparisons": comparisons,
+    }
+    parity_path.write_text(json.dumps(parity), encoding="utf-8")
+    allowed, policy = _legacy_seed0_fallback_exception(quality, freeze)
+    assert allowed == {
+        ("zac18", "c", "M3", 0, 0),
+        ("zac18", "c", "M4", 0, 0),
+    }
+    assert policy["allowed_identity_N"] == 2
+
+    parity["comparisons"] = parity["comparisons"][:1]
+    parity_path.write_text(json.dumps(parity), encoding="utf-8")
+    with pytest.raises(ValueError, match="passed parity gate"):
+        _legacy_seed0_fallback_exception(quality, freeze)
+
+
+def test_sensitivity_uses_log_fidelity_without_linear_underflow() -> None:
+    run = _run(
+        "zac18", "c", "M4", 0, -1000.0,
+        variant="paper_sensitivity_default")
+    run.fidelity = 0.0
+    summary, _rows = summarize_sensitivity([run])
+    assert summary["settings"]["paper_sensitivity_default"][
+        "fidelity_geometric_mean"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("m4_logs", "wording"),
+    [((-1.07, -1.05, -1.03), "降低"),
+     ((-0.95002, -0.95, -0.94998), "基本持平")],
+)
+def test_result_statement_uses_directional_non_significance_wording(
+        m4_logs: tuple[float, float, float], wording: str) -> None:
+    manifests = _complete_main()
+    for run in manifests:
+        if run.method == "M4":
+            run.log_fidelity = m4_logs[run.seed]
+            run.fidelity = math.exp(run.log_fidelity)
+    report = aggregate_paper(
+        manifests,
+        frozen_suites={"zac18": ["zac_c"], "qmap154": ["qmap_c"]},
+        bootstrap_iterations=20)
+    statement = report["paper_values"]["macros"]["ResultStatement"]
+    assert wording in statement
+    assert "提高-" not in statement
+    assert "显著" not in statement
+
+
 def test_aggregate_writes_csv_json_and_tex_but_not_xlsx(tmp_path: Path) -> None:
     suites = {"zac18": ["zac_c"], "qmap154": ["qmap_c"]}
+    ablation = []
+    for seed in (0, 1, 2):
+        ablation.append(_run(
+            "zac18", "zac_c", "M3", seed, -0.9,
+            variant="H0"))
+        ablation.append(_run(
+            "zac18", "zac_c", "M4", seed, -0.7,
+            variant="H8"))
+    ablation.append(_run(
+        "zac18", "zac_c", "M4", 0, -0.8,
+        variant="greedy_only"))
     report = aggregate_paper(
         _complete_main(), frozen_suites=suites, output_dir=tmp_path,
+        ablation_manifest_inputs=ablation,
+        ablation_identities=[("zac18", "zac_c")],
         bootstrap_iterations=50)
+    holm = report["main_summary"]["primary_holm_family"]
+    assert set(holm["tests"]) == {
+        "zac18:M4_vs_Bstar", "qmap154:M4_vs_Bstar",
+        "ablation:H8_vs_H0",
+    }
+    assert all(
+        holm["adjusted_p_values"][name] >= raw
+        for name, raw in holm["tests"].items())
+    assert report["main_summary"]["datasets"]["zac18"]["comparisons"][
+        "M4_vs_Bstar"]["robustness"]["remove_top_1"]["n"] == 0
     expected = {
         "zac18.csv", "qmap154.csv", "ablation.csv", "sensitivity.csv",
         "runtime.csv", "main_summary.json", "paper_values.json",
         "results_values_zh.tex", "final_manifest.json",
+        "fig6_fidelity_gain.csv", "fig6_mechanism.csv",
+        "fig6_ablation.csv", "fig6_m4_stage_time.csv",
     }
     assert expected == {path.name for path in tmp_path.iterdir()}
     assert not list(tmp_path.glob("*.xlsx"))
@@ -228,6 +452,37 @@ def test_aggregate_writes_csv_json_and_tex_but_not_xlsx(tmp_path: Path) -> None:
     assert manifest["xlsx_generated_here"] is False
     assert manifest["nested_timing_semantics"]["must_not_be_summed"] is True
 
+    with (tmp_path / "fig6_fidelity_gain.csv").open(
+            newline="", encoding="utf-8") as handle:
+        fidelity_rows = list(csv.DictReader(handle))
+    zac_gain = next(row for row in fidelity_rows if row["dataset"] == "zac18")
+    assert zac_gain["baseline_method"] == "M2"
+    assert float(zac_gain["M4_minus_Bstar_delta_logF"]) == pytest.approx(0.15)
+    assert float(zac_gain["M4_over_Bstar_ratio"]) == pytest.approx(math.exp(0.15))
+
+    with (tmp_path / "fig6_mechanism.csv").open(
+            newline="", encoding="utf-8") as handle:
+        mechanism_rows = list(csv.DictReader(handle))
+    zac_mechanism = next(
+        row for row in mechanism_rows if row["dataset"] == "zac18")
+    assert float(zac_mechanism["M4_minus_Bstar_transfers"]) == pytest.approx(1.0)
+
+    with (tmp_path / "fig6_ablation.csv").open(
+            newline="", encoding="utf-8") as handle:
+        ablation_rows = list(csv.DictReader(handle))
+    lookahead = next(
+        row for row in ablation_rows if row["comparison"] == "H8_vs_H0")
+    assert float(lookahead["delta_logF"]) == pytest.approx(0.2)
+
+    with (tmp_path / "fig6_m4_stage_time.csv").open(
+            newline="", encoding="utf-8") as handle:
+        stage_rows = list(csv.DictReader(handle))
+    zac_stage = next(row for row in stage_rows if row["dataset"] == "zac18")
+    assert float(zac_stage["search_kernel_s"]) == pytest.approx(6.0)
+    assert zac_stage["valid"] == "3"
+    assert zac_stage["N"] == "3"
+    assert zac_stage["return_match_and_forecast_nested_in_search_kernel"] == "True"
+
 
 def test_command_aggregate_paper_integrates_frozen_sources(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -237,7 +492,9 @@ def test_command_aggregate_paper_integrates_frozen_sources(
     freeze_path = tmp_path / "freeze.json"
     freeze_path.write_text("{}\n", encoding="utf-8")
     run_map: dict[Path, RunManifest] = {}
-    source = {"baselines": {"M1": {}, "M2": {}},
+    source = {"accepted_old_seed0": False,
+              "protocol_id": "paper-protocol", "freeze_id": "f" * 64,
+              "baselines": {"M1": {}, "M2": {}},
               "ours": {"M3": {}, "M4": {}}}
     for run in _complete_main():
         path = tmp_path / "manifests" / f"{run.run_id}.json"
@@ -257,6 +514,7 @@ def test_command_aggregate_paper_integrates_frozen_sources(
         json.dumps(source), encoding="utf-8")
 
     def add_track(track: str, run: RunManifest) -> None:
+        run.run_kind = "timing" if track == "timing" else "ablation"
         path = artifact / "runs" / track / run.run_id / "manifest.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(run.run_id, encoding="utf-8")
@@ -286,9 +544,11 @@ def test_command_aggregate_paper_integrates_frozen_sources(
     hidden.write_text("must be ignored", encoding="utf-8")
     freeze = {
         "freeze_id": "f" * 64,
+        "protocol_id": "paper-protocol",
+        "abi8_wheel": {"sha256": "8" * 64},
         "canonical_suites": {
-            "zac18": {"canonical_inputs": {"zac_c": "1" * 64}},
-            "qmap154": {"canonical_inputs": {"qmap_c": "2" * 64}},
+            "zac18": {"canonical_inputs": {"zac_c": "b" * 64}},
+            "qmap154": {"canonical_inputs": {"qmap_c": "b" * 64}},
         },
         "ablation_cohort": {"identities": [["zac18", "zac_c"]]},
         "parity_timing_cohort": {"identities": [["zac18", "zac_c"]]},
@@ -299,11 +559,48 @@ def test_command_aggregate_paper_integrates_frozen_sources(
     monkeypatch.setattr(
         "experiments_v2.paper_aggregate.load_run_manifest",
         lambda path, require_success_metrics=True: run_map[Path(path).resolve()])
+
+    def fake_workbook(_aggregate, output, *, qa_directory, **_kwargs):
+        output = Path(output)
+        qa_directory = Path(qa_directory)
+        output.write_bytes(b"xlsx")
+        qa_directory.mkdir(parents=True)
+        qa_path = qa_directory / "workbook_qa.json"
+        qa_path.write_text("{}\n", encoding="utf-8")
+        previews = []
+        for index in range(4):
+            preview = qa_directory / f"preview-{index}.png"
+            preview.write_bytes(b"png")
+            previews.append(str(preview))
+        return {
+            "xlsx_path": str(output), "qa_path": str(qa_path),
+            "preview_paths": previews,
+            "sheet_names": ["ZAC18", "QMAP154"],
+            "row_counts": {"ZAC18": 18, "QMAP154": 154},
+            "column_count": 52,
+        }
+
+    monkeypatch.setattr(
+        "experiments_v2.paper_workbook.export_paper_workbook", fake_workbook)
     result = command_aggregate_paper(
         plan=SimpleNamespace(path=tmp_path / "plan.json"),
         freeze_path=freeze_path, artifact_root=artifact,
         output_root=delivery, paper_directory=paper)
     assert result["strict_common_linear_N"] == {"zac18": 1, "qmap154": 1}
     assert (paper / "results_values_zh.tex").is_file()
+    assert (delivery / "four_methods_results.xlsx").is_file()
     final = json.loads((delivery / "final_manifest.json").read_text())
     assert final["input_manifest_counts"]["main"] == 16
+    assert final["xlsx_generated_here"] is True
+    assert final["paper_workbook"]["sheet_names"] == ["ZAC18", "QMAP154"]
+    assert final["evidence_validation"]["quality"][
+        "canonical_inputs_verified"] is True
+
+    source["freeze_id"] = "0" * 64
+    (artifact / "quality_source_manifest.json").write_text(
+        json.dumps(source), encoding="utf-8")
+    with pytest.raises(ValueError, match="does not belong to the loaded freeze"):
+        command_aggregate_paper(
+            plan=SimpleNamespace(path=tmp_path / "plan.json"),
+            freeze_path=freeze_path, artifact_root=artifact,
+            output_root=delivery, paper_directory=paper)
