@@ -530,7 +530,7 @@ def paper_native_python_identity(
             f"cannot verify paper native Python: {details}") from error
     if (value.get("abi") != expected_abi or
             value.get("backend") != f"cpp-native-v{expected_abi}" or
-            value.get("version") != "0.5.33"):
+            value.get("version") != "0.5.34"):
         raise RuntimeError(
             "paper native Python does not load the registered ABI9 backend: "
             f"{value!r}")

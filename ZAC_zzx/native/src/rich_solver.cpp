@@ -894,15 +894,17 @@ class RichSolver {
       if (recovered.has_value()) {
         winner = recovered->fitness.chromosome;
         auto completed_recovery = *recovered;
-        if (!problem_.forecast_terms.empty() &&
-            problem_.future_layers.empty()) {
+        if (problem_.future_layers.empty() &&
+            (config_.max_horizon == 0 ||
+             !problem_.forecast_terms.empty())) {
           // Current-feasibility recovery intentionally scores gate geometry
-          // without a forecast.  Precomputed terms, unlike a physical future
-          // rollout, cannot become geometrically infeasible and must be
-          // restored before the recovered candidate is published.  This is
-          // especially important for M3's depth-zero value terms: returning
-          // the current-only recovery silently changed their objective to
-          // zero on the exact large-boundary path.
+          // without a forecast.  Before publication, strict H0 still needs
+          // its one-element zero depth vector, and any precomputed value term
+          // must be restored.  Unlike a physical future rollout, those terms
+          // cannot become geometrically infeasible.  This is especially
+          // important for M3: returning the raw current-only recovery either
+          // produced an empty H0 vector or silently dropped its depth-zero
+          // value term on the exact large-boundary path.
           apply_forecast(completed_recovery, winner);
         }
         guarded_final_value_ = std::move(completed_recovery);
@@ -2448,6 +2450,19 @@ class RichSolver {
   }
 
   void apply_native_rollout(Evaluated& result) {
+    if (config_.max_horizon == 0) {
+      // Strict H=0 is the current-boundary control.  In particular, an
+      // ordinary non-terminal boundary may still leave eligible residents in
+      // the entangling zone; that state must not be charged the rollout's
+      // terminal all-RETURN proxy.  Explicit depth-zero value terms are
+      // handled by apply_forecast() before this physical-rollout entry point.
+      result.forecast_nll = 0.0;
+      result.search_nll = result.fitness.negative_log_fidelity;
+      std::fill(result.forecast_by_depth.begin(),
+                result.forecast_by_depth.end(), 0.0);
+      result.forecast_by_category.fill(0.0);
+      return;
+    }
     auto positions = problem_.current_points;
     auto accumulated_idle = problem_.prior_idle_time_us;
     if (result.fitness.candidate_idle_time_us.size() != problem_.n_atoms) {

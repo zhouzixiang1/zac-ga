@@ -2377,6 +2377,37 @@ def _recover_rich_infeasible_current_gate_projection(
             **inactive,
             "current_gate_projection_evaluated": evaluated,
         }
+    if config.max_horizon == 0:
+        # Native current recovery first proves executability without a
+        # forecast, then publishes the strict-H0 value contract.  Mirror that
+        # sequencing here: an ordinary H0 boundary has a one-element zero
+        # depth vector, while explicit depth-zero Phi(s') terms remain active.
+        return_pairs = tuple(
+            (problem.eligible[index], site_id)
+            for index, site_id, _point in best.assignments)
+        if problem.forecast_terms:
+            forecast = evaluate_decay_forecast(
+                problem, config, best.fitness.chromosome,
+                best.option_indices, return_pairs)
+            forecast_nll, by_depth, breakdown = forecast[:3]
+        else:
+            forecast_nll = 0.0
+            by_depth = (0.0,)
+            breakdown = {
+                "residency": 0.0,
+                "reentry": 0.0,
+                "terminal": 0.0,
+                "routing": 0.0,
+            }
+        best = replace(
+            best,
+            forecast_nll=forecast_nll,
+            search_nll=best.fitness.negative_log_fidelity + forecast_nll,
+            forecast_by_depth=by_depth,
+            forecast_breakdown=breakdown,
+            forecast_feasible=True,
+            forecast_error="",
+        )
     return best, {
         "current_gate_guard_branch":
             "infeasible-current-full-domain-recovery",

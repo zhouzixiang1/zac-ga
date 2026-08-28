@@ -992,6 +992,126 @@ class TestNativeRichSolver(unittest.TestCase):
             native.search_negative_log_fidelity))
         self.assertEqual(0.0, native.forecast_nll)
 
+    def test_h0_recovery_initializes_zero_forecast_contract(self):
+        points = tuple(Point(*value) for value in (
+            (0, 0), (0, 1), (1, 1),
+            (2, 2), (3, 2), (4, 4), (5, 4)))
+        arch = ArchitectureSnapshot(3, points)
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(points[0], points[1], points[2]),
+            participants=(0, 1),
+            gate_domains=((
+                RichGateOption(70, 0, 1, points[3], points[4]),
+                RichGateOption(71, 0, 1, points[5], points[6]),
+                RichGateOption(72, 0, 1, points[0], points[1]),
+            ),),
+            static_ghosts=(),
+            eligible=(),
+            min_returns=0,
+            eviction_order_indices=(),
+            forced_return_mask=(),
+            return_domains=(),
+            matched_gate_genes=(0,),
+            selected_horizon=0,
+            terminal_boundary=False,
+            boundary_id="h0-current-recovery-zero-forecast",
+        )
+        config = RichSearchConfig(
+            operator_profile="tuned",
+            population_size=1,
+            iterations=1,
+            max_unique_evaluations=1,
+            direct_enumeration_limit=1,
+            max_horizon=0,
+        )
+        reference, audit = _recover_rich_infeasible_current_gate_projection(
+            problem, config, (0,))
+        self.assertIsNotNone(reference)
+        self.assertEqual(
+            "infeasible-current-full-domain-recovery",
+            audit["current_gate_guard_branch"])
+        self.assertEqual((0.0,), reference.forecast_by_depth)
+        self.assertEqual(0.0, reference.forecast_nll)
+        self.assertEqual(
+            reference.fitness.negative_log_fidelity,
+            reference.search_nll)
+        native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, random.Random(0).getstate())
+        self.assertIn("current-recovery", native.search_mode)
+        self.assertEqual((2,), native.gate_option_indices)
+        self.assertEqual(0.0, native.forecast_nll)
+        self.assertEqual((0.0,), native.forecast_by_depth)
+        self.assertEqual(
+            {"residency": 0.0, "reentry": 0.0,
+             "terminal": 0.0, "routing": 0.0},
+            native.forecast_breakdown)
+        self.assertEqual(0, native.forecast_terms_applied)
+        self.assertEqual(reference.fitness, native.winner)
+        self.assertEqual(reference.forecast_by_depth,
+                         native.forecast_by_depth)
+        self.assertEqual(
+            native.winner.negative_log_fidelity,
+            native.search_negative_log_fidelity)
+
+    def test_h0_nonterminal_resident_uses_only_current_physical_cost(self):
+        points = tuple(Point(*value) for value in (
+            (0, 0), (0, 1), (1, 1),
+            (2, 2), (3, 2), (4, 4), (5, 4),
+            (1000, 1000)))
+        arch = ArchitectureSnapshot(
+            3, points, (7,), ((0, 1), (1, 2), (3, 4), (5, 6)))
+        problem = RichH0Problem(
+            architecture=arch,
+            current_points=(points[0], points[1], points[2]),
+            participants=(0, 1),
+            gate_domains=((
+                RichGateOption(70, 0, 1, points[3], points[4]),
+                RichGateOption(71, 0, 1, points[5], points[6]),
+                RichGateOption(72, 0, 1, points[0], points[1]),
+            ),),
+            static_ghosts=(),
+            eligible=(2,),
+            min_returns=0,
+            eviction_order_indices=(0,),
+            forced_return_mask=(False,),
+            return_domains=((RichReturnOption(7, points[7], 1.0),),),
+            matched_gate_genes=(0,),
+            selected_horizon=0,
+            terminal_boundary=False,
+            boundary_id="hwb8-h0-nonterminal-resident",
+        )
+        config = RichSearchConfig(
+            operator_profile="tuned",
+            direct_enumeration_limit=512,
+            max_horizon=0,
+        )
+        current_values = tuple(
+            evaluate_rich_exact_candidate(problem, config, chromosome)
+            for chromosome in (
+                (0, 0), (0, 1), (1, 0),
+                (1, 1), (2, 0), (2, 1)))
+        expected = min(
+            (value for value in current_values if value.fitness.feasible),
+            key=lambda value: (
+                value.fitness.negative_log_fidelity,
+                value.fitness.move_batches,
+                value.fitness.move_time_us,
+                value.fitness.total_distance_um,
+                value.fitness.chromosome))
+        native = NativeResidentBackend(arch).solve_rich_boundary(
+            problem, config, random.Random(0).getstate())
+        self.assertFalse(problem.terminal_boundary)
+        self.assertEqual((2, 0), expected.fitness.chromosome)
+        self.assertEqual(expected.fitness, native.winner)
+        self.assertEqual((), native.return_assignments)
+        self.assertEqual(0.0, native.forecast_nll)
+        self.assertEqual((0.0,), native.forecast_by_depth)
+        self.assertEqual(0.0, native.forecast_breakdown["terminal"])
+        self.assertEqual(
+            native.winner.negative_log_fidelity,
+            native.search_negative_log_fidelity)
+
     def test_h0_current_recovery_restores_depth_zero_value_term(self):
         points = tuple(Point(*value) for value in (
             (0, 0), (0, 1), (1, 1),
@@ -1028,6 +1148,9 @@ class TestNativeRichSolver(unittest.TestCase):
         )
         native = NativeResidentBackend(arch).solve_rich_boundary(
             problem, config, random.Random(0).getstate())
+        reference, _audit = _recover_rich_infeasible_current_gate_projection(
+            problem, config, (0,))
+        self.assertIsNotNone(reference)
         oracle = evaluate_decay_forecast(
             problem, config, native.winner.chromosome,
             native.gate_option_indices, native.return_assignments)
@@ -1037,6 +1160,9 @@ class TestNativeRichSolver(unittest.TestCase):
         self.assertEqual(oracle[0], native.forecast_nll)
         self.assertEqual(oracle[1], native.forecast_by_depth)
         self.assertEqual(oracle[2], native.forecast_breakdown)
+        self.assertEqual(oracle[0], reference.forecast_nll)
+        self.assertEqual(oracle[1], reference.forecast_by_depth)
+        self.assertEqual(oracle[2], reference.forecast_breakdown)
         self.assertEqual(
             native.winner.negative_log_fidelity + oracle[0],
             native.search_negative_log_fidelity)

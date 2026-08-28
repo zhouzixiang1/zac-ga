@@ -798,6 +798,63 @@ int main() {
   assert(recovered.current_gate_projection_source ==
          "infeasible-single-gate-full-domain");
   assert(recovered.current_gate_projection_evaluated == 3);
+  assert(recovered.forecast_nll == 0.0);
+  assert(recovered.forecast_by_depth == std::vector<double>({0.0}));
+  assert(recovered.forecast_residency_nll == 0.0);
+  assert(recovered.forecast_reentry_nll == 0.0);
+  assert(recovered.forecast_terminal_nll == 0.0);
+  assert(recovered.forecast_routing_nll == 0.0);
+  assert(recovered.search_negative_log_fidelity ==
+         recovered.winner.negative_log_fidelity);
+  assert(recovered.stats.forecast_terms_applied == 0);
+  ++tests;
+
+  // hwb8 exposed the strict-H0 endpoint case: this is not the terminal
+  // circuit boundary and an eligible resident may correctly remain in the
+  // entangling zone.  Exact enumeration must therefore choose solely by the
+  // current physical objective; no implicit terminal cleanup proxy may turn
+  // the resident into a forecast RETURN.
+  ArchitectureSnapshot h0_resident_architecture(
+      3, {{0.0, 0.0}, {0.0, 1.0}, {1.0, 1.0},
+          {2.0, 2.0}, {3.0, 2.0}, {4.0, 4.0}, {5.0, 4.0},
+          {1000.0, 1000.0}}, {7},
+      {{0, 1}, {1, 2}, {3, 4}, {5, 6}});
+  RichH0Problem h0_resident_problem;
+  h0_resident_problem.n_atoms = 3;
+  h0_resident_problem.current_points = {
+      {0.0, 0.0}, {0.0, 1.0}, {1.0, 1.0}};
+  h0_resident_problem.participants = {0, 1};
+  h0_resident_problem.gate_domains = {{
+      {70, 0, 1, {2.0, 2.0}, {3.0, 2.0}},
+      {71, 0, 1, {4.0, 4.0}, {5.0, 4.0}},
+      {72, 0, 1, {0.0, 0.0}, {0.0, 1.0}},
+  }};
+  h0_resident_problem.eligible = {2};
+  h0_resident_problem.eviction_order_indices = {0};
+  h0_resident_problem.forced_return_mask = {false};
+  h0_resident_problem.return_domains = {{
+      {7, {1000.0, 1000.0}, 1.0},
+  }};
+  h0_resident_problem.matched_gate_genes = {0};
+  h0_resident_problem.terminal_boundary = false;
+  auto h0_resident_config = exact_config();
+  h0_resident_config.operator_profile = RichOperatorProfile::kTuned;
+  h0_resident_config.direct_enumeration_limit = 512;
+  h0_resident_config.max_horizon = 0;
+  const auto h0_resident = solve_rich_h0(
+      h0_resident_architecture, h0_resident_problem,
+      h0_resident_config, rng_fixture());
+  assert(h0_resident.search_mode == "enumerate");
+  assert(h0_resident.winner.chromosome ==
+         std::vector<std::int64_t>({2, 0}));
+  assert(h0_resident.gate_option_indices ==
+         std::vector<std::size_t>({2}));
+  assert(h0_resident.return_assignments.empty());
+  assert(h0_resident.forecast_nll == 0.0);
+  assert(h0_resident.forecast_by_depth == std::vector<double>({0.0}));
+  assert(h0_resident.forecast_terminal_nll == 0.0);
+  assert(h0_resident.search_negative_log_fidelity ==
+         h0_resident.winner.negative_log_fidelity);
   ++tests;
 
   // The current-feasibility recovery is evaluated without forecast so that
