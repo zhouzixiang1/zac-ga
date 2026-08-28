@@ -1305,7 +1305,21 @@ def _track_manifests(root: Path, track: str) -> list[Path]:
     track_root = root / "runs" / track
     if not track_root.exists():
         return []
-    return sorted(track_root.rglob("manifest.json"), key=str)
+    result = []
+    for path in track_root.rglob("manifest.json"):
+        relative = path.relative_to(track_root)
+        if any(part.startswith(".") for part in relative.parts):
+            continue
+        result.append(path)
+    return sorted(result, key=str)
+
+
+def _require_exact_manifest_count(
+        label: str, paths: Sequence[Path], expected: int) -> None:
+    if len(paths) != expected:
+        raise ValueError(
+            f"paper {label} manifest count is incomplete or duplicated: "
+            f"expected={expected}, found={len(paths)}")
 
 
 def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
@@ -1348,6 +1362,15 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
     timing_paths = _track_manifests(artifacts, "timing")
     sensitivity_variants = [f"paper_sensitivity_{profile}"
                             for profile in SENSITIVITY_PROFILE_IDS]
+    circuit_count = sum(len(rows) for rows in frozen_suites.values())
+    _require_exact_manifest_count("quality", quality_paths, circuit_count * 8)
+    _require_exact_manifest_count(
+        "ablation", ablation_paths, len(ablation_identities) * 7)
+    _require_exact_manifest_count(
+        "sensitivity", sensitivity_paths,
+        len(twelve_identities) * len(sensitivity_variants))
+    _require_exact_manifest_count(
+        "timing", timing_paths, len(twelve_identities) * 4 * 3)
     report = aggregate_paper(
         quality_paths,
         frozen_suites=frozen_suites,

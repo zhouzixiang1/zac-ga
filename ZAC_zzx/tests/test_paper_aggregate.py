@@ -19,6 +19,10 @@ from experiments_v2.paper_aggregate import (
     summarize_main,
     summarize_runtime,
 )
+from experiments_v2.paper_protocol import (
+    PAPER_ABLATION_VARIANTS,
+    SENSITIVITY_PROFILE_IDS,
+)
 
 
 def _run(dataset: str, circuit: str, method: str, seed: int, log_f: float,
@@ -251,6 +255,35 @@ def test_command_aggregate_paper_integrates_frozen_sources(
     artifact.mkdir()
     (artifact / "quality_source_manifest.json").write_text(
         json.dumps(source), encoding="utf-8")
+
+    def add_track(track: str, run: RunManifest) -> None:
+        path = artifact / "runs" / track / run.run_id / "manifest.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(run.run_id, encoding="utf-8")
+        run_map[path.resolve()] = run
+
+    for seed in (0, 1, 2):
+        add_track("ablation", _run(
+            "zac18", "zac_c", "M3", seed, -0.9,
+            variant=PAPER_ABLATION_VARIANTS["h0"]))
+        add_track("ablation", _run(
+            "zac18", "zac_c", "M4", seed, -0.8,
+            variant=PAPER_ABLATION_VARIANTS["h8"]))
+    add_track("ablation", _run(
+        "zac18", "zac_c", "M4", 0, -0.85,
+        variant=PAPER_ABLATION_VARIANTS["greedy"]))
+    for profile in SENSITIVITY_PROFILE_IDS:
+        variant = f"paper_sensitivity_{profile}"
+        add_track("sensitivity", _run(
+            "zac18", "zac_c", "M4", 0, -0.8, variant=variant))
+    for method in ("M1", "M2", "M3", "M4"):
+        for repetition in range(3):
+            add_track("timing", _run(
+                "zac18", "zac_c", method, 0, -0.8,
+                repetition=repetition))
+    hidden = artifact / "runs" / "timing" / ".incomplete.tmp" / "manifest.json"
+    hidden.parent.mkdir(parents=True, exist_ok=True)
+    hidden.write_text("must be ignored", encoding="utf-8")
     freeze = {
         "freeze_id": "f" * 64,
         "canonical_suites": {
