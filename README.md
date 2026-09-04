@@ -7,7 +7,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](ZAC_zzx/experiments_v2/environment_zac_qiskit124.lock.txt)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)](ZAC_zzx/native/CMakeLists.txt)
 [![Experiment schema](https://img.shields.io/badge/experiment%20schema-v2-6B7280)](ZAC_zzx/experiments_v2/README.md)
-[![Paper artifacts](https://img.shields.io/badge/paper%20artifacts-verified-2F855A)](ZAC_zzx/results/paper_zh_v1/final_manifest.json)
+[![Paper artifacts](https://img.shields.io/badge/paper%20artifacts-v2-2F855A)](ZAC_zzx/results/paper_zh_v2/final_manifest.json)
 
 [Overview](#overview) · [Method](#method-at-a-glance) · [Repository map](#repository-map) · [Results](#paper-result-snapshot) · [Build and test](#build-and-test) · [Reproducibility](#reproducibility-boundaries)
 
@@ -76,36 +76,41 @@ passes its own internal bookkeeping.
 | [`ZAC_zzx/experiments_v2/`](ZAC_zzx/experiments_v2/) | Schema-v2 experiment drivers, statistics, export, and provenance checks |
 | [`ZAC_zzx/exp_setting/native_ga_v1/`](ZAC_zzx/exp_setting/native_ga_v1/) | Frozen experiment configurations and circuit splits |
 | [`ZAC_zzx/results/native_ga_v1/`](ZAC_zzx/results/native_ga_v1/) | Four-method delivery for ZAC18 and QMAP154 |
-| [`ZAC_zzx/results/paper_zh_v1/`](ZAC_zzx/results/paper_zh_v1/) | Paper tables, ablations, runtime data, figure data, and final evidence manifest |
+| [`ZAC_zzx/results/paper_zh_v2/`](ZAC_zzx/results/paper_zh_v2/) | Current paper aggregates, independent analysis units, workbook QA, and final evidence manifest |
+| [`ZAC_zzx/results/paper_zh_v1/`](ZAC_zzx/results/paper_zh_v1/) | Preserved historical aggregate; not overwritten by the v2 statistics update |
 | [`ZAC/`](ZAC/) | Original ZAC baseline and its environment |
 | [`documents/`](documents/) | Local copies of the baseline papers used by this study |
 
 ## Paper result snapshot
 
-The table below summarizes the strictly paired circuits for which every method
-produced a valid compilation. Fidelity ratios compare GA-LK with the stronger
-baseline on each circuit.
+The primary comparison requires valid ZAC, ICCAD/QMAP A*, and GA-LK results;
+GA-NL is an internal configuration and does not determine this cohort. QMAP
+aliases with the same canonical QASM hash are averaged before inference, while
+compiler coverage continues to count every frozen input file.
 
 | Evidence | ZAC18 | QMAP154 |
 |---|---:|---:|
-| Common valid circuits | 17 | 122 |
-| Fidelity geometric-mean ratio | 1.0231 | 1.2443 |
-| 95% confidence interval | [0.9985, 1.0613] | [1.0450, 1.5816] |
-| Per-circuit median ratio | - | 0.9977 |
-| Win / tie / loss | - | 51 / 0 / 71 |
+| Valid files in the primary cohort | 18 | 122 |
+| Independent analysis units | 18 circuit files | 120 canonical-hash clusters |
+| Fidelity geometric-mean ratio | 1.0795 | 1.2478 |
+| Independent-unit bootstrap 95% confidence interval | [1.0024, 1.2198] | [1.0461, 1.5865] |
+| Median ratio per independent unit | 1.0052 | 0.9976 |
+| Win / tie / loss | 12 / 0 / 6 | 49 / 0 / 71 |
 
-These aggregates require different interpretations. The ZAC18 confidence
-interval includes one. On QMAP154, the positive geometric mean is driven by a
-small upper tail; the median and win/loss counts do not indicate an improvement
-on most circuits. GA-LK also requires substantially more compilation time than
+These aggregates require different interpretations. ZAC18 gains include one
+additional valid circuit that was previously excluded only because GA-NL was
+incomplete. On QMAP154, the positive geometric mean is driven by a small upper
+tail; the median and win/loss counts do not indicate an improvement on most
+independent units. GA-LK also requires substantially more compilation time than
 either baseline.
 
 Authoritative artifacts:
 
-- [`final_manifest.json`](ZAC_zzx/results/paper_zh_v1/final_manifest.json) - file hashes and evidence protocol;
-- [`four_methods_results.xlsx`](ZAC_zzx/results/paper_zh_v1/four_methods_results.xlsx) - complete ZAC18 and QMAP154 tables;
-- [`main_summary.json`](ZAC_zzx/results/paper_zh_v1/main_summary.json) - paired aggregate statistics;
-- [`paper_workbook_qa/`](ZAC_zzx/results/paper_zh_v1/paper_workbook_qa/) - workbook structure and formula checks.
+- [`final_manifest.json`](ZAC_zzx/results/paper_zh_v2/final_manifest.json) - file hashes and evidence protocol;
+- [`main_primary_analysis_units.csv`](ZAC_zzx/results/paper_zh_v2/main_primary_analysis_units.csv) - exact circuit or canonical-cluster means used by bootstrap and Wilcoxon;
+- [`four_methods_results.xlsx`](ZAC_zzx/results/paper_zh_v2/four_methods_results.xlsx) - complete file-level ZAC18 and QMAP154 tables;
+- [`main_summary.json`](ZAC_zzx/results/paper_zh_v2/main_summary.json) - primary and internal-configuration statistics;
+- [`paper_workbook_qa/`](ZAC_zzx/results/paper_zh_v2/paper_workbook_qa/) - workbook structure, formula scan, and rendered previews.
 
 ## Build and test
 
@@ -143,9 +148,9 @@ for the experiment protocol.
 
 ## Reproducibility boundaries
 
-- The paper-quality results are bound to the frozen **ABI8** build. The current
-  development backend is **ABI9**; building the latest source and auditing the
-  paper snapshot are therefore distinct workflows.
+- Main quality and timing results are bound to the frozen **ABI8** build;
+  ablation and sensitivity tracks use the frozen **ABI9** build. Their wheel
+  hashes and validation records are separated in the final manifest.
 - The paper evaluates only **ZAC18** and **QMAP154**. QASMBench and large-circuit
   pilot runs are not part of the manuscript evidence.
 - MQT QMAP 3.2 is an external dependency and is not vendored as a complete
@@ -174,4 +179,3 @@ https://github.com/zhouzixiang1/zac-ga
 
 Publication metadata and a formal citation file will be added when the
 manuscript record is finalized.
-

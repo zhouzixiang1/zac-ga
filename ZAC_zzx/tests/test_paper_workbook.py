@@ -27,7 +27,7 @@ TIMING = (
 def _write_fixture(root: Path) -> None:
     datasets = (("zac18", "ZAC18", 18), ("qmap154", "QMAP154", 154))
     summary = {
-        "protocol": "paper-zh-v1-main-summary-v1",
+        "protocol": "paper-zh-v2-main-summary-v1",
         "datasets": {},
     }
     fieldnames = ["dataset", "circuit", "qubits", "gates_1q", "gates_2q"]
@@ -99,7 +99,11 @@ def _write_fixture(root: Path) -> None:
             }
         summary["datasets"][dataset] = {
             "circuit_N": count,
+            "independent_analysis_unit": (
+                "canonical_sha256_cluster_mean"
+                if dataset == "qmap154" else "circuit_file"),
             "strict_common_linear_N": count,
+            "strict_common_linear_file_N": count,
             "methods": methods,
             "comparisons": comparisons,
         }
@@ -140,8 +144,10 @@ def test_artifact_tool_workbook_has_exact_two_sheets_and_52_columns(
     }
     assert "M1/M2 seed0一次；M3/M4三种子中位数" in qa_payload["sheets"][0][
         "inspection_ndjson"]
-    assert "上述六项总体均值均在" in qa_payload["sheets"][0][
+    assert qa_payload["protocol"] == "paper-zh-v2-two-sheet-workbook-v1"
+    assert "主比较仅要求M1/M2各一次成功和M4三种子完整" in qa_payload["sheets"][0][
         "inspection_ndjson"]
+    assert "M3仅作内部配置" in qa_payload["sheets"][0]["inspection_ndjson"]
     assert "中位比" in qa_payload["sheets"][0]["inspection_ndjson"]
     assert "去前10" in qa_payload["sheets"][0]["inspection_ndjson"]
     with zipfile.ZipFile(output) as archive:

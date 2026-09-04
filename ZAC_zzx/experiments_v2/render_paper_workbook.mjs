@@ -24,10 +24,10 @@ const SHEETS = [
 ];
 const METHODS = ["M1", "M2", "M3", "M4"];
 const METHOD_LABELS = {
-  M1: "M1 ZAC",
-  M2: "M2 ICCAD/QMAP A*",
-  M3: "M3 GA-NL",
-  M4: "M4 GA-LK",
+  M1: "ZAC",
+  M2: "ICCAD/QMAP A*",
+  M3: "GA-NL（内部）",
+  M4: "GA-LK",
 };
 const GROUP_COLORS = {
   base: "#5B7088", M1: "#4472C4", M2: "#ED7D31",
@@ -248,7 +248,7 @@ async function buildSheet(workbook, spec, records, datasetSummary, index, qa) {
   ]];
   sheet.getRange("A2:AZ2").merge();
   sheet.getRange("A2").values = [[
-    "上述六项总体均值均在M1/M2各一次成功、M3/M4三种子完整且线性模型有效的严格共同集合上聚合：Fidelity取几何均值，其余五项取算术均值；覆盖率独立报告。RETURN匹配与前瞻均嵌套在搜索核时间中，不得重复相加。",
+    "主比较仅要求M1/M2各一次成功和M4三种子完整且线性模型有效；M3仅作内部配置并使用自身共同集合。QMAP先按canonical SHA-256聚类并取簇均值，再进行几何均值、bootstrap和Wilcoxon；覆盖率仍按全部文件报告。",
   ]];
   sheet.getRange("A3:E3").values = [["指标", ...METHODS.map((method) => METHOD_LABELS[method])]];
   sheet.getRange("A4:E11").values = summaryRows(datasetSummary);
@@ -273,15 +273,15 @@ async function buildSheet(workbook, spec, records, datasetSummary, index, qa) {
   sheet.getRange("I4:I5").formulas = [['=IF(H4="","",H4-1)'], ['=IF(H5="","",H5-1)']];
   sheet.getRange("A12:AZ12").merge();
   sheet.getRange("A12").values = [[
-    `严格共同集合N=${datasetSummary.strict_common_linear_N}；各方法success与完整种子覆盖见上表；逐电路失败不删除、不补跑。`,
+    `主比较独立单位=${datasetSummary.independent_analysis_unit}，N=${datasetSummary.strict_common_linear_N}（对应${datasetSummary.strict_common_linear_file_N}个文件）；完整文件覆盖N=${datasetSummary.circuit_N}，逐文件失败不删除、不补跑。`,
   ]];
 
   const groups = [
     ["A13:D13", "电路", "base"],
     ["E13:L13", "M1 ZAC", "M1"],
     ["M13:T13", "M2 ICCAD/QMAP A*", "M2"],
-    ["U13:AB13", "M3 GA-NL 核心指标", "M3"],
-    ["AC13:AJ13", "M3 阶段时间", "M3"],
+    ["U13:AB13", "M3 GA-NL（内部配置）核心指标", "M3"],
+    ["AC13:AJ13", "M3（内部配置）阶段时间", "M3"],
     ["AK13:AR13", "M4 GA-LK 核心指标", "M4"],
     ["AS13:AZ13", "M4 阶段时间", "M4"],
   ];
@@ -419,14 +419,14 @@ const summary = JSON.parse(
   await fs.readFile(path.join(aggregateDirectory, "main_summary.json"), "utf8"),
 );
 if (
-  summary.protocol !== "paper-zh-v1-main-summary-v1" ||
+  summary.protocol !== "paper-zh-v2-main-summary-v1" ||
   JSON.stringify(Object.keys(summary.datasets).sort()) !== JSON.stringify(["qmap154", "zac18"])
 ) {
   throw new Error("invalid paper main_summary.json");
 }
 const workbook = Workbook.create();
 const qa = {
-  protocol: "paper-zh-v1-two-sheet-workbook-v1",
+  protocol: "paper-zh-v2-two-sheet-workbook-v1",
   column_count: COLUMNS.length,
   sheets: [], previews: [], formula_errors: [],
   output_xlsx: outputPath,

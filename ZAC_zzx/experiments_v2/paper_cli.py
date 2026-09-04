@@ -114,6 +114,10 @@ def _parser() -> argparse.ArgumentParser:
     aggregate.add_argument("--freeze", type=Path)
     aggregate.add_argument("--delivery-root", type=Path)
     aggregate.add_argument("--paper-directory", type=Path)
+    aggregate.add_argument(
+        "--no-paper-publish", action="store_true",
+        help=("write only the versioned aggregate directory; do not copy "
+              "macros or derived figure data into the manuscript repository"))
     return parser
 
 
@@ -132,12 +136,14 @@ def _aggregate(args: argparse.Namespace, plan: ExperimentPlan,
     except ImportError as error:  # pragma: no cover - integration guard
         raise RuntimeError("paper aggregation module is not installed") from error
     delivery = (args.delivery_root or
-                PACKAGE_ROOT / "results" / "paper_zh_v1").resolve()
-    paper = (args.paper_directory.resolve() if args.paper_directory else
+                PACKAGE_ROOT / "results" / "paper_zh_v2").resolve()
+    paper = (None if args.no_paper_publish else
+             args.paper_directory.resolve() if args.paper_directory else
              _default_paper_directory(plan))
     return command_aggregate_paper(
         plan=plan, freeze_path=freeze, artifact_root=root,
-        output_root=delivery, paper_directory=paper)
+        output_root=delivery, paper_directory=paper,
+        publish_to_paper=not args.no_paper_publish)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

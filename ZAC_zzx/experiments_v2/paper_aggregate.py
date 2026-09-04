@@ -6,8 +6,11 @@ module has a narrower contract:
 
 * M1/M2 are one actually executed seed-0 manifest per circuit;
 * M3/M4 are the median of seeds 0, 1, and 2 per circuit;
-* fidelity comparisons use the strict common *linear-model* cohort, while
-  compiler coverage is reported independently;
+* the primary fidelity comparison requires only ZAC, ICCAD/QMAP A*, and
+  GA-LK; GA-NL is retained as an internal configuration and never gates the
+  primary cohort;
+* QMAP inference uses the mean within each ``canonical_sha256`` cluster as
+  one independent observation, while compiler coverage remains file based;
 * ``return_match_ns`` and ``forecast_ns`` are nested diagnostics inside
   ``search_kernel_ns`` and are never added to the wall-clock decomposition.
 
@@ -35,6 +38,8 @@ from .statistics import holm_adjust, paired_wilcoxon, wilson_interval
 
 
 METHODS = ("M1", "M2", "M3", "M4")
+PRIMARY_METHODS = ("M1", "M2", "M4")
+INTERNAL_CONFIGURATION_METHODS = ("M3",)
 DATASETS = ("zac18", "qmap154")
 EXPECTED_SEEDS = {
     "M1": (0,), "M2": (0,), "M3": (0, 1, 2), "M4": (0, 1, 2),
@@ -53,6 +58,10 @@ TIME_FIELDS = (
 NESTED_TIME_FIELDS = frozenset(("return_match_ns", "forecast_ns"))
 FIDELITY_COMPONENTS = (
     "log_atom_transfer", "log_idle_excitation", "log_coherence_linear",
+)
+ANALYSIS_FIELDS = (
+    "log_fidelity", "transfers", "idle_exposures", "move_batches",
+    "move_time_us", "algorithm_time_s", *FIDELITY_COMPONENTS,
 )
 FIG6_RAW_EXPORTS = (
     "fig6_fidelity_gain.csv",
@@ -392,40 +401,117 @@ def _bootstrap_log_ratio(
     }
 
 
-def _comparison_against_strongest_baseline(
-        rows: Sequence[Mapping[str, Any]], method: str, *,
-        iterations: int, seed: int) -> dict[str, Any]:
-    paired: list[tuple[str, float, float, str]] = []
+def _has_complete_linear_fidelity(row: Mapping[str, Any], method: str) -> bool:
+    cell = row[method]
+    return bool(
+        cell["log_fidelity"] is not None and
+        cell["valid"] == cell["N"] and
+        cell["fidelity_valid"] == cell["fidelity_N"])
+
+
+def _analysis_unit_name(dataset: str) -> str:
+    return ("canonical_sha256_cluster_mean" if dataset == "qmap154" else
+            "circuit_file")
+
+
+def _analysis_units(
+        rows: Sequence[Mapping[str, Any]], *, dataset: str,
+        required_methods: Sequence[str]) -> list[dict[str, Any]]:
+    """Return independent units for one fidelity comparison.
+
+    QMAP contains aliases with identical canonical QASM.  Those aliases stay
+    in file-level coverage, but their numeric outcomes are averaged within a
+    canonical hash before any geometric mean, bootstrap, or signed-rank test.
+    ZAC18 has no such aliasing contract, so each frozen file remains one unit.
+    """
+    grouped: MutableMapping[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in rows:
-        m1 = row["M1"]["log_fidelity"]
-        m2 = row["M2"]["log_fidelity"]
-        target = row[method]["log_fidelity"]
-        # The paper's headline ratio uses the same all-four strict cohort as
-        # the table, not a method-specific pair that changes its denominator.
-        if (m1 is None or m2 is None or target is None or
-                any(row[item]["log_fidelity"] is None or
-                    row[item]["valid"] != row[item]["N"] or
-                    row[item]["fidelity_valid"] != row[item]["fidelity_N"]
-                    for item in METHODS)):
+        if not all(_has_complete_linear_fidelity(row, method)
+                   for method in required_methods):
             continue
+        circuit = str(row["circuit"])
+        digest = row.get("canonical_sha256")
+        if dataset == "qmap154":
+            if not _is_sha256(digest):
+                raise ValueError(
+                    "QMAP cluster inference requires canonical_sha256 for "
+                    f"every eligible file: {circuit}")
+            unit_id = str(digest)
+        else:
+            unit_id = f"{dataset}/{circuit}"
+        grouped[unit_id].append(row)
+
+    units: list[dict[str, Any]] = []
+    analysis_unit = _analysis_unit_name(dataset)
+    for unit_id, members in sorted(grouped.items()):
+        circuits = sorted(str(row["circuit"]) for row in members)
+        unit: dict[str, Any] = {
+            "analysis_unit": analysis_unit,
+            "unit_id": unit_id,
+            "canonical_sha256": (
+                unit_id if dataset == "qmap154" else
+                str(members[0].get("canonical_sha256", ""))),
+            "circuits": circuits,
+            "member_N": len(members),
+        }
+        for method in required_methods:
+            cell = {
+                field: _mean(row[method].get(field) for row in members)
+                for field in ANALYSIS_FIELDS
+            }
+            log_fidelity = cell["log_fidelity"]
+            cell["fidelity"] = (
+                math.exp(float(log_fidelity))
+                if log_fidelity is not None else None)
+            unit[method] = cell
+        units.append(unit)
+    return units
+
+
+def _comparison_against_strongest_baseline(
+        units: Sequence[Mapping[str, Any]], method: str, *,
+        analysis_unit: str, iterations: int, seed: int) -> dict[str, Any]:
+    paired: list[dict[str, Any]] = []
+    for unit in units:
+        m1 = float(unit["M1"]["log_fidelity"])
+        m2 = float(unit["M2"]["log_fidelity"])
+        target = float(unit[method]["log_fidelity"])
         baseline_method = "M1" if float(m1) >= float(m2) else "M2"
-        paired.append((str(row["circuit"]), float(target), max(float(m1), float(m2)),
-                       baseline_method))
-    differences = [target - baseline for _circuit, target, baseline, _choice in paired]
-    bootstrap = _bootstrap_log_ratio(differences, iterations=iterations, seed=seed)
+        paired.append({
+            "unit_id": str(unit["unit_id"]),
+            "circuits": list(unit["circuits"]),
+            "member_N": int(unit["member_N"]),
+            "target": target,
+            "baseline": max(m1, m2),
+            "baseline_method": baseline_method,
+        })
+    differences = [row["target"] - row["baseline"] for row in paired]
+    bootstrap = {
+        **_bootstrap_log_ratio(differences, iterations=iterations, seed=seed),
+        "analysis_unit": analysis_unit,
+        "resampling": "independent_units_with_replacement",
+    }
     wilcoxon = paired_wilcoxon(differences) if differences else None
+    if wilcoxon is not None:
+        wilcoxon = {**wilcoxon, "analysis_unit": analysis_unit}
     tolerance = 1e-12
     wins = sum(value > tolerance for value in differences)
     losses = sum(value < -tolerance for value in differences)
     ties = len(differences) - wins - losses
     robust: dict[str, Any] = {}
-    ordered = sorted(paired, key=lambda item: item[1] - item[2], reverse=True)
+    ordered = sorted(
+        paired, key=lambda item: item["target"] - item["baseline"], reverse=True)
     for count in (1, 5, 10):
         retained = ordered[count:] if len(ordered) > count else []
-        retained_diffs = [target - baseline
-                          for _circuit, target, baseline, _choice in retained]
+        retained_diffs = [row["target"] - row["baseline"] for row in retained]
         robust[f"remove_top_{count}"] = {
-            "removed_circuits": [item[0] for item in ordered[:count]],
+            "removed_units": [
+                {key: item[key] for key in ("unit_id", "circuits", "member_N")}
+                for item in ordered[:count]
+            ],
+            "removed_circuits": [
+                ",".join(item["circuits"]) for item in ordered[:count]
+            ],
             "n": len(retained),
             "geometric_mean_ratio": (
                 math.exp(statistics.fmean(retained_diffs))
@@ -439,27 +525,34 @@ def _comparison_against_strongest_baseline(
         }
     return {
         "method": method,
+        "analysis_role": (
+            "primary" if method == "M4" else "internal_configuration"),
+        "independent_analysis_unit": analysis_unit,
         "strict_common_linear_N": len(paired),
+        "strict_common_linear_file_N": sum(row["member_N"] for row in paired),
         "target_geometric_mean_fidelity": _geometric_mean_logs(
-            target for _circuit, target, _baseline, _choice in paired),
+            row["target"] for row in paired),
         "strongest_baseline_geometric_mean_fidelity": _geometric_mean_logs(
-            baseline for _circuit, _target, baseline, _choice in paired),
+            row["baseline"] for row in paired),
         "geometric_mean_ratio": bootstrap["ratio"],
         "bootstrap": bootstrap,
         "median_per_circuit_ratio": (
             math.exp(statistics.median(differences)) if differences else None),
+        "median_per_independent_unit_ratio": (
+            math.exp(statistics.median(differences)) if differences else None),
         "wins": wins, "ties": ties, "losses": losses,
         "wilcoxon": wilcoxon,
         "strongest_baseline_choice_counts": dict(Counter(
-            choice for _circuit, _target, _baseline, choice in paired)),
+            row["baseline_method"] for row in paired)),
         "robustness": robust,
     }
 
 
 def _method_summary(rows: Sequence[Mapping[str, Any]], method: str,
-                    common_circuits: set[str]) -> dict[str, Any]:
+                    analysis_units: Sequence[Mapping[str, Any]], *,
+                    analysis_unit: str) -> dict[str, Any]:
     cells = [row[method] for row in rows]
-    common = [row[method] for row in rows if row["circuit"] in common_circuits]
+    common = [unit[method] for unit in analysis_units]
     successes = sum(cell["valid"] > 0 for cell in cells)
     complete = sum(cell["valid"] == cell["N"] for cell in cells)
     linear = [cell for cell in common if cell["log_fidelity"] is not None]
@@ -473,7 +566,10 @@ def _method_summary(rows: Sequence[Mapping[str, Any]], method: str,
             "wilson95": list(interval),
             "status_counts": dict(Counter(cell["status"] for cell in cells)),
         },
+        "independent_analysis_unit": analysis_unit,
         "strict_common_linear_N": len(linear),
+        "strict_common_linear_file_N": sum(
+            int(unit["member_N"]) for unit in analysis_units),
         "fidelity_geometric_mean": _geometric_mean_logs(
             cell["log_fidelity"] for cell in linear),
         "transfers_arithmetic_mean": _mean(cell["transfers"] for cell in common),
@@ -488,9 +584,9 @@ def _method_summary(rows: Sequence[Mapping[str, Any]], method: str,
     }
 
 
-def _mechanism_summary(rows: Sequence[Mapping[str, Any]], method: str,
-                       common_circuits: set[str]) -> dict[str, Any]:
-    cells = [row[method] for row in rows if row["circuit"] in common_circuits]
+def _mechanism_summary(
+        analysis_units: Sequence[Mapping[str, Any]], method: str) -> dict[str, Any]:
+    cells = [unit[method] for unit in analysis_units]
     result = {
         "N": len(cells),
         "transfers_mean": _mean(cell["transfers"] for cell in cells),
@@ -508,15 +604,12 @@ def _mechanism_summary(rows: Sequence[Mapping[str, Any]], method: str,
 
 
 def _mechanism_delta_vs_strongest(
-        rows: Sequence[Mapping[str, Any]], method: str,
-        common_circuits: set[str]) -> dict[str, Any]:
+        analysis_units: Sequence[Mapping[str, Any]], method: str) -> dict[str, Any]:
     paired: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
-    for row in rows:
-        if row["circuit"] not in common_circuits:
-            continue
-        baseline = (row["M1"] if float(row["M1"]["log_fidelity"]) >=
-                    float(row["M2"]["log_fidelity"]) else row["M2"])
-        paired.append((row[method], baseline))
+    for unit in analysis_units:
+        baseline = (unit["M1"] if float(unit["M1"]["log_fidelity"]) >=
+                    float(unit["M2"]["log_fidelity"]) else unit["M2"])
+        paired.append((unit[method], baseline))
 
     def delta(field: str) -> float | None:
         values = [float(current[field]) - float(reference[field])
@@ -543,43 +636,106 @@ def summarize_main(
         main_rows: Mapping[str, Sequence[Mapping[str, Any]]], *,
         bootstrap_iterations: int = 10_000,
         bootstrap_seed: int = 0) -> dict[str, Any]:
-    """Summarize datasets separately; never mix QMAP coverage with fidelity."""
+    """Summarize file coverage separately from independent fidelity units."""
     datasets: dict[str, Any] = {}
     for dataset_index, dataset in enumerate(DATASETS):
         rows = list(main_rows[dataset])
-        common = {
-            str(row["circuit"]) for row in rows
-            if all(row[method]["log_fidelity"] is not None and
-                   row[method]["valid"] == row[method]["N"] and
-                   row[method]["fidelity_valid"] == row[method]["fidelity_N"]
-                   for method in METHODS)
+        primary_units = _analysis_units(
+            rows, dataset=dataset, required_methods=PRIMARY_METHODS)
+        internal_units = _analysis_units(
+            rows, dataset=dataset,
+            required_methods=("M1", "M2", *INTERNAL_CONFIGURATION_METHODS))
+        analysis_unit = _analysis_unit_name(dataset)
+        units_by_method = {
+            "M1": primary_units,
+            "M2": primary_units,
+            "M3": internal_units,
+            "M4": primary_units,
         }
-        comparisons = {}
-        for method_index, method in enumerate(("M3", "M4")):
-            comparison = _comparison_against_strongest_baseline(
-                rows, method, iterations=bootstrap_iterations,
-                seed=bootstrap_seed + 101 * dataset_index + method_index)
-            comparisons[f"{method}_vs_Bstar"] = comparison
+        comparisons = {
+            "M3_vs_Bstar": _comparison_against_strongest_baseline(
+                internal_units, "M3", analysis_unit=analysis_unit,
+                iterations=bootstrap_iterations,
+                seed=bootstrap_seed + 101 * dataset_index),
+            "M4_vs_Bstar": _comparison_against_strongest_baseline(
+                primary_units, "M4", analysis_unit=analysis_unit,
+                iterations=bootstrap_iterations,
+                seed=bootstrap_seed + 101 * dataset_index + 1),
+        }
+        primary_circuits = sorted(
+            circuit for unit in primary_units for circuit in unit["circuits"])
+        if dataset == "qmap154":
+            invalid_hash_circuits = sorted(
+                str(row["circuit"]) for row in rows
+                if not _is_sha256(row.get("canonical_sha256")))
+            if invalid_hash_circuits:
+                raise ValueError(
+                    "QMAP file inventory lacks canonical_sha256: "
+                    f"{invalid_hash_circuits[:5]}")
+            full_cluster_counts = Counter(
+                str(row["canonical_sha256"]) for row in rows)
+        else:
+            full_cluster_counts = Counter(
+                f"{dataset}/{row['circuit']}" for row in rows)
+        cluster_members = [
+            {
+                "unit_id": unit["unit_id"],
+                "canonical_sha256": unit["canonical_sha256"],
+                "circuits": unit["circuits"],
+                "member_N": unit["member_N"],
+            }
+            for unit in primary_units
+        ]
         datasets[dataset] = {
             "circuit_N": len(rows),
-            "strict_common_linear_circuits": sorted(common),
-            "strict_common_linear_N": len(common),
-            "methods": {method: _method_summary(rows, method, common)
+            "coverage_unit": "frozen_input_file",
+            "independent_analysis_unit": analysis_unit,
+            "primary_methods": list(PRIMARY_METHODS),
+            "internal_configuration_methods": list(
+                INTERNAL_CONFIGURATION_METHODS),
+            "strict_common_linear_circuits": primary_circuits,
+            "strict_common_linear_file_N": len(primary_circuits),
+            "strict_common_linear_N": len(primary_units),
+            "canonical_file_N": len(rows),
+            "canonical_cluster_N": len(full_cluster_counts),
+            "canonical_cluster_members": cluster_members,
+            "canonical_duplicate_cluster_N": sum(
+                count > 1 for count in full_cluster_counts.values()),
+            "canonical_duplicate_file_N": sum(
+                count for count in full_cluster_counts.values() if count > 1),
+            "strict_common_duplicate_cluster_N": sum(
+                int(unit["member_N"]) > 1 for unit in primary_units),
+            "methods": {method: _method_summary(
+                rows, method, units_by_method[method],
+                analysis_unit=analysis_unit)
                         for method in METHODS},
             "comparisons": comparisons,
-            "mechanism": {method: _mechanism_summary(rows, method, common)
+            "comparison_roles": {
+                "M4_vs_Bstar": "primary",
+                "M3_vs_Bstar": "internal_configuration",
+            },
+            "mechanism": {method: _mechanism_summary(
+                units_by_method[method], method)
                           for method in METHODS},
             "mechanism_delta_vs_strongest_baseline": {
-                method: _mechanism_delta_vs_strongest(rows, method, common)
-                for method in ("M3", "M4")},
+                "M3": _mechanism_delta_vs_strongest(internal_units, "M3"),
+                "M4": _mechanism_delta_vs_strongest(primary_units, "M4"),
+            },
         }
     return {
-        "protocol": "paper-zh-v1-main-summary-v1",
+        "protocol": "paper-zh-v2-main-summary-v1",
         "bootstrap_iterations": bootstrap_iterations,
         "bootstrap_seed": bootstrap_seed,
+        "primary_methods": list(PRIMARY_METHODS),
+        "internal_configuration_methods": list(INTERNAL_CONFIGURATION_METHODS),
         "fidelity_cohort_semantics": (
-            "strict common linear-model cohort; separate for zac18 and qmap154"),
-        "coverage_semantics": "compiler success is reported independently of fidelity",
+            "M1/M2/M4 strict common linear-model cohort; QMAP uses the mean "
+            "within each canonical_sha256 cluster as one independent unit"),
+        "inference_semantics": (
+            "bootstrap and Wilcoxon operate on independent units; GA-NL/M3 "
+            "is an internal configuration and does not gate the primary cohort"),
+        "coverage_semantics": (
+            "compiler success remains reported over every frozen input file"),
         "datasets": datasets,
     }
 
@@ -1147,7 +1303,12 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
                 seen.add(key)
                 keys.append(key)
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=keys, extrasaction="ignore")
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=keys,
+            extrasaction="ignore",
+            lineterminator="\n",
+        )
         writer.writeheader()
         for row in rows:
             writer.writerow({key: _csv_value(row.get(key)) for key in keys})
@@ -1308,6 +1469,10 @@ def build_paper_values(
         dataset_summary = main_summary["datasets"][dataset]
         macros[f"{prefix}StrictN"] = str(
             dataset_summary["strict_common_linear_N"])
+        macros[f"{prefix}StrictFileN"] = str(
+            dataset_summary["strict_common_linear_file_N"])
+        macros[f"{prefix}AnalysisUnit"] = (
+            "canonical哈希簇" if dataset == "qmap154" else "电路文件")
         for method in METHODS:
             method_summary = dataset_summary["methods"][method]
             suffix = _macro(method)
@@ -1399,7 +1564,10 @@ def build_paper_values(
             robust_ten = comparison.get("robustness", {}).get(
                 "remove_top_10", {}).get("geometric_mean_ratio")
             evidence = [
-                f"严格共同集合$N={comparison['strict_common_linear_N']}$",
+                (f"严格共同集合$N={comparison['strict_common_linear_N']}$个"
+                 f"{'canonical哈希簇' if dataset == 'qmap154' else '电路文件'}"
+                 + (f"（对应{comparison['strict_common_linear_file_N']}个文件）"
+                    if dataset == "qmap154" else "")),
                 (f"95\\% CI [{float(low):.4f}, {float(high):.4f}]"
                  if low is not None and high is not None else "95\\% CI不可用"),
                 (f"中位比{float(median):.4f}"
@@ -1585,27 +1753,38 @@ def build_paper_values(
         macros["SensitivityStatement"] = r"\textemdash{}"
 
     for method in METHODS:
-        method_cells = [
-            row[method] for dataset in DATASETS for row in main_rows[dataset]
-            if all(row[item]["log_fidelity"] is not None and
-                   row[item]["valid"] == row[item]["N"] and
-                   row[item]["fidelity_valid"] == row[item]["fidelity_N"]
-                   for item in METHODS)]
+        method_mechanisms = [
+            (main_summary["datasets"][dataset]["mechanism"][method],
+             int(main_summary["datasets"][dataset]["methods"][method][
+                 "strict_common_linear_N"]))
+            for dataset in DATASETS
+        ]
+
+        def weighted(field: str) -> float | None:
+            values = [
+                (float(summary[field]), count)
+                for summary, count in method_mechanisms
+                if count > 0 and summary.get(field) is not None
+            ]
+            total = sum(count for _value, count in values)
+            return (sum(value * count for value, count in values) / total
+                    if total else None)
+
         suffix = _macro(method)
         macros[f"Mechanism{suffix}Transfer"] = _format_number(
-            _mean(cell["transfers"] for cell in method_cells), digits=1)
+            weighted("transfers_mean"), digits=1)
         macros[f"Mechanism{suffix}Idle"] = _format_number(
-            _mean(cell["idle_exposures"] for cell in method_cells), digits=1)
-        coherence = _mean(cell["log_coherence_linear"] for cell in method_cells)
+            weighted("idle_exposures_mean"), digits=1)
+        coherence = weighted("log_coherence_linear_mean")
         macros[f"Mechanism{suffix}Coherence"] = _format_number(
             -float(coherence) if coherence is not None else None, digits=3)
         macros[f"Mechanism{suffix}Batch"] = _format_number(
-            _mean(cell["move_batches"] for cell in method_cells), digits=1)
-        move_time = _mean(cell["move_time_us"] for cell in method_cells)
+            weighted("move_batches_mean"), digits=1)
+        move_time = weighted("move_time_us_mean")
         macros[f"Mechanism{suffix}MoveTime"] = _format_number(
             float(move_time) / 1000.0 if move_time is not None else None, digits=3)
     return {
-        "protocol": "paper-zh-v1-values-v1",
+        "protocol": "paper-zh-v2-values-v1",
         "macros": macros,
         "nested_timing_semantics": {
             "return_match": "nested in search_kernel",
@@ -1638,6 +1817,41 @@ def _flatten_main_row(row: Mapping[str, Any]) -> dict[str, Any]:
     return flat
 
 
+def _primary_analysis_unit_rows(
+        main_rows: Mapping[str, Sequence[Mapping[str, Any]]],
+        ) -> list[dict[str, Any]]:
+    """Export the exact independent observations used by the primary tests."""
+    result: list[dict[str, Any]] = []
+    for dataset in DATASETS:
+        units = _analysis_units(
+            main_rows[dataset], dataset=dataset,
+            required_methods=PRIMARY_METHODS)
+        for unit in units:
+            m1_log = float(unit["M1"]["log_fidelity"])
+            m2_log = float(unit["M2"]["log_fidelity"])
+            baseline_method = "M1" if m1_log >= m2_log else "M2"
+            baseline_log = max(m1_log, m2_log)
+            m4_log = float(unit["M4"]["log_fidelity"])
+            row: dict[str, Any] = {
+                "dataset": dataset,
+                "analysis_unit": unit["analysis_unit"],
+                "unit_id": unit["unit_id"],
+                "canonical_sha256": unit["canonical_sha256"],
+                "member_N": unit["member_N"],
+                "circuits": _csv_value(unit["circuits"]),
+                "baseline_method": baseline_method,
+                "Bstar__log_fidelity": baseline_log,
+                "Bstar__fidelity": math.exp(baseline_log),
+                "M4_minus_Bstar_delta_logF": m4_log - baseline_log,
+                "M4_over_Bstar_ratio": math.exp(m4_log - baseline_log),
+            }
+            for method in PRIMARY_METHODS:
+                for field, value in unit[method].items():
+                    row[f"{method}__{field}"] = value
+            result.append(row)
+    return result
+
+
 def _figure_main_rows(
         main_rows: Mapping[str, Sequence[Mapping[str, Any]]],
         ) -> tuple[list[dict[str, Any]], list[dict[str, Any]],
@@ -1645,7 +1859,7 @@ def _figure_main_rows(
     """Build plot-ready per-circuit main-result tables for manuscript figures.
 
     The strongest baseline is selected by fidelity on the same circuit.  Rows
-    outside the strict all-four linear-model cohort are retained with an
+    outside the strict three-method primary linear-model cohort are retained with an
     explicit ``strict_paired=False`` marker and blank deltas, so a plotting
     script cannot silently change the denominator by dropping failed runs.
     """
@@ -1657,12 +1871,13 @@ def _figure_main_rows(
         "log_atom_transfer", "log_idle_excitation", "log_coherence_linear",
     )
     for dataset in DATASETS:
+        canonical_counts = Counter(
+            str(row.get("canonical_sha256", ""))
+            for row in main_rows[dataset])
         for row in main_rows[dataset]:
             strict = all(
-                row[method]["log_fidelity"] is not None and
-                row[method]["valid"] == row[method]["N"] and
-                row[method]["fidelity_valid"] == row[method]["fidelity_N"]
-                for method in METHODS)
+                _has_complete_linear_fidelity(row, method)
+                for method in PRIMARY_METHODS)
             m1_log = row["M1"]["log_fidelity"]
             m2_log = row["M2"]["log_fidelity"]
             baseline_method = None
@@ -1677,6 +1892,10 @@ def _figure_main_rows(
             fidelity_rows.append({
                 "dataset": dataset,
                 "circuit": row["circuit"],
+                "canonical_sha256": row.get("canonical_sha256", ""),
+                "independent_analysis_unit": _analysis_unit_name(dataset),
+                "canonical_cluster_file_N": canonical_counts[
+                    str(row.get("canonical_sha256", ""))],
                 "strict_paired": strict,
                 "baseline_method": baseline_method,
                 "baseline_log_fidelity": (
@@ -1693,6 +1912,10 @@ def _figure_main_rows(
             mechanism: dict[str, Any] = {
                 "dataset": dataset,
                 "circuit": row["circuit"],
+                "canonical_sha256": row.get("canonical_sha256", ""),
+                "independent_analysis_unit": _analysis_unit_name(dataset),
+                "canonical_cluster_file_N": canonical_counts[
+                    str(row.get("canonical_sha256", ""))],
                 "strict_paired": strict,
                 "baseline_method": baseline_method,
                 "count_delta_semantics": (
@@ -1860,7 +2083,7 @@ def aggregate_paper(
         sensitivity_summary=sensitivity_summary,
         runtime_summary=runtime_summary)
     report: dict[str, Any] = {
-        "protocol": "paper-zh-v1-aggregate-v1",
+        "protocol": "paper-zh-v2-aggregate-v1",
         "main_summary": main_summary,
         "ablation_summary": ablation_summary,
         "sensitivity_summary": sensitivity_summary,
@@ -1883,6 +2106,8 @@ def aggregate_paper(
         _write_csv(destination / "ablation.csv", ablation_rows)
         _write_csv(destination / "sensitivity.csv", sensitivity_rows)
         _write_csv(destination / "runtime.csv", runtime_rows)
+        _write_csv(destination / "main_primary_analysis_units.csv",
+                   _primary_analysis_unit_rows(main_rows))
         _write_csv(destination / "fig6_fidelity_gain.csv", figure_fidelity)
         _write_csv(destination / "fig6_mechanism.csv", figure_mechanism)
         _write_csv(destination / "fig6_ablation.csv", figure_ablation)
@@ -1894,7 +2119,7 @@ def aggregate_paper(
         files = [path for path in destination.iterdir()
                  if path.is_file() and path.name != "final_manifest.json"]
         final_manifest = {
-            "protocol": "paper-zh-v1-final-manifest-v1",
+            "protocol": "paper-zh-v2-final-manifest-v1",
             "datasets": {dataset: list(frozen_suites[dataset])
                          for dataset in DATASETS},
             "files": {path.name: {"sha256": sha256_file(path),
@@ -2193,12 +2418,14 @@ def _publish_paper_fig6_data(delivery: Path, paper: Path) -> dict[str, Any]:
 def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
                             artifact_root: str | Path,
                             output_root: str | Path,
-                            paper_directory: str | Path) -> Mapping[str, Any]:
+                            paper_directory: str | Path | None = None,
+                            publish_to_paper: bool = True) -> Mapping[str, Any]:
     """Integration entry used by ``paper_cli aggregate-paper``.
 
     The function verifies the frozen quality-source hashes, enumerates only the
-    five registered paper run roots (never QASMBench/Large), and copies the
-    generated macro file into the Chinese IEEE manuscript directory.
+    five registered paper run roots (never QASMBench/Large).  Manuscript
+    publication is an explicit final step and can be disabled for a read-only
+    re-aggregation of frozen results.
     """
     from .paper_protocol import (PAPER_ABLATION_VARIANTS,
                                  SENSITIVITY_PROFILE_IDS,
@@ -2208,7 +2435,10 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
     freeze = load_paper_freeze(freeze_file)
     artifacts = Path(artifact_root).resolve()
     destination = Path(output_root).resolve()
-    paper = Path(paper_directory).resolve()
+    paper = (Path(paper_directory).resolve()
+             if paper_directory is not None else None)
+    if publish_to_paper and paper is None:
+        raise ValueError("paper_directory is required when publishing")
     quality_source = artifacts / "quality_source_manifest.json"
     if not quality_source.is_file():
         raise FileNotFoundError(
@@ -2344,19 +2574,23 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
         h8_variant=PAPER_ABLATION_VARIANTS["h8"],
         greedy_variant=PAPER_ABLATION_VARIANTS["greedy"],
     )
-    paper.mkdir(parents=True, exist_ok=True)
     macro_source = destination / "results_values_zh.tex"
-    macro_target = paper / "results_values_zh.tex"
-    temporary = macro_target.with_name(f".{macro_target.name}.tmp")
-    temporary.write_bytes(macro_source.read_bytes())
-    temporary.replace(macro_target)
+    macro_target: Path | None = None
+    if publish_to_paper:
+        assert paper is not None
+        paper.mkdir(parents=True, exist_ok=True)
+        macro_target = paper / "results_values_zh.tex"
+        temporary = macro_target.with_name(f".{macro_target.name}.tmp")
+        temporary.write_bytes(macro_source.read_bytes())
+        temporary.replace(macro_target)
 
     from .paper_workbook import export_paper_workbook
     workbook_path = destination / "four_methods_results.xlsx"
     workbook_result = export_paper_workbook(
         destination, workbook_path,
         qa_directory=destination / "paper_workbook_qa")
-    fig6_data = _publish_paper_fig6_data(destination, paper)
+    fig6_data = (_publish_paper_fig6_data(destination, paper)
+                 if publish_to_paper and paper is not None else None)
 
     final_path = destination / "final_manifest.json"
     final_payload = json.loads(final_path.read_text(encoding="utf-8"))
@@ -2386,8 +2620,10 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
                                      for run in timing_warmup_runs}),
         },
         "timing_warmup": timing_warmup,
-        "paper_macro_target": {"path": str(macro_target.resolve()),
-                               "sha256": sha256_file(macro_target)},
+        "paper_publication": {
+            "performed": publish_to_paper,
+            "paper_directory": str(paper) if paper is not None else None,
+        },
         "paper_run_reports": reports,
         "evidence_validation": evidence,
         "legacy_python_fallback_policy": legacy_policy,
@@ -2413,9 +2649,15 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
                 for path in workbook_result["preview_paths"]
             },
         },
-        "paper_fig6_data": fig6_data,
         "plan_path": str(getattr(plan, "path", "")),
     })
+    if macro_target is not None:
+        final_payload["paper_macro_target"] = {
+            "path": str(macro_target.resolve()),
+            "sha256": sha256_file(macro_target),
+        }
+    if fig6_data is not None:
+        final_payload["paper_fig6_data"] = fig6_data
     final_payload["files"][workbook_path.name] = {
         "sha256": sha256_file(workbook_path),
         "bytes": workbook_path.stat().st_size,
@@ -2425,7 +2667,9 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
         "protocol": report["protocol"],
         "output_root": str(destination),
         "paper_values": str((destination / "paper_values.json").resolve()),
-        "results_values_zh_tex": str(macro_target.resolve()),
+        "results_values_zh_tex": str(macro_source.resolve()),
+        "paper_results_values_zh_tex": (
+            str(macro_target.resolve()) if macro_target is not None else None),
         "final_manifest": str(final_path.resolve()),
         "four_methods_results_xlsx": str(workbook_path.resolve()),
         "paper_fig6_data": fig6_data,
@@ -2442,7 +2686,8 @@ def command_aggregate_paper(*, plan: Any, freeze_path: str | Path,
 
 
 __all__ = [
-    "DATASETS", "EXPECTED_SEEDS", "METHODS", "NESTED_TIME_FIELDS",
+    "DATASETS", "EXPECTED_SEEDS", "INTERNAL_CONFIGURATION_METHODS", "METHODS",
+    "NESTED_TIME_FIELDS", "PRIMARY_METHODS",
     "aggregate_paper", "command_aggregate_paper", "build_main_rows", "build_paper_values",
     "render_results_values_tex", "summarize_ablation", "summarize_main",
     "summarize_runtime", "summarize_sensitivity",

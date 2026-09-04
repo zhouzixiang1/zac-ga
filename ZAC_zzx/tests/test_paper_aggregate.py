@@ -16,6 +16,7 @@ from experiments_v2.paper_aggregate import (
     METHODS,
     _exact_matrix,
     _figure_ablation_rows,
+    _figure_main_rows,
     _ga_applicable_count,
     _legacy_seed0_fallback_exception,
     _publish_paper_fig6_data,
@@ -148,6 +149,100 @@ def test_main_uses_three_seed_median_and_separates_qmap_coverage() -> None:
     mechanism = qmap["mechanism_delta_vs_strongest_baseline"]["M4"]
     assert mechanism["N"] == 1
     assert mechanism["log_coherence_linear_mean_delta"] == pytest.approx(-0.001)
+
+
+def test_primary_cohort_does_not_depend_on_internal_ga_nl() -> None:
+    manifests = _complete_main()
+    for index, row in enumerate(manifests):
+        if row.dataset == "qmap154" and row.method == "M3" and row.seed == 2:
+            manifests[index] = _run(
+                "qmap154", "qmap_c", "M3", 2, -0.88,
+                status=RunStatus.TIMEOUT.value)
+    suites = {"zac18": ["zac_c"], "qmap154": ["qmap_c"]}
+    rows = build_main_rows(manifests, frozen_suites=suites)
+    summary = summarize_main(rows, bootstrap_iterations=50, bootstrap_seed=7)
+    qmap = summary["datasets"]["qmap154"]
+
+    assert qmap["primary_methods"] == ["M1", "M2", "M4"]
+    assert qmap["internal_configuration_methods"] == ["M3"]
+    assert qmap["strict_common_linear_N"] == 1
+    assert qmap["comparisons"]["M4_vs_Bstar"][
+        "geometric_mean_ratio"] == pytest.approx(math.exp(0.15))
+    assert qmap["comparisons"]["M3_vs_Bstar"][
+        "strict_common_linear_N"] == 0
+    assert qmap["comparisons"]["M3_vs_Bstar"][
+        "analysis_role"] == "internal_configuration"
+    fidelity_rows, mechanism_rows, _stage_rows = _figure_main_rows(rows)
+    assert next(row for row in fidelity_rows
+                if row["dataset"] == "qmap154")["strict_paired"] is True
+    assert next(row for row in mechanism_rows
+                if row["dataset"] == "qmap154")["strict_paired"] is True
+
+
+def test_qmap_inference_clusters_canonical_aliases_before_statistics(
+        tmp_path: Path) -> None:
+    manifests: list[RunManifest] = []
+
+    def add_circuit(dataset: str, circuit: str, digest: str,
+                    m4_log: float) -> None:
+        runs = [
+            _run(dataset, circuit, "M1", 0, -1.2),
+            _run(dataset, circuit, "M2", 0, -1.0),
+            *(_run(dataset, circuit, "M3", seed, -0.95)
+              for seed in (0, 1, 2)),
+            *(_run(dataset, circuit, "M4", seed, m4_log)
+              for seed in (0, 1, 2)),
+        ]
+        for run in runs:
+            run.input_sha256 = digest
+        manifests.extend(runs)
+
+    add_circuit("zac18", "zac_c", "1" * 64, -0.9)
+    add_circuit("qmap154", "alias_a", "a" * 64, -0.9)
+    add_circuit("qmap154", "alias_b", "a" * 64, -0.7)
+    add_circuit("qmap154", "unique_c", "d" * 64, -1.1)
+    suites = {
+        "zac18": ["zac_c"],
+        "qmap154": ["alias_a", "alias_b", "unique_c"],
+    }
+    rows = build_main_rows(manifests, frozen_suites=suites)
+    summary = summarize_main(rows, bootstrap_iterations=100, bootstrap_seed=5)
+    qmap = summary["datasets"]["qmap154"]
+    comparison = qmap["comparisons"]["M4_vs_Bstar"]
+
+    assert qmap["circuit_N"] == 3
+    assert qmap["methods"]["M4"]["coverage"]["N"] == 3
+    assert qmap["methods"]["M4"]["coverage"]["success_circuits"] == 3
+    assert qmap["canonical_cluster_N"] == 2
+    assert qmap["canonical_duplicate_cluster_N"] == 1
+    assert qmap["strict_common_linear_file_N"] == 3
+    assert qmap["strict_common_linear_N"] == 2
+    assert comparison["strict_common_linear_file_N"] == 3
+    assert comparison["strict_common_linear_N"] == 2
+    assert comparison["independent_analysis_unit"] == (
+        "canonical_sha256_cluster_mean")
+    assert comparison["bootstrap"]["analysis_unit"] == (
+        "canonical_sha256_cluster_mean")
+    assert comparison["wilcoxon"]["analysis_unit"] == (
+        "canonical_sha256_cluster_mean")
+    # Alias deltas 0.1 and 0.3 first average to one cluster delta 0.2;
+    # the unique cluster delta is -0.1, giving exp(mean(0.2, -0.1)).
+    assert comparison["geometric_mean_ratio"] == pytest.approx(math.exp(0.05))
+    assert comparison["geometric_mean_ratio"] != pytest.approx(math.exp(0.1))
+    assert qmap["methods"]["M4"]["fidelity_geometric_mean"] == pytest.approx(
+        math.exp((-0.8 - 1.1) / 2.0))
+
+    aggregate_paper(
+        manifests, frozen_suites=suites, output_dir=tmp_path,
+        bootstrap_iterations=20, bootstrap_seed=5)
+    with (tmp_path / "main_primary_analysis_units.csv").open(
+            newline="", encoding="utf-8") as handle:
+        unit_rows = list(csv.DictReader(handle))
+    qmap_units = [row for row in unit_rows if row["dataset"] == "qmap154"]
+    assert len(qmap_units) == 2
+    alias_unit = next(row for row in qmap_units if row["member_N"] == "2")
+    assert json.loads(alias_unit["circuits"]) == ["alias_a", "alias_b"]
+    assert float(alias_unit["M4_minus_Bstar_delta_logF"]) == pytest.approx(0.2)
 
 
 def test_partial_seed_is_coverage_but_not_strict_fidelity() -> None:
@@ -639,6 +734,7 @@ def test_aggregate_writes_csv_json_and_tex_but_not_xlsx(tmp_path: Path) -> None:
     expected = {
         "zac18.csv", "qmap154.csv", "ablation.csv", "sensitivity.csv",
         "runtime.csv", "main_summary.json", "paper_values.json",
+        "main_primary_analysis_units.csv",
         "results_values_zh.tex", "final_manifest.json",
         "fig6_fidelity_gain.csv", "fig6_mechanism.csv",
         "fig6_ablation.csv", "fig6_m4_stage_time.csv",
@@ -658,6 +754,10 @@ def test_aggregate_writes_csv_json_and_tex_but_not_xlsx(tmp_path: Path) -> None:
     assert "RETURN匹配和前瞻时间嵌套于搜索核" in tex
     assert render_results_values_tex(report["paper_values"]) == tex
     manifest = json.loads((tmp_path / "final_manifest.json").read_text())
+    assert report["protocol"] == "paper-zh-v2-aggregate-v1"
+    assert report["main_summary"]["protocol"] == "paper-zh-v2-main-summary-v1"
+    assert report["paper_values"]["protocol"] == "paper-zh-v2-values-v1"
+    assert manifest["protocol"] == "paper-zh-v2-final-manifest-v1"
     assert manifest["xlsx_generated_here"] is False
     assert manifest["nested_timing_semantics"]["must_not_be_summed"] is True
 
@@ -854,6 +954,29 @@ def test_command_aggregate_paper_integrates_frozen_sources(
             ValueError, match=r"requires eight successful compilations"):
         command_aggregate_paper(**call)
     add_track("timing-warmup", warmups[7])
+
+    paper_before = {
+        path.relative_to(paper): sha256_file(path)
+        for path in paper.rglob("*") if path.is_file()
+    }
+    unpublished = tmp_path / "delivery-v2-unpublished"
+    unpublished_result = command_aggregate_paper(
+        plan=call["plan"], freeze_path=call["freeze_path"],
+        artifact_root=call["artifact_root"], output_root=unpublished,
+        paper_directory=None, publish_to_paper=False)
+    assert unpublished_result["paper_results_values_zh_tex"] is None
+    assert unpublished_result["paper_fig6_data"] is None
+    unpublished_final = json.loads(
+        (unpublished / "final_manifest.json").read_text())
+    assert unpublished_final["paper_publication"] == {
+        "performed": False, "paper_directory": None}
+    assert "paper_macro_target" not in unpublished_final
+    assert "paper_fig6_data" not in unpublished_final
+    assert paper_before == {
+        path.relative_to(paper): sha256_file(path)
+        for path in paper.rglob("*") if path.is_file()
+    }
+
     result = command_aggregate_paper(
         **call)
     assert result["strict_common_linear_N"] == {"zac18": 1, "qmap154": 1}

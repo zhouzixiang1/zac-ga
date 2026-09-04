@@ -408,6 +408,11 @@ class PaperCliTests(unittest.TestCase):
             PAPER_ABLATION_VARIANTS["h8"],
             PAPER_ABLATION_VARIANTS["greedy"])
 
+    def test_aggregate_can_write_versioned_results_without_paper_publish(self) -> None:
+        args = _parser().parse_args(["aggregate-paper", "--no-paper-publish"])
+        self.assertTrue(args.no_paper_publish)
+        self.assertIsNone(args.paper_directory)
+
 
 if __name__ == "__main__":
     unittest.main()
