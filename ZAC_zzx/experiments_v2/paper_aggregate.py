@@ -75,6 +75,8 @@ FIG6_DERIVED_OUTPUTS = (
     "fig6_mechanism.dat",
     "fig6_ablation.dat",
     "fig6_stage_time.dat",
+    "fig6_selected_cases.dat",
+    "fig6_selected_cases.tex",
     "fig6_meta.tex",
 )
 
@@ -2394,7 +2396,7 @@ def _publish_paper_fig6_data(delivery: Path, paper: Path) -> dict[str, Any]:
             (staging / name).replace(published_root / name)
 
     return {
-        "protocol": "paper-fig6-derived-v1",
+        "protocol": "paper-fig6-derived-v2",
         "converter": {
             "path": str(converter.resolve()),
             "sha256": sha256_file(converter),

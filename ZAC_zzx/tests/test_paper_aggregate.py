@@ -809,10 +809,14 @@ def test_publish_fig6_data_fails_closed_then_hashes_all_outputs(
 
     converter = _write_fake_fig6_converter(paper)
     result = _publish_paper_fig6_data(delivery, paper)
-    assert result["protocol"] == "paper-fig6-derived-v1"
+    assert result["protocol"] == "paper-fig6-derived-v2"
     assert result["converter"]["sha256"] == sha256_file(converter)
     assert set(result["raw_inputs"]) == set(FIG6_RAW_EXPORTS)
     assert set(result["files"]) == set(FIG6_DERIVED_OUTPUTS)
+    assert {
+        "fig6_selected_cases.dat",
+        "fig6_selected_cases.tex",
+    } <= set(result["files"])
     for name, row in result["files"].items():
         path = published / name
         assert row["sha256"] == sha256_file(path)
@@ -1004,8 +1008,13 @@ def test_command_aggregate_paper_integrates_frozen_sources(
     assert final["evidence_validation"]["quality"][
         "canonical_inputs_verified"] is True
     fig6 = final["paper_fig6_data"]
+    assert fig6["protocol"] == "paper-fig6-derived-v2"
     assert fig6["converter"]["sha256"] == sha256_file(converter)
     assert set(fig6["files"]) == set(FIG6_DERIVED_OUTPUTS)
+    assert {
+        "fig6_selected_cases.dat",
+        "fig6_selected_cases.tex",
+    } <= set(fig6["files"])
     assert result["paper_fig6_data"] == fig6
     for row in fig6["files"].values():
         assert row["sha256"] == sha256_file(Path(row["path"]))
