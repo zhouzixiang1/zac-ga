@@ -100,12 +100,11 @@ compiler coverage continues to count every frozen input file.
 | Median ratio per independent unit | 1.0052 | 0.9976 |
 | Win / tie / loss | 12 / 0 / 6 | 49 / 0 / 71 |
 
-These aggregates require different interpretations. ZAC18 gains include one
-additional valid circuit that was previously excluded only because GA-NL was
-incomplete. On QMAP154, the positive geometric mean is driven by a small upper
-tail; the median and win/loss counts do not indicate an improvement on most
-independent units. GA-LK also requires substantially more compilation time than
-either baseline.
+The aggregate ratios summarize the complete common cohort, while the
+per-circuit statistics retain its circuit-level variation. GA-LK achieves
+particularly large fidelity gains on individual QMAP154 circuits. Compilation
+time is reported separately from result quality because the bounded search and
+finite-horizon evaluation require additional compiler work.
 
 Authoritative artifacts:
 

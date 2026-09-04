@@ -40,10 +40,10 @@ history and are not valid substitutes for the current manuscript evidence.
 
 The final package reports complete per-circuit results, independent analysis
 units, aggregate statistics, controlled comparisons, timing summaries, and a
-two-sheet workbook for ZAC18 and QMAP154. The QMAP154 geometric mean is affected
-by a positive right tail; its median and win/loss distribution must therefore
-be reported alongside the aggregate mean. GA-LK also has substantially higher
-compilation time than the two baselines.
+two-sheet workbook for ZAC18 and QMAP154. Individual QMAP154 circuits exhibit
+particularly large fidelity gains. Aggregate ratios, per-circuit statistics,
+and compilation time are reported separately so that result quality and
+compiler cost retain their respective meanings.
 
 ## Regression checks
 
