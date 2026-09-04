@@ -92,6 +92,24 @@ class GAInitialPlacer:
 
     # ---------------- 热启动：三个结构化解 ----------------
 
+    @staticmethod
+    def _assignment_from_atom_order(atom_at_seat: list[int]) -> list[int]:
+        """Invert an ``atom_at_seat`` ordering into the chromosome contract.
+
+        The structured heuristics naturally build a list whose position is a
+        seat and whose value is the atom occupying that seat.  GA chromosomes
+        use the opposite direction, ``p[atom] = seat_index``.  Treating the
+        heuristic ordering directly as ``p`` silently assigns every non-self-
+        inverse ordering to the wrong atoms.
+        """
+        n = len(atom_at_seat)
+        if sorted(atom_at_seat) != list(range(n)):
+            raise ValueError("warm-start atom order must be a permutation")
+        assignment = [-1] * n
+        for seat_index, atom in enumerate(atom_at_seat):
+            assignment[atom] = seat_index
+        return assignment
+
     def _warm_starts(self, n, W, list_gate) -> list[list[int]]:
         seeds = [list(range(n))]                        # ① 平凡序（SA 的老赢家）
 
@@ -100,7 +118,9 @@ class GAInitialPlacer:
             for g in gates:
                 for q in (g[0], g[1]):
                     first_use.setdefault(q, l)
-        seeds.append(sorted(range(n), key=lambda q: first_use.get(q, 1 << 30)))
+        first_use_order = sorted(
+            range(n), key=lambda q: first_use.get(q, 1 << 30))
+        seeds.append(self._assignment_from_atom_order(first_use_order))
 
         # ③ 权重贪心相邻序：连接强度增量维护，每步挂上与已放集合亲和最大者
         strength = [sum(W[i]) for i in range(n)]
@@ -119,7 +139,7 @@ class GAInitialPlacer:
             in_set.add(best)
             for i in range(n):
                 conn[i] += W[i][best]
-        seeds.append(placed)
+        seeds.append(self._assignment_from_atom_order(placed))
         return seeds
 
     # ---------------- 邻域与进化 ----------------
@@ -128,6 +148,8 @@ class GAInitialPlacer:
     def _neighbor(p: list[int], rng) -> list[int]:
         m = list(p)
         n = len(m)
+        if n < 2:
+            return m
         r = rng.random()
         if r < 0.4:                                     # 交换两原子的座位
             a, b = rng.randrange(n), rng.randrange(n)

@@ -1,0 +1,98 @@
+diff --git a/include/na/zoned/Compiler.hpp b/include/na/zoned/Compiler.hpp
+index ca352d5..23bd454 100644
+--- a/include/na/zoned/Compiler.hpp
++++ b/include/na/zoned/Compiler.hpp
+@@ -82,12 +82,16 @@ public:
+     int64_t schedulingTime;     ///< Time taken for scheduling in us
+     int64_t reuseAnalysisTime;  ///< Time taken for reuse analysis in us
+     int64_t placementTime;      ///< Time taken for placement in us
++    int64_t initialPlacementTime; ///< Initial placement subset in us
++    int64_t layerPlacementTime; ///< Per-layer placement subset in us
+     int64_t routingTime;        ///< Time taken for routing in us
+     int64_t codeGenerationTime; ///< Time taken for code generation in us
+     int64_t totalTime;          ///< Total time taken for the compilation in us
+     NLOHMANN_DEFINE_TYPE_INTRUSIVE_ONLY_SERIALIZE(Statistics, schedulingTime,
+                                                   reuseAnalysisTime,
+-                                                  placementTime, routingTime,
++                                                  placementTime,
++                                                  initialPlacementTime,
++                                                  layerPlacementTime, routingTime,
+                                                   codeGenerationTime,
+                                                   totalTime);
+   };
+@@ -209,6 +213,13 @@ public:
+         std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::system_clock::now() - placementStart)
+             .count();
++    if constexpr (std::is_same_v<Placer, AStarPlacer>) {
++      statistics_.initialPlacementTime = SELF.getInitialPlacementTime();
++      statistics_.layerPlacementTime = SELF.getLayerPlacementTime();
++    } else {
++      statistics_.initialPlacementTime = 0;
++      statistics_.layerPlacementTime = statistics_.placementTime;
++    }
+     SPDLOG_INFO("Time for placement: {}us", statistics_.placementTime);
+ 
+     const auto& routingStart = std::chrono::system_clock::now();
+diff --git a/include/na/zoned/placer/AStarPlacer.hpp b/include/na/zoned/placer/AStarPlacer.hpp
+index 5af2977..865cd7e 100644
+--- a/include/na/zoned/placer/AStarPlacer.hpp
++++ b/include/na/zoned/placer/AStarPlacer.hpp
+@@ -66,6 +66,9 @@ class AStarPlacer : public PlacerBase {
+    * @note Is automatically computed in the constructor.
+    */
+   size_t windowMinHeight_;
++  /// Timing-only instrumentation. These counters never participate in search.
++  int64_t initialPlacementTime_ = 0;
++  int64_t layerPlacementTime_ = 0;
+ 
+ public:
+   /// The configuration of the A* placer
+@@ -305,6 +308,13 @@ public:
+         const std::vector<std::unordered_set<qc::Qubit>>& reuseQubits)
+       -> std::vector<Placement>;
+ 
++  [[nodiscard]] auto getInitialPlacementTime() const -> int64_t {
++    return initialPlacementTime_;
++  }
++  [[nodiscard]] auto getLayerPlacementTime() const -> int64_t {
++    return layerPlacementTime_;
++  }
++
+ private:
+   /**
+    * @brief A* search algorithm for trees
+diff --git a/src/na/zoned/placer/AStarPlacer.cpp b/src/na/zoned/placer/AStarPlacer.cpp
+index b1d743d..343c459 100644
+--- a/src/na/zoned/placer/AStarPlacer.cpp
++++ b/src/na/zoned/placer/AStarPlacer.cpp
+@@ -1438,10 +1438,18 @@ auto AStarPlacer::place(
+     const std::vector<TwoQubitGateLayer>& twoQubitGateLayers,
+     const std::vector<std::unordered_set<qc::Qubit>>& reuseQubits)
+     -> std::vector<Placement> {
++  initialPlacementTime_ = 0;
++  layerPlacementTime_ = 0;
+   std::vector<Placement> placement;
+   placement.reserve((2 * twoQubitGateLayers.size()) + 1);
++  auto stageStart = std::chrono::steady_clock::now();
+   placement.emplace_back(makeInitialPlacement(nQubits));
++  initialPlacementTime_ =
++      std::chrono::duration_cast<std::chrono::microseconds>(
++          std::chrono::steady_clock::now() - stageStart)
++          .count();
+   for (size_t layer = 0; layer < twoQubitGateLayers.size(); ++layer) {
++    stageStart = std::chrono::steady_clock::now();
+     const auto& [gatePlacement, qubitPlacement] = makeIntermediatePlacement(
+         placement.back(),
+         layer == 0 ? std::unordered_set<qc::Qubit>{} : reuseQubits[layer - 1],
+@@ -1450,6 +1458,10 @@ auto AStarPlacer::place(
+         twoQubitGateLayers[layer],
+         layer == twoQubitGateLayers.size() - 1 ? TwoQubitGateLayer{}
+                                                : twoQubitGateLayers[layer + 1]);
++    layerPlacementTime_ +=
++        std::chrono::duration_cast<std::chrono::microseconds>(
++            std::chrono::steady_clock::now() - stageStart)
++            .count();
+     placement.emplace_back(gatePlacement);
+     placement.emplace_back(qubitPlacement);
+   }

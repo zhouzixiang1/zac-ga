@@ -79,7 +79,8 @@ class TestRegression(unittest.TestCase):
         from verify_batches import load_arch
 
         def scan(path):
-            code = json.load(open(path))
+            with open(path, encoding="utf-8") as handle:
+                code = json.load(handle)
             arch = load_arch(code, Path(path))
             ex3 = lambda t: arch.exact_SLM_location_tuple(tuple(t))
             where = {}

@@ -1,0 +1,40 @@
+{
+  "experiment_schema": 2,
+  "classification": "legacy/pilot",
+  "accepted_by_schema2_aggregator": false,
+  "purpose": "regression_and_diagnostic_reference_only",
+  "retention_contract": {
+    "working_tree": "The path must exist at the current tip and its SHA256 is verified directly.",
+    "git_history_only": "The path is intentionally absent from the current tip; git_commit:path remains hash-verifiable in repository history."
+  },
+  "artifacts": [
+    {
+      "category": "historical_four_metric_workbook",
+      "path": "ZAC_zzx/results/fourway/四方法_四指标_双数据集.xlsx",
+      "retention_state": "git_history_only",
+      "git_commit": "daa90343c3932db327710727b72690c7205333da",
+      "sha256": "d3d37a246d3ca94ee2b09f5c35cf6294226725cefc7ad9d1528083f335cbe90f"
+    },
+    {
+      "category": "historical_genetic_workbook",
+      "path": "ZAC_zzx/results/fourway/四方法对比_ga.xlsx",
+      "retention_state": "git_history_only",
+      "git_commit": "e1561b9e111cb4ac2cd0552d789033a50f3dda22",
+      "sha256": "af9ff3af77a784eb5ca35e09b677f33600f91b80ea1f039eb4fc7610066adc1f"
+    },
+    {
+      "category": "historical_qmap_3_2_capture",
+      "path": "experiments/results/qmap_iccad_v32.json",
+      "retention_state": "working_tree",
+      "sha256": "702f44e1a31b805aa2b3166cb5dafa03ca45b07ac328a8daa90993a8dcd4257e"
+    },
+    {
+      "category": "historical_ga_summary",
+      "path": "ZAC_zzx/results/qmap_suite/summary_zzx_ga_zzx_nolook_ga.json",
+      "retention_state": "git_history_only",
+      "git_commit": "8faae3c5207fb590fc736e4853f00641e31f64dc",
+      "sha256": "e5a4870dd357e205ec5163fd8cc5c957c5d93ab42a803838aca13de690f26110"
+    }
+  ],
+  "exclusion_rule": "Formal reports accept only Schema 2 RunManifest files under the frozen experiment output root; legacy *_fidelity.json, fallback captures and workbooks are never scanned."
+}

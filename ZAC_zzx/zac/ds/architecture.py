@@ -64,6 +64,13 @@ class Architecture:
         self.entanglement_zone = []
         self.dict_SLM = dict()
         self.dict_AOD = dict()
+        # Geometry is immutable after construction, while placement search asks
+        # for the same physical coordinates and pair distances millions of
+        # times.  Keep exact, per-architecture memo tables instead of repeating
+        # validation and arithmetic in every GA fitness evaluation.
+        self._exact_slm_location_cache = {}
+        self._nearest_entanglement_pair_cache = {}
+        self._nearest_entanglement_distance_cache = {}
         self.time_atom_transfer = 15 # us
         self.time_rydberg = 0.36 # us
         self.time_1qGate = 0.625 # us
@@ -124,18 +131,21 @@ class Architecture:
         return (idx in self.dict_AOD)
     
     def exact_SLM_location(self, idx, r, c):
-        slm = self.dict_SLM[idx]
-        assert(self.is_valid_SLM_position(idx, r, c))
-        x = slm.site_seperation[0] * c + slm.location[0]
-        y = slm.site_seperation[1] * r + slm.location[1]
-        return (x, y)
+        return self.exact_SLM_location_tuple((idx, r, c))
 
     def exact_SLM_location_tuple(self, loc):
-        slm = self.dict_SLM[loc[0]]
-        assert(self.is_valid_SLM_position(loc[0], loc[1], loc[2]))
-        x = slm.site_seperation[0] * loc[2] + slm.location[0]
-        y = slm.site_seperation[1] * loc[1] + slm.location[1]
-        return (x, y)
+        key = (loc[0], loc[1], loc[2])
+        cached = self._exact_slm_location_cache.get(key)
+        if cached is not None:
+            return cached
+        slm = self.dict_SLM[key[0]]
+        assert(self.is_valid_SLM_position(*key))
+        value = (
+            slm.site_seperation[0] * key[2] + slm.location[0],
+            slm.site_seperation[1] * key[1] + slm.location[1],
+        )
+        self._exact_slm_location_cache[key] = value
+        return value
 
 
     def preprocessing(self):
@@ -308,13 +318,19 @@ class Architecture:
     def nearest_entanglement_site(self, idx1, r1, c1, idx2, r2, c2):
         # return the nearest Rydberg site for two qubit in the storage zone
         # based on the position of two qubits
+        cache_key = (idx1, r1, c1, idx2, r2, c2)
+        cached = self._nearest_entanglement_pair_cache.get(cache_key)
+        if cached is not None:
+            # Some legacy callers concatenate the returned list in place.
+            # Return a fresh list so memoisation cannot change that behaviour.
+            return list(cached)
         storage_site1 = self.exact_SLM_location(idx1, r1, c1)
         storage_site2 = self.exact_SLM_location(idx2, r2, c2)
         site1 = self.storage_site_nearest_Rydberg_site[idx1][r1][c1]
         site2 = self.storage_site_nearest_Rydberg_site[idx2][r2][c2]
         # the nearest zone for both qubits are in the same entanglement zone
         if site1 == site2:
-            return [site1]
+            result = (site1,)
         elif site1[0] == site2[0]:
             near_x = (storage_site1[0] + storage_site1[1]) // 2
             middle_site_c = (site1[2] + site2[2])// 2
@@ -330,22 +346,18 @@ class Architecture:
             #     if next_dis < near_site_dis:
             #         near_site_idx -= 1
 
-            return [(site1[0], site1[1], near_site_idx)]
+            result = ((site1[0], site1[1], near_site_idx),)
         else:
-            return [site1, site2]
-            slm1 = self.dict_SLM[site1[0]]
-            slm2 = self.dict_SLM[site2[0]]
-            row_y_1 = slm1.location[1] + site1[1] * slm1.site_seperation[1]
-            row_y_2 = slm2.location[1] + site2[1] * slm2.site_seperation[1]
-            diff_y_1 = abs(row_y_1 - storage_site1[1]) + abs(row_y_1 - storage_site2[1])
-            diff_y_2 = abs(row_y_2 - storage_site1[1]) + abs(row_y_2 - storage_site2[1])
-            if diff_y_1 < diff_y_2:
-                return (site1[0], site1[1], (site1[2] + site2[2])// 2)
-            else:
-                return (site2[0], site2[1], (site1[2] + site2[2])// 2)
+            result = (site1, site2)
+        self._nearest_entanglement_pair_cache[cache_key] = result
+        return list(result)
 
     def nearest_entanglement_site_dis(self, idx1, r1, c1, idx2, r2, c2):
         # return the sum of the distance to move two qubits to one rydberg site
+        cache_key = (idx1, r1, c1, idx2, r2, c2)
+        cached = self._nearest_entanglement_distance_cache.get(cache_key)
+        if cached is not None:
+            return cached
         storage_site1 = self.exact_SLM_location(idx1, r1, c1)
         storage_site2 = self.exact_SLM_location(idx2, r2, c2)
         list_site = self.nearest_entanglement_site(idx1, r1, c1, idx2, r2, c2)
@@ -357,6 +369,7 @@ class Architecture:
                 dis = min(max(math.dist(storage_site1, exact_site), math.dist(storage_site2, exact_site)), dis)
             else:
                 dis = min( math.dist(storage_site1, exact_site) + math.dist(storage_site2, exact_site), dis )
+        self._nearest_entanglement_distance_cache[cache_key] = dis
         return dis
     
 
@@ -371,4 +384,3 @@ class Architecture:
             
             
             
-

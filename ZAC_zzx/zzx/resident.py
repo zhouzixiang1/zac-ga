@@ -86,6 +86,26 @@ class ResidentRegistry:
                 self.zone_seat[q] = tuple(loc)
             else:
                 self.storage_site[q] = tuple(loc)
+        # Two deliberately separate physical ledgers are kept here.
+        #
+        # ``resident_idle_*`` is the online rent paid since an atom's most
+        # recent CZ participation.  It is reset by ``enter_zone`` (which is
+        # called when that atom participates in a committed gate) and removed
+        # by RETURN.  The rent-or-return guard consumes only this past/current
+        # state; it is therefore a legal H=0 input.
+        #
+        # ``coherence_idle_time_us`` is the non-resetting per-atom idle-time
+        # ledger for events whose ordering is known at placement time: the
+        # leading global 1Q prefix, AOD phases, and CZ pulses.  It must not be
+        # confused with resident rent: storage atoms also accrue coherence
+        # during those events.  Parent-layer 1Q/AOD overlap remains owned by
+        # the router trace rather than being guessed here.
+        self.resident_idle_exposures: dict[int, int] = {
+            q: 0 for q in self.zone_seat}
+        self.resident_idle_time_us: dict[int, float] = {
+            q: 0.0 for q in self.zone_seat}
+        self.coherence_idle_time_us: list[float] = [
+            0.0 for _ in initial_mapping]
         self.theta = theta_capacity
         # 容量（座位数）：纠缠区两片镜像 SLM 的全部座位（一对门位占 2 座）
         self.zone_sites = sum(slm.n_r * slm.n_c
@@ -114,6 +134,98 @@ class ResidentRegistry:
         """第 3 层前瞻·拥挤梯度：占用 + 需求 - θ·容量（正值即超压程度）。"""
         return max(0.0, len(self.zone_seat) + demand_seats - self.theta * self.zone_sites)
 
+    # ---- 物理 idle 账本 ----
+    def resident_rent(self, q: int) -> tuple[int, float]:
+        """Return ``(idle exposures, idle us)`` since q's latest CZ gate."""
+        if q not in self.zone_seat:
+            return 0, 0.0
+        return (int(self.resident_idle_exposures.get(q, 0)),
+                float(self.resident_idle_time_us.get(q, 0.0)))
+
+    def resident_rent_snapshot(self) -> tuple[tuple[int, int, float], ...]:
+        """Stable atom-ordered snapshot for manifests/checkpoints."""
+        return tuple(
+            (int(q), *self.resident_rent(q))
+            for q in sorted(self.zone_seat))
+
+    def coherence_idle_snapshot(self) -> tuple[float, ...]:
+        """Stable per-atom prior consumed by the stateful-coherence backend."""
+        return tuple(float(value) for value in self.coherence_idle_time_us)
+
+    def record_movement_phase(self, move_time_us: float, movers=(),
+                              *, transfer_time_us: float = 15.0) -> None:
+        """Commit one executable AOD phase to both idle ledgers.
+
+        Every stationary atom waits for the complete phase.  A mover is busy
+        during load and store, so its coherence-idle contribution is the phase
+        duration minus two transfer intervals, matching the registered
+        serialized boundary-phase proxy.  Resident rent follows the same time accounting but
+        only for atoms that are still in the entangling zone at this phase.
+        """
+        duration = float(move_time_us)
+        transfer = float(transfer_time_us)
+        if duration < 0.0 or transfer < 0.0:
+            raise ValueError("movement/transfer duration must be non-negative")
+        mover_set = {int(q) for q in movers}
+        unknown = mover_set - set(range(len(self.coherence_idle_time_us)))
+        if unknown:
+            raise ValueError(f"unknown movement owners: {sorted(unknown)}")
+        for q in range(len(self.coherence_idle_time_us)):
+            idle = (max(0.0, duration - 2.0 * transfer)
+                    if q in mover_set else duration)
+            self.coherence_idle_time_us[q] += idle
+            if q in self.zone_seat:
+                self.resident_idle_time_us[q] = (
+                    self.resident_idle_time_us.get(q, 0.0) + idle)
+
+    def record_rydberg_pulse(self, participants, duration_us: float) -> None:
+        """Commit one CZ pulse; non-participants are physically idle.
+
+        A resident non-participant additionally receives one idle-excitation
+        exposure.  Participating residents are reset by the subsequent
+        ``enter_zone`` calls after the pulse has completed.
+        """
+        duration = float(duration_us)
+        if duration < 0.0:
+            raise ValueError("Rydberg duration must be non-negative")
+        participant_set = {int(q) for q in participants}
+        unknown = participant_set - set(range(len(self.coherence_idle_time_us)))
+        if unknown:
+            raise ValueError(f"unknown CZ participants: {sorted(unknown)}")
+        for q in range(len(self.coherence_idle_time_us)):
+            if q in participant_set:
+                continue
+            self.coherence_idle_time_us[q] += duration
+            if q in self.zone_seat:
+                self.resident_idle_exposures[q] = (
+                    self.resident_idle_exposures.get(q, 0) + 1)
+                self.resident_idle_time_us[q] = (
+                    self.resident_idle_time_us.get(q, 0.0) + duration)
+
+    def record_external_idle_interval(self, duration_us: float,
+                                      busy_atoms=()) -> None:
+        """Explicit hook for later 1Q/global-schedule integration.
+
+        This method records elapsed coherence and resident waiting time but no
+        Rydberg exposure.  The placement engine intentionally does not guess
+        where 1Q instructions occur; the event scheduler may call this hook
+        once that timing is available.
+        """
+        duration = float(duration_us)
+        if duration < 0.0:
+            raise ValueError("external idle duration must be non-negative")
+        busy = {int(q) for q in busy_atoms}
+        unknown = busy - set(range(len(self.coherence_idle_time_us)))
+        if unknown:
+            raise ValueError(f"unknown busy atoms: {sorted(unknown)}")
+        for q in range(len(self.coherence_idle_time_us)):
+            if q in busy:
+                continue
+            self.coherence_idle_time_us[q] += duration
+            if q in self.zone_seat:
+                self.resident_idle_time_us[q] = (
+                    self.resident_idle_time_us.get(q, 0.0) + duration)
+
     def anchor(self, q: int, after: int, next_use: NextUse):
         """下次使用锚点：搭档当前座位在存储区的投影（搭档在激发区 → 其最近存储位）。
 
@@ -135,31 +247,62 @@ class ResidentRegistry:
         """原子进入激发区（参与门后驻留在门位）。"""
         self.storage_site.pop(q, None)
         self.zone_seat[q] = tuple(seat)
+        # A committed CZ is the new origin of resident rent.  Global
+        # coherence is intentionally never reset here.
+        self.resident_idle_exposures[q] = 0
+        self.resident_idle_time_us[q] = 0.0
 
     def return_to_storage(self, q: int, site: tuple):
         self.zone_seat.pop(q, None)
         self.storage_site[q] = tuple(site)
+        self.resident_idle_exposures.pop(q, None)
+        self.resident_idle_time_us.pop(q, None)
 
     def reseat(self, q: int, new_seat: tuple):
         self.zone_seat[q] = tuple(new_seat)
+        self.resident_idle_exposures.setdefault(q, 0)
+        self.resident_idle_time_us.setdefault(q, 0.0)
 
 
 # ---------------------------------------------------------------------- 三方案箱匹配
-def _box_sites(arch, center: tuple, ratio: int, free: set) -> list:
+def _box_sites(arch, center: tuple, ratio: int, occupied: set) -> list:
     """以 storage 位 center 为中心的 (2ratio+1)^2 自由位箱（裁剪到 SLM 边界）。"""
-    slm = arch.dict_SLM[center[0]]
-    out = []
-    for r in range(max(0, center[1] - ratio), min(slm.n_r, center[1] + ratio + 1)):
-        for c in range(max(0, center[2] - ratio), min(slm.n_c, center[2] + ratio + 1)):
-            site = (center[0], r, c)
-            if site in free:
-                out.append(site)
-    return out
+    cache = getattr(arch, "_resident_box_sites", None)
+    if cache is None:
+        cache = {}
+        arch._resident_box_sites = cache
+    key = (tuple(center), int(ratio))
+    domain = cache.get(key)
+    if domain is None:
+        slm = arch.dict_SLM[center[0]]
+        domain = tuple(
+            (center[0], r, c)
+            for r in range(max(0, center[1] - ratio),
+                           min(slm.n_r, center[1] + ratio + 1))
+            for c in range(max(0, center[2] - ratio),
+                           min(slm.n_c, center[2] + ratio + 1)))
+        cache[key] = domain
+    return [site for site in domain if site not in occupied]
+
+
+def _all_storage_sites(arch) -> tuple:
+    """Return the immutable storage domain, constructed once per architecture."""
+    cached = getattr(arch, "_resident_all_storage_sites", None)
+    if cached is None:
+        cached = tuple(
+            (sid, r, c) for sid in arch.storage_zone
+            for r in range(arch.dict_SLM[sid].n_r)
+            for c in range(arch.dict_SLM[sid].n_c))
+        arch._resident_all_storage_sites = cached
+    return cached
 
 
 def match_return_sites(registry: ResidentRegistry, returners: list,
                        next_use: NextUse, after: int,
-                       box_ratio: int = 3, alpha_lookahead: float = 0.1) -> dict:
+                       box_ratio: int = 3, alpha_lookahead: float = 0.1,
+                       forecast=None, candidate_mode: str = "legacy",
+                       candidate_cache: dict | None = None,
+                       assignment_mode: str = "exact") -> dict:
     """给一批回返者定存储落位：三方案箱候选 ∪ 自由位 → 最小权完美匹配。
 
     三方案（笔记 :123-131，ZAC place_qubit 的箱式化沿用 vmplacer.py:443-450 ratio=3）：
@@ -174,79 +317,185 @@ def match_return_sites(registry: ResidentRegistry, returners: list,
     回返者的 C2/C3 候选撞车，匹配无解；扩成 (2·box_ratio+1)² 的自由位箱
     后候选池恒够（存储 10000 位 vs ≤98 回返者）。
     """
+    if candidate_mode not in ("legacy", "nearest", "forecast"):
+        raise ValueError(f"未知 RETURN 候选模式: {candidate_mode!r}")
+    if assignment_mode not in ("exact", "greedy"):
+        raise ValueError(f"未知 RETURN 匹配模式: {assignment_mode!r}")
     arch = registry.arch
     # 全存储位清单 + 自由位集合（未被任何在储原子占用——occupied 含未来
     # 参与者仍在存储的家，所以回返者永远不会落到别人头上）
-    all_storage = [
-        (sid, r, c) for sid in arch.storage_zone
-        for r in range(arch.dict_SLM[sid].n_r)
-        for c in range(arch.dict_SLM[sid].n_c)]
-    free = set(all_storage) - registry.occupied_storage()    # 未被占用的都可用
+    all_storage = _all_storage_sites(arch)
+    # Occupancy contains at most one entry per atom, whereas the architecture
+    # has 10,000 storage sites.  Testing the small occupied set is equivalent
+    # to rebuilding the full free-site set on every rollout candidate and
+    # removes the dominant terminal-matching allocation.
+    occupied = registry.occupied_storage()
 
-    # 二部图：行 = 候选存储位（三族箱并集），列 = 回返者
-    site_index: dict = {}
-    rows_list: list = []
-    rows, cols, data = [], [], []
-
-    def _add(site):
-        """给候选位编号（建行索引），重复出现的位共用一行。"""
-        if site not in site_index:
-            site_index[site] = len(rows_list)
-            rows_list.append(site)
-        return site_index[site]
+    # Build per-returner columns first.  Most calls have distinct strict local
+    # minima and can return before allocating a sparse bipartite graph; only
+    # the genuinely coupled exact path below needs row indices.
+    fallback_context = {}
+    column_options = [[] for _ in returners]
 
     for i, q in enumerate(returners):
         zone_loc = registry.zone_seat[q]                  # 调用保证 q 当前在激发区
         zx, zy = arch.exact_SLM_location_tuple(zone_loc)
-        # 锚点：有下次使用→搭档投影；死驻留者→原位（微弱拉回家的倾向）
-        anchor_loc, _ = registry.anchor(q, after, next_use)
+        # Schema 2 只能通过 ForecastOracle 读取可见未来。H=0 时 next_use()
+        # 必为 None，RETURN 落位因此只看当前位置与最近存储区，不会泄漏搭档。
+        anchor_loc = None
+        if candidate_mode == "legacy":
+            anchor_loc, _ = registry.anchor(q, after, next_use)
+            if anchor_loc is None:
+                anchor_loc = registry.homes[q]
+        elif candidate_mode == "forecast" and forecast is not None:
+            visible = forecast.next_use(q, after)
+            if visible is not None:
+                _, partner = visible
+                partner_loc = registry.current_pos(partner)
+                anchor_loc = (arch.nearest_storage_site(*partner_loc)
+                              if registry._is_zone(partner_loc) else partner_loc)
         if anchor_loc is None:
-            anchor_loc = registry.homes[q]                # 死驻留者：锚点=原位
+            anchor_loc = arch.nearest_storage_site(*zone_loc)
         ax, ay = arch.exact_SLM_location_tuple(anchor_loc)
+        lookahead_weight = (alpha_lookahead
+                            if candidate_mode != "nearest" else 0.0)
+        fallback_context[q] = (zx, zy, ax, ay, lookahead_weight)
 
         # C1 原位 / C2 就近 / C3 伙伴 —— 三族候选箱（各以中心±box_ratio 展开）
         near_current = arch.nearest_storage_site(zone_loc[0], zone_loc[1], zone_loc[2])
-        families = [registry.homes[q], near_current, anchor_loc]
-        candidates = set()
-        for center in families:
-            if center[0] in arch.storage_zone:
-                candidates.update(_box_sites(arch, center, box_ratio, free))
-        if registry.homes[q] in free:
-            candidates.add(registry.homes[q])              # 原位自由时永远给一次机会
+        if candidate_mode == "nearest":
+            families = [near_current]
+        elif candidate_mode == "forecast":
+            families = [near_current, anchor_loc]
+        else:
+            families = [registry.homes[q], near_current, anchor_loc]
+        cache_key = None
+        options = None
+        if candidate_cache is not None:
+            cache_key = (
+                candidate_mode, tuple(zone_loc), tuple(anchor_loc),
+                tuple(registry.homes[q]), int(box_ratio), lookahead_weight,
+            )
+            options = candidate_cache.get(cache_key)
+        if options is None:
+            # Cache the immutable geometric column before occupancy filtering.
+            # Occupancy changes for almost every H=2 rollout state, while the
+            # boxes and their physical weights do not.  The previous cache key
+            # included all occupied sites and therefore missed on essentially
+            # every chromosome.
+            candidates = set()
+            for center in families:
+                if center[0] in arch.storage_zone:
+                    candidates.update(_box_sites(
+                        arch, center, box_ratio, set()))
+            if candidate_mode == "legacy":
+                candidates.add(registry.homes[q])
 
-        # 每个候选位的代价：省本次（离激发区近）+ 省未来（离锚点近）
-        for site in candidates:
-            sx, sy = arch.exact_SLM_location_tuple(site)
-            cost = sqrt(math.dist((zx, zy), (sx, sy))) + alpha_lookahead * sqrt(
-                math.dist((sx, sy), (ax, ay)))
-            rows.append(_add(site))
-            cols.append(i)
-            data.append(cost)
+            # 每个候选位的代价：省本次（离激发区近）+ 省未来（离锚点近）
+            computed = []
+            for site in candidates:
+                sx, sy = arch.exact_SLM_location_tuple(site)
+                cost = (sqrt(math.dist((zx, zy), (sx, sy)))
+                        + lookahead_weight * sqrt(
+                            math.dist((sx, sy), (ax, ay))))
+                computed.append((cost, site))
+            options = tuple(sorted(computed))
+            if candidate_cache is not None:
+                candidate_cache[cache_key] = options
+        column_options[i] = [
+            (cost, site) for cost, site in options if site not in occupied]
 
     if not returners:
         return {}
-    matrix = coo_matrix((np.array(data), (np.array(rows), np.array(cols))),
-                        shape=(len(rows_list), len(returners)))
-    try:
-        # 最小权完美匹配：所有回返者各得一个互异自由位，总代价最小
-        row_ind, col_ind = min_weight_full_bipartite_matching(matrix)
-        assignment = {returners[c]: rows_list[r] for r, c in zip(row_ind, col_ind)}
-    except ValueError:
-        # 保险丝：候选太稀疏导致无完美匹配 → 贪心兜底（按代价升序逐个拿未占位）
-        assignment = {}
+    # If every column has a strict local minimum and those minima are already
+    # distinct, their union is the unique global optimum.  Skipping scipy in
+    # this common case is exact; tied or colliding minima retain the original
+    # sparse full-matching path and its deterministic tie behaviour.
+    independent = []
+    for options in column_options:
+        ordered = sorted(options)
+        if not ordered or (len(ordered) > 1
+                           and ordered[0][0] == ordered[1][0]):
+            independent = []
+            break
+        independent.append(ordered[0][1])
+    if independent and len(set(independent)) == len(returners):
+        return {q: site for q, site in zip(returners, independent)}
+    assignment = {}
+    if assignment_mode == "exact":
+        # 二部图：行 = 候选存储位（三族箱并集），列 = 回返者
+        site_index: dict = {}
+        rows_list: list = []
+        rows, cols, data = [], [], []
+        for column, options in enumerate(column_options):
+            for cost, site in options:
+                row = site_index.get(site)
+                if row is None:
+                    row = len(rows_list)
+                    site_index[site] = row
+                    rows_list.append(site)
+                rows.append(row)
+                cols.append(column)
+                data.append(cost)
+        try:
+            # 最小权完美匹配：所有回返者各得一个互异自由位，总代价最小
+            matrix = coo_matrix(
+                (np.array(data), (np.array(rows), np.array(cols))),
+                shape=(len(rows_list), len(returners)))
+            row_ind, col_ind = min_weight_full_bipartite_matching(matrix)
+            assignment = {
+                returners[c]: rows_list[r] for r, c in zip(row_ind, col_ind)}
+        except ValueError:
+            # A structurally singular sparse matrix is completed below by the same
+            # deterministic fallback used for a partial scipy result.
+            pass
+    else:
+        # Forecast rollouts need a deterministic bounded terminal value, not
+        # another exact combinatorial solve for every chromosome.  Assign the
+        # most constrained atoms first, then their cheapest still-free site.
+        # Executable RETURN phases keep the default exact matching mode.
         taken = set()
-        order = sorted(zip(data, rows, cols))
-        for w, r, c in order:
-            q = returners[c]
-            if q in assignment or rows_list[r] in taken:
-                continue
-            assignment[q] = rows_list[r]
-            taken.add(rows_list[r])
-        for q in returners:                                # 仍漏的：扫全存储自由位
-            if q not in assignment:
-                rest = next(s for s in all_storage if s not in taken)
-                assignment[q] = rest
-                taken.add(rest)
+        order = sorted(
+            range(len(returners)),
+            key=lambda i: (len(column_options[i]), returners[i]))
+        for i in order:
+            q = returners[i]
+            site = next(
+                (candidate for _cost, candidate
+                 in sorted(column_options[i]) if candidate not in taken),
+                None)
+            if site is not None:
+                assignment[q] = site
+                taken.add(site)
+
+    # scipy's "full" routine covers the smaller bipartite side.  With a sparse
+    # candidate graph it may therefore return normally while leaving one or
+    # more RETURN columns unmatched.  Treat completeness as a hard postcondition
+    # instead of waiting for a later KeyError in the fitness function.
+    taken = set(assignment.values())
+    for i, q in enumerate(returners):
+        if q in assignment:
+            continue
+        local = sorted(column_options[i])
+        site = next((candidate for _, candidate in local
+                     if candidate not in taken), None)
+        if site is None:
+            zx, zy, ax, ay, lookahead_weight = fallback_context[q]
+
+            def global_cost(candidate):
+                sx, sy = arch.exact_SLM_location_tuple(candidate)
+                return (sqrt(math.dist((zx, zy), (sx, sy)))
+                        + lookahead_weight * sqrt(
+                            math.dist((sx, sy), (ax, ay))), candidate)
+
+            site = min((candidate for candidate in all_storage
+                        if candidate not in occupied and candidate not in taken),
+                       key=global_cost)
+        assignment[q] = site
+        taken.add(site)
+    if set(assignment) != set(returners) or \
+            len(set(assignment.values())) != len(returners):
+        raise RuntimeError("RETURN 匹配未形成完整互异存储落位")
     return assignment
 
 
@@ -330,13 +579,13 @@ def boundary_legs(registry_before: dict, decisions: dict, arch) -> list:
     """决策 → 回相腿清单（zcost 格式 (dist, 起x, 起y, 终x, 终y)，dist=0 不上车）。
 
     registry_before：决策应用前各搬运决策者的激发区座位 {q: seat}
-    （决策后登记簿已变）。RESEAT 是鬼点修补引入的第三种决策——
-    驻留者区内让座（激发区 → 激发区），与 RETURN 一样发生在边界相位，
-    路由端按映射增量自动带上，无需特殊处理。
+    （决策后登记簿已变）。RESEAT 是驻留者区内让座；PARK 是目标门
+    参与者为避开 out 相鬼点而临时停入存储区。它们都与 RETURN 一样
+    发生在边界相位，路由端按映射增量自动带上。
     """
     legs = []
     for q, decision in decisions.items():
-        if decision[0] not in ("RETURN", "RESEAT"):
+        if decision[0] not in ("RETURN", "RESEAT", "PARK"):
             continue
         seat = registry_before[q]
         sx, sy = arch.exact_SLM_location_tuple(seat)

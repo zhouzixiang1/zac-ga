@@ -1,0 +1,3024 @@
+diff --git a/include/na/zoned/Compiler.hpp b/include/na/zoned/Compiler.hpp
+index ca352d5..44fdca8 100644
+--- a/include/na/zoned/Compiler.hpp
++++ b/include/na/zoned/Compiler.hpp
+@@ -25,0 +26 @@
++#include <cstddef>
+@@ -29,0 +31 @@
++#include <optional>
+@@ -30,0 +33,4 @@
++#include <type_traits>
++#include <unordered_set>
++#include <variant>
++#include <vector>
+@@ -34,0 +41,33 @@ namespace na::zoned {
++/** A scheduled layer supplied to the stateful streaming compiler. */
++struct ScheduledLayer {
++  /// Single-qubit operations executed before the optional two-qubit layer.
++  SingleQubitGateLayer singleQubitGates;
++  /// The following two-qubit layer. Only the final item omits this value.
++  std::optional<TwoQubitGateLayer> twoQubitGates;
++  /// Optional ownership backing references in singleQubitGates.
++  std::vector<std::shared_ptr<const qc::Operation>> ownedSingleQubitOperations;
++};
++
++/** Metadata accompanying the first native-code chunk. */
++struct StreamingInitialPlacement {
++  Placement placement;
++};
++
++/** Metadata accompanying one compiled two-qubit-layer transition. */
++struct StreamingTransition {
++  size_t layer;
++  std::unordered_set<qc::Qubit> previousReuseQubits;
++  std::unordered_set<qc::Qubit> nextReuseQubits;
++  Placement previousPlacement;
++  Placement gatePlacement;
++  Placement storagePlacement;
++  Routing executionRouting;
++  Routing storageRouting;
++};
++
++using StreamingChunkMetadata =
++    std::variant<StreamingInitialPlacement, StreamingTransition>;
++using ScheduledLayerProvider = std::function<std::optional<ScheduledLayer>()>;
++using StreamingChunkConsumer =
++    std::function<void(const StreamingChunkMetadata&, const NAComputation&)>;
++
+@@ -239,0 +279,149 @@ public:
++
++  /**
++   * Compile a pre-scheduled circuit one layer at a time.
++   *
++   * @details The provider is called sequentially and is expected to return one
++   * item for every single-qubit layer. Each item except the last also contains
++   * the two-qubit layer that follows it. Such a provider can be populated in a
++   * first pass with `ASAPScheduler::scheduleOperation`. Only the current and
++   * next provider items are retained so that adjacent-layer reuse and the
++   * routing-aware lookahead are exactly equivalent to the batch compiler.
++   *
++   * The consumer is first called with the initial placement and a computation
++   * containing the initial state followed by the first single-qubit layer. It
++   * is then called once per two-qubit layer with both rearrangements, the CZ,
++   * and the following single-qubit layer. The operations are cleared
++   * immediately after every callback; atoms, zones, and initial locations stay
++   * alive for the entire compilation. Later chunks are transitions from the
++   * preceding chunk's final placement and therefore must be validated by a
++   * stateful consumer rather than as stand-alone `NAComputation` objects.
++   *
++   * @note This exact transition interface currently requires AStarPlacer.
++   * @param nQubits number of circuit qubits
++   * @param provider sequential source of scheduled layers
++   * @param consumer synchronous consumer for native-code chunks and metadata
++   */
++  template <class P = Placer,
++            std::enable_if_t<std::is_same_v<P, AStarPlacer>, int> = 0>
++  auto compileStreaming(const size_t nQubits, ScheduledLayerProvider provider,
++                        const StreamingChunkConsumer& consumer) -> void {
++    statistics_ = {};
++    const auto readScheduledLayer = [&]() {
++      const auto start = std::chrono::system_clock::now();
++      auto layer = provider();
++      statistics_.schedulingTime +=
++          std::chrono::duration_cast<std::chrono::microseconds>(
++              std::chrono::system_clock::now() - start)
++              .count();
++      return layer;
++    };
++    auto currentLayer = readScheduledLayer();
++    auto nextLayer =
++        currentLayer ? readScheduledLayer() : std::optional<ScheduledLayer>{};
++    const auto validateProviderWindow = [&]() {
++      if (currentLayer && currentLayer->twoQubitGates && !nextLayer) {
++        throw std::invalid_argument(
++            "A two-qubit layer must be followed by a single-qubit layer.");
++      }
++      if (currentLayer && !currentLayer->twoQubitGates && nextLayer) {
++        throw std::invalid_argument(
++            "Only the final scheduled layer may omit its two-qubit layer.");
++      }
++    };
++    validateProviderWindow();
++
++    auto start = std::chrono::system_clock::now();
++    auto previousPlacement = SELF.placeInitial(nQubits);
++    statistics_.placementTime +=
++        std::chrono::duration_cast<std::chrono::microseconds>(
++            std::chrono::system_clock::now() - start)
++            .count();
++
++    start = std::chrono::system_clock::now();
++    auto code = SELF.initialize(previousPlacement);
++    if (currentLayer) {
++      SELF.appendSingleQubitLayer(nQubits, currentLayer->singleQubitGates,
++                                  code);
++    }
++    statistics_.codeGenerationTime +=
++        std::chrono::duration_cast<std::chrono::microseconds>(
++            std::chrono::system_clock::now() - start)
++            .count();
++    assert(code.validate().first);
++    consumer(
++        StreamingChunkMetadata{StreamingInitialPlacement{previousPlacement}},
++        code);
++    code.clear();
++
++    std::unordered_set<qc::Qubit> previousReuseQubits;
++    size_t layer = 0;
++    while (currentLayer && currentLayer->twoQubitGates) {
++      assert(nextLayer);
++      const auto& currentTwoQubitGates = *currentLayer->twoQubitGates;
++      const TwoQubitGateLayer emptyNextTwoQubitGates;
++      const auto& nextTwoQubitGates = nextLayer->twoQubitGates
++                                          ? *nextLayer->twoQubitGates
++                                          : emptyNextTwoQubitGates;
++
++      start = std::chrono::system_clock::now();
++      auto nextReuseQubits =
++          nextLayer->twoQubitGates
++              ? SELF.analyzeTransition(currentTwoQubitGates, nextTwoQubitGates)
++              : std::unordered_set<qc::Qubit>{};
++      statistics_.reuseAnalysisTime +=
++          std::chrono::duration_cast<std::chrono::microseconds>(
++              std::chrono::system_clock::now() - start)
++              .count();
++
++      start = std::chrono::system_clock::now();
++      auto [gatePlacement, storagePlacement] = SELF.placeLayer(
++          previousPlacement, previousReuseQubits, nextReuseQubits,
++          currentTwoQubitGates, nextTwoQubitGates);
++      statistics_.placementTime +=
++          std::chrono::duration_cast<std::chrono::microseconds>(
++              std::chrono::system_clock::now() - start)
++              .count();
++
++      start = std::chrono::system_clock::now();
++      auto executionRouting =
++          SELF.routeTransition(previousPlacement, gatePlacement);
++      auto storageRouting =
++          SELF.routeTransition(gatePlacement, storagePlacement);
++      statistics_.routingTime +=
++          std::chrono::duration_cast<std::chrono::microseconds>(
++              std::chrono::system_clock::now() - start)
++              .count();
++
++      start = std::chrono::system_clock::now();
++      SELF.appendTwoQubitLayer(previousPlacement, executionRouting,
++                               gatePlacement, storageRouting, storagePlacement,
++                               code);
++      SELF.appendSingleQubitLayer(nQubits, nextLayer->singleQubitGates, code);
++      statistics_.codeGenerationTime +=
++          std::chrono::duration_cast<std::chrono::microseconds>(
++              std::chrono::system_clock::now() - start)
++              .count();
++      const StreamingTransition transition{layer,
++                                           previousReuseQubits,
++                                           nextReuseQubits,
++                                           previousPlacement,
++                                           gatePlacement,
++                                           storagePlacement,
++                                           executionRouting,
++                                           storageRouting};
++      consumer(StreamingChunkMetadata{transition}, code);
++      code.clear();
++
++      previousPlacement = std::move(storagePlacement);
++      previousReuseQubits = std::move(nextReuseQubits);
++      currentLayer = std::move(nextLayer);
++      nextLayer = readScheduledLayer();
++      validateProviderWindow();
++      ++layer;
++    }
++    statistics_.totalTime =
++        statistics_.schedulingTime + statistics_.reuseAnalysisTime +
++        statistics_.placementTime + statistics_.routingTime +
++        statistics_.codeGenerationTime;
++  }
++
+diff --git a/include/na/zoned/code_generator/CodeGenerator.hpp b/include/na/zoned/code_generator/CodeGenerator.hpp
+index 98ee4ce..8eec7c4 100644
+--- a/include/na/zoned/code_generator/CodeGenerator.hpp
++++ b/include/na/zoned/code_generator/CodeGenerator.hpp
+@@ -59,0 +60,22 @@ public:
++
++  /**
++   * Initialize a neutral atom computation with zones, atoms, and their initial
++   * locations, but without operations.
++   * @param initialPlacement is the initial placement of all atoms
++   * @return the initialized neutral atom computation
++   */
++  [[nodiscard]] auto initialize(const Placement& initialPlacement) const
++      -> NAComputation;
++
++  /** Append one layer of single-qubit gates to an initialized computation. */
++  auto appendSingleQubitLayer(size_t nQubits, const SingleQubitGateLayer& layer,
++                              NAComputation& code) const -> void;
++
++  /** Append one two-qubit layer and both surrounding rearrangements. */
++  auto appendTwoQubitLayer(const Placement& currentPlacement,
++                           const Routing& executionRouting,
++                           const Placement& executionPlacement,
++                           const Routing& targetRouting,
++                           const Placement& targetPlacement,
++                           NAComputation& code) const -> void;
++
+diff --git a/include/na/zoned/placer/AStarPlacer.hpp b/include/na/zoned/placer/AStarPlacer.hpp
+index 5af2977..13fa8dd 100644
+--- a/include/na/zoned/placer/AStarPlacer.hpp
++++ b/include/na/zoned/placer/AStarPlacer.hpp
+@@ -294,0 +295,25 @@ public:
++  /**
++   * Generate the initial placement for a circuit.
++   * @param nQubits denotes the number of qubits to be placed
++   * @return the placement of all qubits in the storage zone
++   */
++  [[nodiscard]] auto placeInitial(size_t nQubits) const -> Placement;
++
++  /**
++   * Generate the two placements belonging to one two-qubit gate layer.
++   * @param previousPlacement is the placement after the previous layer
++   * @param previousReuseQubits are the qubits reused from the previous layer
++   * @param currentReuseQubits are the qubits reused in the next layer
++   * @param currentTwoQubitGates are the gates in the current layer
++   * @param nextTwoQubitGates are the gates in the next layer and are used for
++   * routing-aware lookahead
++   * @return the current gate placement followed by its storage placement
++   */
++  [[nodiscard]] auto
++  placeLayer(const Placement& previousPlacement,
++             const std::unordered_set<qc::Qubit>& previousReuseQubits,
++             const std::unordered_set<qc::Qubit>& currentReuseQubits,
++             const TwoQubitGateLayer& currentTwoQubitGates,
++             const TwoQubitGateLayer& nextTwoQubitGates)
++      -> std::pair<Placement, Placement>;
++
+diff --git a/include/na/zoned/reuse_analyzer/VertexMatchingReuseAnalyzer.hpp b/include/na/zoned/reuse_analyzer/VertexMatchingReuseAnalyzer.hpp
+index e35ac79..223c16e 100644
+--- a/include/na/zoned/reuse_analyzer/VertexMatchingReuseAnalyzer.hpp
++++ b/include/na/zoned/reuse_analyzer/VertexMatchingReuseAnalyzer.hpp
+@@ -62,0 +63,11 @@ public:
++  /**
++   * Analyze the reuse of qubits for one transition between adjacent layers.
++   * @param currentLayer is the two-qubit gate layer qubits may be reused from
++   * @param nextLayer is the two-qubit gate layer qubits may be reused in
++   * @return the set of qubits that can remain in the entanglement zone
++   */
++  [[nodiscard]] static auto
++  analyzeTransition(const TwoQubitGateLayer& currentLayer,
++                    const TwoQubitGateLayer& nextLayer)
++      -> std::unordered_set<qc::Qubit>;
++
+diff --git a/include/na/zoned/router/IndependentSetRouter.hpp b/include/na/zoned/router/IndependentSetRouter.hpp
+index 9279bc5..e315b8c 100644
+--- a/include/na/zoned/router/IndependentSetRouter.hpp
++++ b/include/na/zoned/router/IndependentSetRouter.hpp
+@@ -64,0 +65,9 @@ public:
++  /**
++   * Compute the routing for one transition between adjacent placements.
++   * @param from is the placement before the transition
++   * @param to is the placement after the transition
++   * @return groups containing atoms that can be moved simultaneously
++   */
++  [[nodiscard]] auto routeTransition(const Placement& from,
++                                     const Placement& to) const -> Routing;
++
+diff --git a/include/na/zoned/scheduler/ASAPScheduler.hpp b/include/na/zoned/scheduler/ASAPScheduler.hpp
+index 851735f..9841432 100644
+--- a/include/na/zoned/scheduler/ASAPScheduler.hpp
++++ b/include/na/zoned/scheduler/ASAPScheduler.hpp
+@@ -17,0 +18 @@
++#include <cstddef>
+@@ -36,0 +38,20 @@ public:
++  /// The kind of layer assignment produced for an operation.
++  enum class OperationKind { Barrier, SingleQubit, TwoQubit };
++
++  /// Bounded state required to schedule one operation at a time.
++  struct State {
++    size_t nQubits;
++    std::vector<size_t> nextLayerForQubit;
++    std::vector<size_t> twoQubitGateCounts;
++
++    explicit State(const size_t nQubits)
++        : nQubits(nQubits), nextLayerForQubit(nQubits, 0) {}
++  };
++
++  /// The layer assignment of one scheduled operation.
++  struct Assignment {
++    OperationKind kind;
++    size_t layer;
++    QubitPair qubits{};
++  };
++
+@@ -54,0 +76,10 @@ public:
++
++  /**
++   * Schedule one operation and update the bounded scheduler state.
++   * @param op is the operation to schedule
++   * @param state is the scheduler state before the operation
++   * @return the operation kind and its assigned layer
++   */
++  [[nodiscard]] auto scheduleOperation(const qc::Operation& op,
++                                       State& state) const -> Assignment;
++
+diff --git a/include/na/zoned/streaming/SQLiteStreaming.hpp b/include/na/zoned/streaming/SQLiteStreaming.hpp
+new file mode 100644
+index 0000000..c14ad76
+--- /dev/null
++++ b/include/na/zoned/streaming/SQLiteStreaming.hpp
+@@ -0,0 +1,79 @@
++/*
++ * Copyright (c) 2023 - 2025 Chair for Design Automation, TUM
++ * Copyright (c) 2025 Munich Quantum Software Company GmbH
++ * All rights reserved.
++ *
++ * SPDX-License-Identifier: MIT
++ *
++ * Licensed under the MIT License
++ */
++
++#pragma once
++
++#include "na/zoned/Compiler.hpp"
++
++#include <cstddef>
++#include <filesystem>
++#include <memory>
++#include <optional>
++#include <string>
++
++namespace na::zoned {
++
++/** Frozen metadata of a qmap-schedule-store-v1 database. */
++struct SQLiteScheduleMetadata {
++  std::string format;
++  size_t qubits;
++  size_t events;
++  size_t gates1Q;
++  size_t gates2Q;
++  size_t twoQubitLayers;
++  size_t scheduledItems;
++};
++
++/** Read scheduled QMAP layers from SQLite while owning only one layer at a
++ * time. */
++class SQLiteScheduledLayerProvider {
++  struct Impl;
++  std::unique_ptr<Impl> impl_;
++
++public:
++  explicit SQLiteScheduledLayerProvider(const std::filesystem::path& path);
++  ~SQLiteScheduledLayerProvider();
++  SQLiteScheduledLayerProvider(SQLiteScheduledLayerProvider&&) noexcept;
++  auto operator=(SQLiteScheduledLayerProvider&&) noexcept
++      -> SQLiteScheduledLayerProvider&;
++  SQLiteScheduledLayerProvider(const SQLiteScheduledLayerProvider&) = delete;
++  auto operator=(const SQLiteScheduledLayerProvider&)
++      -> SQLiteScheduledLayerProvider& = delete;
++
++  /** Return the next scheduled item or nullopt after the frozen final item. */
++  [[nodiscard]] auto next() -> std::optional<ScheduledLayer>;
++
++  [[nodiscard]] auto metadata() const -> const SQLiteScheduleMetadata&;
++};
++
++/** Inputs and outputs for one SQLite-backed routing-aware compilation. */
++struct SQLiteStreamingCompileOptions {
++  std::filesystem::path scheduleDatabase;
++  std::filesystem::path architectureJson;
++  std::filesystem::path compilerConfigJson;
++  std::filesystem::path nativeOutput;
++  std::filesystem::path metadataJsonlOutput;
++};
++
++/** Small, bounded result retained after a streaming compilation. */
++struct SQLiteStreamingCompileResult {
++  SQLiteScheduleMetadata schedule;
++  size_t chunks;
++  size_t peakNativeOperationsPerChunk;
++  RoutingAwareCompiler::Statistics statistics;
++};
++
++/** Compile a frozen SQLite schedule and atomically publish native and metadata
++ * streams. */
++[[nodiscard]] auto
++compileSQLiteSchedule(const SQLiteStreamingCompileOptions& options)
++    -> SQLiteStreamingCompileResult;
++
++} // namespace na::zoned
+diff --git a/src/na/zoned/CMakeLists.txt b/src/na/zoned/CMakeLists.txt
+index 262d223..61d145f 100644
+--- a/src/na/zoned/CMakeLists.txt
++++ b/src/na/zoned/CMakeLists.txt
+@@ -25,0 +26,30 @@ endif()
++
++set(STREAMING_TARGET_NAME ${MQT_QMAP_TARGET_NAME}-na-zoned-streaming)
++if(NOT TARGET ${STREAMING_TARGET_NAME})
++  find_package(SQLite3 REQUIRED)
++  if(TARGET SQLite3::SQLite3)
++    set(MQT_QMAP_SQLITE_TARGET SQLite3::SQLite3)
++  else()
++    set(MQT_QMAP_SQLITE_TARGET SQLite::SQLite3)
++  endif()
++
++  add_library(
++    ${STREAMING_TARGET_NAME}
++    ${MQT_QMAP_INCLUDE_BUILD_DIR}/na/zoned/streaming/SQLiteStreaming.hpp
++    ${PROJECT_SOURCE_DIR}/src/na/zoned_streaming/SQLiteStreaming.cpp)
++  target_include_directories(
++    ${STREAMING_TARGET_NAME} PUBLIC $<BUILD_INTERFACE:${MQT_QMAP_INCLUDE_BUILD_DIR}>)
++  target_link_libraries(
++    ${STREAMING_TARGET_NAME}
++    PUBLIC MQT::QMapNAZoned ${MQT_QMAP_SQLITE_TARGET}
++    PRIVATE MQT::ProjectOptions MQT::ProjectWarnings)
++  add_library(MQT::QMapNAZonedStreaming ALIAS ${STREAMING_TARGET_NAME})
++endif()
++
++if(MQT_QMAP_MASTER_PROJECT AND NOT TARGET mqt-qmap-na-zoned-stream)
++  add_executable(mqt-qmap-na-zoned-stream
++                 ${PROJECT_SOURCE_DIR}/tools/na_zoned_stream.cpp)
++  target_link_libraries(
++    mqt-qmap-na-zoned-stream
++    PRIVATE MQT::QMapNAZonedStreaming MQT::ProjectOptions MQT::ProjectWarnings)
++endif()
+diff --git a/src/na/zoned/code_generator/CodeGenerator.cpp b/src/na/zoned/code_generator/CodeGenerator.cpp
+index dc41af6..5266ee5 100644
+--- a/src/na/zoned/code_generator/CodeGenerator.cpp
++++ b/src/na/zoned/code_generator/CodeGenerator.cpp
+@@ -255,4 +255,3 @@ auto CodeGenerator::appendRearrangement(
+-auto CodeGenerator::generate(
+-    const std::vector<SingleQubitGateLayer>& singleQubitGateLayers,
+-    const std::vector<Placement>& placement,
+-    const std::vector<Routing>& routing) const -> NAComputation {
++
++auto CodeGenerator::initialize(const Placement& initialPlacement) const
++    -> NAComputation {
+@@ -260 +258,0 @@ auto CodeGenerator::generate(
+-  std::vector<std::reference_wrapper<const Zone>> rydbergZones;
+@@ -262 +260 @@ auto CodeGenerator::generate(
+-    rydbergZones.emplace_back(code.emplaceBackZone(
++    code.emplaceBackZone(
+@@ -268 +266 @@ auto CodeGenerator::generate(
+-            static_cast<double>(architecture_.get().rydbergRangeMaxY.at(i))}));
++            static_cast<double>(architecture_.get().rydbergRangeMaxY.at(i))});
+@@ -282,5 +280,4 @@ auto CodeGenerator::generate(
+-  const auto& globalZone = code.emplaceBackZone(
+-      "global",
+-      Zone::Extent{static_cast<double>(minX), static_cast<double>(minY),
+-                   static_cast<double>(maxX), static_cast<double>(maxY)});
+-  const auto& initialPlacement = placement.front();
++  code.emplaceBackZone("global", Zone::Extent{static_cast<double>(minX),
++                                              static_cast<double>(minY),
++                                              static_cast<double>(maxX),
++                                              static_cast<double>(maxY)});
+@@ -294,0 +292,43 @@ auto CodeGenerator::generate(
++  return code;
++}
++
++auto CodeGenerator::appendSingleQubitLayer(const size_t nQubits,
++                                           const SingleQubitGateLayer& layer,
++                                           NAComputation& code) const -> void {
++  std::vector<std::reference_wrapper<const Atom>> atoms;
++  atoms.reserve(code.getAtoms().size());
++  for (const auto& atom : code.getAtoms()) {
++    atoms.emplace_back(*atom);
++  }
++  assert(!code.getZones().empty());
++  appendSingleQubitGates(nQubits, layer, atoms, *code.getZones().back(), code);
++}
++
++auto CodeGenerator::appendTwoQubitLayer(const Placement& currentPlacement,
++                                        const Routing& executionRouting,
++                                        const Placement& executionPlacement,
++                                        const Routing& targetRouting,
++                                        const Placement& targetPlacement,
++                                        NAComputation& code) const -> void {
++  std::vector<std::reference_wrapper<const Atom>> atoms;
++  atoms.reserve(code.getAtoms().size());
++  for (const auto& atom : code.getAtoms()) {
++    atoms.emplace_back(*atom);
++  }
++  std::vector<std::reference_wrapper<const Zone>> rydbergZones;
++  assert(!code.getZones().empty());
++  rydbergZones.reserve(code.getZones().size() - 1);
++  for (auto zone = code.getZones().cbegin();
++       std::next(zone) != code.getZones().cend(); ++zone) {
++    rydbergZones.emplace_back(**zone);
++  }
++  appendTwoQubitGates(currentPlacement, executionRouting, executionPlacement,
++                      targetRouting, targetPlacement, atoms, rydbergZones,
++                      code);
++}
++
++auto CodeGenerator::generate(
++    const std::vector<SingleQubitGateLayer>& singleQubitGateLayers,
++    const std::vector<Placement>& placement,
++    const std::vector<Routing>& routing) const -> NAComputation {
++  auto code = initialize(placement.front());
+@@ -301,2 +341,2 @@ auto CodeGenerator::generate(
+-  appendSingleQubitGates(atoms.size(), singleQubitGateLayers.front(), atoms,
+-                         globalZone, code);
++  appendSingleQubitLayer(code.getAtomsSize(), singleQubitGateLayers.front(),
++                         code);
+@@ -304 +344 @@ auto CodeGenerator::generate(
+-    appendTwoQubitGates(placement[2 * layer], routing[2 * layer],
++    appendTwoQubitLayer(placement[2 * layer], routing[2 * layer],
+@@ -306,3 +346,3 @@ auto CodeGenerator::generate(
+-                        placement[2 * (layer + 1)], atoms, rydbergZones, code);
+-    appendSingleQubitGates(atoms.size(), singleQubitGateLayers[layer + 1],
+-                           atoms, globalZone, code);
++                        placement[2 * (layer + 1)], code);
++    appendSingleQubitLayer(code.getAtomsSize(),
++                           singleQubitGateLayers[layer + 1], code);
+diff --git a/src/na/zoned/placer/AStarPlacer.cpp b/src/na/zoned/placer/AStarPlacer.cpp
+index b1d743d..1adf7d1 100644
+--- a/src/na/zoned/placer/AStarPlacer.cpp
++++ b/src/na/zoned/placer/AStarPlacer.cpp
+@@ -1435,0 +1436,16 @@ AStarPlacer::AStarPlacer(const Architecture& architecture, const Config& config)
++auto AStarPlacer::placeInitial(const size_t nQubits) const -> Placement {
++  return makeInitialPlacement(nQubits);
++}
++
++auto AStarPlacer::placeLayer(
++    const Placement& previousPlacement,
++    const std::unordered_set<qc::Qubit>& previousReuseQubits,
++    const std::unordered_set<qc::Qubit>& currentReuseQubits,
++    const TwoQubitGateLayer& currentTwoQubitGates,
++    const TwoQubitGateLayer& nextTwoQubitGates)
++    -> std::pair<Placement, Placement> {
++  return makeIntermediatePlacement(previousPlacement, previousReuseQubits,
++                                   currentReuseQubits, currentTwoQubitGates,
++                                   nextTwoQubitGates);
++}
++
+@@ -1443 +1459 @@ auto AStarPlacer::place(
+-  placement.emplace_back(makeInitialPlacement(nQubits));
++  placement.emplace_back(placeInitial(nQubits));
+@@ -1445 +1461 @@ auto AStarPlacer::place(
+-    const auto& [gatePlacement, qubitPlacement] = makeIntermediatePlacement(
++    const auto& [gatePlacement, qubitPlacement] = placeLayer(
+diff --git a/src/na/zoned/reuse_analyzer/VertexMatchingReuseAnalyzer.cpp b/src/na/zoned/reuse_analyzer/VertexMatchingReuseAnalyzer.cpp
+index 2e672a1..bd42b73 100644
+--- a/src/na/zoned/reuse_analyzer/VertexMatchingReuseAnalyzer.cpp
++++ b/src/na/zoned/reuse_analyzer/VertexMatchingReuseAnalyzer.cpp
+@@ -37,9 +36,0 @@ auto VertexMatchingReuseAnalyzer::analyzeReuse(
+-  std::vector<std::unordered_map<qc::Qubit, size_t>> usedQubitsInLayers;
+-  usedQubitsInLayers.reserve(twoQubitGateLayers.size());
+-  const auto& firstGateLayer = twoQubitGateLayers.front();
+-  auto& usedQubitsInFirstLayer = usedQubitsInLayers.emplace_back();
+-  for (size_t gateIdx = 0; gateIdx < firstGateLayer.size(); ++gateIdx) {
+-    for (const auto qubit : firstGateLayer[gateIdx]) {
+-      usedQubitsInFirstLayer[qubit] = gateIdx;
+-    }
+-  }
+@@ -49 +40 @@ auto VertexMatchingReuseAnalyzer::analyzeReuse(
+-    const auto& twoQubitGatesInPreviousLayer = *layer;
++    const auto& currentLayer = *layer;
+@@ -53,27 +44,11 @@ auto VertexMatchingReuseAnalyzer::analyzeReuse(
+-    const auto& twoQubitGatesInCurrentLayer = *layer;
+-    std::vector matrix(twoQubitGatesInCurrentLayer.size(),
+-                       std::vector(twoQubitGatesInPreviousLayer.size(), false));
+-    const auto& usedQubitsInPreviousLayer = usedQubitsInLayers.back();
+-    auto& usedQubitsInCurrentLayer = usedQubitsInLayers.emplace_back();
+-    auto& reuseQubitsInCurrentLayer = reuseQubits.emplace_back();
+-    for (size_t gateIdx = 0; gateIdx < twoQubitGatesInCurrentLayer.size();
+-         ++gateIdx) {
+-      const auto& gate = twoQubitGatesInCurrentLayer[gateIdx];
+-      const auto& itFirst = usedQubitsInPreviousLayer.find(gate.front());
+-      const auto& itSecond = usedQubitsInPreviousLayer.find(gate.back());
+-      const auto firstReusable = itFirst != usedQubitsInPreviousLayer.end();
+-      const auto secondReusable = itSecond != usedQubitsInPreviousLayer.end();
+-      if (firstReusable && secondReusable &&
+-          itFirst->second == itSecond->second) {
+-        // If both qubits of the gate are used in the previous layer also
+-        // by the identical gate, then both qubits can stay at their location
+-        // and be reused.
+-        reuseQubitsInCurrentLayer.emplace(gate.front());
+-        reuseQubitsInCurrentLayer.emplace(gate.back());
+-      } else if (firstReusable) {
+-        matrix[gateIdx][itFirst->second] = true;
+-      } else if (secondReusable) {
+-        matrix[gateIdx][itSecond->second] = true;
+-      }
+-      usedQubitsInCurrentLayer[gate.front()] = gateIdx;
+-      usedQubitsInCurrentLayer[gate.back()] = gateIdx;
++    reuseQubits.emplace_back(analyzeTransition(currentLayer, *layer));
++  }
++  return reuseQubits;
++}
++auto VertexMatchingReuseAnalyzer::analyzeTransition(
++    const TwoQubitGateLayer& currentLayer, const TwoQubitGateLayer& nextLayer)
++    -> std::unordered_set<qc::Qubit> {
++  std::unordered_map<qc::Qubit, size_t> usedQubitsInCurrentLayer;
++  for (size_t gateIdx = 0; gateIdx < currentLayer.size(); ++gateIdx) {
++    for (const auto qubit : currentLayer[gateIdx]) {
++      usedQubitsInCurrentLayer[qubit] = gateIdx;
+@@ -81,6 +56,27 @@ auto VertexMatchingReuseAnalyzer::analyzeReuse(
+-    std::vector sparseMatrix(matrix.size(), std::vector<std::size_t>{});
+-    for (std::size_t r = 0; r < matrix.size(); ++r) {
+-      for (std::size_t c = 0; c < matrix[r].size(); ++c) {
+-        if (matrix[r][c]) {
+-          sparseMatrix[r].emplace_back(c);
+-        }
++  }
++  std::vector matrix(nextLayer.size(), std::vector(currentLayer.size(), false));
++  std::unordered_set<qc::Qubit> reuseQubitsInNextLayer;
++  for (size_t gateIdx = 0; gateIdx < nextLayer.size(); ++gateIdx) {
++    const auto& gate = nextLayer[gateIdx];
++    const auto& itFirst = usedQubitsInCurrentLayer.find(gate.front());
++    const auto& itSecond = usedQubitsInCurrentLayer.find(gate.back());
++    const auto firstReusable = itFirst != usedQubitsInCurrentLayer.end();
++    const auto secondReusable = itSecond != usedQubitsInCurrentLayer.end();
++    if (firstReusable && secondReusable &&
++        itFirst->second == itSecond->second) {
++      // If both qubits of the gate are used in the previous layer also
++      // by the identical gate, then both qubits can stay at their location
++      // and be reused.
++      reuseQubitsInNextLayer.emplace(gate.front());
++      reuseQubitsInNextLayer.emplace(gate.back());
++    } else if (firstReusable) {
++      matrix[gateIdx][itFirst->second] = true;
++    } else if (secondReusable) {
++      matrix[gateIdx][itSecond->second] = true;
++    }
++  }
++  std::vector sparseMatrix(matrix.size(), std::vector<std::size_t>{});
++  for (std::size_t r = 0; r < matrix.size(); ++r) {
++    for (std::size_t c = 0; c < matrix[r].size(); ++c) {
++      if (matrix[r][c]) {
++        sparseMatrix[r].emplace_back(c);
+@@ -89,12 +85,11 @@ auto VertexMatchingReuseAnalyzer::analyzeReuse(
+-    const auto& matching = maximumBipartiteMatching(sparseMatrix);
+-    for (std::size_t gateIdx = 0; gateIdx < matching.size(); ++gateIdx) {
+-      if (const auto& reuseGateIdx = matching[gateIdx]; reuseGateIdx) {
+-        const auto& gate = twoQubitGatesInCurrentLayer[gateIdx];
+-        if (const auto& it = usedQubitsInPreviousLayer.find(gate.front());
+-            it != usedQubitsInPreviousLayer.end() &&
+-            it->second == *reuseGateIdx) {
+-          reuseQubitsInCurrentLayer.emplace(gate.front());
+-        } else {
+-          assert(usedQubitsInPreviousLayer.at(gate.back()) == *reuseGateIdx);
+-          reuseQubitsInCurrentLayer.emplace(gate.back());
+-        }
++  }
++  const auto& matching = maximumBipartiteMatching(sparseMatrix);
++  for (std::size_t gateIdx = 0; gateIdx < matching.size(); ++gateIdx) {
++    if (const auto& reuseGateIdx = matching[gateIdx]; reuseGateIdx) {
++      const auto& gate = nextLayer[gateIdx];
++      if (const auto& it = usedQubitsInCurrentLayer.find(gate.front());
++          it != usedQubitsInCurrentLayer.end() && it->second == *reuseGateIdx) {
++        reuseQubitsInNextLayer.emplace(gate.front());
++      } else {
++        assert(usedQubitsInCurrentLayer.at(gate.back()) == *reuseGateIdx);
++        reuseQubitsInNextLayer.emplace(gate.back());
+@@ -104 +99 @@ auto VertexMatchingReuseAnalyzer::analyzeReuse(
+-  return reuseQubits;
++  return reuseQubitsInNextLayer;
+diff --git a/src/na/zoned/router/IndependentSetRouter.cpp b/src/na/zoned/router/IndependentSetRouter.cpp
+index 0c37e25..411e8d3 100644
+--- a/src/na/zoned/router/IndependentSetRouter.cpp
++++ b/src/na/zoned/router/IndependentSetRouter.cpp
+@@ -95,22 +95,19 @@ auto IndependentSetRouter::route(const std::vector<Placement>& placement) const
+-    const auto& targetPlacement = *it;
+-    std::set<std::pair<double, qc::Qubit>, std::greater<>>
+-        atomsToMoveOrderedAscByDist;
+-    assert(startPlacement.size() == targetPlacement.size());
+-    for (qc::Qubit atom = 0; atom < startPlacement.size(); ++atom) {
+-      const auto& [startSLM, startRow, startColumn] = startPlacement[atom];
+-      const auto& [targetSLM, targetRow, targetColumn] = targetPlacement[atom];
+-      // if atom must be moved
+-      if (&startSLM.get() != &targetSLM.get() || startRow != targetRow ||
+-          startColumn != targetColumn) {
+-        const auto distance =
+-            architecture_.get().distance(startSLM, startRow, startColumn,
+-                                         targetSLM, targetRow, targetColumn);
+-        atomsToMoveOrderedAscByDist.emplace(distance, atom);
+-      }
+-    }
+-    std::vector<qc::Qubit> atomsToMove;
+-    atomsToMove.reserve(atomsToMoveOrderedAscByDist.size());
+-    // put the atoms into the vector such they are ordered decreasingly by their
+-    // movement distance
+-    for (const auto& atomIt : atomsToMoveOrderedAscByDist) {
+-      atomsToMove.emplace_back(atomIt.second);
++    routing.emplace_back(routeTransition(startPlacement, *it));
++  }
++  return routing;
++}
++auto IndependentSetRouter::routeTransition(const Placement& from,
++                                           const Placement& to) const
++    -> Routing {
++  std::set<std::pair<double, qc::Qubit>, std::greater<>>
++      atomsToMoveOrderedAscByDist;
++  assert(from.size() == to.size());
++  for (qc::Qubit atom = 0; atom < from.size(); ++atom) {
++    const auto& [startSLM, startRow, startColumn] = from[atom];
++    const auto& [targetSLM, targetRow, targetColumn] = to[atom];
++    // if atom must be moved
++    if (&startSLM.get() != &targetSLM.get() || startRow != targetRow ||
++        startColumn != targetColumn) {
++      const auto distance = architecture_.get().distance(
++          startSLM, startRow, startColumn, targetSLM, targetRow, targetColumn);
++      atomsToMoveOrderedAscByDist.emplace(distance, atom);
+@@ -118,17 +115,23 @@ auto IndependentSetRouter::route(const std::vector<Placement>& placement) const
+-    auto conflictGraph =
+-        createConflictGraph(atomsToMove, startPlacement, targetPlacement);
+-    auto& currentRouting = routing.emplace_back();
+-    while (!atomsToMove.empty()) {
+-      auto& independentSet = currentRouting.emplace_back();
+-      std::vector<qc::Qubit> remainingAtoms;
+-      std::unordered_set<qc::Qubit> conflictingAtomsMoves;
+-      for (const auto& atom : atomsToMove) {
+-        if (conflictingAtomsMoves.find(atom) == conflictingAtomsMoves.end()) {
+-          // if the atom does not conflict with any atom that is already in the
+-          // independent set, add it and mark its neighbors as conflicting
+-          independentSet.emplace_back(atom);
+-          if (const auto conflictingNeighbors = conflictGraph.find(atom);
+-              conflictingNeighbors != conflictGraph.end()) {
+-            for (const auto neighbor : conflictingNeighbors->second) {
+-              conflictingAtomsMoves.emplace(neighbor);
+-            }
++  }
++  std::vector<qc::Qubit> atomsToMove;
++  atomsToMove.reserve(atomsToMoveOrderedAscByDist.size());
++  // put the atoms into the vector such they are ordered decreasingly by their
++  // movement distance
++  for (const auto& atomIt : atomsToMoveOrderedAscByDist) {
++    atomsToMove.emplace_back(atomIt.second);
++  }
++  auto conflictGraph = createConflictGraph(atomsToMove, from, to);
++  Routing routing;
++  while (!atomsToMove.empty()) {
++    auto& independentSet = routing.emplace_back();
++    std::vector<qc::Qubit> remainingAtoms;
++    std::unordered_set<qc::Qubit> conflictingAtomsMoves;
++    for (const auto& atom : atomsToMove) {
++      if (conflictingAtomsMoves.find(atom) == conflictingAtomsMoves.end()) {
++        // if the atom does not conflict with any atom that is already in the
++        // independent set, add it and mark its neighbors as conflicting
++        independentSet.emplace_back(atom);
++        if (const auto conflictingNeighbors = conflictGraph.find(atom);
++            conflictingNeighbors != conflictGraph.end()) {
++          for (const auto neighbor : conflictingNeighbors->second) {
++            conflictingAtomsMoves.emplace(neighbor);
+@@ -136,4 +138,0 @@ auto IndependentSetRouter::route(const std::vector<Placement>& placement) const
+-        } else {
+-          // if an atom could not be put into the current independent set, add
+-          // it to the remaining atoms
+-          remainingAtoms.emplace_back(atom);
+@@ -140,0 +140,4 @@ auto IndependentSetRouter::route(const std::vector<Placement>& placement) const
++      } else {
++        // if an atom could not be put into the current independent set, add
++        // it to the remaining atoms
++        remainingAtoms.emplace_back(atom);
+@@ -142 +144,0 @@ auto IndependentSetRouter::route(const std::vector<Placement>& placement) const
+-      atomsToMove = remainingAtoms;
+@@ -143,0 +146 @@ auto IndependentSetRouter::route(const std::vector<Placement>& placement) const
++    atomsToMove = remainingAtoms;
+diff --git a/src/na/zoned/scheduler/ASAPScheduler.cpp b/src/na/zoned/scheduler/ASAPScheduler.cpp
+index de8ba14..0bc17c5 100644
+--- a/src/na/zoned/scheduler/ASAPScheduler.cpp
++++ b/src/na/zoned/scheduler/ASAPScheduler.cpp
+@@ -43,0 +44,59 @@ ASAPScheduler::ASAPScheduler(const Architecture& architecture,
++
++auto ASAPScheduler::scheduleOperation(const qc::Operation& op,
++                                      State& state) const -> Assignment {
++  assert(state.nextLayerForQubit.size() == state.nQubits);
++  if (op.getType() == qc::Barrier) {
++    if (op.getNqubits() < state.nQubits) {
++      throw std::invalid_argument("Only global barriers are allowed.");
++    }
++    const auto layer = state.twoQubitGateCounts.size();
++    std::fill(state.nextLayerForQubit.begin(), state.nextLayerForQubit.end(),
++              layer);
++    return Assignment{OperationKind::Barrier, layer};
++  }
++  if (op.isGlobal(state.nQubits) && !op.isControlled() && state.nQubits > 1) {
++    const auto layer = *std::max_element(state.nextLayerForQubit.cbegin(),
++                                         state.nextLayerForQubit.cend());
++    std::fill(state.nextLayerForQubit.begin(), state.nextLayerForQubit.end(),
++              layer);
++    return Assignment{OperationKind::SingleQubit, layer};
++  }
++  if (op.isStandardOperation()) {
++    const auto& stdOp = dynamic_cast<const qc::StandardOperation&>(op);
++    if (stdOp.getNtargets() == 1 && stdOp.getNcontrols() == 0) {
++      return Assignment{OperationKind::SingleQubit,
++                        state.nextLayerForQubit[stdOp.getTargets().front()]};
++    }
++    if (stdOp.getType() == qc::Z && stdOp.getNtargets() == 1 &&
++        stdOp.getNcontrols() == 1) {
++      const auto qubit1 = stdOp.getTargets().front();
++      const auto qubit2 = stdOp.getControls().cbegin()->qubit;
++      auto layer = std::max(state.nextLayerForQubit[qubit1],
++                            state.nextLayerForQubit[qubit2]);
++      while (layer < state.twoQubitGateCounts.size() &&
++             state.twoQubitGateCounts[layer] >= maxTwoQubitGateNumPerLayer_) {
++        ++layer;
++      }
++      assert(layer <= state.twoQubitGateCounts.size());
++      if (layer == state.twoQubitGateCounts.size()) {
++        state.twoQubitGateCounts.emplace_back(0);
++      }
++      ++state.twoQubitGateCounts[layer];
++      state.nextLayerForQubit[qubit1] = layer + 1;
++      state.nextLayerForQubit[qubit2] = layer + 1;
++      return Assignment{
++          OperationKind::TwoQubit, layer,
++          std::array{std::min(qubit1, qubit2), std::max(qubit1, qubit2)}};
++    }
++    std::stringstream ss;
++    ss << "Operation type not supported: " << stdOp.getType() << " with "
++       << stdOp.getNcontrols() << " controls and " << stdOp.getNtargets()
++       << " targets";
++    throw std::invalid_argument(ss.str());
++  }
++  std::stringstream ss;
++  ss << "Operation type not supported: " << op.getType() << " with "
++     << op.getNcontrols() << " controls and " << op.getNtargets() << " targets";
++  throw std::invalid_argument(ss.str());
++}
++
+@@ -54,4 +113 @@ auto ASAPScheduler::schedule(const qc::QuantumComputation& qc) const
+-  // the following vector contains a mapping from qubits to the layer where
+-  // the next two-qubit gate can be scheduled for that qubit, i.e., the layer
+-  // after the last layer with a two-qubit gate acting on that qubit
+-  std::vector<size_t> nextLayerForQubit(qc.getNqubits(), 0);
++  State state(qc.getNqubits());
+@@ -59,57 +115,9 @@ auto ASAPScheduler::schedule(const qc::QuantumComputation& qc) const
+-    if (op->getType() == qc::Barrier) {
+-      if (op->getNqubits() < qc.getNqubits()) {
+-        throw std::invalid_argument("Only global barriers are allowed.");
+-      }
+-      // set the next layer for all qubits to the currently last layer
+-      assert(twoQubitGateLayers.size() + 1 == singleQubitGateLayers.size());
+-      const auto newNextLayerForQubit = twoQubitGateLayers.size();
+-      for (qc::Qubit q = 0; q < qc.getNqubits(); ++q) {
+-        nextLayerForQubit[q] = newNextLayerForQubit;
+-      }
+-    } else if (op->isGlobal(qc.getNqubits()) && !op->isControlled() &&
+-               qc.getNqubits() > 1) {
+-      const auto maxNextLayerForQubit = *std::max_element(
+-          nextLayerForQubit.cbegin(), nextLayerForQubit.cend());
+-      for (qc::Qubit q = 0; q < qc.getNqubits(); ++q) {
+-        nextLayerForQubit[q] = maxNextLayerForQubit;
+-      }
+-      singleQubitGateLayers[maxNextLayerForQubit].emplace_back(*op);
+-    } else if (op->isStandardOperation()) {
+-      const auto& stdOp = dynamic_cast<qc::StandardOperation&>(*op);
+-      if (stdOp.getNtargets() == 1 && stdOp.getNcontrols() == 0) {
+-        singleQubitGateLayers[nextLayerForQubit[stdOp.getTargets().front()]]
+-            .emplace_back(stdOp);
+-      } else if (stdOp.getType() == qc::Z && stdOp.getNtargets() == 1 &&
+-                 stdOp.getNcontrols() == 1) {
+-        const auto qubit1 = stdOp.getTargets().front();
+-        const auto qubit2 = stdOp.getControls().cbegin()->qubit;
+-        auto layer =
+-            std::max(nextLayerForQubit[qubit1], nextLayerForQubit[qubit2]);
+-        while (layer < twoQubitGateLayers.size() &&
+-               twoQubitGateLayers[layer].size() >=
+-                   maxTwoQubitGateNumPerLayer_) {
+-          ++layer;
+-        }
+-        assert(layer <= twoQubitGateLayers.size());
+-        if (layer == twoQubitGateLayers.size()) {
+-          // add a new layer
+-          singleQubitGateLayers.emplace_back();
+-          twoQubitGateLayers.emplace_back();
+-        }
+-        twoQubitGateLayers[layer].emplace_back(
+-            std::array{std::min(qubit1, qubit2), std::max(qubit1, qubit2)});
+-        nextLayerForQubit[qubit1] = layer + 1;
+-        nextLayerForQubit[qubit2] = layer + 1;
+-      } else {
+-        std::stringstream ss;
+-        ss << "Operation type not supported: " << stdOp.getType() << " with "
+-           << stdOp.getNcontrols() << " controls and " << stdOp.getNtargets()
+-           << " targets";
+-        throw std::invalid_argument(ss.str());
+-      }
+-    } else {
+-      std::stringstream ss;
+-      ss << "Operation type not supported: " << op->getType() << " with "
+-         << op->getNcontrols() << " controls and " << op->getNtargets()
+-         << " targets";
+-      throw std::invalid_argument(ss.str());
++    const auto assignment = scheduleOperation(*op, state);
++    while (twoQubitGateLayers.size() < state.twoQubitGateCounts.size()) {
++      singleQubitGateLayers.emplace_back();
++      twoQubitGateLayers.emplace_back();
++    }
++    if (assignment.kind == OperationKind::SingleQubit) {
++      singleQubitGateLayers[assignment.layer].emplace_back(*op);
++    } else if (assignment.kind == OperationKind::TwoQubit) {
++      twoQubitGateLayers[assignment.layer].emplace_back(assignment.qubits);
+diff --git a/src/na/zoned_streaming/SQLiteStreaming.cpp b/src/na/zoned_streaming/SQLiteStreaming.cpp
+new file mode 100644
+index 0000000..d75b9bf
+--- /dev/null
++++ b/src/na/zoned_streaming/SQLiteStreaming.cpp
+@@ -0,0 +1,894 @@
++/*
++ * Copyright (c) 2023 - 2025 Chair for Design Automation, TUM
++ * Copyright (c) 2025 Munich Quantum Software Company GmbH
++ * All rights reserved.
++ *
++ * SPDX-License-Identifier: MIT
++ *
++ * Licensed under the MIT License
++ */
++
++#include "na/zoned/streaming/SQLiteStreaming.hpp"
++
++#include "ir/Definitions.hpp"
++#include "ir/operations/OpType.hpp"
++#include "ir/operations/StandardOperation.hpp"
++#include "na/zoned/Architecture.hpp"
++
++#include <algorithm>
++#include <array>
++#include <cassert>
++#include <cctype>
++#include <cmath>
++#include <cstddef>
++#include <cstdint>
++#include <cstdlib>
++#include <filesystem>
++#include <fstream>
++#include <limits>
++#include <memory>
++#include <nlohmann/json.hpp>
++#include <optional>
++#include <sqlite3.h>
++#include <stdexcept>
++#include <string>
++#include <string_view>
++#include <system_error>
++#include <unordered_map>
++#include <unordered_set>
++#include <utility>
++#include <vector>
++
++namespace na::zoned {
++namespace {
++
++class SQLiteStatement {
++  sqlite3_stmt* statement_ = nullptr;
++
++public:
++  SQLiteStatement(sqlite3* database, const std::string_view sql) {
++    const std::string ownedSQL(sql);
++    if (sqlite3_prepare_v2(database, ownedSQL.c_str(), -1, &statement_,
++                           nullptr) != SQLITE_OK) {
++      throw std::runtime_error("SQLite prepare failed: " +
++                               std::string(sqlite3_errmsg(database)));
++    }
++  }
++
++  ~SQLiteStatement() { sqlite3_finalize(statement_); }
++  SQLiteStatement(const SQLiteStatement&) = delete;
++  auto operator=(const SQLiteStatement&) -> SQLiteStatement& = delete;
++  SQLiteStatement(SQLiteStatement&&) = delete;
++  auto operator=(SQLiteStatement&&) -> SQLiteStatement& = delete;
++
++  [[nodiscard]] auto get() const -> sqlite3_stmt* { return statement_; }
++
++  auto reset() const -> void {
++    if (sqlite3_reset(statement_) != SQLITE_OK ||
++        sqlite3_clear_bindings(statement_) != SQLITE_OK) {
++      throw std::runtime_error("SQLite statement reset failed");
++    }
++  }
++};
++
++struct SQLiteDatabaseDeleter {
++  auto operator()(sqlite3* database) const noexcept -> void {
++    if (database != nullptr) {
++      sqlite3_close_v2(database);
++    }
++  }
++};
++using SQLiteDatabase = std::unique_ptr<sqlite3, SQLiteDatabaseDeleter>;
++
++[[nodiscard]] auto openReadOnlyDatabase(const std::filesystem::path& path)
++    -> SQLiteDatabase {
++  sqlite3* rawDatabase = nullptr;
++  const auto result =
++      sqlite3_open_v2(path.string().c_str(), &rawDatabase,
++                      SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nullptr);
++  if (result != SQLITE_OK) {
++    const auto message = rawDatabase == nullptr
++                             ? std::string("unknown SQLite error")
++                             : std::string(sqlite3_errmsg(rawDatabase));
++    SQLiteDatabaseDeleter{}(rawDatabase);
++    throw std::runtime_error("Cannot open schedule database read-only: " +
++                             message);
++  }
++  SQLiteDatabase database(rawDatabase);
++  char* error = nullptr;
++  if (sqlite3_exec(database.get(),
++                   "PRAGMA query_only=ON;PRAGMA trusted_schema=OFF;", nullptr,
++                   nullptr, &error) != SQLITE_OK) {
++    const std::string message =
++        error == nullptr ? sqlite3_errmsg(database.get()) : error;
++    sqlite3_free(error);
++    throw std::runtime_error("Cannot protect schedule database: " + message);
++  }
++  return database;
++}
++
++[[nodiscard]] auto columnInt64(sqlite3_stmt* statement, const int column,
++                               const std::string_view field) -> int64_t {
++  if (sqlite3_column_type(statement, column) != SQLITE_INTEGER) {
++    throw std::runtime_error("SQLite field is not an integer: " +
++                             std::string(field));
++  }
++  return sqlite3_column_int64(statement, column);
++}
++
++[[nodiscard]] auto columnText(sqlite3_stmt* statement, const int column,
++                              const std::string_view field) -> std::string {
++  if (sqlite3_column_type(statement, column) != SQLITE_TEXT) {
++    throw std::runtime_error("SQLite field is not text: " + std::string(field));
++  }
++  const auto* text = sqlite3_column_text(statement, column);
++  if (text == nullptr) {
++    throw std::runtime_error("SQLite text field is null: " +
++                             std::string(field));
++  }
++  return reinterpret_cast<const char*>(text);
++}
++
++[[nodiscard]] auto checkedSize(const int64_t value,
++                               const std::string_view field) -> size_t {
++  if (value < 0) {
++    throw std::runtime_error("Negative SQLite value for " + std::string(field));
++  }
++  return static_cast<size_t>(value);
++}
++
++[[nodiscard]] auto jsonSize(const nlohmann::json& value,
++                            const std::string_view field) -> size_t {
++  uint64_t converted = 0;
++  if (value.is_number_unsigned()) {
++    converted = value.get<uint64_t>();
++  } else if (value.is_number_integer()) {
++    const auto signedValue = value.get<int64_t>();
++    if (signedValue < 0) {
++      throw std::runtime_error("Negative metadata value for " +
++                               std::string(field));
++    }
++    converted = static_cast<uint64_t>(signedValue);
++  } else {
++    throw std::runtime_error("Metadata value is not an integer: " +
++                             std::string(field));
++  }
++  if (converted > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
++      converted > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
++    throw std::runtime_error("Metadata value is too large: " +
++                             std::string(field));
++  }
++  return static_cast<size_t>(converted);
++}
++
++class ExpressionParser {
++  std::string expression_;
++  size_t position_ = 0;
++
++  auto skipWhitespace() -> void {
++    while (position_ < expression_.size() &&
++           std::isspace(static_cast<unsigned char>(expression_[position_])) !=
++               0) {
++      ++position_;
++    }
++  }
++
++  [[nodiscard]] auto parsePrimary() -> double {
++    skipWhitespace();
++    if (position_ == expression_.size()) {
++      throw std::runtime_error("Unexpected end of gate parameter");
++    }
++    if (expression_[position_] == '(') {
++      ++position_;
++      const auto value = parseExpression();
++      skipWhitespace();
++      if (position_ == expression_.size() || expression_[position_] != ')') {
++        throw std::runtime_error("Unclosed gate parameter expression");
++      }
++      ++position_;
++      return value;
++    }
++    if (expression_.compare(position_, 2, "pi") == 0) {
++      position_ += 2;
++      return qc::PI;
++    }
++    char* end = nullptr;
++    const auto* begin = expression_.c_str() + position_;
++    const auto value = std::strtod(begin, &end);
++    if (end == begin) {
++      throw std::runtime_error("Invalid numeric gate parameter");
++    }
++    position_ += static_cast<size_t>(end - begin);
++    if (!std::isfinite(value)) {
++      throw std::runtime_error("Non-finite gate parameter");
++    }
++    return value;
++  }
++
++  [[nodiscard]] auto parseFactor() -> double {
++    skipWhitespace();
++    if (position_ < expression_.size() && expression_[position_] == '+') {
++      ++position_;
++      return parseFactor();
++    }
++    if (position_ < expression_.size() && expression_[position_] == '-') {
++      ++position_;
++      return -parseFactor();
++    }
++    return parsePrimary();
++  }
++
++  [[nodiscard]] auto parseTerm() -> double {
++    auto value = parseFactor();
++    while (true) {
++      skipWhitespace();
++      if (position_ == expression_.size() ||
++          (expression_[position_] != '*' && expression_[position_] != '/')) {
++        return value;
++      }
++      const auto operation = expression_[position_++];
++      const auto operand = parseFactor();
++      if (operation == '/') {
++        if (operand == 0.0) {
++          throw std::runtime_error("Division by zero in gate parameter");
++        }
++        value /= operand;
++      } else {
++        value *= operand;
++      }
++      if (!std::isfinite(value)) {
++        throw std::runtime_error("Non-finite gate parameter");
++      }
++    }
++  }
++
++  [[nodiscard]] auto parseExpression() -> double {
++    auto value = parseTerm();
++    while (true) {
++      skipWhitespace();
++      if (position_ == expression_.size() ||
++          (expression_[position_] != '+' && expression_[position_] != '-')) {
++        return value;
++      }
++      const auto operation = expression_[position_++];
++      const auto operand = parseTerm();
++      value = operation == '+' ? value + operand : value - operand;
++      if (!std::isfinite(value)) {
++        throw std::runtime_error("Non-finite gate parameter");
++      }
++    }
++  }
++
++public:
++  explicit ExpressionParser(std::string expression)
++      : expression_(std::move(expression)) {}
++
++  [[nodiscard]] auto parse() -> double {
++    const auto result = parseExpression();
++    skipWhitespace();
++    if (position_ != expression_.size()) {
++      throw std::runtime_error("Trailing input in gate parameter");
++    }
++    return result;
++  }
++};
++
++[[nodiscard]] auto trim(const std::string_view input) -> std::string_view {
++  auto first = size_t{0};
++  while (first < input.size() &&
++         std::isspace(static_cast<unsigned char>(input[first])) != 0) {
++    ++first;
++  }
++  auto last = input.size();
++  while (last > first &&
++         std::isspace(static_cast<unsigned char>(input[last - 1])) != 0) {
++    --last;
++  }
++  return input.substr(first, last - first);
++}
++
++[[nodiscard]] auto parseParameters(const std::string& operation,
++                                   const std::string& statement,
++                                   const size_t expected)
++    -> std::vector<double> {
++  const auto normalized = trim(statement);
++  if (normalized.size() <= operation.size() ||
++      normalized.substr(0, operation.size()) != operation ||
++      normalized[operation.size()] != '(' || normalized.back() != ';') {
++    throw std::runtime_error("Malformed canonical statement: " + statement);
++  }
++  size_t depth = 0;
++  std::optional<size_t> closingParenthesis;
++  for (size_t index = operation.size(); index < normalized.size(); ++index) {
++    if (normalized[index] == '(') {
++      ++depth;
++    } else if (normalized[index] == ')') {
++      if (depth == 0) {
++        throw std::runtime_error("Malformed gate parameters: " + statement);
++      }
++      --depth;
++      if (depth == 0) {
++        closingParenthesis = index;
++        break;
++      }
++    }
++  }
++  if (!closingParenthesis) {
++    throw std::runtime_error("Unclosed gate parameters: " + statement);
++  }
++  const auto operands = trim(normalized.substr(
++      *closingParenthesis + 1, normalized.size() - *closingParenthesis - 2));
++  if (operands.empty()) {
++    throw std::runtime_error("Missing gate operand: " + statement);
++  }
++  const auto parameterText = normalized.substr(
++      operation.size() + 1, *closingParenthesis - operation.size() - 1);
++  std::vector<double> parameters;
++  size_t start = 0;
++  depth = 0;
++  for (size_t index = 0; index <= parameterText.size(); ++index) {
++    const auto atEnd = index == parameterText.size();
++    if (!atEnd && parameterText[index] == '(') {
++      ++depth;
++    } else if (!atEnd && parameterText[index] == ')') {
++      if (depth == 0) {
++        throw std::runtime_error("Malformed gate parameter: " + statement);
++      }
++      --depth;
++    }
++    if (atEnd || (parameterText[index] == ',' && depth == 0)) {
++      const auto parameter = trim(parameterText.substr(start, index - start));
++      if (parameter.empty()) {
++        throw std::runtime_error("Empty gate parameter: " + statement);
++      }
++      parameters.emplace_back(ExpressionParser(std::string(parameter)).parse());
++      start = index + 1;
++    }
++  }
++  if (depth != 0 || parameters.size() != expected) {
++    throw std::runtime_error("Wrong gate parameter arity: " + statement);
++  }
++  return parameters;
++}
++
++[[nodiscard]] auto makeSingleQubitOperation(const std::string& operation,
++                                            const std::string& statement,
++                                            const qc::Qubit qubit)
++    -> std::shared_ptr<const qc::Operation> {
++  if (operation == "u1") {
++    return std::make_shared<qc::StandardOperation>(
++        qubit, qc::P, parseParameters(operation, statement, 1));
++  }
++  if (operation == "u2") {
++    return std::make_shared<qc::StandardOperation>(
++        qubit, qc::U2, parseParameters(operation, statement, 2));
++  }
++  if (operation == "u3") {
++    return std::make_shared<qc::StandardOperation>(
++        qubit, qc::U, parseParameters(operation, statement, 3));
++  }
++  throw std::runtime_error("Unsupported frozen one-qubit operation: " +
++                           operation);
++}
++
++[[nodiscard]] auto placementToJson(const Placement& placement)
++    -> nlohmann::json {
++  auto result = nlohmann::json::array();
++  for (size_t qubit = 0; qubit < placement.size(); ++qubit) {
++    const auto& [slm, row, column] = placement[qubit];
++    result.emplace_back(nlohmann::json{{"qubit", qubit},
++                                       {"slm", slm.get().id},
++                                       {"row", row},
++                                       {"column", column}});
++  }
++  return result;
++}
++
++[[nodiscard]] auto sortedQubits(const std::unordered_set<qc::Qubit>& qubits)
++    -> std::vector<qc::Qubit> {
++  std::vector<qc::Qubit> result(qubits.cbegin(), qubits.cend());
++  std::sort(result.begin(), result.end());
++  return result;
++}
++
++[[nodiscard]] auto
++scheduleMetadataToJson(const SQLiteScheduleMetadata& metadata)
++    -> nlohmann::json {
++  return {{"format", metadata.format},
++          {"qubits", metadata.qubits},
++          {"events", metadata.events},
++          {"gates_1q", metadata.gates1Q},
++          {"gates_2q", metadata.gates2Q},
++          {"two_qubit_layers", metadata.twoQubitLayers},
++          {"scheduled_items", metadata.scheduledItems}};
++}
++
++[[nodiscard]] auto readJsonFile(const std::filesystem::path& path)
++    -> nlohmann::json {
++  std::ifstream input(path);
++  if (!input) {
++    throw std::runtime_error("Cannot open JSON file: " + path.string());
++  }
++  nlohmann::json result;
++  input >> result;
++  if (!input.eof() && input.fail()) {
++    throw std::runtime_error("Cannot parse JSON file: " + path.string());
++  }
++  return result;
++}
++
++auto validateFrozenConfig(const nlohmann::json& configJson,
++                          const RoutingAwareCompiler::Config& config) -> void {
++  if (!configJson.is_object() || !configJson.contains("placerConfig") ||
++      !configJson.at("placerConfig").is_object() ||
++      !configJson.contains("codeGeneratorConfig") ||
++      !configJson.at("codeGeneratorConfig").is_object()) {
++    throw std::runtime_error(
++        "Frozen compiler config must contain placerConfig and "
++        "codeGeneratorConfig objects");
++  }
++  const auto& placer = configJson.at("placerConfig");
++  for (const auto* key : {"useWindow", "windowMinWidth", "windowRatio",
++                          "windowShare", "deepeningFactor", "deepeningValue",
++                          "lookaheadFactor", "reuseLevel", "maxNodes"}) {
++    if (!placer.contains(key)) {
++      throw std::runtime_error("Frozen placer config is missing key: " +
++                               std::string(key));
++    }
++  }
++  const auto& codeGenerator = configJson.at("codeGeneratorConfig");
++  for (const auto* key : {"parkingOffset", "warnUnsupportedGates"}) {
++    if (!codeGenerator.contains(key)) {
++      throw std::runtime_error("Frozen code-generator config is missing key: " +
++                               std::string(key));
++    }
++  }
++  const auto& placerConfig = config.placerConfig;
++  if (!placerConfig.useWindow || placerConfig.windowMinWidth != 8 ||
++      placerConfig.windowRatio != 1.0 || placerConfig.windowShare != 0.6 ||
++      placerConfig.deepeningFactor != 0.6F ||
++      placerConfig.deepeningValue != 0.2F ||
++      placerConfig.lookaheadFactor != 0.2F || placerConfig.reuseLevel != 5.0F ||
++      placerConfig.maxNodes != 50'000'000 ||
++      config.codeGeneratorConfig.parkingOffset != 1 ||
++      !config.codeGeneratorConfig.warnUnsupportedGates) {
++    throw std::runtime_error(
++        "Compiler config does not match the frozen QMAP 3.2 paper settings");
++  }
++}
++
++auto validateArchitectureCapacity(const Architecture& architecture,
++                                  const size_t nQubits) -> void {
++  if (architecture.storageZones.empty()) {
++    throw std::runtime_error("Architecture has no storage SLM");
++  }
++  size_t storageCapacity = 0;
++  for (const auto& slm : architecture.storageZones) {
++    if (slm->nRows == 0 || slm->nCols == 0 ||
++        slm->nRows > std::numeric_limits<size_t>::max() / slm->nCols) {
++      throw std::runtime_error("Architecture has an invalid storage SLM");
++    }
++    const auto sites = slm->nRows * slm->nCols;
++    if (storageCapacity > std::numeric_limits<size_t>::max() - sites) {
++      throw std::runtime_error("Architecture storage capacity overflows");
++    }
++    storageCapacity += sites;
++  }
++  if (nQubits > storageCapacity) {
++    throw std::runtime_error(
++        "Schedule has more qubits than architecture storage sites");
++  }
++}
++
++struct OutputCleanup {
++  std::filesystem::path temporaryNative;
++  std::filesystem::path temporaryMetadata;
++  std::filesystem::path finalNative;
++  std::filesystem::path finalMetadata;
++  bool nativePublished = false;
++  bool metadataPublished = false;
++  bool success = false;
++
++  ~OutputCleanup() {
++    if (success) {
++      return;
++    }
++    std::error_code error;
++    std::filesystem::remove(temporaryNative, error);
++    error.clear();
++    std::filesystem::remove(temporaryMetadata, error);
++    if (nativePublished) {
++      error.clear();
++      std::filesystem::remove(finalNative, error);
++    }
++    if (metadataPublished) {
++      error.clear();
++      std::filesystem::remove(finalMetadata, error);
++    }
++  }
++};
++
++} // namespace
++
++struct SQLiteScheduledLayerProvider::Impl {
++  SQLiteDatabase database;
++  SQLiteScheduleMetadata metadata;
++  SQLiteStatement layerStatement;
++  SQLiteStatement gateCountStatement;
++  size_t nextLayer = 0;
++  size_t observedEvents = 0;
++  size_t observedGates1Q = 0;
++  size_t observedGates2Q = 0;
++  bool finalized = false;
++
++  explicit Impl(const std::filesystem::path& path)
++      : database(openReadOnlyDatabase(path)),
++        metadata(loadMetadata(database.get())),
++        layerStatement(
++            database.get(),
++            "SELECT seq,kind,operation,q0,q1,statement FROM qmap_operations "
++            "WHERE layer=?1 ORDER BY kind,seq"),
++        gateCountStatement(
++            database.get(),
++            "SELECT gate_count FROM two_qubit_counts WHERE layer=?1") {
++    validateDatabase();
++  }
++
++  [[nodiscard]] static auto loadMetadata(sqlite3* database)
++      -> SQLiteScheduleMetadata {
++    SQLiteStatement statement(database, "SELECT key,value FROM metadata");
++    std::unordered_map<std::string, nlohmann::json> values;
++    while (true) {
++      const auto result = sqlite3_step(statement.get());
++      if (result == SQLITE_DONE) {
++        break;
++      }
++      if (result != SQLITE_ROW) {
++        throw std::runtime_error("Cannot read schedule metadata: " +
++                                 std::string(sqlite3_errmsg(database)));
++      }
++      const auto key = columnText(statement.get(), 0, "metadata.key");
++      const auto rawValue = columnText(statement.get(), 1, "metadata.value");
++      if (!values.emplace(key, nlohmann::json::parse(rawValue)).second) {
++        throw std::runtime_error("Duplicate schedule metadata key: " + key);
++      }
++    }
++    const auto required =
++        [&values](const std::string_view key) -> const nlohmann::json& {
++      const auto found = values.find(std::string(key));
++      if (found == values.end()) {
++        throw std::runtime_error("Missing schedule metadata key: " +
++                                 std::string(key));
++      }
++      return found->second;
++    };
++    const auto& formatValue = required("format");
++    if (!formatValue.is_string()) {
++      throw std::runtime_error("Schedule metadata format is not a string");
++    }
++    SQLiteScheduleMetadata result{
++        formatValue.get<std::string>(),
++        jsonSize(required("qubits"), "qubits"),
++        jsonSize(required("events"), "events"),
++        jsonSize(required("gates_1q"), "gates_1q"),
++        jsonSize(required("gates_2q"), "gates_2q"),
++        jsonSize(required("two_qubit_layers"), "two_qubit_layers"),
++        jsonSize(required("scheduled_items"), "scheduled_items")};
++    if (result.format != "qmap-schedule-store-v1") {
++      throw std::runtime_error("Unsupported schedule database format: " +
++                               result.format);
++    }
++    if (result.qubits > std::numeric_limits<qc::Qubit>::max() ||
++        result.gates1Q > std::numeric_limits<size_t>::max() - result.gates2Q ||
++        result.events != result.gates1Q + result.gates2Q ||
++        result.scheduledItems != result.twoQubitLayers + 1) {
++      throw std::runtime_error("Inconsistent schedule metadata counts");
++    }
++    return result;
++  }
++
++  auto validateDatabase() const -> void {
++    SQLiteStatement operations(
++        database.get(),
++        "SELECT COUNT(*),COALESCE(MIN(seq),-1),COALESCE(MAX(seq),-1),"
++        "COALESCE(SUM(CASE WHEN kind=1 THEN 1 ELSE 0 END),0),"
++        "COALESCE(SUM(CASE WHEN kind=2 THEN 1 ELSE 0 END),0),"
++        "COALESCE(SUM(CASE WHEN "
++        "typeof(seq)<>'integer' OR typeof(layer)<>'integer' OR "
++        "typeof(kind)<>'integer' OR typeof(operation)<>'text' OR "
++        "typeof(q0)<>'integer' OR "
++        "(q1 IS NOT NULL AND typeof(q1)<>'integer') OR "
++        "typeof(statement)<>'text' OR seq<0 OR layer<0 OR layer>?1 OR "
++        "kind NOT IN (1,2) OR q0<0 OR q0>=?2 OR "
++        "(q1 IS NOT NULL AND (q1<0 OR q1>=?2 OR q1=q0)) OR "
++        "(kind=1 AND (q1 IS NOT NULL OR operation NOT IN ('u1','u2','u3'))) "
++        "OR (kind=2 AND (q1 IS NULL OR operation<>'cz' OR layer>=?1)) "
++        "THEN 1 ELSE 0 END),0) FROM qmap_operations");
++    sqlite3_bind_int64(operations.get(), 1,
++                       static_cast<sqlite3_int64>(metadata.twoQubitLayers));
++    sqlite3_bind_int64(operations.get(), 2,
++                       static_cast<sqlite3_int64>(metadata.qubits));
++    if (sqlite3_step(operations.get()) != SQLITE_ROW) {
++      throw std::runtime_error("Cannot validate qmap_operations: " +
++                               std::string(sqlite3_errmsg(database.get())));
++    }
++    const auto count = checkedSize(
++        columnInt64(operations.get(), 0, "qmap_operations.count"), "events");
++    const auto minimum =
++        columnInt64(operations.get(), 1, "qmap_operations.min_seq");
++    const auto maximum =
++        columnInt64(operations.get(), 2, "qmap_operations.max_seq");
++    const auto gates1Q = checkedSize(
++        columnInt64(operations.get(), 3, "qmap_operations.gates_1q"),
++        "gates_1q");
++    const auto gates2Q = checkedSize(
++        columnInt64(operations.get(), 4, "qmap_operations.gates_2q"),
++        "gates_2q");
++    const auto invalid =
++        checkedSize(columnInt64(operations.get(), 5, "qmap_operations.invalid"),
++                    "invalid rows");
++    const auto expectedMaximum =
++        metadata.events == 0 ? int64_t{-1}
++                             : static_cast<int64_t>(metadata.events - 1);
++    if (count != metadata.events || gates1Q != metadata.gates1Q ||
++        gates2Q != metadata.gates2Q || invalid != 0 ||
++        minimum != (metadata.events == 0 ? -1 : 0) ||
++        maximum != expectedMaximum) {
++      throw std::runtime_error("qmap_operations does not match metadata");
++    }
++
++    SQLiteStatement layerCounts(
++        database.get(),
++        "SELECT COUNT(*),COALESCE(MIN(layer),-1),"
++        "COALESCE(MAX(layer),-1),COALESCE(SUM(gate_count),0),"
++        "COALESCE(SUM(CASE WHEN typeof(layer)<>'integer' OR "
++        "typeof(gate_count)<>'integer' OR layer<0 OR layer>=?1 OR "
++        "gate_count<=0 THEN 1 ELSE 0 END),0) FROM two_qubit_counts");
++    sqlite3_bind_int64(layerCounts.get(), 1,
++                       static_cast<sqlite3_int64>(metadata.twoQubitLayers));
++    if (sqlite3_step(layerCounts.get()) != SQLITE_ROW) {
++      throw std::runtime_error("Cannot validate two_qubit_counts: " +
++                               std::string(sqlite3_errmsg(database.get())));
++    }
++    const auto layers =
++        checkedSize(columnInt64(layerCounts.get(), 0, "two_qubit_counts.count"),
++                    "two_qubit_layers");
++    const auto minimumLayer =
++        columnInt64(layerCounts.get(), 1, "two_qubit_counts.min_layer");
++    const auto maximumLayer =
++        columnInt64(layerCounts.get(), 2, "two_qubit_counts.max_layer");
++    const auto totalGates =
++        checkedSize(columnInt64(layerCounts.get(), 3, "two_qubit_counts.gates"),
++                    "gates_2q");
++    const auto invalidCounts = checkedSize(
++        columnInt64(layerCounts.get(), 4, "two_qubit_counts.invalid"),
++        "invalid layer counts");
++    const auto expectedMaxLayer =
++        metadata.twoQubitLayers == 0
++            ? int64_t{-1}
++            : static_cast<int64_t>(metadata.twoQubitLayers - 1);
++    if (layers != metadata.twoQubitLayers ||
++        minimumLayer != (metadata.twoQubitLayers == 0 ? -1 : 0) ||
++        maximumLayer != expectedMaxLayer || totalGates != metadata.gates2Q ||
++        invalidCounts != 0) {
++      throw std::runtime_error("two_qubit_counts does not match metadata");
++    }
++  }
++
++  [[nodiscard]] auto expectedTwoQubitGates(const size_t layer) const -> size_t {
++    gateCountStatement.reset();
++    sqlite3_bind_int64(gateCountStatement.get(), 1,
++                       static_cast<sqlite3_int64>(layer));
++    if (sqlite3_step(gateCountStatement.get()) != SQLITE_ROW) {
++      throw std::runtime_error("Missing two_qubit_counts row for layer " +
++                               std::to_string(layer));
++    }
++    const auto result = checkedSize(
++        columnInt64(gateCountStatement.get(), 0, "gate_count"), "gate_count");
++    if (sqlite3_step(gateCountStatement.get()) != SQLITE_DONE) {
++      throw std::runtime_error("Duplicate two_qubit_counts row");
++    }
++    return result;
++  }
++
++  auto finalizeCounts() -> void {
++    if (!finalized) {
++      if (observedEvents != metadata.events ||
++          observedGates1Q != metadata.gates1Q ||
++          observedGates2Q != metadata.gates2Q) {
++        throw std::runtime_error(
++            "Streamed schedule counts do not match metadata");
++      }
++      finalized = true;
++    }
++  }
++
++  [[nodiscard]] auto next() -> std::optional<ScheduledLayer> {
++    if (nextLayer == metadata.scheduledItems) {
++      finalizeCounts();
++      return std::nullopt;
++    }
++    if (nextLayer > metadata.scheduledItems) {
++      throw std::logic_error("Schedule provider read past end");
++    }
++    const auto layerIndex = nextLayer++;
++    layerStatement.reset();
++    sqlite3_bind_int64(layerStatement.get(), 1,
++                       static_cast<sqlite3_int64>(layerIndex));
++    ScheduledLayer layer;
++    TwoQubitGateLayer twoQubitGates;
++    std::vector<bool> usedByTwoQubitGate(metadata.qubits, false);
++    std::optional<int64_t> lastSingleQubitSequence;
++    std::optional<int64_t> lastTwoQubitSequence;
++    while (true) {
++      const auto result = sqlite3_step(layerStatement.get());
++      if (result == SQLITE_DONE) {
++        break;
++      }
++      if (result != SQLITE_ROW) {
++        throw std::runtime_error("Cannot read scheduled layer: " +
++                                 std::string(sqlite3_errmsg(database.get())));
++      }
++      const auto sequence =
++          columnInt64(layerStatement.get(), 0, "qmap_operations.seq");
++      const auto kind =
++          columnInt64(layerStatement.get(), 1, "qmap_operations.kind");
++      const auto operation =
++          columnText(layerStatement.get(), 2, "qmap_operations.operation");
++      const auto rawQubit0 =
++          columnInt64(layerStatement.get(), 3, "qmap_operations.q0");
++      const auto qubit0 = static_cast<qc::Qubit>(rawQubit0);
++      const auto statement =
++          columnText(layerStatement.get(), 5, "qmap_operations.statement");
++      if (kind == 1) {
++        if (lastSingleQubitSequence && sequence <= *lastSingleQubitSequence) {
++          throw std::runtime_error("One-qubit operations are not seq ordered");
++        }
++        lastSingleQubitSequence = sequence;
++        auto owner = makeSingleQubitOperation(operation, statement, qubit0);
++        layer.singleQubitGates.emplace_back(*owner);
++        layer.ownedSingleQubitOperations.emplace_back(std::move(owner));
++        ++observedGates1Q;
++      } else {
++        if (lastTwoQubitSequence && sequence <= *lastTwoQubitSequence) {
++          throw std::runtime_error("Two-qubit operations are not seq ordered");
++        }
++        lastTwoQubitSequence = sequence;
++        const auto rawQubit1 =
++            columnInt64(layerStatement.get(), 4, "qmap_operations.q1");
++        const auto qubit1 = static_cast<qc::Qubit>(rawQubit1);
++        if (usedByTwoQubitGate[qubit0] || usedByTwoQubitGate[qubit1]) {
++          throw std::runtime_error(
++              "Qubit occurs in multiple CZ gates in one scheduled layer");
++        }
++        usedByTwoQubitGate[qubit0] = true;
++        usedByTwoQubitGate[qubit1] = true;
++        twoQubitGates.emplace_back(
++            std::array{std::min(qubit0, qubit1), std::max(qubit0, qubit1)});
++        ++observedGates2Q;
++      }
++      ++observedEvents;
++    }
++    if (layerIndex < metadata.twoQubitLayers) {
++      const auto expected = expectedTwoQubitGates(layerIndex);
++      if (twoQubitGates.size() != expected) {
++        throw std::runtime_error("CZ count mismatch in scheduled layer " +
++                                 std::to_string(layerIndex));
++      }
++      layer.twoQubitGates.emplace(std::move(twoQubitGates));
++    } else {
++      if (!twoQubitGates.empty()) {
++        throw std::runtime_error("Final scheduled item contains CZ gates");
++      }
++      layer.twoQubitGates = std::nullopt;
++    }
++    return layer;
++  }
++};
++
++SQLiteScheduledLayerProvider::SQLiteScheduledLayerProvider(
++    const std::filesystem::path& path)
++    : impl_(std::make_unique<Impl>(path)) {}
++
++SQLiteScheduledLayerProvider::~SQLiteScheduledLayerProvider() = default;
++SQLiteScheduledLayerProvider::SQLiteScheduledLayerProvider(
++    SQLiteScheduledLayerProvider&&) noexcept = default;
++auto SQLiteScheduledLayerProvider::operator=(
++    SQLiteScheduledLayerProvider&&) noexcept
++    -> SQLiteScheduledLayerProvider& = default;
++
++auto SQLiteScheduledLayerProvider::next() -> std::optional<ScheduledLayer> {
++  return impl_->next();
++}
++
++auto SQLiteScheduledLayerProvider::metadata() const
++    -> const SQLiteScheduleMetadata& {
++  return impl_->metadata;
++}
++
++auto compileSQLiteSchedule(const SQLiteStreamingCompileOptions& options)
++    -> SQLiteStreamingCompileResult {
++  if (options.nativeOutput == options.metadataJsonlOutput ||
++      std::filesystem::exists(options.nativeOutput) ||
++      std::filesystem::exists(options.metadataJsonlOutput)) {
++    throw std::runtime_error("Streaming output paths must be distinct and new");
++  }
++  const auto temporaryNative =
++      std::filesystem::path(options.nativeOutput.string() + ".tmp");
++  const auto temporaryMetadata =
++      std::filesystem::path(options.metadataJsonlOutput.string() + ".tmp");
++  if (std::filesystem::exists(temporaryNative) ||
++      std::filesystem::exists(temporaryMetadata)) {
++    throw std::runtime_error("Streaming temporary output already exists");
++  }
++
++  auto architecture =
++      Architecture::fromJSON(readJsonFile(options.architectureJson));
++  const auto configJson = readJsonFile(options.compilerConfigJson);
++  const RoutingAwareCompiler::Config config = configJson;
++  validateFrozenConfig(configJson, config);
++  SQLiteScheduledLayerProvider provider(options.scheduleDatabase);
++  const auto scheduleMetadata = provider.metadata();
++  validateArchitectureCapacity(architecture, scheduleMetadata.qubits);
++
++  OutputCleanup cleanup{temporaryNative, temporaryMetadata,
++                        options.nativeOutput, options.metadataJsonlOutput};
++  std::ofstream nativeOutput(temporaryNative, std::ios::out | std::ios::trunc);
++  std::ofstream metadataOutput(temporaryMetadata,
++                               std::ios::out | std::ios::trunc);
++  nativeOutput.exceptions(std::ios::badbit | std::ios::failbit);
++  metadataOutput.exceptions(std::ios::badbit | std::ios::failbit);
++
++  size_t chunks = 0;
++  size_t peakNativeOperationsPerChunk = 0;
++  const ScheduledLayerProvider layerProvider = [&provider]() {
++    return provider.next();
++  };
++  const StreamingChunkConsumer consumer =
++      [&](const StreamingChunkMetadata& metadata, const NAComputation& chunk) {
++        peakNativeOperationsPerChunk =
++            std::max(peakNativeOperationsPerChunk, chunk.size());
++        nlohmann::json record{{"schema", "qmap-stream-metadata-v1"},
++                              {"native_operations", chunk.size()}};
++        if (const auto* initial =
++                std::get_if<StreamingInitialPlacement>(&metadata)) {
++          nativeOutput << chunk.toString();
++          record["kind"] = "initial";
++          record["schedule"] = scheduleMetadataToJson(scheduleMetadata);
++          record["placement"] = placementToJson(initial->placement);
++        } else {
++          for (const auto& operation : chunk) {
++            nativeOutput << *operation << '\n';
++          }
++          const auto& transition = std::get<StreamingTransition>(metadata);
++          record["kind"] = "transition";
++          record["layer"] = transition.layer;
++          record["previous_reuse"] =
++              sortedQubits(transition.previousReuseQubits);
++          record["next_reuse"] = sortedQubits(transition.nextReuseQubits);
++          record["previous_placement"] =
++              placementToJson(transition.previousPlacement);
++          record["gate_placement"] = placementToJson(transition.gatePlacement);
++          record["storage_placement"] =
++              placementToJson(transition.storagePlacement);
++          record["execution_routing"] = transition.executionRouting;
++          record["storage_routing"] = transition.storageRouting;
++        }
++        metadataOutput << record.dump() << '\n';
++        ++chunks;
++      };
++
++  RoutingAwareCompiler compiler(architecture, config);
++  compiler.compileStreaming(scheduleMetadata.qubits, layerProvider, consumer);
++  nativeOutput.close();
++  metadataOutput.close();
++  std::filesystem::rename(temporaryNative, options.nativeOutput);
++  cleanup.nativePublished = true;
++  std::filesystem::rename(temporaryMetadata, options.metadataJsonlOutput);
++  cleanup.metadataPublished = true;
++  cleanup.success = true;
++  return {scheduleMetadata, chunks, peakNativeOperationsPerChunk,
++          compiler.getStatistics()};
++}
++
++} // namespace na::zoned
+diff --git a/test/na/zoned/CMakeLists.txt b/test/na/zoned/CMakeLists.txt
+index 36693ba..7af60e2 100644
+--- a/test/na/zoned/CMakeLists.txt
++++ b/test/na/zoned/CMakeLists.txt
+@@ -15,2 +15,12 @@ if(TARGET MQT::QMapNAZoned)
+-  target_link_libraries(mqt-qmap-na-zoned-test PRIVATE MQT::CoreCircuitOptimizer MQT::CoreQASM)
+-  target_compile_definitions(mqt-qmap-na-zoned-test PRIVATE TEST_CIRCUITS=${CIRCUITS})
++  target_link_libraries(
++    mqt-qmap-na-zoned-test
++    PRIVATE MQT::CoreCircuitOptimizer MQT::CoreQASM MQT::QMapNAZonedStreaming)
++  target_compile_definitions(mqt-qmap-na-zoned-test
++                             PRIVATE TEST_CIRCUITS=${CIRCUITS})
++  if(TARGET mqt-qmap-na-zoned-stream)
++    add_dependencies(mqt-qmap-na-zoned-test mqt-qmap-na-zoned-stream)
++    add_test(NAME mqt-qmap-na-zoned-stream-help
++             COMMAND $<TARGET_FILE:mqt-qmap-na-zoned-stream> --help)
++    set_tests_properties(mqt-qmap-na-zoned-stream-help
++                         PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
++  endif()
+diff --git a/test/na/zoned/test_a_star_placer.cpp b/test/na/zoned/test_a_star_placer.cpp
+index 2d99647..7d808a9 100644
+--- a/test/na/zoned/test_a_star_placer.cpp
++++ b/test/na/zoned/test_a_star_placer.cpp
+@@ -18,0 +19 @@
++#include <unordered_set>
+@@ -66,4 +67,5 @@ TEST_F(AStarPlacerPlaceTest, Empty) {
+-  EXPECT_THAT(placer.place(nQubits,
+-                           std::vector<std::vector<std::array<qc::Qubit, 2>>>{},
+-                           std::vector<std::unordered_set<qc::Qubit>>{}),
+-              ::testing::ElementsAre(::testing::SizeIs(nQubits)));
++  const auto placement =
++      placer.place(nQubits, std::vector<TwoQubitGateLayer>{},
++                   std::vector<std::unordered_set<qc::Qubit>>{});
++  ASSERT_THAT(placement, ::testing::ElementsAre(::testing::SizeIs(nQubits)));
++  EXPECT_EQ(placement.front(), placer.placeInitial(nQubits));
+@@ -221,0 +224,35 @@ TEST_F(AStarPlacerPlaceTest, TwoTwoQubitLayerReuse) {
++TEST_F(AStarPlacerPlaceTest, FirstAndLastLayerMatchBatchExactly) {
++  constexpr size_t nQubits = 2;
++  const TwoQubitGateLayer gates{{0U, 1U}};
++  const std::unordered_set<qc::Qubit> noReuse;
++  const auto initialPlacement = placer.placeInitial(nQubits);
++  const auto [gatePlacement, storagePlacement] = placer.placeLayer(
++      initialPlacement, noReuse, noReuse, gates, TwoQubitGateLayer{});
++
++  EXPECT_EQ(placer.place(nQubits, {gates}, {}),
++            (std::vector<Placement>{initialPlacement, gatePlacement,
++                                    storagePlacement}));
++}
++TEST_F(AStarPlacerPlaceTest, LayerInterfaceMatchesBatchExactly) {
++  constexpr size_t nQubits = 6;
++  const std::vector<TwoQubitGateLayer> gateLayers{
++      {{0U, 1U}, {2U, 3U}}, {{1U, 4U}, {2U, 5U}}, {{1U, 5U}, {0U, 4U}}};
++  const std::vector<std::unordered_set<qc::Qubit>> reuseQubits{{1U, 2U}, {1U}};
++
++  const auto batchPlacement = placer.place(nQubits, gateLayers, reuseQubits);
++  std::vector<Placement> layerPlacement{placer.placeInitial(nQubits)};
++  for (size_t layer = 0; layer < gateLayers.size(); ++layer) {
++    const auto& [gatePlacement, storagePlacement] = placer.placeLayer(
++        layerPlacement.back(),
++        layer == 0 ? std::unordered_set<qc::Qubit>{} : reuseQubits[layer - 1],
++        layer == reuseQubits.size() ? std::unordered_set<qc::Qubit>{}
++                                    : reuseQubits[layer],
++        gateLayers[layer],
++        layer == gateLayers.size() - 1 ? TwoQubitGateLayer{}
++                                       : gateLayers[layer + 1]);
++    layerPlacement.emplace_back(gatePlacement);
++    layerPlacement.emplace_back(storagePlacement);
++  }
++
++  EXPECT_EQ(layerPlacement, batchPlacement);
++}
+diff --git a/test/na/zoned/test_asap_scheduler.cpp b/test/na/zoned/test_asap_scheduler.cpp
+index f8e3d26..a84ec8b 100644
+--- a/test/na/zoned/test_asap_scheduler.cpp
++++ b/test/na/zoned/test_asap_scheduler.cpp
+@@ -44,0 +45,41 @@ constexpr std::string_view architectureJson = R"({
++using Schedule = std::pair<std::vector<SingleQubitGateLayer>,
++                           std::vector<TwoQubitGateLayer>>;
++
++[[nodiscard]] auto scheduleIncrementally(const ASAPScheduler& scheduler,
++                                         const qc::QuantumComputation& qc)
++    -> Schedule {
++  if (qc.empty()) {
++    return {};
++  }
++  ASAPScheduler::State state(qc.getNqubits());
++  std::vector<SingleQubitGateLayer> singleQubitGateLayers(1);
++  std::vector<TwoQubitGateLayer> twoQubitGateLayers;
++  for (const auto& op : qc) {
++    const auto assignment = scheduler.scheduleOperation(*op, state);
++    while (twoQubitGateLayers.size() < state.twoQubitGateCounts.size()) {
++      singleQubitGateLayers.emplace_back();
++      twoQubitGateLayers.emplace_back();
++    }
++    if (assignment.kind == ASAPScheduler::OperationKind::SingleQubit) {
++      singleQubitGateLayers[assignment.layer].emplace_back(*op);
++    } else if (assignment.kind == ASAPScheduler::OperationKind::TwoQubit) {
++      twoQubitGateLayers[assignment.layer].emplace_back(assignment.qubits);
++    }
++  }
++  return {singleQubitGateLayers, twoQubitGateLayers};
++}
++
++auto expectSchedulesEqual(const Schedule& expected, const Schedule& actual)
++    -> void {
++  const auto& [expectedSingle, expectedTwo] = expected;
++  const auto& [actualSingle, actualTwo] = actual;
++  ASSERT_EQ(actualSingle.size(), expectedSingle.size());
++  for (size_t layer = 0; layer < expectedSingle.size(); ++layer) {
++    ASSERT_EQ(actualSingle[layer].size(), expectedSingle[layer].size());
++    for (size_t gate = 0; gate < expectedSingle[layer].size(); ++gate) {
++      EXPECT_EQ(&actualSingle[layer][gate].get(),
++                &expectedSingle[layer][gate].get());
++    }
++  }
++  EXPECT_EQ(actualTwo, expectedTwo);
++}
+@@ -166,0 +208,12 @@ TEST_F(ASAPSchedulerScheduleTest, Mixed) {
++TEST_F(ASAPSchedulerScheduleTest, IncrementalMatchesBatchExactly) {
++  qc::QuantumComputation qc(4);
++  qc.rz(qc::PI, 0);
++  qc.cz(0, 1);
++  qc.rz(qc::PI_2, 1);
++  qc.cz(2, 3);
++  qc.rz(qc::PI_4, 2);
++  qc.cz(1, 2);
++
++  expectSchedulesEqual(scheduler.schedule(qc),
++                       scheduleIncrementally(scheduler, qc));
++}
+@@ -194,0 +248,53 @@ TEST_F(ASAPSchedulerScheduleTest, Barrier) {
++TEST_F(ASAPSchedulerScheduleTest, GlobalGateAndBarrierAssignments) {
++  qc::QuantumComputation qc(4);
++  qc.cz(0, 1);
++  qc::CompoundOperation globalRy;
++  for (qc::Qubit qubit = 0; qubit < qc.getNqubits(); ++qubit) {
++    globalRy.emplace_back<qc::StandardOperation>(qubit, qc::RY,
++                                                 std::vector{qc::PI_2});
++  }
++  qc.emplace_back<qc::CompoundOperation>(std::move(globalRy));
++  qc.barrier();
++  qc.cz(2, 3);
++
++  ASAPScheduler::State state(qc.getNqubits());
++  EXPECT_EQ(scheduler.scheduleOperation(*qc.at(0), state).layer, 0U);
++  const auto globalAssignment = scheduler.scheduleOperation(*qc.at(1), state);
++  EXPECT_EQ(globalAssignment.kind, ASAPScheduler::OperationKind::SingleQubit);
++  EXPECT_EQ(globalAssignment.layer, 1U);
++  const auto barrierAssignment = scheduler.scheduleOperation(*qc.at(2), state);
++  EXPECT_EQ(barrierAssignment.kind, ASAPScheduler::OperationKind::Barrier);
++  EXPECT_EQ(barrierAssignment.layer, 1U);
++  EXPECT_THAT(state.nextLayerForQubit, ::testing::Each(1U));
++  const auto finalAssignment = scheduler.scheduleOperation(*qc.at(3), state);
++  EXPECT_EQ(finalAssignment.kind, ASAPScheduler::OperationKind::TwoQubit);
++  EXPECT_EQ(finalAssignment.layer, 1U);
++
++  expectSchedulesEqual(scheduler.schedule(qc),
++                       scheduleIncrementally(scheduler, qc));
++}
++TEST_F(ASAPSchedulerScheduleTest, CapacityBackfillAndFullLayers) {
++  auto architectureConfig = nlohmann::json::parse(architectureJson);
++  for (auto& slm : architectureConfig["entanglement_zones"][0]["slms"]) {
++    slm["r"] = 1;
++    slm["c"] = 2;
++  }
++  const auto capacityArchitecture = Architecture::fromJSON(architectureConfig);
++  const ASAPScheduler capacityScheduler(capacityArchitecture, config);
++  qc::QuantumComputation qc(7);
++  qc.cz(0, 1);
++  qc.cz(0, 2);
++  qc.cz(3, 4);
++  qc.cz(5, 6);
++
++  ASAPScheduler::State state(qc.getNqubits());
++  std::vector<size_t> assignedLayers;
++  for (const auto& op : qc) {
++    assignedLayers.emplace_back(
++        capacityScheduler.scheduleOperation(*op, state).layer);
++  }
++  EXPECT_THAT(assignedLayers, ::testing::ElementsAre(0U, 1U, 0U, 1U));
++  EXPECT_THAT(state.twoQubitGateCounts, ::testing::ElementsAre(2U, 2U));
++  expectSchedulesEqual(capacityScheduler.schedule(qc),
++                       scheduleIncrementally(capacityScheduler, qc));
++}
+@@ -201,0 +308,3 @@ TEST_F(ASAPSchedulerScheduleTest, NonGlobalBarrier) {
++  ASAPScheduler::State state(qc.getNqubits());
++  EXPECT_THROW(std::ignore = scheduler.scheduleOperation(*qc.at(0), state),
++               std::invalid_argument);
+@@ -214,0 +324,5 @@ TEST_F(ASAPSchedulerScheduleTest, UnsupportedCXGate) {
++  ASAPScheduler::State state(qc.getNqubits());
++  EXPECT_THROW(std::ignore = scheduler.scheduleOperation(*qc.at(0), state),
++               std::invalid_argument);
++  EXPECT_THAT(state.nextLayerForQubit, ::testing::Each(0U));
++  EXPECT_THAT(state.twoQubitGateCounts, ::testing::IsEmpty());
+diff --git a/test/na/zoned/test_code_generator.cpp b/test/na/zoned/test_code_generator.cpp
+index 731de5a..4727f81 100644
+--- a/test/na/zoned/test_code_generator.cpp
++++ b/test/na/zoned/test_code_generator.cpp
+@@ -22,0 +23,2 @@
++#include <sstream>
++#include <string>
+@@ -51,0 +54,8 @@ constexpr std::string_view configJson = R"({
++[[nodiscard]] auto operationsToString(const NAComputation& code)
++    -> std::string {
++  std::ostringstream output;
++  for (const auto& op : code) {
++    output << *op << "\n";
++  }
++  return output.str();
++}
+@@ -606,0 +617,86 @@ TEST_F(CodeGeneratorGenerateTest, Offset) {
++TEST_F(CodeGeneratorGenerateTest, IncrementalMatchesBatchTextExactly) {
++  const auto& storage = *architecture.storageZones.front();
++  const auto& entanglementLeft =
++      architecture.entanglementZones.front()->front();
++  const auto& entanglementRight =
++      architecture.entanglementZones.front()->back();
++  const qc::StandardOperation rz(0, qc::RZ, {0.1});
++  const qc::StandardOperation x(1, qc::X);
++  const qc::StandardOperation z(0, qc::Z);
++  const std::vector<SingleQubitGateLayer> singleQubitGateLayers{{rz}, {x}, {z}};
++  const std::vector<Placement> placement{
++      {{storage, 19, 0}, {storage, 19, 1}},
++      {{entanglementLeft, 0, 0}, {entanglementRight, 0, 0}},
++      {{storage, 19, 0}, {storage, 19, 1}},
++      {{entanglementLeft, 1, 0}, {entanglementRight, 1, 0}},
++      {{storage, 19, 0}, {storage, 19, 1}}};
++  const std::vector<Routing> routing{
++      {{0U, 1U}}, {{0U, 1U}}, {{0U, 1U}}, {{0U, 1U}}};
++
++  const auto batch =
++      codeGenerator.generate(singleQubitGateLayers, placement, routing);
++  auto incremental = codeGenerator.initialize(placement.front());
++  codeGenerator.appendSingleQubitLayer(
++      incremental.getAtomsSize(), singleQubitGateLayers.front(), incremental);
++  for (size_t layer = 0; layer + 1 < singleQubitGateLayers.size(); ++layer) {
++    codeGenerator.appendTwoQubitLayer(
++        placement[2 * layer], routing[2 * layer], placement[(2 * layer) + 1],
++        routing[(2 * layer) + 1], placement[2 * (layer + 1)], incremental);
++    codeGenerator.appendSingleQubitLayer(incremental.getAtomsSize(),
++                                         singleQubitGateLayers[layer + 1],
++                                         incremental);
++  }
++
++  EXPECT_EQ(incremental.toString(), batch.toString());
++  const auto& [valid, error] = incremental.validate();
++  EXPECT_TRUE(valid) << error;
++}
++TEST_F(CodeGeneratorGenerateTest, ClearedLayerChunksMatchBatchTextExactly) {
++  const auto& storage = *architecture.storageZones.front();
++  const auto& entanglementLeft =
++      architecture.entanglementZones.front()->front();
++  const auto& entanglementRight =
++      architecture.entanglementZones.front()->back();
++  const qc::StandardOperation rz(0, qc::RZ, {0.1});
++  const qc::StandardOperation x(1, qc::X);
++  const qc::StandardOperation z(0, qc::Z);
++  const std::vector<SingleQubitGateLayer> singleQubitGateLayers{{rz}, {x}, {z}};
++  const std::vector<Placement> placement{
++      {{storage, 19, 0}, {storage, 19, 1}},
++      {{entanglementLeft, 0, 0}, {entanglementRight, 0, 0}},
++      {{storage, 19, 0}, {storage, 19, 1}},
++      {{entanglementLeft, 1, 0}, {entanglementRight, 1, 0}},
++      {{storage, 19, 0}, {storage, 19, 1}}};
++  const std::vector<Routing> routing{
++      {{0U, 1U}}, {{0U, 1U}}, {{0U, 1U}}, {{0U, 1U}}};
++  const auto batchText =
++      codeGenerator.generate(singleQubitGateLayers, placement, routing)
++          .toString();
++
++  auto chunk = codeGenerator.initialize(placement.front());
++  std::string chunkedText = chunk.toString();
++  const auto* const firstAtom = chunk.getAtoms().front().get();
++  const auto flushChunk = [&chunk, &chunkedText, firstAtom]() {
++    const auto& [valid, error] = chunk.validate();
++    EXPECT_TRUE(valid) << error;
++    chunkedText += operationsToString(chunk);
++    chunk.clear();
++    EXPECT_EQ(chunk.size(), 0U);
++    EXPECT_EQ(chunk.getAtoms().front().get(), firstAtom);
++  };
++
++  codeGenerator.appendSingleQubitLayer(chunk.getAtomsSize(),
++                                       singleQubitGateLayers.front(), chunk);
++  flushChunk();
++  for (size_t layer = 0; layer + 1 < singleQubitGateLayers.size(); ++layer) {
++    codeGenerator.appendTwoQubitLayer(
++        placement[2 * layer], routing[2 * layer], placement[(2 * layer) + 1],
++        routing[(2 * layer) + 1], placement[2 * (layer + 1)], chunk);
++    flushChunk();
++    codeGenerator.appendSingleQubitLayer(
++        chunk.getAtomsSize(), singleQubitGateLayers[layer + 1], chunk);
++    flushChunk();
++  }
++
++  EXPECT_EQ(chunkedText, batchText);
++}
+diff --git a/test/na/zoned/test_compiler.cpp b/test/na/zoned/test_compiler.cpp
+index d046ed2..cbcc8cb 100644
+--- a/test/na/zoned/test_compiler.cpp
++++ b/test/na/zoned/test_compiler.cpp
+@@ -17,0 +18,4 @@
++#include <optional>
++#include <sstream>
++#include <string>
++#include <unordered_set>
+@@ -18,0 +23,2 @@
++#include <variant>
++#include <vector>
+@@ -70,0 +77,57 @@ constexpr std::string_view routingAwareConfiguration = R"({
++
++[[nodiscard]] auto
++makeScheduledLayersIncrementally(const ASAPScheduler& scheduler,
++                                 const qc::QuantumComputation& circuit)
++    -> std::vector<ScheduledLayer> {
++  if (circuit.empty()) {
++    return {};
++  }
++  ASAPScheduler::State state(circuit.getNqubits());
++  std::vector<SingleQubitGateLayer> singleQubitGateLayers(1);
++  std::vector<TwoQubitGateLayer> twoQubitGateLayers;
++  for (const auto& op : circuit) {
++    const auto assignment = scheduler.scheduleOperation(*op, state);
++    while (twoQubitGateLayers.size() < state.twoQubitGateCounts.size()) {
++      singleQubitGateLayers.emplace_back();
++      twoQubitGateLayers.emplace_back();
++    }
++    if (assignment.kind == ASAPScheduler::OperationKind::SingleQubit) {
++      singleQubitGateLayers[assignment.layer].emplace_back(*op);
++    } else if (assignment.kind == ASAPScheduler::OperationKind::TwoQubit) {
++      twoQubitGateLayers[assignment.layer].emplace_back(assignment.qubits);
++    }
++  }
++  std::vector<ScheduledLayer> layers;
++  layers.reserve(singleQubitGateLayers.size());
++  for (size_t layer = 0; layer < singleQubitGateLayers.size(); ++layer) {
++    layers.emplace_back(ScheduledLayer{
++        singleQubitGateLayers[layer],
++        layer < twoQubitGateLayers.size()
++            ? std::optional<TwoQubitGateLayer>{twoQubitGateLayers[layer]}
++            : std::nullopt,
++        {}});
++  }
++  return layers;
++}
++
++[[nodiscard]] auto compilerOperationsToString(const NAComputation& code)
++    -> std::string {
++  std::ostringstream output;
++  for (const auto& op : code) {
++    output << *op << "\n";
++  }
++  return output.str();
++}
++
++auto expectSingleQubitLayersEqual(
++    const std::vector<SingleQubitGateLayer>& expected,
++    const std::vector<ScheduledLayer>& actual) -> void {
++  ASSERT_EQ(actual.size(), expected.size());
++  for (size_t layer = 0; layer < expected.size(); ++layer) {
++    ASSERT_EQ(actual[layer].singleQubitGates.size(), expected[layer].size());
++    for (size_t gate = 0; gate < expected[layer].size(); ++gate) {
++      EXPECT_EQ(&actual[layer].singleQubitGates[gate].get(),
++                &expected[layer][gate].get());
++    }
++  }
++}
+@@ -127,0 +191,221 @@ COMPILER_TEST(RoutingAwareCompiler, routingAwareConfiguration);
++
++TEST(RoutingAwareCompilerStreamingTest,
++     MatchesBatchArtifactsAndNativeTextExactly) {
++  const auto architecture =
++      Architecture::fromJSONString(architectureSpecification);
++  const RoutingAwareCompiler::Config config =
++      nlohmann::json::parse(routingAwareConfiguration);
++  qc::QuantumComputation circuit(4);
++  circuit.rz(qc::PI, 0);
++  circuit.cz(0, 1);
++  circuit.rz(qc::PI_2, 1);
++  circuit.cz(1, 2);
++  circuit.rz(qc::PI_4, 2);
++  circuit.cz(2, 3);
++  circuit.rz(-qc::PI_4, 3);
++
++  const ASAPScheduler scheduler(architecture, config.schedulerConfig);
++  auto scheduledLayers = makeScheduledLayersIncrementally(scheduler, circuit);
++  const auto batchSchedule = scheduler.schedule(circuit);
++  const auto& batchSingleQubitGateLayers = batchSchedule.first;
++  const auto& batchTwoQubitGateLayers = batchSchedule.second;
++  expectSingleQubitLayersEqual(batchSingleQubitGateLayers, scheduledLayers);
++  ASSERT_EQ(scheduledLayers.size(), batchTwoQubitGateLayers.size() + 1);
++  for (size_t layer = 0; layer < batchTwoQubitGateLayers.size(); ++layer) {
++    ASSERT_TRUE(scheduledLayers[layer].twoQubitGates);
++    EXPECT_EQ(*scheduledLayers[layer].twoQubitGates,
++              batchTwoQubitGateLayers[layer]);
++  }
++  EXPECT_FALSE(scheduledLayers.back().twoQubitGates);
++
++  VertexMatchingReuseAnalyzer reuseAnalyzer(architecture,
++                                            config.reuseAnalyzerConfig);
++  const auto expectedReuse =
++      reuseAnalyzer.analyzeReuse(batchTwoQubitGateLayers);
++  AStarPlacer placer(architecture, config.placerConfig);
++  const auto expectedPlacements = placer.place(
++      circuit.getNqubits(), batchTwoQubitGateLayers, expectedReuse);
++  const IndependentSetRouter router(architecture, config.routerConfig);
++  const auto expectedRoutes = router.route(expectedPlacements);
++  RoutingAwareCompiler batchCompiler(architecture, config);
++  const auto batchCode = batchCompiler.compile(circuit);
++  EXPECT_TRUE(batchCode.validate().first);
++
++  size_t nextScheduledLayer = 0;
++  const ScheduledLayerProvider provider =
++      [&]() -> std::optional<ScheduledLayer> {
++    if (nextScheduledLayer == scheduledLayers.size()) {
++      return std::nullopt;
++    }
++    return scheduledLayers[nextScheduledLayer++];
++  };
++  std::vector<Placement> streamedPlacements;
++  std::vector<std::unordered_set<qc::Qubit>> streamedReuse;
++  std::vector<Routing> streamedRoutes;
++  std::string streamedText;
++  size_t chunks = 0;
++  const StreamingChunkConsumer consumer =
++      [&](const StreamingChunkMetadata& metadata, const NAComputation& chunk) {
++        if (const auto* initial =
++                std::get_if<StreamingInitialPlacement>(&metadata)) {
++          streamedPlacements.emplace_back(initial->placement);
++          streamedText += chunk.toString();
++        } else {
++          const auto& transition = std::get<StreamingTransition>(metadata);
++          EXPECT_EQ(transition.layer, chunks - 1);
++          EXPECT_EQ(transition.previousPlacement, streamedPlacements.back());
++          if (transition.layer == 0) {
++            EXPECT_TRUE(transition.previousReuseQubits.empty());
++          } else {
++            EXPECT_EQ(transition.previousReuseQubits,
++                      expectedReuse[transition.layer - 1]);
++          }
++          streamedPlacements.emplace_back(transition.gatePlacement);
++          streamedPlacements.emplace_back(transition.storagePlacement);
++          if (transition.layer + 1 < batchTwoQubitGateLayers.size()) {
++            streamedReuse.emplace_back(transition.nextReuseQubits);
++          }
++          streamedRoutes.emplace_back(transition.executionRouting);
++          streamedRoutes.emplace_back(transition.storageRouting);
++          streamedText += compilerOperationsToString(chunk);
++        }
++        ++chunks;
++      };
++  RoutingAwareCompiler streamingCompiler(architecture, config);
++  streamingCompiler.compileStreaming(circuit.getNqubits(), provider, consumer);
++
++  EXPECT_EQ(nextScheduledLayer, scheduledLayers.size());
++  EXPECT_EQ(chunks, batchTwoQubitGateLayers.size() + 1);
++  EXPECT_EQ(streamedPlacements, expectedPlacements);
++  EXPECT_EQ(streamedReuse, expectedReuse);
++  EXPECT_EQ(streamedRoutes, expectedRoutes);
++  EXPECT_EQ(streamedText, batchCode.toString());
++}
++
++TEST(RoutingAwareCompilerStreamingTest, EmptyCircuitMatchesBatchExactly) {
++  const auto architecture =
++      Architecture::fromJSONString(architectureSpecification);
++  const RoutingAwareCompiler::Config config =
++      nlohmann::json::parse(routingAwareConfiguration);
++  const qc::QuantumComputation circuit(3);
++  RoutingAwareCompiler batchCompiler(architecture, config);
++  const auto batchCode = batchCompiler.compile(circuit);
++
++  size_t chunks = 0;
++  std::string streamedText;
++  const ScheduledLayerProvider provider = []() {
++    return std::optional<ScheduledLayer>{};
++  };
++  const StreamingChunkConsumer consumer =
++      [&](const StreamingChunkMetadata& metadata, const NAComputation& chunk) {
++        EXPECT_TRUE(
++            std::holds_alternative<StreamingInitialPlacement>(metadata));
++        streamedText = chunk.toString();
++        ++chunks;
++      };
++  RoutingAwareCompiler streamingCompiler(architecture, config);
++  streamingCompiler.compileStreaming(circuit.getNqubits(), provider, consumer);
++
++  EXPECT_EQ(chunks, 1U);
++  EXPECT_EQ(streamedText, batchCode.toString());
++}
++
++TEST(RoutingAwareCompilerStreamingTest, SingleQubitOnlyMatchesBatchExactly) {
++  const auto architecture =
++      Architecture::fromJSONString(architectureSpecification);
++  const RoutingAwareCompiler::Config config =
++      nlohmann::json::parse(routingAwareConfiguration);
++  qc::QuantumComputation circuit(3);
++  circuit.rz(qc::PI, 0);
++  circuit.rz(qc::PI_2, 2);
++  const ASAPScheduler scheduler(architecture, config.schedulerConfig);
++  const auto scheduledLayers =
++      makeScheduledLayersIncrementally(scheduler, circuit);
++  ASSERT_EQ(scheduledLayers.size(), 1U);
++  ASSERT_FALSE(scheduledLayers.front().twoQubitGates);
++  RoutingAwareCompiler batchCompiler(architecture, config);
++  const auto batchCode = batchCompiler.compile(circuit);
++
++  size_t nextScheduledLayer = 0;
++  const ScheduledLayerProvider provider =
++      [&]() -> std::optional<ScheduledLayer> {
++    if (nextScheduledLayer == scheduledLayers.size()) {
++      return std::nullopt;
++    }
++    return scheduledLayers[nextScheduledLayer++];
++  };
++  std::string streamedText;
++  size_t chunks = 0;
++  const StreamingChunkConsumer consumer =
++      [&](const StreamingChunkMetadata& metadata, const NAComputation& chunk) {
++        EXPECT_TRUE(
++            std::holds_alternative<StreamingInitialPlacement>(metadata));
++        streamedText = chunk.toString();
++        ++chunks;
++      };
++  RoutingAwareCompiler streamingCompiler(architecture, config);
++  streamingCompiler.compileStreaming(circuit.getNqubits(), provider, consumer);
++
++  EXPECT_EQ(chunks, 1U);
++  EXPECT_EQ(streamedText, batchCode.toString());
++}
++
++TEST(RoutingAwareCompilerStreamingTest,
++     IncrementalSchedulingPreservesUnsupportedError) {
++  const auto architecture =
++      Architecture::fromJSONString(architectureSpecification);
++  const RoutingAwareCompiler::Config config =
++      nlohmann::json::parse(routingAwareConfiguration);
++  qc::QuantumComputation circuit(2);
++  circuit.cx(0, 1);
++  RoutingAwareCompiler compiler(architecture, config);
++  std::string batchError;
++  try {
++    std::ignore = compiler.compile(circuit);
++  } catch (const std::invalid_argument& error) {
++    batchError = error.what();
++  }
++  const ASAPScheduler scheduler(architecture, config.schedulerConfig);
++  std::string incrementalError;
++  try {
++    std::ignore = makeScheduledLayersIncrementally(scheduler, circuit);
++  } catch (const std::invalid_argument& error) {
++    incrementalError = error.what();
++  }
++  EXPECT_FALSE(batchError.empty());
++  EXPECT_EQ(incrementalError, batchError);
++}
++
++TEST(RoutingAwareCompilerStreamingTest, RejectsMalformedProviderWindow) {
++  const auto architecture =
++      Architecture::fromJSONString(architectureSpecification);
++  const RoutingAwareCompiler::Config config =
++      nlohmann::json::parse(routingAwareConfiguration);
++  RoutingAwareCompiler compiler(architecture, config);
++  size_t calls = 0;
++  const ScheduledLayerProvider missingFinalSingle =
++      [&]() -> std::optional<ScheduledLayer> {
++    if (calls++ == 0) {
++      return ScheduledLayer{{}, TwoQubitGateLayer{{0U, 1U}}, {}};
++    }
++    return std::nullopt;
++  };
++  const StreamingChunkConsumer consumer = [](const StreamingChunkMetadata&,
++                                             const NAComputation&) {};
++  EXPECT_THROW(compiler.compileStreaming(2, missingFinalSingle, consumer),
++               std::invalid_argument);
++
++  calls = 0;
++  const ScheduledLayerProvider nonFinalTerminal =
++      [&]() -> std::optional<ScheduledLayer> {
++    if (calls++ == 0) {
++      return ScheduledLayer{{}, std::nullopt, {}};
++    }
++    if (calls == 2) {
++      return ScheduledLayer{{}, std::nullopt, {}};
++    }
++    return std::nullopt;
++  };
++  EXPECT_THROW(compiler.compileStreaming(2, nonFinalTerminal, consumer),
++               std::invalid_argument);
++}
+diff --git a/test/na/zoned/test_independent_set_router.cpp b/test/na/zoned/test_independent_set_router.cpp
+index 54cd2be..c8bb4db 100644
+--- a/test/na/zoned/test_independent_set_router.cpp
++++ b/test/na/zoned/test_independent_set_router.cpp
+@@ -118,0 +119,23 @@ TEST_F(IndependentSetRouterRouteTest, Cross) {
++TEST_F(IndependentSetRouterRouteTest,
++       TransitionMatchesBatchRoutingAndOrderExactly) {
++  const auto& storage = *architecture.storageZones.front();
++  const auto& entanglementLeft =
++      architecture.entanglementZones.front()->front();
++  const auto& entanglementRight =
++      architecture.entanglementZones.front()->back();
++  const std::vector<Placement> placements{
++      {{storage, 19, 0}, {storage, 19, 1}},
++      {{entanglementRight, 0, 0}, {entanglementLeft, 0, 0}},
++      {{storage, 19, 0}, {storage, 19, 1}}};
++
++  const std::vector<Routing> transitionRouting{
++      router.routeTransition(placements[0], placements[1]),
++      router.routeTransition(placements[1], placements[2])};
++  EXPECT_EQ(router.route(placements), transitionRouting);
++  EXPECT_EQ(transitionRouting,
++            (std::vector<Routing>{{{0U}, {1U}}, {{0U}, {1U}}}));
++
++  EXPECT_EQ(router.routeTransition(placements[0], placements[0]), Routing{});
++  EXPECT_EQ(router.route({placements[0], placements[0]}),
++            std::vector<Routing>{Routing{}});
++}
+diff --git a/test/na/zoned/test_sqlite_streaming.cpp b/test/na/zoned/test_sqlite_streaming.cpp
+new file mode 100644
+index 0000000..3348efd
+--- /dev/null
++++ b/test/na/zoned/test_sqlite_streaming.cpp
+@@ -0,0 +1,432 @@
++/*
++ * Copyright (c) 2023 - 2025 Chair for Design Automation, TUM
++ * Copyright (c) 2025 Munich Quantum Software Company GmbH
++ * All rights reserved.
++ *
++ * SPDX-License-Identifier: MIT
++ *
++ * Licensed under the MIT License
++ */
++
++#include "ir/QuantumComputation.hpp"
++#include "na/zoned/Architecture.hpp"
++#include "na/zoned/Compiler.hpp"
++#include "na/zoned/streaming/SQLiteStreaming.hpp"
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstddef>
++#include <filesystem>
++#include <fstream>
++#include <gtest/gtest.h>
++#include <iterator>
++#include <memory>
++#include <nlohmann/json.hpp>
++#include <optional>
++#include <sqlite3.h>
++#include <stdexcept>
++#include <string>
++#include <string_view>
++#include <utility>
++#include <vector>
++
++namespace na::zoned {
++namespace {
++
++constexpr std::string_view sqliteArchitecture = R"({
++  "name": "sqlite_streaming_architecture",
++  "storage_zones": [{
++    "zone_id": 0,
++    "slms": [{"id": 0, "site_separation": [3, 3], "r": 20, "c": 20, "location": [0, 0]}],
++    "offset": [0, 0],
++    "dimension": [60, 60]
++  }],
++  "entanglement_zones": [{
++    "zone_id": 0,
++    "slms": [
++      {"id": 1, "site_separation": [12, 10], "r": 4, "c": 4, "location": [5, 70]},
++      {"id": 2, "site_separation": [12, 10], "r": 4, "c": 4, "location": [7, 70]}
++    ],
++    "offset": [5, 70],
++    "dimension": [50, 40]
++  }],
++  "aods":[{"id": 0, "site_separation": 2, "r": 20, "c": 20}],
++  "rydberg_range": [[[5, 70], [55, 110]]]
++})";
++
++constexpr std::string_view sqliteCompilerConfig = R"({
++  "logLevel": 4,
++  "schedulerConfig": null,
++  "reuseAnalyzerConfig": null,
++  "routerConfig": null,
++  "placerConfig": {
++    "useWindow": true,
++    "windowMinWidth": 8,
++    "windowRatio": 1.0,
++    "windowShare": 0.6,
++    "deepeningFactor": 0.6,
++    "deepeningValue": 0.2,
++    "lookaheadFactor": 0.2,
++    "reuseLevel": 5.0,
++    "maxNodes": 50000000
++  },
++  "codeGeneratorConfig": {
++    "parkingOffset": 1,
++    "warnUnsupportedGates": true
++  }
++})";
++
++struct ScheduleRow {
++  size_t sequence;
++  size_t layer;
++  int kind;
++  std::string operation;
++  size_t qubit0;
++  std::optional<size_t> qubit1;
++  std::string statement;
++};
++
++class TemporaryDirectory {
++  std::filesystem::path path_;
++
++public:
++  TemporaryDirectory() {
++    static std::atomic<size_t> counter{0};
++    const auto nonce =
++        std::chrono::steady_clock::now().time_since_epoch().count();
++    path_ = std::filesystem::temp_directory_path() /
++            ("mqt-qmap-sqlite-streaming-" + std::to_string(nonce) + "-" +
++             std::to_string(counter.fetch_add(1)));
++    std::filesystem::create_directory(path_);
++  }
++
++  ~TemporaryDirectory() {
++    std::error_code error;
++    std::filesystem::remove_all(path_, error);
++  }
++
++  [[nodiscard]] auto path() const -> const std::filesystem::path& {
++    return path_;
++  }
++};
++
++auto sqliteCheck(sqlite3* database, const int result,
++                 const std::string& context) -> void {
++  if (result != SQLITE_OK) {
++    throw std::runtime_error(context + ": " + sqlite3_errmsg(database));
++  }
++}
++
++auto createScheduleDatabase(const std::filesystem::path& path,
++                            const size_t qubits,
++                            const std::vector<ScheduleRow>& rows,
++                            const std::vector<size_t>& twoQubitCounts) -> void {
++  sqlite3* database = nullptr;
++  if (sqlite3_open(path.string().c_str(), &database) != SQLITE_OK) {
++    const auto message = database == nullptr ? std::string("open failed")
++                                             : sqlite3_errmsg(database);
++    sqlite3_close(database);
++    throw std::runtime_error(message);
++  }
++  const auto closeDatabase = [&database]() { sqlite3_close(database); };
++  try {
++    sqliteCheck(database,
++                sqlite3_exec(
++                    database,
++                    "CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);"
++                    "CREATE TABLE qmap_operations("
++                    "seq INTEGER PRIMARY KEY,layer INTEGER,kind INTEGER,"
++                    "operation TEXT,q0 INTEGER,q1 INTEGER NULL,statement TEXT);"
++                    "CREATE INDEX qmap_operations_by_layer "
++                    "ON qmap_operations(layer,kind,seq);"
++                    "CREATE TABLE two_qubit_counts("
++                    "layer INTEGER PRIMARY KEY,gate_count INTEGER);"
++                    "BEGIN;",
++                    nullptr, nullptr, nullptr),
++                "create fixture schema");
++
++    sqlite3_stmt* operationStatement = nullptr;
++    sqliteCheck(
++        database,
++        sqlite3_prepare_v2(database,
++                           "INSERT INTO qmap_operations VALUES(?,?,?,?,?,?,?)",
++                           -1, &operationStatement, nullptr),
++        "prepare operation insert");
++    for (const auto& row : rows) {
++      sqlite3_bind_int64(operationStatement, 1,
++                         static_cast<sqlite3_int64>(row.sequence));
++      sqlite3_bind_int64(operationStatement, 2,
++                         static_cast<sqlite3_int64>(row.layer));
++      sqlite3_bind_int(operationStatement, 3, row.kind);
++      sqlite3_bind_text(operationStatement, 4, row.operation.c_str(), -1,
++                        SQLITE_TRANSIENT);
++      sqlite3_bind_int64(operationStatement, 5,
++                         static_cast<sqlite3_int64>(row.qubit0));
++      if (row.qubit1) {
++        sqlite3_bind_int64(operationStatement, 6,
++                           static_cast<sqlite3_int64>(*row.qubit1));
++      } else {
++        sqlite3_bind_null(operationStatement, 6);
++      }
++      sqlite3_bind_text(operationStatement, 7, row.statement.c_str(), -1,
++                        SQLITE_TRANSIENT);
++      if (sqlite3_step(operationStatement) != SQLITE_DONE) {
++        sqlite3_finalize(operationStatement);
++        throw std::runtime_error("insert operation failed");
++      }
++      sqlite3_reset(operationStatement);
++      sqlite3_clear_bindings(operationStatement);
++    }
++    sqlite3_finalize(operationStatement);
++
++    sqlite3_stmt* countStatement = nullptr;
++    sqliteCheck(database,
++                sqlite3_prepare_v2(database,
++                                   "INSERT INTO two_qubit_counts VALUES(?,?)",
++                                   -1, &countStatement, nullptr),
++                "prepare layer-count insert");
++    for (size_t layer = 0; layer < twoQubitCounts.size(); ++layer) {
++      sqlite3_bind_int64(countStatement, 1, static_cast<sqlite3_int64>(layer));
++      sqlite3_bind_int64(countStatement, 2,
++                         static_cast<sqlite3_int64>(twoQubitCounts[layer]));
++      if (sqlite3_step(countStatement) != SQLITE_DONE) {
++        sqlite3_finalize(countStatement);
++        throw std::runtime_error("insert layer count failed");
++      }
++      sqlite3_reset(countStatement);
++      sqlite3_clear_bindings(countStatement);
++    }
++    sqlite3_finalize(countStatement);
++
++    size_t gates1Q = 0;
++    size_t gates2Q = 0;
++    for (const auto& row : rows) {
++      if (row.kind == 1) {
++        ++gates1Q;
++      } else {
++        ++gates2Q;
++      }
++    }
++    const std::vector<std::pair<std::string, nlohmann::json>> metadata{
++        {"format", "qmap-schedule-store-v1"},
++        {"qubits", qubits},
++        {"events", rows.size()},
++        {"gates_1q", gates1Q},
++        {"gates_2q", gates2Q},
++        {"two_qubit_layers", twoQubitCounts.size()},
++        {"scheduled_items", twoQubitCounts.size() + 1}};
++    sqlite3_stmt* metadataStatement = nullptr;
++    sqliteCheck(database,
++                sqlite3_prepare_v2(database, "INSERT INTO metadata VALUES(?,?)",
++                                   -1, &metadataStatement, nullptr),
++                "prepare metadata insert");
++    for (const auto& [key, value] : metadata) {
++      const auto serialized = value.dump();
++      sqlite3_bind_text(metadataStatement, 1, key.c_str(), -1,
++                        SQLITE_TRANSIENT);
++      sqlite3_bind_text(metadataStatement, 2, serialized.c_str(), -1,
++                        SQLITE_TRANSIENT);
++      if (sqlite3_step(metadataStatement) != SQLITE_DONE) {
++        sqlite3_finalize(metadataStatement);
++        throw std::runtime_error("insert metadata failed");
++      }
++      sqlite3_reset(metadataStatement);
++      sqlite3_clear_bindings(metadataStatement);
++    }
++    sqlite3_finalize(metadataStatement);
++    sqliteCheck(database,
++                sqlite3_exec(database, "COMMIT;", nullptr, nullptr, nullptr),
++                "commit fixture");
++  } catch (...) {
++    closeDatabase();
++    throw;
++  }
++  closeDatabase();
++}
++
++auto writeText(const std::filesystem::path& path, const std::string_view text)
++    -> void {
++  std::ofstream output(path);
++  output << text;
++  if (!output) {
++    throw std::runtime_error("cannot write fixture text");
++  }
++}
++
++[[nodiscard]] auto readText(const std::filesystem::path& path) -> std::string {
++  std::ifstream input(path);
++  return {std::istreambuf_iterator<char>(input),
++          std::istreambuf_iterator<char>()};
++}
++
++} // namespace
++
++TEST(SQLiteStreamingTest, MatchesBatchNativeOutputExactly) {
++  const TemporaryDirectory temporary;
++  const auto database = temporary.path() / "schedule.sqlite";
++  const auto architecturePath = temporary.path() / "architecture.json";
++  const auto configPath = temporary.path() / "config.json";
++  const auto nativePath = temporary.path() / "program.naviz";
++  const auto metadataPath = temporary.path() / "program.metadata.jsonl";
++  const std::vector<ScheduleRow> rows{
++      {0, 0, 1, "u1", 0, std::nullopt, "u1(0.123) q[0];"},
++      {1, 0, 2, "cz", 0, 1, "cz q[0],q[1];"},
++      {2, 1, 1, "u2", 1, std::nullopt, "u2(0.234,-0.345) q[1];"},
++      {3, 1, 2, "cz", 1, 2, "cz q[1],q[2];"},
++      {4, 2, 1, "u3", 2, std::nullopt, "u3(0.456,0.567,-0.678) q[2];"}};
++  createScheduleDatabase(database, 4, rows, {1, 1});
++  writeText(architecturePath, sqliteArchitecture);
++  writeText(configPath, sqliteCompilerConfig);
++
++  const auto result = compileSQLiteSchedule(
++      {database, architecturePath, configPath, nativePath, metadataPath});
++  EXPECT_EQ(result.schedule.format, "qmap-schedule-store-v1");
++  EXPECT_EQ(result.schedule.events, rows.size());
++  EXPECT_EQ(result.chunks, 3U);
++  EXPECT_GT(result.peakNativeOperationsPerChunk, 0U);
++  const nlohmann::json statistics = result.statistics;
++  EXPECT_EQ(statistics.at("totalTime"),
++            statistics.at("schedulingTime").get<int64_t>() +
++                statistics.at("reuseAnalysisTime").get<int64_t>() +
++                statistics.at("placementTime").get<int64_t>() +
++                statistics.at("routingTime").get<int64_t>() +
++                statistics.at("codeGenerationTime").get<int64_t>());
++
++  const auto architecture =
++      Architecture::fromJSONString(std::string(sqliteArchitecture));
++  const RoutingAwareCompiler::Config config =
++      nlohmann::json::parse(sqliteCompilerConfig);
++  qc::QuantumComputation circuit(4);
++  circuit.p(0.123, 0);
++  circuit.cz(0, 1);
++  circuit.u2(0.234, -0.345, 1);
++  circuit.cz(1, 2);
++  circuit.u(0.456, 0.567, -0.678, 2);
++  RoutingAwareCompiler batchCompiler(architecture, config);
++  const auto batch = batchCompiler.compile(circuit);
++  EXPECT_EQ(readText(nativePath), batch.toString());
++
++  std::ifstream metadataInput(metadataPath);
++  std::vector<nlohmann::json> metadataRecords;
++  for (std::string line; std::getline(metadataInput, line);) {
++    metadataRecords.emplace_back(nlohmann::json::parse(line));
++  }
++  ASSERT_EQ(metadataRecords.size(), 3U);
++  EXPECT_EQ(metadataRecords.front().at("kind"), "initial");
++  EXPECT_EQ(metadataRecords.front().at("schedule").at("events"), rows.size());
++  EXPECT_EQ(metadataRecords[1].at("kind"), "transition");
++  EXPECT_EQ(metadataRecords[1].at("layer"), 0);
++  EXPECT_EQ(metadataRecords[2].at("layer"), 1);
++  EXPECT_FALSE(std::filesystem::exists(nativePath.string() + ".tmp"));
++  EXPECT_FALSE(std::filesystem::exists(metadataPath.string() + ".tmp"));
++}
++
++TEST(SQLiteStreamingTest, ReleasesLayersOutsideCurrentNextWindow) {
++  const TemporaryDirectory temporary;
++  const auto database = temporary.path() / "many-layers.sqlite";
++  constexpr size_t layerCount = 2048;
++  std::vector<ScheduleRow> rows;
++  rows.reserve((2 * layerCount) + 1);
++  for (size_t layer = 0; layer < layerCount; ++layer) {
++    rows.emplace_back(ScheduleRow{2 * layer, layer, 1, "u1", 0, std::nullopt,
++                                  "u1(pi/7) q[0];"});
++    rows.emplace_back(
++        ScheduleRow{(2 * layer) + 1, layer, 2, "cz", 0, 1, "cz q[0],q[1];"});
++  }
++  rows.emplace_back(ScheduleRow{2 * layerCount, layerCount, 1, "u1", 0,
++                                std::nullopt, "u1(-pi/9) q[0];"});
++  createScheduleDatabase(database, 2, rows, std::vector<size_t>(layerCount, 1));
++
++  SQLiteScheduledLayerProvider provider(database);
++  auto current = provider.next();
++  auto next = provider.next();
++  ASSERT_TRUE(current);
++  ASSERT_TRUE(next);
++  ASSERT_EQ(current->ownedSingleQubitOperations.size(), 1U);
++  std::weak_ptr<const qc::Operation> firstOwner =
++      current->ownedSingleQubitOperations.front();
++  size_t items = 1;
++  size_t maxLiveOwnedOperations = 0;
++  while (current) {
++    const auto currentOwners = current->ownedSingleQubitOperations.size();
++    const auto nextOwners =
++        next ? next->ownedSingleQubitOperations.size() : size_t{0};
++    maxLiveOwnedOperations =
++        std::max(maxLiveOwnedOperations, currentOwners + nextOwners);
++    current = std::move(next);
++    next = provider.next();
++    ++items;
++    if (items == 2) {
++      EXPECT_TRUE(firstOwner.expired());
++    }
++  }
++  EXPECT_EQ(items, layerCount + 2);
++  EXPECT_LE(maxLiveOwnedOperations, 2U);
++  EXPECT_FALSE(next);
++}
++
++TEST(SQLiteStreamingTest, FailsClosedAndDoesNotPublishPartialOutput) {
++  const TemporaryDirectory temporary;
++  const auto database = temporary.path() / "invalid.sqlite";
++  const auto architecturePath = temporary.path() / "architecture.json";
++  const auto configPath = temporary.path() / "config.json";
++  const auto nativePath = temporary.path() / "program.naviz";
++  const auto metadataPath = temporary.path() / "program.metadata.jsonl";
++  createScheduleDatabase(
++      database, 1, {{0, 0, 1, "u1", 0, std::nullopt, "u1(not_a_number) q[0];"}},
++      {});
++  writeText(architecturePath, sqliteArchitecture);
++  writeText(configPath, sqliteCompilerConfig);
++
++  EXPECT_THROW(
++      std::ignore = compileSQLiteSchedule(
++          {database, architecturePath, configPath, nativePath, metadataPath}),
++      std::runtime_error);
++  EXPECT_FALSE(std::filesystem::exists(nativePath));
++  EXPECT_FALSE(std::filesystem::exists(metadataPath));
++  EXPECT_FALSE(std::filesystem::exists(nativePath.string() + ".tmp"));
++  EXPECT_FALSE(std::filesystem::exists(metadataPath.string() + ".tmp"));
++}
++
++TEST(SQLiteStreamingTest, RejectsNonFrozenPaperConfiguration) {
++  const TemporaryDirectory temporary;
++  const auto database = temporary.path() / "schedule.sqlite";
++  const auto architecturePath = temporary.path() / "architecture.json";
++  const auto configPath = temporary.path() / "config.json";
++  const auto nativePath = temporary.path() / "program.naviz";
++  const auto metadataPath = temporary.path() / "program.metadata.jsonl";
++  createScheduleDatabase(database, 1, {}, {});
++  writeText(architecturePath, sqliteArchitecture);
++  auto config = nlohmann::json::parse(sqliteCompilerConfig);
++  config["placerConfig"]["maxNodes"] = 1;
++  writeText(configPath, config.dump());
++
++  EXPECT_THROW(
++      std::ignore = compileSQLiteSchedule(
++          {database, architecturePath, configPath, nativePath, metadataPath}),
++      std::runtime_error);
++  EXPECT_FALSE(std::filesystem::exists(nativePath));
++  EXPECT_FALSE(std::filesystem::exists(metadataPath));
++}
++
++TEST(SQLiteStreamingTest, RejectsInsufficientStorageCapacity) {
++  const TemporaryDirectory temporary;
++  const auto database = temporary.path() / "schedule.sqlite";
++  const auto architecturePath = temporary.path() / "architecture.json";
++  const auto configPath = temporary.path() / "config.json";
++  const auto nativePath = temporary.path() / "program.naviz";
++  const auto metadataPath = temporary.path() / "program.metadata.jsonl";
++  createScheduleDatabase(database, 401, {}, {});
++  writeText(architecturePath, sqliteArchitecture);
++  writeText(configPath, sqliteCompilerConfig);
++
++  EXPECT_THROW(
++      std::ignore = compileSQLiteSchedule(
++          {database, architecturePath, configPath, nativePath, metadataPath}),
++      std::runtime_error);
++  EXPECT_FALSE(std::filesystem::exists(nativePath));
++  EXPECT_FALSE(std::filesystem::exists(metadataPath));
++}
++
++} // namespace na::zoned
+diff --git a/test/na/zoned/test_vertex_matching_reuse_analyzer.cpp b/test/na/zoned/test_vertex_matching_reuse_analyzer.cpp
+index 736be77..1e4a437 100644
+--- a/test/na/zoned/test_vertex_matching_reuse_analyzer.cpp
++++ b/test/na/zoned/test_vertex_matching_reuse_analyzer.cpp
+@@ -79,0 +80,19 @@ TEST_F(VertexMatchingReuseAnalyzerAnalyzeTest, UniqueUnbalanced) {
++TEST_F(VertexMatchingReuseAnalyzerAnalyzeTest,
++       TransitionMatchesBatchAnalysisExactly) {
++  const std::vector<TwoQubitGateLayer> twoQubitGateLayers{
++      {{0, 1}, {2, 3}}, {{0, 2}, {1, 4}}, {{0, 2}, {3, 4}}, {}};
++
++  const auto batchReuse = analyzer.analyzeReuse(twoQubitGateLayers);
++  ASSERT_EQ(batchReuse.size(), twoQubitGateLayers.size() - 1);
++  for (std::size_t layer = 1; layer < twoQubitGateLayers.size(); ++layer) {
++    EXPECT_EQ(batchReuse[layer - 1],
++              analyzer.analyzeTransition(twoQubitGateLayers[layer - 1],
++                                         twoQubitGateLayers[layer]));
++  }
++
++  // Both qubits occur in the current layer but in different gates. QMAP 3.2
++  // deliberately keeps the first reusable qubit because this is an else-if.
++  EXPECT_THAT(
++      analyzer.analyzeTransition(twoQubitGateLayers[0], twoQubitGateLayers[1]),
++      ::testing::UnorderedElementsAre(0U));
++}
+diff --git a/tools/na_zoned_routing_aware_paper.json b/tools/na_zoned_routing_aware_paper.json
+new file mode 100644
+index 0000000..02f7847
+--- /dev/null
++++ b/tools/na_zoned_routing_aware_paper.json
+@@ -0,0 +1,21 @@
++{
++  "logLevel": 4,
++  "schedulerConfig": null,
++  "reuseAnalyzerConfig": null,
++  "routerConfig": null,
++  "placerConfig": {
++    "useWindow": true,
++    "windowMinWidth": 8,
++    "windowRatio": 1.0,
++    "windowShare": 0.6,
++    "deepeningFactor": 0.6,
++    "deepeningValue": 0.2,
++    "lookaheadFactor": 0.2,
++    "reuseLevel": 5.0,
++    "maxNodes": 50000000
++  },
++  "codeGeneratorConfig": {
++    "parkingOffset": 1,
++    "warnUnsupportedGates": true
++  }
++}
+diff --git a/tools/na_zoned_stream.cpp b/tools/na_zoned_stream.cpp
+new file mode 100644
+index 0000000..6da9e94
+--- /dev/null
++++ b/tools/na_zoned_stream.cpp
+@@ -0,0 +1,99 @@
++/*
++ * Copyright (c) 2023 - 2025 Chair for Design Automation, TUM
++ * Copyright (c) 2025 Munich Quantum Software Company GmbH
++ * All rights reserved.
++ *
++ * SPDX-License-Identifier: MIT
++ *
++ * Licensed under the MIT License
++ */
++
++#include "na/zoned/streaming/SQLiteStreaming.hpp"
++
++#include <charconv>
++#include <cstddef>
++#include <exception>
++#include <iostream>
++#include <nlohmann/json.hpp>
++#include <stdexcept>
++#include <string>
++#include <string_view>
++#include <system_error>
++
++namespace {
++auto printUsage(const char* executable) -> void {
++  std::cout << "Usage: " << executable
++            << " <schedule.sqlite> <architecture.json> <compiler-config.json>"
++               " <native-output> <metadata-jsonl-output>\n"
++            << "       " << executable
++            << " --inspect-schedule <schedule.sqlite> <layer-count>\n";
++}
++
++[[nodiscard]] auto parseLayerCount(const std::string_view value) -> size_t {
++  size_t result = 0;
++  const auto [end, error] =
++      std::from_chars(value.data(), value.data() + value.size(), result);
++  if (error != std::errc{} || end != value.data() + value.size()) {
++    throw std::invalid_argument("layer-count must be a non-negative integer");
++  }
++  return result;
++}
++} // namespace
++
++auto main(const int argc, char** argv) -> int {
++  if (argc == 2 && std::string_view(argv[1]) == "--help") {
++    printUsage(argv[0]);
++    return 0;
++  }
++  if (argc == 4 && std::string_view(argv[1]) == "--inspect-schedule") {
++    try {
++      na::zoned::SQLiteScheduledLayerProvider provider(argv[2]);
++      const auto requestedLayers = parseLayerCount(argv[3]);
++      const auto& metadata = provider.metadata();
++      std::cout << "format=" << metadata.format << " qubits=" << metadata.qubits
++                << " events=" << metadata.events
++                << " gates_1q=" << metadata.gates1Q
++                << " gates_2q=" << metadata.gates2Q
++                << " two_qubit_layers=" << metadata.twoQubitLayers
++                << " scheduled_items=" << metadata.scheduledItems << '\n';
++      for (size_t index = 0; index < requestedLayers; ++index) {
++        auto layer = provider.next();
++        if (!layer) {
++          throw std::runtime_error(
++              "requested layer-count exceeds scheduled_items");
++        }
++        std::cout << "item=" << index
++                  << " gates_1q=" << layer->singleQubitGates.size()
++                  << " gates_2q="
++                  << (layer->twoQubitGates ? layer->twoQubitGates->size() : 0)
++                  << " final=" << (!layer->twoQubitGates) << '\n';
++      }
++      return 0;
++    } catch (const std::exception& error) {
++      std::cerr << "qmap schedule inspection failed: " << error.what() << '\n';
++      return 1;
++    }
++  }
++  if (argc != 6) {
++    printUsage(argv[0]);
++    return 2;
++  }
++  try {
++    const na::zoned::SQLiteStreamingCompileOptions options{
++        argv[1], argv[2], argv[3], argv[4], argv[5]};
++    const auto result = na::zoned::compileSQLiteSchedule(options);
++    const nlohmann::json summary{
++        {"schema", "qmap-stream-cli-result-v1"},
++        {"events", result.schedule.events},
++        {"two_qubit_layers", result.schedule.twoQubitLayers},
++        {"chunks", result.chunks},
++        {"peak_native_operations_per_chunk",
++         result.peakNativeOperationsPerChunk},
++        {"statistics", result.statistics}};
++    std::cout << summary.dump() << '\n';
++    return 0;
++  } catch (const std::exception& error) {
++    std::cerr << "qmap streaming compilation failed: " << error.what() << '\n';
++    return 1;
++  }
++}

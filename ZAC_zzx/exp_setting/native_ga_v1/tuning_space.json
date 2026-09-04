@@ -1,0 +1,96 @@
+{
+  "common_knobs": {
+    "crossover_rate": [
+      0.25,
+      0.5
+    ],
+    "local_polish_sweeps": [
+      1,
+      2
+    ],
+    "return_assignment_k": [
+      4,
+      8
+    ],
+    "return_candidate_limit": [
+      6,
+      10
+    ],
+    "theta_capacity": [
+      0.85,
+      0.9,
+      0.95
+    ]
+  },
+  "design": "sequential-profile-then-one-factor-then-m4-decay",
+  "direct_enumeration_limit": 512,
+  "elimination_logf_margin": 0.005,
+  "experiment_schema": 2,
+  "m4_decay_knobs": {
+    "alpha_lookahead": [
+      0.1,
+      0.2,
+      0.35
+    ],
+    "forecast_gate_candidate_budget": [
+      1,
+      2,
+      4
+    ],
+    "rho": [
+      0.5,
+      0.7
+    ]
+  },
+  "near_optimal_logf": 0.002,
+  "protocol_id": "resident-ga-quality-racing-v3",
+  "race_block_size": 5,
+  "search_profiles": {
+    "balanced": {
+      "early_stop_patience": 4,
+      "elite_count": 2,
+      "iterations": 10,
+      "max_unique_evaluations": 1920,
+      "neighbor_sample_size": 16,
+      "neighbors_per_solution": 2,
+      "population_size": 12
+    },
+    "deep": {
+      "early_stop_patience": 5,
+      "elite_count": 2,
+      "iterations": 16,
+      "max_unique_evaluations": 2048,
+      "neighbor_sample_size": 16,
+      "neighbors_per_solution": 3,
+      "population_size": 8
+    },
+    "default": {
+      "early_stop_patience": 0,
+      "elite_count": 1,
+      "iterations": 8,
+      "max_unique_evaluations": 1152,
+      "neighbor_sample_size": 24,
+      "neighbors_per_solution": 2,
+      "population_size": 6
+    },
+    "fast": {
+      "early_stop_patience": 3,
+      "elite_count": 2,
+      "iterations": 6,
+      "max_unique_evaluations": 576,
+      "neighbor_sample_size": 12,
+      "neighbors_per_solution": 2,
+      "population_size": 8
+    },
+    "quality": {
+      "early_stop_patience": 5,
+      "elite_count": 2,
+      "iterations": 12,
+      "max_unique_evaluations": 4096,
+      "neighbor_sample_size": 24,
+      "neighbors_per_solution": 3,
+      "population_size": 16
+    }
+  },
+  "sha256": "a681328614d495e23167dd090e1885b13df3046c981c71aa5e603246d35cd169"
+}

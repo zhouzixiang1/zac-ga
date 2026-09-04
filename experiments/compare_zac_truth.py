@@ -1,4 +1,4 @@
-"""Compare ZAC repro run (result/zac/repro/qasm_sa_1000_reuse) against HPCA'25 paper truth."""
+"""Compare the fixed ZAC reproduction against the HPCA'25 paper truth."""
 import csv
 import json
 from pathlib import Path

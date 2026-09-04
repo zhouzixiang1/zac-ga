@@ -1,0 +1,70 @@
+{
+  "architecture": "../hardware_spec/full_architecture.json",
+  "bootstrap_iterations": 10000,
+  "bootstrap_seed": 0,
+  "datasets": {
+    "qmap154": {
+      "canonical_directory": "../../fidelity-lookahead-v2/artifacts/canonical/qmap154",
+      "kind": "main",
+      "recursive": false,
+      "sources": [
+        "/Users/zhouzixiang/Desktop/zac/qmap-main/examples"
+      ]
+    },
+    "zac18": {
+      "canonical_directory": "../../fidelity-lookahead-v2/artifacts/canonical/zac18",
+      "kind": "main",
+      "recursive": false,
+      "sources": [
+        "../benchmark/hpca"
+      ]
+    }
+  },
+  "experiment_schema": 2,
+  "large_rss_limit_bytes": 23622320128,
+  "large_timeout_seconds": 86400,
+  "methods": {
+    "M1": {
+      "config": "../exp_setting/zac_m1_v2.json"
+    },
+    "M2": {
+      "config": "../exp_setting/iccad_m2_v2.json",
+      "python": "/Users/zhouzixiang/Desktop/zac/.venv_qmap32/bin/python3"
+    },
+    "M3": {
+      "config": "../exp_setting/native_ga_v1/ours_nl_independent.json"
+    },
+    "M4": {
+      "config": "../exp_setting/native_ga_v1/ours_lk_independent.json"
+    }
+  },
+  "minimum_free_bytes": 5368709120,
+  "model": "../evaluation/fidelity_model_zac.json",
+  "output_root": "../../fidelity-lookahead-v2/artifacts/native-ga-v1",
+  "package_versions": {
+    "canonical_qiskit": "1.2.4",
+    "mqt_core_m2": "3.1.0",
+    "mqt_qmap_m2": "3.2.0"
+  },
+  "python": "/Users/zhouzixiang/Desktop/zac/ZAC/.venv/bin/python",
+  "qmap_python": "/Users/zhouzixiang/Desktop/zac/.venv_qmap32/bin/python3",
+  "repo_root": "../..",
+  "reproduction": {
+    "zac_execute": {
+      "architecture": "../../experiments/zac_arch_repro.json",
+      "compiler_root": "../../ZAC",
+      "hpca_directory": "../../ZAC/benchmark/hpca",
+      "output_directory": "../../fidelity-lookahead-v2/artifacts/reproduction-v2/zac-original-qiskit1.2.4"
+    },
+    "iccad_execute": {
+      "hpca_directory": "../benchmark/hpca",
+      "output_directory": "../../fidelity-lookahead-v2/artifacts/reproduction-v2/iccad-v3.2",
+      "qmap_python": "/Users/zhouzixiang/Desktop/zac/.venv_qmap32/bin/python3"
+    },
+    "iccad_truth": "../../experiments/paper_truth/qmap_table1.csv",
+    "output": "../../fidelity-lookahead-v2/artifacts/reports/baseline_reproduction.json",
+    "zac_truth": "../../experiments/paper_truth/zac.csv"
+  },
+  "rss_limit_bytes": 23622320128,
+  "timeout_seconds": 600
+}

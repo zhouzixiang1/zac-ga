@@ -71,6 +71,37 @@ class SAPlacer:
         self.architecture = arch
         self.list_gate = list_gate
         self.preprocessing()
+        self._run_search()
+
+    def run_preprocessed(self, arch: Architecture, n_qubit: int,
+                         list_qubit_dict_gate: list[dict]):
+        """Run the unchanged SA search from a bounded precomputed objective.
+
+        Large compilation cannot retain millions of physical stages merely for
+        initial placement.  Callers may stream those stages once and build the
+        same per-qubit weighted interaction dictionaries that ``preprocessing``
+        produces.  This entry point deliberately shares the complete search
+        loop below with :meth:`run`, so only objective construction differs.
+        """
+        print("[INFO] ZAC: SA-based placement")
+        self.initialize_param()
+        self.n_qubit = n_qubit
+        self.architecture = arch
+        if len(list_qubit_dict_gate) != n_qubit:
+            raise ValueError("preprocessed SA interaction width mismatch")
+        self.list_gate = []
+        self.list_qubit_dict_gate = [dict(row)
+                                     for row in list_qubit_dict_gate]
+        for q, partners in enumerate(self.list_qubit_dict_gate):
+            for partner, weight in partners.items():
+                if not 0 <= partner < n_qubit or partner == q:
+                    raise ValueError("invalid preprocessed SA interaction")
+                if self.list_qubit_dict_gate[partner].get(q) != weight:
+                    raise ValueError("preprocessed SA interactions must be symmetric")
+        self._run_search()
+
+    def _run_search(self):
+        """Execute the stock search after its interaction objective is ready."""
         # large iteration
         for trial in range(self.sa_n_trials):
             self.init_sa_solution()
@@ -365,4 +396,3 @@ class SAPlacer:
     def update_optimal_sol(self):
         self.best_mapping = deepcopy(self.current_mapping)
         self.best_cost = self.current_cost
-

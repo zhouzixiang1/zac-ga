@@ -1,118 +1,75 @@
-# ZAC_zzx —— 驻留编译器：2q 轮次 + 不放回 + GA 分相位着色适应度
+# ZAC_zzx: GA-LK compiler and experiment pipeline
 
-以 ZAC 为基座的第三个派生实验（与 `ZAC_new/` 同级、自包含；本地 `zac/`
-是 ZAC 源码字节级副本）。核心思想：**激发区原子默认不放回（驻留）**，
-每个边界做 STAY/RETURN 决策，放置由 GA + 分相位图着色适应度引导。
-这是"合并路线"的落地：①不调回（原生编译器在串行电路的赢法）
-× ③着色引导放置 × ④着色分批路由（后两者继承 ZAC_new 的已验证部件）。
+`ZAC_zzx` contains the current GA-LK implementation used by the manuscript on
+zoned neutral-atom compilation. All maintained development and experiment
+history has been consolidated into the repository's default `main` branch.
 
-## 三个放置模式（placer 键）
+## Current scope
 
-| placer | 含义 | 对照对象 |
-|---|---|---|
-| `"zac"` | 原版放置 + 原版路由 | ZAC 真值（回归基线） |
-| `"batch"` | ZAC_new 的 BatchAwarePlacer + 着色路由 | ZAC_new-B/A（同会话重跑） |
-| `"resident"` | **本作主角**：驻留放置 + 驻留路由 | — |
+GA-LK optimizes each two-qubit layer boundary by jointly selecting gate sites,
+cross-layer atom residency, and storage sites. Complete candidates undergo the
+same AOD-aware physical transition checks before ranking. The objective combines
+the current transition cost with a decayed finite-horizon physical estimate.
+Small decision spaces use exact enumeration; larger spaces use a bounded genetic
+search.
 
-## 决策模型（每个边界，激发区每个原子）
+The manuscript evaluation is restricted to ZAC18 and QMAP154. It compares
+GA-LK with the original ZAC compiler and the routing-aware ICCAD/QMAP method.
+Controlled comparisons separately examine the finite-horizon configuration and
+the search strategy.
 
-| 原子身份 | 默认 | 触发 RETURN 的条件 |
-|---|---|---|
-| 下一轮参与者 | STAY（入区腿 = 区内短移到门位） | 搜索决定 |
-| 非参与者、有后续 | STAY 原位闲放（0 腿） | 搜索 / 容量阀 |
-| 死驻留者（后续无 2q） | STAY（判分模型 idle 项=1 零代价） | 仅容量压力 |
-| 挡路者 | — | 强制 RETURN（E2） |
+## Maintained entry points
 
-RETURN 落位 = 用户笔记三方案（原位 / 就近 / 伙伴位）箱式化最小权匹配。
+| Path | Purpose |
+|---|---|
+| [`zzx/`](zzx/) | Python compiler integration and state management |
+| [`native/`](native/) | C++17 layer-boundary solver and native tests |
+| [`experiments_v2/`](experiments_v2/) | Schema-v2 runners, aggregation, provenance, and validation |
+| [`exp_setting/native_ga_v1/`](exp_setting/native_ga_v1/) | Frozen paper experiment configurations |
+| [`tests/`](tests/) | Python regression and evidence-contract tests |
+| [`results/paper_zh_v2/`](results/paper_zh_v2/) | Current paper results and final evidence manifest |
+| [`third_party/qmap32_streaming/`](third_party/qmap32_streaming/) | Frozen QMAP 3.2 patch and verification material |
 
-## 适应度（分相位——两个时间窗各自着色）
+The authoritative result package is
+[`results/paper_zh_v2/final_manifest.json`](results/paper_zh_v2/final_manifest.json).
+Only this current result directory is tracked at the repository tip. Earlier
+pilot, diagnostic, and intermediate result trees remain available through Git
+history and are not valid substitutes for the current manuscript evidence.
 
-```
-F = w_batch·(χ(back腿) + χ(入区腿)) + Σ√dmax(各相位)
-  + γ0^轮距 · √d(决策后位置, 下次使用锚点)        ← 前瞻层
-```
+## Result interpretation
 
-- `w_batch=1.57`：每批 2×15μs 固定开销的 √μm 当量（审计标定）
-- `gamma0=0.5` 默认；`gamma0=0` 即无前瞻对照；`fitness_mode="lumped"` 为 A3' 消融档
+The final package reports complete per-circuit results, independent analysis
+units, aggregate statistics, controlled comparisons, timing summaries, and a
+two-sheet workbook for ZAC18 and QMAP154. The QMAP154 geometric mean is affected
+by a positive right tail; its median and win/loss distribution must therefore
+be reported alongside the aggregate mean. GA-LK also has substantially higher
+compilation time than the two baselines.
 
-## 正确性装置（对抗审计后落地的七道补丁）
+## Regression checks
 
-1. 菜单硬排除：闲住驻留者 + 本轮其他参与者的座位不让门——同相位座位交接
-   从构造上禁绝（ZAC 的 site 账本只记"离开"不记"到达"，交接无法排序）
-2. `_repair_placements` 安全网：门位不得压任何他人座位/他门工位（终检+改选）
-3. 驻留者保座朝向 `_pair_seats`：配对含自己座位时不动、搭档去另一座
-4. 依赖账本补丁：回撤腿的非参与者依赖压到本轮门指令后（防与激光并行）
-5. 流契约断言：长度 2n+1 / 拷贝不变式 / 每张映射单射
-6. 匹配修复：scipy 的 "full" 只保小侧全覆盖 + 食堂顺延预扩容 + 贪心全区展开
-7. RNG 隔离 + 白名单消费断言（任务单里未认识的键直接报错）
-
-**verify_batches.py 8 查**（独立回放，不信任编译器自述）：批内兼容 / 位置连续 /
-时序（取放语义）/ 门邻接 / **座位独占时间线（同时刻整批结算）** / 1q 位置一致 /
-**门账本 vs QASM** / 门-搬运互斥。ZAC 原版 18/18 全过；损坏注入 7/7 抓到。
-
-## 用法
+From `ZAC_zzx/`, run the maintained paper-facing checks in an environment with
+the ZAC and experiment dependencies:
 
 ```bash
-ZAC/.venv/bin/python ZAC_zzx/run.py ZAC_zzx/exp_setting/zzx_main.json    # 18 电路主配置
-ZAC/.venv/bin/python ZAC_zzx/verify_batches.py results/main/code/X.json \
-    --qasm=benchmark/hpca/X.qasm                                          # 8 查校验
-ZAC/.venv/bin/python ZAC_zzx/tests/test_resident.py                       # 单测（30 项）
-.venv_qmap/bin/python ZAC_zzx/fourway_qmap.py                             # ICCAD 计分(move时间/编译)
-ZAC/.venv/bin/python ZAC_zzx/run_qmap_suite.py --tags zzx_nolook          # 154 例无前瞻套件
-.venv_qmap/bin/python ZAC_zzx/fourway_table.py                            # 四方法对比.xlsx
+python -m pytest -q -p no:cacheprovider \
+  tests/test_final_results.py \
+  tests/test_cli_v2.py \
+  tests/test_native_resident_integration.py \
+  tests/test_native_rich_solver.py \
+  tests/test_resident_rent_guard.py \
+  tests/test_qmap_legacy_regression.py
 ```
 
-## 关键实证（主入口 = results/fourway/四方法对比.xlsx：ZAC原始 / ICCAD / 遗传无前瞻 / 遗传前瞻 × 保真度 / move批 / move时间 / 编译时间，双数据集）
+Native build instructions and the ABI contract are documented in
+[`native/README.md`](native/README.md). Experiment schemas and provenance rules
+are documented in [`experiments_v2/README.md`](experiments_v2/README.md).
 
-| 指标（对 ZAC geomean） | ICCAD | 遗传无前瞻 | 遗传前瞻 |
-|---|---|---|---|
-| Rearr. Steps（hpca18 / 154 例） | 0.859 / 1.064 | **0.746 / 0.566** | 0.745 / 0.563 |
-| move 时间（hpca18 / 154 例） | 0.853 / 1.060 | **0.857 / 0.611** | 0.865 / 0.603 |
-| 编译时间（hpca18 / 154 例） | **0.004 / 0.005** | 1.052 / 1.139 | 1.024 / 1.115 |
-| 平均保真度（hpca18 / 154 例） | 0.428 / 0.412 | **0.504 / 0.477** | 0.504 / 0.477 |
+## Reproducibility boundary
 
-move 批按 ICCAD'25 Table I 的 Num. Rearr. Steps 口径（一次完整 AOD 重排循环=1 步；
-qmap 侧计数已对论文逐位复现验证）。两套数据集上一致：**遗传两变体全面赢执行指标（步数/时间/保真度），ICCAD 只赢编译速度
-（快 ~200 倍）**；前瞻项 γ0 在全套数据下与无前瞻持平（收益来自驻留+分相位着色+GA 门位
-搜索这些结构部件）。旧消融表（B/A/A1/gamma/seed）已随原始数据归档至 `archive/`。
+The tracked result package contains the paper-facing aggregates and hashes.
+Some raw executions, environments, and build products are intentionally kept
+outside Git because of their size. The final manifest records their provenance;
+it does not make a fresh clone a one-command reproduction of every raw run.
 
-**qmap examples 外部套件（154 例）**：三法全成的 119 个公共集上 zzx
-**119/119 全胜、geomean 0.606**（批数降 45%、人次降 47%），无一例超
-1.0，最佳 4mod7-v1 0.474。**三方对比**（ZAC / ICCAD-qmap / zzx，双
-sheet `results/three_way/三方对比.xlsx`）：qmap 同尺计分 geomean 1.755
-（hpca18）/ 1.701（公共集，0/119 胜），zzx 0.867 / 0.606；qmap 的真强项
-是编译可行性——其 C++ 把 22 万门的 urf4 都编出来了（ZAC/zzx 在 >1.5
-万门超时）。三方互补：zzx 赢时长、qmap 赢规模、ZAC 是基线。
-
-- 大赢家：swap_test 0.561 / seca 0.570 / knn 0.631 / multiply 0.650 /
-  ising_n42 0.647 / qft_n18 0.799 / **qft_n29 0.777（根治 ZAC_new-B 的 1.077
-  回退，批数 401→217）**
-- 链式族 ~1.0-1.15（bv/cat/ghz/wstate）：几何下限——新原子必须与驻留者
-  同排落座（"同终点⇒同起点"的 y 维冲突），驻留者只要动、两腿必分两批；
-  唯一破法是"预取"（v1.1 候选）
-- ising_n98 0.870 vs B 0.661：B 的着色放置在超宽并行层仍占优（互补保留）
-- **决策分布：STAY 2630 / RETURN 0**——GA 学到"永不回撤"（与原生 K5 同构），
-  驻留收益全部来自门位搜索
-- **钉扎不是免费午餐**（消融）：不钉扎 1.115 / 钉扎 1.095 / 偏移罚 1.197
-  ——门位取舍必须逐门搜索，GA 决策层存在的直接证据
-- **γ0 前瞻标定**（3 哨兵）：γ0=0 → 0.738/0.863/1.028 vs 默认 0.5 →
-  0.777/0.870/1.025——前瞻项不赚反亏（幅度在种子噪声内）；结构性部件
-  （驻留+着色分相）起作用，权重项平坦——与 ZAC_new 的 w_batch 现象同款
-- **种子方差**：qft_n29 极差 0.079（超 0.03 帽；seed1=0.698 反而更好）、
-  ising_n98 0.060、ghz_n78 0.000——大电路上 GA 随机性显著，多种子取优
-  是 v1.1 的免费收益
-- A3'（混合适应度）qft_n29 0.763 vs 分相位 0.777：噪声内持平；分相位的
-  价值在记账诚实而非可测时长
-
-## 已知边界（记录在案，与基线同等条件）
-
-- 判分模型的 idle 项被注释（simulator.py:77 → 恒 1）：驻留闲放零保真度代价
-- 编译器 1q=0.625μs / 仿真器忙时 52μs 的内部不一致（全系统一致沿用）
-- 飞行中路径穿越无检查（与 ZAC 同盲区；验证器是端点级）
-- stay_horizon 在本套件不 binding（实测 inter-use 仅 1-2 轮）
-- v1.1 候选：预取（下轮搭档提前入场，破链式两批铁律）、rollout 前瞻档
-- **SA 初始放置实测**（saplacer.py）：占编译时间 97-98%，但邻域生成器有两处缺陷
-  ——行移动是死代码（`randrange(0,1,1)` 恒 0），`new_c` 误用 `old_r`（:291，目标列
-  恒为 99±5 的窗口，bv_n30/n70 初始布局中的 94-99 列即其痕迹）；18 电路里 9 个的
-  初始布局就是平凡顺序（best-of-3 的 trivial 胜出）。换成 GA + 结构化热启动
-  （门图谱排序）是编译时间的主攻点
+See the repository-level [`README.md`](../README.md) for the method overview,
+reported result snapshot, baseline attribution, and release constraints.
