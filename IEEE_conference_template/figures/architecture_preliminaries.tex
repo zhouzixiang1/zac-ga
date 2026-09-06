@@ -1,0 +1,197 @@
+\input{figures/tikz_style}
+\begin{tikzpicture}[
+  galk/base,x=1cm,y=1cm,
+  line cap=butt,line join=miter,
+  trap/.style={galk/site},
+  target/.style={galk/target site},
+  atom/.style={galk/occupied atom},
+  fixed/.style={circle,draw=galkInk!65,line width=.35pt,fill=galkInk!25,
+    minimum size=1.35mm,inner sep=0pt},
+  leader/.style={galk/accepted path},
+  motion/.style={galk/accepted path},
+  aod guide/.style={draw=galkStorage!38,densely dashed,line width=.35pt},
+  mini frame/.style={draw=galkInk!68,line width=.40pt,fill=white},
+  dim/.style={{Stealth[length=.72mm,width=.46mm]}-{Stealth[length=.72mm,width=.46mm]},
+    draw=galkInk,line width=.40pt},
+  panel title/.style={galk/panel title},
+  zone label/.style={galk/zone label}
+]
+  \path[use as bounding box] (-.05,-.62) rectangle (8.35,7.38);
+
+  % (a) Device-level view of the two computational zones.
+  \node[panel title,anchor=west] at (.18,7.21) {(a) Zoned neutral-atom array};
+  \begin{scope}[xscale=1.14]
+  \draw[galkInk,line width=.46pt] (.62,3.42) rectangle (6.94,6.92);
+  \fill[galkEntangleFill] (.63,5.54) rectangle (6.93,6.91);
+  \fill[galkStorageFill] (.63,3.43) rectangle (6.93,5.27);
+  \draw[galkEntangle,line width=.48pt] (.62,5.54) rectangle (6.94,6.92);
+  \draw[galkStorage,line width=.48pt] (.62,3.42) rectangle (6.94,5.27);
+
+  \node[zone label,fill=galkEntangleFill] at (.72,6.84)
+    {entanglement zone};
+  \node[zone label,fill=galkStorageFill] at (.72,5.19)
+    {storage zone};
+
+  % Regular Rydberg sites: each dashed ellipse encloses one gate-site pair.
+  \foreach \cx in {1.34,2.70,4.06,5.42,6.38} {
+    \draw[galkInk!62,densely dashed,line width=.36pt]
+      (\cx,6.12) ellipse (.30 and .19);
+    \node[trap] at (\cx-.095,6.12) {};
+    \node[trap] at (\cx+.095,6.12) {};
+  }
+  \node[atom] (qzero) at (3.965,6.12) {};
+  \node[atom] (qone) at (4.155,6.12) {};
+  \node[galk/q label,anchor=south east] at (3.94,6.23) {$q_0$};
+  \node[galk/q label,anchor=south west] at (4.18,6.23) {$q_1$};
+  \draw[galkInk,line width=.48pt] (qzero)--(qone);
+
+  % Dense storage array with one locally addressed atom.
+  \foreach \x in {1.00,1.52,2.04,2.56,3.08,3.60,4.12,4.64,5.16,5.68,6.20} {
+    \foreach \y in {3.72,4.04,4.36,4.68} {
+      \node[trap] at (\x,\y) {};
+    }
+  }
+  \node[atom] (qtwo) at (2.56,4.04) {};
+  \node[atom] (qthree) at (5.16,4.68) {};
+  \node[galk/q label,anchor=north east] at (2.51,4.00) {$q_2$};
+  \node[galk/q label,anchor=south west] at (5.21,4.72) {$q_3$};
+
+  % Beam annotations occupy the clear bands above their targets.  Leaders
+  % begin at the label edge so that they neither cross the text nor span the
+  % full device width.
+  \node[anchor=east,align=right,font=\rmfamily\fontsize{8.7pt}{9.7pt}\selectfont]
+    (rydbergNote) at (6.83,6.62) {Rydberg pulse (2Q)};
+  \draw[leader] (rydbergNote.south west)--(qone.east);
+  \node[anchor=east,align=right,font=\rmfamily\fontsize{8.7pt}{9.7pt}\selectfont]
+    (ramanNote) at (6.80,5.05) {Raman pulse (1Q)};
+  \draw[leader] ([xshift=.18cm]ramanNote.south west)
+    .. controls (2.92,4.61) and (2.88,4.23) .. (qtwo.north east);
+
+  % A physical transfer between zones, with the same atom identity at both ends.
+  \node[target] (dst) at (5.325,6.12) {};
+  \draw[motion] (qthree.north east)
+    .. controls (5.52,5.05) and (5.58,5.67) .. (dst.south west);
+  \node[galk/q label,anchor=north west] at (5.39,6.04) {$q_3$};
+  \node[anchor=east,text=galkMuted] at (6.82,5.40) {AOD transport};
+
+  % Coordinate convention without assuming numerical device dimensions.
+  \draw[-{Stealth[length=.85mm,width=.55mm]},line width=.40pt]
+    (.45,3.28)--(7.12,3.28) node[below left,inner sep=1pt] {$x$};
+  \draw[-{Stealth[length=.85mm,width=.55mm]},line width=.40pt]
+    (.45,3.28)--(.45,7.02);
+  \node[left,inner sep=1pt] at (.45,6.88) {$y$};
+  \draw[dim] (1.34,5.88)--(2.70,5.88);
+  \node[fill=galkEntangleFill,inner sep=.6pt] at (2.02,5.88) {$d_{\rm site}$};
+  \end{scope}
+
+  % (b)--(d) Three distinct AOD constraints.  Each panel contrasts an
+  % invalid simultaneous motion with a feasible alternative.  The diagrams
+  % use the manuscript's restrained line grammar rather than icon-like cards.
+
+  % (b) AOD rows or columns cannot exchange their relative order.
+  \node[panel title,anchor=west] at (.18,2.92) {(b) Non-crossing constraint};
+  \draw[mini frame] (.18,1.36) rectangle (4.05,2.76);
+  \draw[galkInk!35,line width=.35pt] (2.12,1.36)--(2.12,2.76);
+  \node[galk/small label,text=galkBad] at (1.15,2.62) {invalid};
+  \node[galk/small label] at (3.09,2.62) {feasible};
+  \foreach \y in {1.62,2.36} {
+    \draw[aod guide] (.38,\y)--(1.92,\y);
+    \draw[aod guide] (2.32,\y)--(3.86,\y);
+  }
+  \node[atom] (nc0s) at (.62,1.62) {};
+  \node[atom] (nc1s) at (1.69,1.62) {};
+  \node[trap] (nc0t) at (1.69,2.36) {};
+  \node[trap] (nc1t) at (.62,2.36) {};
+  \node[galk/q label,anchor=north] at (.62,1.54) {$q_0$};
+  \node[galk/q label,anchor=north] at (1.69,1.54) {$q_1$};
+  \node[galk/q label,anchor=west] at (1.80,2.36) {$q_0$};
+  \node[galk/q label,anchor=east] at (.51,2.36) {$q_1$};
+  \draw[galk/invalid path] (nc0s)--(nc0t);
+  \draw[galk/invalid path] (nc1s)--(nc1t);
+  \node[text=galkBad,font=\bfseries\fontsize{8pt}{8pt}\selectfont,
+    inner sep=0pt] at (1.15,1.99) {$\times$};
+  \node[atom] (ncf0s) at (2.55,1.62) {};
+  \node[atom] (ncf1s) at (3.62,1.62) {};
+  \node[trap] (ncf0t) at (2.70,2.36) {};
+  \node[trap] (ncf1t) at (3.47,2.36) {};
+  \node[galk/q label,anchor=north] at (2.55,1.54) {$q_0$};
+  \node[galk/q label,anchor=north] at (3.62,1.54) {$q_1$};
+  \draw[leader] (ncf0s)--(ncf0t);
+  \draw[leader] (ncf1s)--(ncf1t);
+
+  % (c) Row/column membership is preserved between source and target arrays.
+  \node[panel title,anchor=west] at (4.28,2.92)
+    {(c) Preservation constraint};
+  \draw[mini frame] (4.28,1.36) rectangle (8.15,2.76);
+  \draw[galkInk!35,line width=.35pt] (6.22,1.36)--(6.22,2.76);
+  \node[galk/small label,text=galkBad] at (5.25,2.62) {invalid};
+  \node[galk/small label] at (7.19,2.62) {feasible};
+  \draw[aod guide] (4.48,1.62)--(6.02,1.62);
+  \draw[aod guide] (4.48,2.36)--(5.08,2.36);
+  \draw[aod guide] (5.22,2.10)--(6.02,2.10);
+  \node[atom] (pr0s) at (4.70,1.62) {};
+  \node[atom] (pr1s) at (5.78,1.62) {};
+  \node[trap] (pr0t) at (4.85,2.36) {};
+  \node[trap] (pr1t) at (5.63,2.10) {};
+  \node[galk/q label,anchor=north] at (4.70,1.54) {$q_0$};
+  \node[galk/q label,anchor=north] at (5.78,1.54) {$q_1$};
+  \draw[galk/invalid path] (pr0s)--(pr0t);
+  \draw[galk/invalid path] (pr1s)--(pr1t);
+  \node[text=galkBad,font=\bfseries\fontsize{8pt}{8pt}\selectfont,
+    inner sep=0pt] at (5.91,2.32) {$\times$};
+  \draw[aod guide] (6.42,1.62)--(7.95,1.62);
+  \draw[aod guide] (6.42,2.30)--(7.95,2.30);
+  \node[atom] (prf0s) at (6.64,1.62) {};
+  \node[atom] (prf1s) at (7.72,1.62) {};
+  \node[trap] (prf0t) at (6.79,2.30) {};
+  \node[trap] (prf1t) at (7.57,2.30) {};
+  \node[galk/q label,anchor=north] at (6.64,1.54) {$q_0$};
+  \node[galk/q label,anchor=north] at (7.72,1.54) {$q_1$};
+  \draw[leader] (prf0s)--(prf0t);
+  \draw[leader] (prf1s)--(prf1t);
+
+  % (d) Cartesian-product intersections of active rows and columns must not
+  % pick up a stationary SLM atom.  The right half serializes the two pick-ups.
+  \node[panel title,anchor=west] at (.18,1.13)
+    {(d) Ghost-spot constraint};
+  \draw[mini frame] (.18,-.53) rectangle (4.05,.92);
+  \draw[galkInk!35,line width=.35pt] (2.12,-.53)--(2.12,.92);
+  \node[galk/small label,text=galkBad] at (1.15,.78)
+    {simultaneous};
+  \node[galk/small label] at (3.09,.78) {serialized};
+  \foreach \x in {.67,1.61} {
+    \draw[aod guide] (\x,-.37)--(\x,.57);
+  }
+  \foreach \y in {-.20,.43} {
+    \draw[aod guide] (.37,\y)--(1.91,\y);
+  }
+  \node[atom] at (.67,-.20) {};
+  \node[atom] at (1.61,.43) {};
+  \node[fixed] at (.67,.43) {};
+  \node[galk/q label,anchor=north] at (.67,-.28) {$q_0$};
+  \node[galk/q label,anchor=west] at (1.72,.43) {$q_1$};
+  \node[galk/q label,anchor=east] at (.57,.32) {$q_2$};
+  \draw[galkBad,line width=.64pt] (.55,.31)--(.79,.55);
+  \draw[galkBad,line width=.64pt] (.55,.55)--(.79,.31);
+  \node[atom] at (2.55,-.20) {};
+  \node[atom] at (3.62,.43) {};
+  \node[fixed] at (2.55,.43) {};
+  \node[galk/q label,anchor=north] at (2.55,-.28) {$q_0$};
+  \node[galk/q label,anchor=west] at (3.73,.43) {$q_1$};
+  \node[galk/q label,anchor=east] at (2.45,.32) {$q_2$};
+  \draw[aod guide] (2.32,-.20)--(2.89,-.20)
+    node[galk/small label,anchor=west,text=galkInk] {$B_1$};
+  \draw[aod guide] (3.62,.12)--(3.62,.58);
+  \node[galk/small label,anchor=east,text=galkInk] at (3.48,.24) {$B_2$};
+
+  % Legend uses the same atom and path vocabulary as all other figures.
+  \node[panel title,anchor=west] at (4.28,1.13) {Notation};
+  \node[atom] at (4.52,.72) {};
+  \node[anchor=west] at (4.72,.72) {atom in AOD};
+  \node[fixed] at (4.52,.35) {};
+  \node[anchor=west] at (4.72,.35) {stationary SLM atom};
+  \draw[galk/invalid path] (4.42,-.02)--(5.22,-.02);
+  \node[anchor=west] at (5.32,-.02) {incompatible motion};
+  \draw[leader] (4.42,-.39)--(5.22,-.39);
+  \node[anchor=west] at (5.32,-.39) {feasible motion};
+\end{tikzpicture}

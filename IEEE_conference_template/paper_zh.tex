@@ -1,0 +1,121 @@
+\documentclass[a4paper,conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setmainfont{texgyretermes-regular.otf}[
+  BoldFont=texgyretermes-bold.otf,
+  ItalicFont=texgyretermes-italic.otf,
+  BoldItalicFont=texgyretermes-bolditalic.otf
+]
+\setsansfont{texgyreheros-regular.otf}[
+  BoldFont=texgyreheros-bold.otf,
+  ItalicFont=texgyreheros-italic.otf,
+  BoldItalicFont=texgyreheros-bolditalic.otf
+]
+\setmonofont{texgyrecursor-regular.otf}[
+  BoldFont=texgyrecursor-bold.otf,
+  ItalicFont=texgyrecursor-italic.otf,
+  BoldItalicFont=texgyrecursor-bolditalic.otf
+]
+\setCJKmainfont{FandolSong-Regular.otf}[
+  BoldFont=FandolHei-Regular.otf,
+  ItalicFont=FandolKai-Regular.otf
+]
+\setCJKsansfont{FandolHei-Regular.otf}
+\setCJKmonofont{FandolFang-Regular.otf}
+\XeTeXlinebreaklocale "zh"
+\XeTeXlinebreakskip=0pt plus 1pt
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{placeins}
+\usepackage{balance}
+\usepackage{etoolbox}
+% balance sizes split boxes by height alone. Reserve a baseline for CJK line
+% depth when reboxing the two columns; this adds footer space, not text scaling.
+\makeatletter
+\patchcmd{\@BAlancecol}
+  {\setbox\@leftcolumn=\vbox to \@tempdima}
+  {\advance\@tempdima by \baselineskip
+   \setbox\@leftcolumn=\vbox to \@tempdima}
+  {}{\PackageError{paper-zh}{Cannot apply CJK column-balance adjustment}{Check balance.sty before building.}}
+\makeatother
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,calc,shapes.geometric,shapes.misc,
+  backgrounds,decorations.pathreplacing,matrix,patterns.meta}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\method}{\textsc{GA-LK}}
+\newcommand{\etal}{\textit{et al.}}
+\newcommand{\todoauthor}[1]{\textcolor{red!75!black}{\textbf{[#1待补]}}}
+\newcolumntype{Y}{>{\centering\arraybackslash}X}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcommand{\PaperTableSetup}{%
+  \fontsize{8.2pt}{9.4pt}\selectfont
+  \renewcommand{\arraystretch}{1.12}%
+  \setlength{\tabcolsep}{3pt}%
+}
+\newcommand{\PaperTableNote}[2][\columnwidth]{%
+  \par\vspace{3pt}\noindent
+  \parbox{#1}{\fontsize{7.3pt}{8.4pt}\selectfont #2}%
+}
+\setcounter{dbltopnumber}{2}
+\setlength{\textfloatsep}{12pt plus 2pt minus 2pt}
+\setlength{\dbltextfloatsep}{12pt plus 2pt minus 2pt}
+\setlength{\floatsep}{10pt plus 2pt minus 2pt}
+\setlength{\dblfloatsep}{10pt plus 2pt minus 2pt}
+
+\input{figures/tikz_style}
+\input{results_values_zh}
+\newcommand{\PaperPercentGain}[2]{%
+  \edef\pgfmathresult{\fpeval{100*((#1)/(#2)-1)}}%
+  \pgfmathprintnumber[fixed,precision=2,zerofill]{\pgfmathresult}\%%
+}
+
+\begin{document}
+
+\title{分区中性原子量子架构的\\层边界联合优化与多层物理前瞻}
+
+\author{
+\IEEEauthorblockN{周子翔}
+\IEEEauthorblockA{杭州电子科技大学\\
+浙江省杭州市钱塘区白杨街道2号大街1158号，中国\\
+zhouzixiang@hdu.edu.cn}
+}
+
+\maketitle
+
+\begin{abstract}
+分区中性原子量子处理器通过存储隔离降低空闲原子的受激误差，层间原子放置与重排则影响阱转移损耗和执行时延。现有复用感知和路由感知方法利用相邻门层或下一交互伙伴指导放置，但非相邻门层之间的原子驻留还会改变纠缠位占用、回迁位置及后续重排的并行性。本文提出联合放置与多层前瞻编译方法GA-LK，在每个层边界联合选择门位、驻留原子和回迁存储位。该方法采用有界遗传搜索求解联合决策，以轨迹冲突图着色构造满足声光偏转器约束的重排批次，并从候选转换后的物理状态估计后续门层的代价，按层距衰减其权重。评估采用两个基准集，分别包含18个11--98量子比特电路和154个3--16量子比特输入电路。在三种编译器共同有效的电路上，相对复用感知ZAC编译器，模型保真度几何均值分别提高\PaperPercentGain{\ZACMFourF}{\ZACMOneF}和\PaperPercentGain{\QMAPMFourF}{\QMAPMOneF}；相对路由感知放置编译器，分别提高\PaperPercentGain{\ZACMFourF}{\ZACMTwoF}和\PaperPercentGain{\QMAPMFourF}{\QMAPMTwoF}。两个基准集的平均重排批次和重排时延也均有所降低。
+\end{abstract}
+
+\begin{IEEEkeywords}
+中性原子量子计算，分区架构，量子编译，原子重排，多层前瞻
+\end{IEEEkeywords}
+
+\input{sections/01_introduction}
+\input{sections/02_background}
+\input{sections/03_method}
+\input{sections/05_evaluation}
+\input{sections/06_related_work}
+\input{sections/07_conclusion}
+
+\clearpage
+\nobalance
+\IEEEtriggeratref{13}
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

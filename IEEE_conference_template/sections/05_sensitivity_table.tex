@@ -1,0 +1,24 @@
+\begin{table}[!t]
+\caption{单因素参数敏感性}
+\label{tab:sensitivity}
+\centering
+\PaperTableSetup
+\begin{tabularx}{\columnwidth}{@{}lLrr@{}}
+\toprule
+参数 & 取值 & $F/F_0$ & $t/t_0$\\
+\midrule
+\multirow{2}{*}{\shortstack[l]{评价预算\\$E_{\max}$}} & 192 & \SensitivityBudgetLowFidelityRatio & \SensitivityBudgetLowTimeRatio\\
+ & 1152 & \SensitivityBudgetHighFidelityRatio & \SensitivityBudgetHighTimeRatio\\
+\addlinespace[3pt]
+\multirow{2}{*}{\shortstack[l]{存储位域/\\匹配数}} & $(4,2)$ & \SensitivityReturnSmallFidelityRatio & \SensitivityReturnSmallTimeRatio\\
+ & $(10,8)$ & \SensitivityReturnLargeFidelityRatio & \SensitivityReturnLargeTimeRatio\\
+\addlinespace[3pt]
+\multirow{2}{*}{\shortstack[l]{最大视界\\$H_{\max}$}} & 2 & \SensitivityHorizonTwoFidelityRatio & \SensitivityHorizonTwoTimeRatio\\
+ & 4 & \SensitivityHorizonFourFidelityRatio & \SensitivityHorizonFourTimeRatio\\
+\addlinespace[3pt]
+\multirow{2}{*}{\shortstack[l]{衰减权重\\$(\alpha,\rho)$}} & $(0.2,0.5)$ & \SensitivityDecayWeakFidelityRatio & \SensitivityDecayWeakTimeRatio\\
+ & $(0.35,0.6)$ & \SensitivityDecayMiddleFidelityRatio & \SensitivityDecayMiddleTimeRatio\\
+\bottomrule
+\end{tabularx}
+\PaperTableNote{注：$F/F_0$、$t/t_0$为相对默认配置的逐电路比值的几何均值，分别含\SensitivityFidelityN、\SensitivityTimeN 个有效电路。默认配置见实验设置与表~\ref{tab:solver-bounds}，存储位域/匹配数为$(6,4)$。}
+\end{table}

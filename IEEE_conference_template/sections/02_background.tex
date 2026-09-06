@@ -1,0 +1,64 @@
+\section{背景与相关工作}
+\label{sec:background}
+
+\subsection{分区架构与原子重排}
+
+空间光调制器（Spatial Light Modulator, SLM）在存储区产生密集静态光阱，用于容纳暂不参与双比特门的原子。纠缠区包含彼此隔离的门位对，同一门位对中的两个原子可接受全局Rydberg脉冲并执行受控Z（controlled-Z, CZ）门\cite{evered2023highfidelity,lin2025zac}。双比特门的参与原子由AOD移动光阱送入纠缠区。以图~\ref{fig:architecture-preliminaries}(a)为例，$q_0$与$q_1$占用同一门位对，$q_2$位于存储阱并接受局域Raman旋转，$q_3$由存储区进入纠缠区，分别对应门执行与跨区输运。
+
+AOD辅助原子重排包含SLM与AOD之间的阱转移以及AOD行列的连续输运。并行输运受到三类结构约束：活动行列在运动中不得交换相对次序；同行或同列关系在源位置与目标位置之间保持一致；阱转移时，同时激活的行列不得在静止原子处形成非目标交叉光阱（ghost spot，下称非目标交点）\cite{bluvstein2022coherenttransport,stade2024abstractmodel,stade2025routingaware}。交换相对次序的两条轨迹、源端同行而目标端分行的两条轨迹，以及在静止原子$q_2$处形成非目标交点的两次搬运，分别违反上述约束，见图~\ref{fig:architecture-preliminaries}(b)--(d)。编译器将同一层的相容轨迹编入同一重排批次，各批次顺序执行，每批的时延由最长轨迹决定。
+
+单比特旋转由可寻址Raman光束执行，双比特CZ门使用纠缠区的全局Rydberg脉冲。全局脉冲会激发纠缠区内未参与目标门的原子，产生空闲受激误差\cite{evered2023highfidelity,lin2025zac}。跨层驻留可减少阱转移，却也使暂不参与门的原子经历更多Rydberg脉冲。
+
+层间路由需要处理移动原子与静止原子的占位关系。给定源位置和目标位置后，编译器确定轨迹分组及其执行顺序，保证原子离开源位置后再占用相应位置\cite{stade2024abstractmodel,stade2025routingaware}。
+
+\begin{figure}[!t]
+  \centering
+  \resizebox{\columnwidth}{!}{\input{figures/architecture_preliminaries}}
+  \caption{分区架构与AOD重排约束。(a) 存储区的$q_2$接受Raman单比特门，纠缠区的$q_0$、$q_1$接受Rydberg双比特门，$q_3$跨区输运。(b)--(d) 分别示意行列非交叉约束、同行/同列保持约束及静止原子$q_2$处的非目标交点约束；(d)中的两次装载须分为$B_1$和$B_2$。实线和红色虚线分别表示可行与不兼容移动；区域尺寸和阱位数量为示意。}
+  \label{fig:architecture-preliminaries}
+\end{figure}
+
+本文采用分区中性原子架构的保真度模型评价编译结果\cite{lin2025zac}：
+\begin{equation}
+\begin{aligned}
+\log F={}&N_1\log f_1+N_2\log f_2
++N_{\mathrm{exc}}\log f_{\mathrm{exc}}\\
+&+N_{\mathrm{tran}}\log f_{\mathrm{tran}}
++\sum_{q\in\mathcal Q}\log\left(1-\frac{t_q}{T_2}\right).
+\end{aligned}
+\label{eq:fidelity}
+\end{equation}
+其中，$N_1$、$N_2$分别为单、双比特门数，$N_{\mathrm{exc}}$为纠缠区非参与原子的受激次数，$N_{\mathrm{tran}}$为SLM与AOD之间的逐原子阱转移次数；$f_1$、$f_2$、$f_{\mathrm{exc}}$和$f_{\mathrm{tran}}$为相应的单次保真度因子，$t_q$为原子$q$的累计空闲时间，$T_2$为相干时间。门数固定时，编译主要通过减少阱转移、空闲受激和相干损失提高保真度。参照Stade等人的路由评价\cite{stade2025routingaware}，本文统计重排批次与重排时延。重排批次为必须顺序执行的相容轨迹组数，批次越少，路由并行性越高；重排时延为各批次关键轨迹持续时间之和，反映完成原子输运所需的时间。
+
+\subsection{中性原子编译方法}
+
+固定阵列编译通过电路分块和原子布局适配硬件门集与连接条件。Geyser围绕原生多比特门进行电路分块，GRAPHINE依据带权交互图构造面向特定应用的Rydberg原子排列\cite{patel2022geyser,patel2023graphine}。Schmid等人的混合映射方法结合长程门与原子输运，以适配具有多种连接能力的中性原子设备\cite{schmid2024hybrid}。
+
+可重构阵列允许在电路执行过程中改变原子位置，其编译器联合安排门操作与原子输运。OLSQ-DPQA联合求解门调度、放置与移动，Enola将双比特门调度和并行搬运分解处理\cite{tan2022mapping,tan2024olsqdpqa,tan2025enola}。Atomique与PARALLAX分别利用多AOD阵列和无SWAP移动扩大并行性\cite{wang2024atomique,ludmir2024parallax}。Q-Pilot将数据原子固定于静态阱，通过可回收的移动辅助原子完成双比特交互；Weaver通过FPQA专用中间表示和可扩展优化通道支持跨设备重定向\cite{wang2024qpilot,kirmemis2025weaver}。这些方法着重改善可重构阵列的连通性与并行性，而分区架构还需要在存储隔离、Rydberg暴露与跨区转移之间作出选择。
+
+面向分区架构，Stade等人给出了抽象模型与重排算法\cite{stade2024abstractmodel}。ZAC通过相邻层匹配复用纠缠区原子，并以带下一伙伴项的最小权匹配选择门位和存储位\cite{lin2025zac}。Stade等人的路由感知放置（下称ICCAD/QMAP）采用A*搜索门放置和中间放置，其代价考虑兼容移动分组、组内最长轨迹和下一交互伙伴\cite{stade2025routingaware}。PowerMove联合优化门调度、放置、移动与跨区通信，Mantra通过程序重写和抢先调度减少原子往返\cite{ruan2025powermove,jang2025mantra}。ZAC与ICCAD/QMAP分别代表复用感知匹配和路由感知A*放置。本文选择二者作为外部基线，在相同分区架构、输入和保真度模型下比较端到端编译结果。
+
+\subsection{跨层驻留与存储位选择}
+
+跨层驻留决定原子在两次交互之间所在的区域。留在纠缠区可减少往返转移，回到存储区可避免中间层的Rydberg暴露。回迁存储位决定后续搬运的起点，以及是否占用其他原子的通道。驻留、回迁存储位与后续门位共同决定了层间重排的物理代价。
+
+考虑原子$q$的两次非相邻交互：在$L_\ell$与$p$执行CZ门后，经过两个中间双比特层，再与$r$交互，层序见图~\ref{fig:baseline-motivation}(a)。驻留会经历两次空闲受激，回迁需要一次往返存储区的转移序列，二者的代价见图~\ref{fig:baseline-motivation}(b)。两次交互间隔的层数越多，驻留原子累积的空闲受激越多；回迁存储位影响后续重排。若$q$占据直达通道上的$s_1$，$u\to u'$轨迹会受到阻挡；通道之外的$s_2$允许直达输运，见图~\ref{fig:baseline-motivation}(c)。静止原子$q$与单条$u\to u'$轨迹之间的占位冲突，需要通过重选存储位释放通道，或增加中转改变路径。
+
+\begin{figure*}[t]
+  \centering
+  \resizebox{\textwidth}{!}{\input{figures/baseline_motivation}}
+  \caption{非相邻交互下的驻留与存储位选择。(a) $q$在两个中间双比特层之后再次参与CZ门。(b) 留在纠缠区可减少阱转移，回到存储区可避免中间层的空闲受激。(c) 当静止原子$q$占据直达通道上的$s_1$时，$u\to u'$直达轨迹不可行；将$q$放置在通道之外的$s_2$后，该轨迹可行。前一种状态需重新选择存储位或增加中转。各状态采用相同区域几何，尺寸与阱位数量不按比例。}
+  \label{fig:baseline-motivation}
+\end{figure*}
+
+选择$s_1$与$s_2$的当前阱转移数相同，后续可行轨迹却不同。层间状态需要记录原子的具体位置；从候选产生的新状态继续评价未来门层，才能将存储位对后续输运的影响计入当前选择。
+
+\subsection{本文贡献}
+\label{sec:contributions}
+
+本文在复用感知编译与路由感知放置\cite{lin2025zac,stade2025routingaware}的基础上提出GA-LK，主要贡献如下：
+\begin{itemize}
+  \item 采用联合遗传搜索协调门位、驻留与回迁存储位。染色体共同表示双比特门位和非相邻层之间的驻留选择，$K$优单射匹配为回迁原子分配互异存储位，使三类位置选择按同一物理目标优化；小规模编码空间采用精确枚举。
+  \item 从候选转换后的物理状态开展衰减多层前瞻。按后续双比特层的执行顺序更新原子位置与时钟，累计阱转移、空闲受激、输运及阻挡原子迁移的代价，以评价当前选择对非相邻交互的影响，并据此选择层边界方案。
+  \item 将轨迹冲突图着色与占位顺序检查用于重排批次构造。依据AOD行列次序、同行同列关系及非目标交点约束建立冲突图，以DSATUR着色\cite{brelaz1979coloring}生成初始分组，再检查源点释放与目标占用顺序。可执行批次及其时延使联合搜索和多层前瞻能够评价放置方案的路由并行性与输运开销。
+\end{itemize}

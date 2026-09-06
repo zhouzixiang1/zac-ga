@@ -1,0 +1,22 @@
+\begin{table*}[!t]
+\caption{ZAC18与QMAP154上三种编译方法的总体结果}
+\label{tab:main-results}
+\centering
+\PaperTableSetup
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}llrrrr@{}}
+\toprule
+数据集 & 方法 & 模型保真度 & 重排批次 & \shortstack{重排时延\\(ms)} & \shortstack{完整结果\\/$N$}\\
+\midrule
+\multirow{3}{*}{\shortstack{ZAC18\\($N_{\rm ind}=\ZACStrictN$)}}
+& ZAC & \pgfmathprintnumber[fixed,precision=4,zerofill]{\ZACMOneF} & \ZACMOneB & \ZACMOneT & \ZACMOneV\\
+& ICCAD/QMAP & \pgfmathprintnumber[fixed,precision=4,zerofill]{\ZACMTwoF} & \ZACMTwoB & \ZACMTwoT & \ZACMTwoV\\
+& GA-LK & \textbf{\boldmath\pgfmathprintnumber[fixed,precision=4,zerofill]{\ZACMFourF}} & \textbf{\ZACMFourB} & \textbf{\ZACMFourT} & \ZACMFourV\\
+\midrule
+\multirow{3}{*}{\shortstack{QMAP154\\($N_{\rm ind}=\QMAPStrictN$)}}
+& ZAC & \pgfmathprintnumber[fixed,precision=6,zerofill]{\QMAPMOneF} & \QMAPMOneB & \QMAPMOneT & \QMAPMOneV\\
+& ICCAD/QMAP & \pgfmathprintnumber[fixed,precision=6,zerofill]{\QMAPMTwoF} & \QMAPMTwoB & \QMAPMTwoT & \QMAPMTwoV\\
+& GA-LK & \textbf{\boldmath\pgfmathprintnumber[fixed,precision=6,zerofill]{\QMAPMFourF}} & \textbf{\QMAPMFourB} & \textbf{\QMAPMFourT} & \QMAPMFourV\\
+\bottomrule
+\end{tabular*}
+\PaperTableNote[\textwidth]{注：保真度取几何均值，重排批次和时延取算术均值；粗体标示同一数据集内的最优值。$N_{\rm ind}$为三种方法共同有效的不同电路数，QMAP154的\QMAPStrictFileN 个共同有效文件去重后对应\QMAPStrictN 个电路。完整结果数按全部输入文件统计。}
+\end{table*}

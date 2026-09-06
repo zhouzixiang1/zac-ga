@@ -1,0 +1,53 @@
+\section{实验评估}
+\label{sec:evaluation}
+
+本文从模型保真度、重排批次和重排时延三个方面比较GA-LK与现有编译方法，并通过受控对照分析多层前瞻与遗传搜索的作用。
+
+\input{sections/05_main_table}
+
+\subsection{实验设置}
+
+实验采用ZAC论文中的18个电路（ZAC18）\cite{lin2025zac}和MQT QMAP示例集中的154个输入文件（QMAP154）\cite{wille2023qmap}。QMAP154经电路规范化与去重后包含151个不同电路；等价输入合并为同一分析单元，其保真度在对数域取均值。外部基线为Lin等人的ZAC\cite{lin2025zac}和Stade等人的路由感知放置ICCAD/QMAP\cite{stade2025routingaware}，后者基于MQT QMAP v3.2.0实现。三种编译器使用相同的规范化输入与门序列。
+
+硬件模型包含$100\times100$个存储区SLM阱位、$7\times20$个纠缠区门位对和一个$100\times100$的AOD阵列。保真度采用式~\eqref{eq:fidelity}，参数为$f_1=0.9997$、$f_2=0.995$、$f_{\rm exc}=0.9975$、$f_{\rm tran}=0.999$及$T_2=1.5\times10^6\,\mu$s，与ZAC的评估设置一致\cite{lin2025zac}。每次SLM--AOD阱转移计入$N_{\rm tran}$，输运时间计入$t_q$。外部基线使用各自的原生输出，GA-LK采用第~\ref{sec:method}节的候选可行性检查。单次运行限时600~s。保真度、重排批次和时延仅统计三种编译器均完成编译且满足$t_q<T_2$的不同电路；完整结果的数量按全部输入文件统计。
+
+程序以C++17 Release模式编译，关闭OpenMP与快速数学优化。单线程计时平台配备14核Apple M4 Pro和24~GB内存，使用macOS~26.6.2、Python~3.10.19和AppleClang~21.0.0。
+
+主比较采用表~\ref{tab:solver-bounds}的求解预算及$(H_{\max},\alpha,\rho,\epsilon)=(8,0.5,0.7,0.05)$。GA-LK以随机种子0、1和2分别运行，逐电路取中位数。受控组件比较的参数与样本范围在对应小节给出。
+
+\subsection{编译质量}
+
+GA-LK在两个基准集上均提高了模型保真度，平均重排批次与重排时延也低于两种基线，三种方法的总体结果见表~\ref{tab:main-results}。在ZAC18上，保真度几何均值相对ZAC和ICCAD/QMAP分别提高\PaperPercentGain{\ZACMFourF}{\ZACMOneF}和\PaperPercentGain{\ZACMFourF}{\ZACMTwoF}；在QMAP154上，分别提高\PaperPercentGain{\QMAPMFourF}{\QMAPMOneF}和\PaperPercentGain{\QMAPMFourF}{\QMAPMTwoF}，对应增幅见图~\ref{fig:experimental-summary}(a)。
+
+个别电路获得了更大的保真度改善。在表~\ref{tab:representative-circuits}的四个实例中，量子傅里叶变换电路\texttt{QFT-18}的相对增幅最大，三个Ising电路也均优于两种基线，逐电路增幅见图~\ref{fig:experimental-summary}(b)。这些实例来自两个基准集，各取两项；要求较高基线保真度不低于0.05，并按GA-LK相对该值的对数保真度差排序。表中列出电路规模和绝对保真度，图中给出相对各基线的增幅。
+
+\input{figures/data/fig6_selected_cases.tex}
+\input{sections/05_circuit_table}
+% Declare both single-column tables before the wide figure so that they remain
+% beside the results discussion rather than entering the final-page float queue.
+\input{sections/05_sensitivity_table}
+\begin{figure*}[t]
+  \centering
+  \resizebox{\textwidth}{!}{\input{figures/experimental_summary}}
+  \caption{GA-LK相对ZAC和ICCAD/QMAP的模型保真度改善。(a) 两个基准集上的几何均值增幅，分别使用18和120个共同有效的不同电路。(b) 表~\ref{tab:representative-circuits}所列四个高增益电路的逐项增幅。纵轴均为$100(F_{\rm GA\text{-}LK}/F_{\rm baseline}-1)$，从零起画；数值越大表示改善越多。}
+  \label{fig:experimental-summary}
+\end{figure*}
+
+重排批次减少意味着原子输运所需的串行阶段更少。GA-LK在ZAC18上的平均批次数由ZAC的\ZACMOneB 和ICCAD/QMAP的\ZACMTwoB 降至\ZACMFourB；在QMAP154上，由\QMAPMOneB 和\QMAPMTwoB 降至\QMAPMFourB。平均重排时延也分别降至\ZACMFourT\,ms和\QMAPMFourT\,ms，均低于两种基线。GA-LK的平均输运开销在批次数与持续时间两个方面均得到改善。
+
+\subsection{多层评价与遗传搜索}
+\label{sec:ablation}
+
+加入后续门层的信息后，$H_{\max}=8$的模型保真度几何均值较零视界配置提高\PaperPercentGain{\AblationHRatio}{1}。在相同目标函数与评价预算下，遗传搜索较逐坐标确定性贪心及局部精修提高\PaperPercentGain{\AblationGARatio}{1}。
+
+视界比较采用$H_{\max}=8$与$H_{\max}=0$，共用$(\alpha,\rho,\epsilon)=(0.5,0.7,0.05)$、搜索预算和存储位候选域。两者均满足当前层的物理约束。最大视界为8层的配置估计后续门层的物理代价和窗口末端的回迁代价，并依据未来复用确定驻留保护集合；零视界配置以当前层代价为目标。遗传搜索与贪心方法的比较固定$H_{\max}=8$目标及全部物理约束。
+
+对照使用全部ZAC18电路和30个分层选取的QMAP154电路。QMAP154按双比特门数分为不超过300、301--1500和大于1500三个层级，各取10个；层内按规范化电路内容的哈希顺序选取，清单见代码仓库。视界与搜索策略比较分别纳入\AblationHN 和\AblationGAN 个具备完整三种子结果的电路。
+
+\subsection{参数选择与编译开销}
+
+候选数量与前瞻深度决定了搜索需要的计算量。评价预算、存储位域、最大视界和衰减权重对保真度与编译时间的影响见表~\ref{tab:sensitivity}。比较采用固定的12个电路：ZAC18按量子比特数分为不超过32、33--64和大于64三个层级，QMAP154沿用双比特门数分层，各层按相同哈希规则取2个电路。
+
+在所评估配置中，降低评价预算或缩小存储位域后，保真度仍接近默认值，编译时间比分别降至\SensitivityBudgetLowTimeRatio 和\SensitivityReturnSmallTimeRatio。最大视界缩短至4层时，保真度也接近默认配置。
+
+候选搜索与未来状态评价增加了GA-LK的编译计算量。固定12电路子集上的端到端编译时间中位数为\StrictMFourTime\,s，相对ICCAD/QMAP的逐电路时间比几何均值为\StrictMFourVsMTwo。各编译器使用原生单线程实现，计时为预热后三次运行的中位数。

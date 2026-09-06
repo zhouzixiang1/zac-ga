@@ -9,13 +9,15 @@
 [![Experiment schema](https://img.shields.io/badge/experiment%20schema-v2-6B7280)](ZAC_zzx/experiments_v2/README.md)
 [![Paper artifacts](https://img.shields.io/badge/paper%20artifacts-v2-2F855A)](ZAC_zzx/results/paper_zh_v2/final_manifest.json)
 
-[Overview](#overview) · [Method](#method-at-a-glance) · [Repository map](#repository-map) · [Results](#paper-result-snapshot) · [Build and test](#build-and-test) · [Reproducibility](#reproducibility-boundaries)
+[Overview](#overview) · [Paper](#manuscript) · [Repository map](#repository-map) · [Results](#paper-result-snapshot) · [Build and test](#build-and-test) · [Reproducibility](#reproducibility-boundaries)
 
 </div>
 
 > [!NOTE]
-> The paper-facing implementation and verified artifacts live on the
-> default `main` branch. The repository is currently private;
+> The implementation, manuscript sources, and verified artifacts live on the
+> default `main` branch. Edit the paper in `IEEE_conference_template/`;
+> new compilation outputs belong in the repository-root `build/` directory.
+> The repository is currently private;
 > access and anonymization should be configured for the relevant review stage.
 
 ## Overview
@@ -32,14 +34,46 @@ same physical state-transition checks before it is ranked by its current
 physical cost and a decayed finite-horizon estimate. Small decision spaces are
 enumerated exactly; larger spaces use a bounded genetic search.
 
-The paper evaluates four compiler configurations:
+The main paper comparison includes two baselines and GA-LK:
 
 | Configuration | Role | Layer-boundary objective |
 |---|---|---|
 | **ZAC** | Baseline from Lin *et al.* | Adjacent-layer reuse and partner-aware matching |
 | **ICCAD/QMAP** | Routing-aware A* baseline from Stade *et al.* | Compatible movement groups and routing cost |
-| **GA-NL** | No-layer-lookahead ablation | Joint placement with the current physical cost only |
 | **GA-LK** | Full method | Joint placement with decayed finite-horizon evaluation |
+
+**GA-NL** is an independently configured internal method retained in the full
+experiment workbook. It is distinct from the controlled **H = 0** configuration:
+the H = 8 / H = 0 comparison shares the remaining parameters and isolates the
+finite-horizon contribution. The matched-objective GA / greedy comparison
+examines the search strategy.
+
+## Manuscript
+
+The maintained Chinese IEEE manuscript is
+[`IEEE_conference_template/paper_zh.tex`](IEEE_conference_template/paper_zh.tex).
+Section sources, editable TikZ figures, numerical macros, and verification
+scripts are kept alongside it. The earlier desktop copy is retained as a
+snapshot; future paper edits belong in this repository.
+
+From the repository root:
+
+```bash
+make paper
+make paper-test
+make paper-preview
+```
+
+The compiled manuscript is `build/paper_zh/paper_zh.pdf`. The standalone
+framework figure, compilation logs, verification reports, and page previews
+also remain under `build/paper_zh/`. Generated build files are not tracked.
+The frozen experiment evidence stays in `ZAC_zzx/results/paper_zh_v2/`.
+
+The [Overleaf project](https://www.overleaf.com/project/6a866ce86ea64496e2ae01a5)
+is a publication mirror of this manuscript directory, not a second source
+repository. The [sync procedure](docs/REPOSITORY_MAP.md#overleaf-同步) prepares a
+separate checkout under `build/`, checks the remote revision, and adapts only the
+standalone figure path. It never writes to the retained desktop copy.
 
 ## Method at a glance
 
@@ -71,14 +105,20 @@ passes its own internal bookkeeping.
 
 | Path | Purpose |
 |---|---|
+| [`IEEE_conference_template/`](IEEE_conference_template/) | Maintained Chinese IEEE manuscript, TikZ sources, numerical presentation, and paper checks |
 | [`ZAC_zzx/native/`](ZAC_zzx/native/) | C++17 layer-boundary search backend and native tests |
 | [`ZAC_zzx/zzx/`](ZAC_zzx/zzx/) | Python compiler integration, state handling, and routing logic |
 | [`ZAC_zzx/experiments_v2/`](ZAC_zzx/experiments_v2/) | Schema-v2 experiment drivers, statistics, export, and provenance checks |
 | [`ZAC_zzx/exp_setting/native_ga_v1/`](ZAC_zzx/exp_setting/native_ga_v1/) | Frozen experiment configurations and circuit splits |
 | [`ZAC_zzx/results/paper_zh_v2/`](ZAC_zzx/results/paper_zh_v2/) | Current paper aggregates, independent analysis units, workbook QA, and final evidence manifest |
 | [`ZAC/`](ZAC/) | Original ZAC baseline and its environment |
+| [`experiments/`](experiments/) | Baseline reproduction helpers and reference evidence |
 | [`archive/`](archive/) | Earlier compiler prototypes and external reference workspaces |
 | [`documents/`](documents/) | Local copies of the baseline papers used by this study |
+| `build/` | Ignored output directory for new paper and native builds |
+
+See the [repository guide](docs/REPOSITORY_MAP.md) for entry points, local-only
+dependencies, historical artifacts, and the paper editing workflow.
 
 Only the current `paper_zh_v2` result package is tracked at the repository tip.
 Earlier diagnostic and intermediate result trees remain recoverable from Git
@@ -90,6 +130,8 @@ The primary comparison requires valid ZAC, ICCAD/QMAP A*, and GA-LK results;
 GA-NL is an internal configuration and does not determine this cohort. QMAP
 aliases with the same canonical QASM hash are averaged before inference, while
 compiler coverage continues to count every frozen input file.
+The snapshot below retains the artifact audit's per-circuit strongest-baseline
+reference; the manuscript reports comparisons with ZAC and ICCAD/QMAP separately.
 
 | Evidence | ZAC18 | QMAP154 |
 |---|---:|---:|
@@ -116,18 +158,38 @@ Authoritative artifacts:
 
 ## Build and test
 
+All commands in this section start at the repository root unless stated
+otherwise. Use `PYTHON=/path/to/env/python` to select an existing environment.
+
+### Manuscript
+
+```bash
+make paper          # Rebuild the standalone figure and manuscript; run verification
+make paper-check    # Check the existing paper build without recompiling
+make paper-test     # Numerical-presentation and figure-data regression tests
+make paper-preview  # Render pages for visual inspection
+```
+
+The paper build requires XeLaTeX, BibTeX, the manuscript's TeX packages and
+fonts, Python, and the PDF inspection tools used by its verifier. Build and
+preview dependencies are described in
+[`IEEE_conference_template/README_zh.md`](IEEE_conference_template/README_zh.md).
+
 ### Native backend
 
 ```bash
-cd ZAC_zzx/native
-python -m pip install build
-python -m build --wheel -o dist
-python -m pip install --force-reinstall dist/zac_native-*.whl
-
-cmake -S . -B build/ctest -DBUILD_TESTING=ON
-cmake --build build/ctest --config Release
-ctest --test-dir build/ctest --output-on-failure
+make native-build PYTHON=/path/to/env/python
+make native-test PYTHON=/path/to/env/python
+make native-wheel PYTHON=/path/to/env/python
 ```
+
+The selected environment needs the native build dependencies, including
+`pybind11` (plus `build` and `scikit-build-core` for wheel packaging), and the
+system needs CMake, Make, and a C++17 compiler.
+The root build targets direct new native outputs to `build/native/`; they do
+not install a wheel, replace a registered experimental binary, or promote a
+build to frozen evidence. Historical attested builds and existing environments
+remain in their recorded locations.
 
 ### Paper-facing regression checks
 
@@ -160,6 +222,9 @@ for the experiment protocol.
 - Some experiment-plan provenance records retain machine-specific paths. The
   checked-in manifests support artifact auditing, but a fresh clone is not yet
   a one-command reproduction of every raw run.
+- Local raw artifacts in `fidelity-lookahead-v2/artifacts/` and their historical
+  build products are preserved in place. The root `build/` convention applies
+  to new compilation outputs, not to relocation of frozen experiment evidence.
 - No repository-level license has been selected. The code should be treated as
   research software with all rights reserved until a license is added.
 
