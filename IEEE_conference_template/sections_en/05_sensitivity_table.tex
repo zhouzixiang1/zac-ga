@@ -1,0 +1,24 @@
+\begin{table}[!t]
+\caption{One-Factor Parameter Sensitivity}
+\label{tab:sensitivity}
+\centering
+\PaperTableSetup
+\begin{tabular*}{\columnwidth}{@{}l@{\extracolsep{\fill}}crr@{}}
+\toprule
+Parameter & Value & $F/F_0$ & $t/t_0$\\
+\midrule
+\multirow{2}{*}{Evaluation budget $E_{\max}$} & 192 & \SensitivityBudgetLowFidelityRatio & \SensitivityBudgetLowTimeRatio\\
+ & 1152 & \SensitivityBudgetHighFidelityRatio & \SensitivityBudgetHighTimeRatio\\
+\addlinespace[4pt]
+\multirow{2}{*}{Storage domain/matchings} & $(4,2)$ & \SensitivityReturnSmallFidelityRatio & \SensitivityReturnSmallTimeRatio\\
+ & $(10,8)$ & \SensitivityReturnLargeFidelityRatio & \SensitivityReturnLargeTimeRatio\\
+\addlinespace[4pt]
+\multirow{2}{*}{Maximum horizon $H_{\max}$} & 2 & \SensitivityHorizonTwoFidelityRatio & \SensitivityHorizonTwoTimeRatio\\
+ & 4 & \SensitivityHorizonFourFidelityRatio & \SensitivityHorizonFourTimeRatio\\
+\addlinespace[4pt]
+\multirow{2}{*}{Decay weights $(\alpha,\rho)$} & $(0.2,0.5)$ & \SensitivityDecayWeakFidelityRatio & \SensitivityDecayWeakTimeRatio\\
+ & $(0.35,0.6)$ & \SensitivityDecayMiddleFidelityRatio & \SensitivityDecayMiddleTimeRatio\\
+\bottomrule
+\end{tabular*}
+\PaperTableNote{$F/F_0$ and $t/t_0$ are geometric means of per-circuit ratios relative to the default, over \SensitivityFidelityN{} and \SensitivityTimeN{} valid circuits, respectively. Defaults are specified in the experimental setup and Table~\ref{tab:solver-bounds}; the storage-site domain size and matching count are $(6,4)$.}
+\end{table}

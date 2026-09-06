@@ -2,6 +2,8 @@
 
 本目录是后续唯一的论文编辑入口，随 ZAC 主仓库的 main 分支管理。主文件为 [paper_zh.tex](paper_zh.tex)，使用 IEEE conference A4 双栏版式和 XeLaTeX。
 
+对应英文稿为 [paper_en.tex](paper_en.tex)，按同名章节保存在 [sections_en/](sections_en/)；构建与逐项对照方法见 [英文稿说明](README_en.md)。中文稿仍作为内容对照依据，两版共用图形、数值宏与文献。
+
 桌面的 IEEE_conference_template_upgrade 与原始 ZIP 保持原样，作为保留副本；不再向它们同步修改或编译。本目录不含嵌套 .git。现有 Overleaf 项目继续使用，其同步副本位于仓库根 build/overleaf-sync/，不依赖桌面目录。
 
 ## 编辑与审阅

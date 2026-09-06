@@ -1,0 +1,22 @@
+\begin{table*}[!t]
+\caption{Overall Results of Three Compilation Methods on ZAC18 and QMAP154}
+\label{tab:main-results}
+\centering
+\PaperTableSetup
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}llrrrr@{}}
+\toprule
+Dataset & Method & Model fidelity & Rearrangement batches & \shortstack{Rearrangement time\\(ms)} & \shortstack{Complete results\\/$N$}\\
+\midrule
+\multirow{3}{*}{\shortstack{ZAC18\\($N_{\rm ind}=\ZACStrictN$)}}
+& ZAC & \pgfmathprintnumber[fixed,precision=4,zerofill]{\ZACMOneF} & \ZACMOneB & \ZACMOneT & \ZACMOneV\\
+& ICCAD/QMAP & \pgfmathprintnumber[fixed,precision=4,zerofill]{\ZACMTwoF} & \ZACMTwoB & \ZACMTwoT & \ZACMTwoV\\
+& GA-LK & \textbf{\boldmath\pgfmathprintnumber[fixed,precision=4,zerofill]{\ZACMFourF}} & \textbf{\ZACMFourB} & \textbf{\ZACMFourT} & \ZACMFourV\\
+\midrule
+\multirow{3}{*}{\shortstack{QMAP154\\($N_{\rm ind}=\QMAPStrictN$)}}
+& ZAC & \pgfmathprintnumber[fixed,precision=6,zerofill]{\QMAPMOneF} & \QMAPMOneB & \QMAPMOneT & \QMAPMOneV\\
+& ICCAD/QMAP & \pgfmathprintnumber[fixed,precision=6,zerofill]{\QMAPMTwoF} & \QMAPMTwoB & \QMAPMTwoT & \QMAPMTwoV\\
+& GA-LK & \textbf{\boldmath\pgfmathprintnumber[fixed,precision=6,zerofill]{\QMAPMFourF}} & \textbf{\QMAPMFourB} & \textbf{\QMAPMFourT} & \QMAPMFourV\\
+\bottomrule
+\end{tabular*}
+\PaperTableNote[\textwidth]{Fidelity is the geometric mean; batch counts and rearrangement times are arithmetic means. Bold values denote the best result within each dataset. $N_{\rm ind}$ counts distinct circuits valid for all three methods. The \QMAPStrictFileN{} common valid QMAP154 files correspond to \QMAPStrictN{} distinct circuits after deduplication. Complete-result counts cover all input files.}
+\end{table*}

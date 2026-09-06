@@ -1,4 +1,7 @@
 % The same frozen aggregate and circuit values, on zero-based gain axes.
+% Setup executes inside resizebox's horizontal box. Suppress setup line ends
+% (including generated definitions) so they cannot become leading figure glue.
+\begingroup\endlinechar=-1\relax%
 \input{figures/tikz_style}
 \providecommand{\FigSixDataRoot}{figures/data}
 \input{\FigSixDataRoot/fig6_meta.tex}
@@ -32,6 +35,7 @@
   figsix iccad/.style={draw=galkTail,fill=galkTail!65,line width=.45pt}
 }
 
+\endlinechar=13\relax%
 \begin{tikzpicture}[galk/base]
   \path[use as bounding box] (-.05,-.30) rectangle (17.85,5.92);
   \begin{pgfinterruptboundingbox}
@@ -86,4 +90,5 @@
       {\FigSixDataRoot/fig6_selected_cases.dat};
   \end{axis}
   \end{pgfinterruptboundingbox}
-\end{tikzpicture}
+\end{tikzpicture}%
+\endgroup

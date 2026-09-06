@@ -1,7 +1,9 @@
 """Offline Overleaf export protections; no test contacts a Git server."""
 
 import importlib.util
+from contextlib import redirect_stdout
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -42,10 +44,10 @@ class OverleafPreparationTests(unittest.TestCase):
     def test_generated_files_and_local_latexmkrc_are_excluded(self):
         for name in (".git/config", "build/paper.pdf", "tmp/a.png", "x.aux", "x.log",
                      "x.synctex.gz", "writing/__pycache__/a.pyc", ".latexmkrc",
-                     "latexmkrc", "paper_zh.pdf", "figures/overall_framework.pdf"):
+                     "latexmkrc", "paper_zh.pdf", "paper_en.pdf", "figures/overall_framework.pdf"):
             with self.subTest(name=name):
                 self.assertTrue(sync.excluded(PurePosixPath(name)))
-        for name in ("paper_zh.tex", "figures/data/results.dat", "template-A4.pdf",
+        for name in ("paper_zh.tex", "paper_en.tex", "figures/data/results.dat", "template-A4.pdf",
                      "IEEEtran_HOWTO.pdf", ".gitignore"):
             with self.subTest(name=name):
                 self.assertFalse(sync.excluded(PurePosixPath(name)))
@@ -63,6 +65,65 @@ class OverleafPreparationTests(unittest.TestCase):
         for source in (b"wrong path", sync.LOCAL_FIGURE_PATH * 2):
             with self.subTest(source=source), self.assertRaises(sync.PreparationError):
                 sync.export_payload({PurePosixPath("sections/03_method.tex"): source}, b"figure")
+
+    def test_bilingual_export_only_changes_both_method_include_paths(self):
+        methods = [PurePosixPath("sections/03_method.tex"),
+                   PurePosixPath("sections_en/03_method.tex")]
+        source = b"before {" + sync.LOCAL_FIGURE_PATH + b"} after"
+        other = PurePosixPath("sections_en/01_introduction.tex")
+        snapshot = {method: source for method in methods}
+        snapshot.update({PurePosixPath("paper_zh.tex"): b"Chinese entry",
+                         PurePosixPath("paper_en.tex"): b"English entry",
+                         other: b"literal example: " + sync.LOCAL_FIGURE_PATH})
+        original = dict(snapshot)
+        result = sync.export_payload(snapshot, b"verified figure")
+        for method in methods:
+            self.assertEqual(result[method], b"before {figures/overall_framework.pdf} after")
+        for relative in snapshot.keys() - set(methods):
+            self.assertEqual(result[relative], snapshot[relative])
+        self.assertEqual(snapshot, original)
+        self.assertEqual(result[PurePosixPath("figures/overall_framework.pdf")], b"verified figure")
+
+    def test_english_entry_or_sections_require_valid_english_method(self):
+        method = PurePosixPath("sections_en/03_method.tex")
+        for marker in (PurePosixPath("paper_en.tex"),
+                       PurePosixPath("sections_en/01_introduction.tex")):
+            for source in (None, b"wrong path", sync.LOCAL_FIGURE_PATH * 2):
+                snapshot = {PurePosixPath("sections/03_method.tex"): sync.LOCAL_FIGURE_PATH,
+                            marker: b"English source"}
+                if source is not None:
+                    snapshot[method] = source
+                with self.subTest(marker=marker, source=source), \
+                        self.assertRaisesRegex(sync.PreparationError, "sections_en/03_method.tex"):
+                    sync.export_payload(snapshot, b"figure")
+
+    def test_english_method_without_entry_is_also_adapted(self):
+        snapshot = {PurePosixPath("sections/03_method.tex"): sync.LOCAL_FIGURE_PATH,
+                    PurePosixPath("sections_en/03_method.tex"): sync.LOCAL_FIGURE_PATH}
+        result = sync.export_payload(snapshot, b"figure")
+        self.assertEqual(result[PurePosixPath("sections_en/03_method.tex")], sync.OVERLEAF_FIGURE_PATH)
+
+    def test_report_lists_all_actual_scientific_source_adaptations(self):
+        for bilingual in (False, True):
+            methods = [PurePosixPath("sections/03_method.tex")]
+            if bilingual:
+                methods.append(PurePosixPath("sections_en/03_method.tex"))
+            snapshot = {method: sync.LOCAL_FIGURE_PATH for method in methods}
+            snapshot[PurePosixPath("paper_zh.tex")] = b"unchanged entry"
+            output = io.StringIO()
+            with self.subTest(bilingual=bilingual), \
+                    patch.object(sync.sys, "argv", ["prepare_overleaf_sync.py", "--check-only",
+                                                   "--expected-remote", self.tip]), \
+                    patch.object(sync, "local_files", return_value=sorted(snapshot)), \
+                    patch.object(sync, "read_sources", return_value=snapshot), \
+                    patch.object(sync, "check_build", return_value=b"figure"), \
+                    patch.object(sync, "prepare_checkout", return_value=(self.checkout, self.tip, [])), \
+                    patch.object(sync, "copy_export") as copy_export, redirect_stdout(output):
+                self.assertEqual(sync.main(), 0)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report["only_scientific_source_adaptation"], [
+                f"{method}: local PDF path to figures/overall_framework.pdf" for method in methods])
+            copy_export.assert_not_called()
 
     def test_dirty_checkout_stops_before_fetch(self):
         with patch.object(sync, "git", return_value=subprocess.CompletedProcess(

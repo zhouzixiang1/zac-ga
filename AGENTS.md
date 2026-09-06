@@ -3,6 +3,7 @@
 - The repository root is this `zac/` directory. Work on `main` unless the user requests another branch.
 - The active Chinese IEEE manuscript is `IEEE_conference_template/paper_zh.tex`. Edit this in-repository copy; the desktop `IEEE_conference_template_upgrade` directory and ZIP are retained snapshots, not active editing targets.
 - Preserve existing uncommitted changes; the author may edit the manuscript concurrently.
+- The English counterpart is `IEEE_conference_template/paper_en.tex` with same-named files in `sections_en/`. Keep its claims, formulas, citations and data aligned with the Chinese source. Use `make paper-en` and inspect both rendered versions after bilingual edits; English outputs belong in `build/paper_en/`, with page count independent of the nine-page Chinese layout.
 - Use `build/overleaf-sync/` for the Overleaf export and Git checkout. Inspect remote changes before exporting; never force-push or overwrite unmerged online edits. Adapt only the generated figure path for the cloud project and leave the desktop copy unchanged.
 - Put newly generated compilation outputs in root `build/`: paper PDF, figure PDF, LaTeX auxiliaries, QA and previews in `build/paper_zh/`; CMake/CTest and wheel outputs in `build/native/`. Use the root Makefile rather than compiling into source directories.
 - Do not relocate or delete historical experiment build artifacts, installed environments, or frozen evidence as part of build cleanup. Experimental data are not disposable build output.

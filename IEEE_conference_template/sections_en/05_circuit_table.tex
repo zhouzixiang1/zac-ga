@@ -1,0 +1,27 @@
+% Display aliases only; the same frozen rows and values serve both languages.
+\ExplSyntaxOn
+\NewExpandableDocumentCommand{\PaperCircuitLabel}{m}{
+  \str_case_e:nnF {#1} {
+    {qft_n18}{QFT-18}
+    {ising_n42}{Ising-42}
+    {ising_model_16}{Ising-16}
+    {ising_model_13}{Ising-13}
+  } {#1}
+}
+\ExplSyntaxOff
+\begin{table}[!t]
+\caption{Model Fidelity on Selected High-Gain Circuits}
+\label{tab:representative-circuits}
+\centering
+\PaperTableSetup
+\let\PaperRawTexttt\texttt
+\renewcommand{\texttt}[1]{\PaperRawTexttt{\PaperCircuitLabel{#1}}}
+\begin{tabularx}{\columnwidth}{@{}lLcrrr@{}}
+\toprule
+Dataset & Circuit & $n/g_2$ & ZAC & ICCAD & GA-LK\\
+\midrule
+\RepresentativeCircuitRows
+\bottomrule
+\end{tabularx}
+\PaperTableNote{Circuit aliases match Fig.~\ref{fig:experimental-summary}; $n/g_2$ denotes the qubit/two-qubit gate counts. ICCAD denotes ICCAD/QMAP; bold values identify the highest model fidelity for each circuit. Selection criteria are given in the text; aggregate results appear in Table~\ref{tab:main-results}.}
+\end{table}

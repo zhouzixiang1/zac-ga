@@ -3,22 +3,22 @@
 \label{tab:sensitivity}
 \centering
 \PaperTableSetup
-\begin{tabularx}{\columnwidth}{@{}lLrr@{}}
+\begin{tabular*}{\columnwidth}{@{}l@{\extracolsep{\fill}}crr@{}}
 \toprule
 参数 & 取值 & $F/F_0$ & $t/t_0$\\
 \midrule
-\multirow{2}{*}{\shortstack[l]{评价预算\\$E_{\max}$}} & 192 & \SensitivityBudgetLowFidelityRatio & \SensitivityBudgetLowTimeRatio\\
+\multirow{2}{*}{评价预算 $E_{\max}$} & 192 & \SensitivityBudgetLowFidelityRatio & \SensitivityBudgetLowTimeRatio\\
  & 1152 & \SensitivityBudgetHighFidelityRatio & \SensitivityBudgetHighTimeRatio\\
-\addlinespace[3pt]
-\multirow{2}{*}{\shortstack[l]{存储位域/\\匹配数}} & $(4,2)$ & \SensitivityReturnSmallFidelityRatio & \SensitivityReturnSmallTimeRatio\\
+\addlinespace[4pt]
+\multirow{2}{*}{存储位域/匹配数} & $(4,2)$ & \SensitivityReturnSmallFidelityRatio & \SensitivityReturnSmallTimeRatio\\
  & $(10,8)$ & \SensitivityReturnLargeFidelityRatio & \SensitivityReturnLargeTimeRatio\\
-\addlinespace[3pt]
-\multirow{2}{*}{\shortstack[l]{最大视界\\$H_{\max}$}} & 2 & \SensitivityHorizonTwoFidelityRatio & \SensitivityHorizonTwoTimeRatio\\
+\addlinespace[4pt]
+\multirow{2}{*}{最大视界 $H_{\max}$} & 2 & \SensitivityHorizonTwoFidelityRatio & \SensitivityHorizonTwoTimeRatio\\
  & 4 & \SensitivityHorizonFourFidelityRatio & \SensitivityHorizonFourTimeRatio\\
-\addlinespace[3pt]
-\multirow{2}{*}{\shortstack[l]{衰减权重\\$(\alpha,\rho)$}} & $(0.2,0.5)$ & \SensitivityDecayWeakFidelityRatio & \SensitivityDecayWeakTimeRatio\\
+\addlinespace[4pt]
+\multirow{2}{*}{衰减权重 $(\alpha,\rho)$} & $(0.2,0.5)$ & \SensitivityDecayWeakFidelityRatio & \SensitivityDecayWeakTimeRatio\\
  & $(0.35,0.6)$ & \SensitivityDecayMiddleFidelityRatio & \SensitivityDecayMiddleTimeRatio\\
 \bottomrule
-\end{tabularx}
+\end{tabular*}
 \PaperTableNote{注：$F/F_0$、$t/t_0$为相对默认配置的逐电路比值的几何均值，分别含\SensitivityFidelityN、\SensitivityTimeN 个有效电路。默认配置见实验设置与表~\ref{tab:solver-bounds}，存储位域/匹配数为$(6,4)$。}
 \end{table}

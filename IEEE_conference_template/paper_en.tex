@@ -1,0 +1,106 @@
+\documentclass[a4paper,conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{fontspec}
+\setmainfont{texgyretermes-regular.otf}[
+  BoldFont=texgyretermes-bold.otf,
+  ItalicFont=texgyretermes-italic.otf,
+  BoldItalicFont=texgyretermes-bolditalic.otf
+]
+\setsansfont{texgyreheros-regular.otf}[
+  BoldFont=texgyreheros-bold.otf,
+  ItalicFont=texgyreheros-italic.otf,
+  BoldItalicFont=texgyreheros-bolditalic.otf
+]
+\setmonofont{texgyrecursor-regular.otf}[
+  BoldFont=texgyrecursor-bold.otf,
+  ItalicFont=texgyrecursor-italic.otf,
+  BoldItalicFont=texgyrecursor-bolditalic.otf
+]
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{placeins}
+\usepackage[nospread,noshrink]{flushend}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,calc,shapes.geometric,shapes.misc,
+  backgrounds,decorations.pathreplacing,matrix,patterns.meta}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\method}{\textsc{GA-LK}}
+\newcommand{\etal}{\textit{et al.}}
+\newcolumntype{Y}{>{\centering\arraybackslash}X}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcommand{\PaperTableSetup}{%
+  \fontsize{8.2pt}{9.4pt}\selectfont
+  \renewcommand{\arraystretch}{1.12}%
+  \setlength{\tabcolsep}{3pt}%
+}
+\newcommand{\PaperTableNote}[2][\columnwidth]{%
+  \par\vspace{3pt}\noindent
+  \parbox{#1}{\fontsize{7.3pt}{8.4pt}\selectfont #2}%
+}
+\setcounter{dbltopnumber}{2}
+\setlength{\textfloatsep}{12pt plus 2pt minus 2pt}
+\setlength{\dbltextfloatsep}{12pt plus 2pt minus 2pt}
+\setlength{\floatsep}{10pt plus 2pt minus 2pt}
+\setlength{\dblfloatsep}{10pt plus 2pt minus 2pt}
+
+\input{figures/tikz_style}
+\input{results_values_zh}
+\newcommand{\PaperPercentGain}[2]{%
+  \edef\pgfmathresult{\fpeval{100*((#1)/(#2)-1)}}%
+  \pgfmathprintnumber[fixed,precision=2,zerofill]{\pgfmathresult}\%%
+}
+
+\begin{document}
+
+\title{Joint Layer-Boundary Optimization and\\
+Multilayer Physical Look-Ahead for\\
+Zoned Neutral-Atom Quantum Architectures}
+
+\author{
+\IEEEauthorblockN{Zixiang Zhou}
+\IEEEauthorblockA{Hangzhou Dianzi University\\
+1158 No. 2 Street, Baiyang Subdistrict, Qiantang District\\
+Hangzhou, Zhejiang, China\\
+zhouzixiang@hdu.edu.cn}
+}
+
+\maketitle
+
+\begin{abstract}
+Zoned neutral-atom quantum processors isolate stored atoms to reduce idle-atom excitation, while inter-layer placement and rearrangement affect trap-transfer losses and execution time. Existing reuse-aware and routing-aware methods guide placement using adjacent gate layers or the next interaction partner. However, residency between nonadjacent layers also changes gate-site occupancy, return locations, and subsequent rearrangement parallelism. We present GA-LK, a compiler with multilayer look-ahead that jointly selects gate sites, resident atoms, and return storage sites at each layer boundary. Bounded genetic search explores these decisions, and trajectory conflict-graph coloring constructs rearrangement batches that satisfy acousto-optic deflector constraints. Future-layer costs are evaluated from each candidate's resulting physical state, with weights decaying by layer distance. Evaluation uses two benchmark sets containing 18 circuits with 11--98 qubits and 154 input circuits with 3--16 qubits, respectively. Among circuits with valid results from all three compilers, GA-LK improves the geometric mean of model fidelity over the reuse-aware ZAC compiler by \PaperPercentGain{\ZACMFourF}{\ZACMOneF} and \PaperPercentGain{\QMAPMFourF}{\QMAPMOneF}, respectively. The corresponding improvements over the routing-aware placement compiler are \PaperPercentGain{\ZACMFourF}{\ZACMTwoF} and \PaperPercentGain{\QMAPMFourF}{\QMAPMTwoF}. Mean rearrangement batch counts and rearrangement times also decrease on both benchmark sets.
+\end{abstract}
+
+\begin{IEEEkeywords}
+neutral-atom quantum computing, zoned architectures, quantum compilation, atom rearrangement, multilayer look-ahead
+\end{IEEEkeywords}
+
+\input{sections_en/01_introduction}
+\input{sections_en/02_background}
+\input{sections_en/03_method}
+\input{sections_en/05_evaluation}
+\input{sections_en/06_related_work}
+\input{sections_en/07_conclusion}
+
+% Balance the final body output without stretching or shrinking its text.
+\flushcolsend
+\clearpage
+\raggedcolsend\raggedend
+\IEEEtriggeratref{13}
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

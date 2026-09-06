@@ -56,6 +56,11 @@ Section sources, editable TikZ figures, numerical macros, and verification
 scripts are kept alongside it. The earlier desktop copy is retained as a
 snapshot; future paper edits belong in this repository.
 
+The [English counterpart](IEEE_conference_template/paper_en.tex) has matching
+section files in `sections_en/` and shares the Chinese draft's figures, numerical
+macros and bibliography. Use `make paper-en` to build it into
+`build/paper_en/paper_en.pdf`; see the [bilingual review workflow](IEEE_conference_template/README_en.md).
+
 From the repository root:
 
 ```bash

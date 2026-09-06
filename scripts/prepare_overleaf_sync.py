@@ -31,7 +31,7 @@ EXCLUDED_DIRECTORIES = {
     ".ruff_cache", ".venv", "venv", "node_modules",
 }
 EXCLUDED_NAMES = {
-    ".latexmkrc", "latexmkrc", ".DS_Store", "paper_zh.pdf",
+    ".latexmkrc", "latexmkrc", ".DS_Store", "paper_zh.pdf", "paper_en.pdf",
     "overall_framework.pdf", "overall_framework_standalone.pdf",
     "final_paper_qa.json", "page_overview.png",
 }
@@ -214,11 +214,18 @@ def safe_destination(checkout: Path, relative: PurePosixPath) -> Path:
 
 def export_payload(snapshot: dict[PurePosixPath, bytes],
                    figure: bytes) -> dict[PurePosixPath, bytes]:
-    method = PurePosixPath("sections/03_method.tex")
-    if snapshot.get(method, b"").count(LOCAL_FIGURE_PATH) != 1:
-        raise PreparationError("Expected exactly one local build path in sections/03_method.tex.")
+    methods = [PurePosixPath("sections/03_method.tex")]
+    if (PurePosixPath("paper_en.tex") in snapshot
+            or any(relative.parts[0] == "sections_en" for relative in snapshot)):
+        methods.append(PurePosixPath("sections_en/03_method.tex"))
+    # Validate both counterparts before constructing the export. A partial
+    # English source tree must not silently retain a local-only figure path.
+    for method in methods:
+        if snapshot.get(method, b"").count(LOCAL_FIGURE_PATH) != 1:
+            raise PreparationError(f"Expected exactly one local build path in {method}.")
     export = dict(snapshot)
-    export[method] = snapshot[method].replace(LOCAL_FIGURE_PATH, OVERLEAF_FIGURE_PATH)
+    for method in methods:
+        export[method] = snapshot[method].replace(LOCAL_FIGURE_PATH, OVERLEAF_FIGURE_PATH)
     export[PurePosixPath("figures/overall_framework.pdf")] = figure
     return export
 
@@ -290,7 +297,12 @@ def main() -> int:
             "checkout": str(checkout), "remote_tip": remote_tip,
             "expected_remote": args.expected_remote, "remote_non_scientific_changes": remote_changes,
             "exported_file_count": 0 if args.check_only else len(export),
-            "only_scientific_source_adaptation": "sections/03_method.tex: local PDF path to figures/overall_framework.pdf",
+            "only_scientific_source_adaptation": [
+                f"{relative}: local PDF path to figures/overall_framework.pdf"
+                for relative in sorted(snapshot)
+                if relative.suffix.lower() in SCIENTIFIC_SOURCE_SUFFIXES
+                and export[relative] != snapshot[relative]
+            ],
             "remote_extra_files_deleted": False, "committed": False, "pushed": False,
         }, ensure_ascii=False, indent=2))
         return 0

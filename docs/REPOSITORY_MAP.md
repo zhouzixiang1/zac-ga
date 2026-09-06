@@ -8,6 +8,7 @@
 | 任务 | 入口 |
 |---|---|
 | 修改论文 | [`../IEEE_conference_template/paper_zh.tex`](../IEEE_conference_template/paper_zh.tex) 及其 `sections/` |
+| 对照审阅英文稿 | [`../IEEE_conference_template/paper_en.tex`](../IEEE_conference_template/paper_en.tex) 及同名 `sections_en/` 文件 |
 | 修改论文图 | `../IEEE_conference_template/figures/` 中的 TikZ 源文件 |
 | 阅读最新编译稿 | 仓库根目录下的 `build/paper_zh/paper_zh.pdf` |
 | 查看最终结果 | [`../ZAC_zzx/results/paper_zh_v2/final_manifest.json`](../ZAC_zzx/results/paper_zh_v2/final_manifest.json) |
@@ -67,6 +68,10 @@ make paper-preview
 `paper` 重建独立图和正文并校验，`paper-check` 检查已有构建，
 `paper-test` 运行数值和图数据回归，`paper-preview` 生成视觉审阅材料。
 需要切换 Python 时，在命令后加 `PYTHON=/path/to/env/python`。
+
+英文稿使用 `make paper-en` 与 `make paper-en-preview`，输出位于
+`build/paper_en/`。该构建先验收中文稿及共享图3，再校验中英文引用、公式和
+结果宏的对应关系。英文分页独立验收，不通过删减翻译内容压到中文稿页数。
 
 统一输出位置：
 
