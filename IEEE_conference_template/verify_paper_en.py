@@ -19,7 +19,7 @@ from typing import Any
 import verify_paper_zh as zh
 
 
-BUILD_DIRECTORY = Path("../build/paper_en")
+BUILD_DIRECTORY = Path("build/paper_en")
 HAN = re.compile(r"[\u3400-\u9fff]")
 FORMULA_TEXT_TRANSLATIONS = {r"\text{存在}": r"\text{exists}"}
 DISPLAY_ENVIRONMENT = re.compile(
@@ -32,8 +32,9 @@ def commands(text: str, command: str) -> list[str]:
 
 
 def result_macro_names(root: Path) -> set[str]:
-    names = {"PaperPercentGain"}
-    for path in [root / "results_values_zh.tex", *sorted((root / "figures/data").glob("*.tex"))]:
+    names = {"PaperPercentGain", "PaperPercentReduction"}
+    for path in [root / "results_values_zh.tex", root / "initial_lookahead_values.tex",
+                 *sorted((root / "figures/data").glob("*.tex"))]:
         if not path.is_file():
             continue
         text = zh._strip_tex_comments(path.read_text(encoding="utf-8"))
@@ -140,18 +141,23 @@ def audit_translation(root: Path, errors: list[str]) -> dict[str, Any]:
         for language, text in (("zh", source), ("en", target)):
             float_counts[language].update(re.findall(r"\\begin\{(figure|table)\*?\}", text))
     report["floats"] = {language: dict(counts) for language, counts in float_counts.items()}
-    if float_counts["en"] != Counter({"figure": 6, "table": 4}) or float_counts["en"] != float_counts["zh"]:
-        errors.append("english_requires_six_figures_four_tables")
+    if float_counts["en"] != Counter({"figure": 7, "table": 4}) or float_counts["en"] != float_counts["zh"]:
+        errors.append("english_requires_seven_figures_four_tables")
     return report
 
 
 def audit_shared_figure(root: Path, errors: list[str]) -> dict[str, Any]:
     audit = zh._source_build_manifest(root, compile_pdf=False, source_before=None, errors=errors)
     try:
-        qa = json.loads((root / "../build/paper_zh/final_paper_qa.json").read_text(encoding="utf-8"))
+        qa = json.loads((root / zh.BUILD_DIRECTORY / "final_paper_qa.json").read_text(encoding="utf-8"))
         if (qa.get("status") != "pass" or qa.get("page_count") != 9
                 or qa.get("overall_figure_pdf", {}).get("pages") != 1):
             errors.append("shared_chinese_build_not_verified")
+        figures = qa.get("core_figures", {})
+        if (set(figures) != set(zh.CORE_FIGURES)
+                or any(not item.get("tikz") or item.get("includegraphics")
+                       or item.get("contains_han") for item in figures.values())):
+            errors.append("shared_seven_figure_sources_not_verified")
     except (OSError, ValueError, AttributeError):
         errors.append("shared_chinese_build_not_verified")
     return audit

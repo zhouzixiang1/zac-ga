@@ -2,267 +2,66 @@
 \label{sec:method}
 \label{sec:formulation}
 
-\subsection{Compilation Flow and Problem Definition}
+\subsection{Overall Framework}
 
-Atomic positions at a layer boundary determine the execution conditions for current gates and the starting points of subsequent rearrangements. GA-LK optimizes transitions between consecutive two-qubit layers, jointly selecting gate sites and orientations, inter-layer residency, and return storage sites. Let $s_\ell$ denote the input state of target layer $\mathcal G_\ell$. It contains the mapping $\pi_\ell$, resident atoms in the entanglement zone, AOD resources, per-atom clocks, and gate dependencies. Two-qubit gates in $\mathcal G_\ell$ share no atoms. The corresponding rearrangements and gate execution produce the next layer's input state $s_{\ell+1}$.
+GA-LK compiles quantum circuits into atom-transport and gate-execution instructions that satisfy zoned-architecture constraints. Compilation proceeds through gate scheduling, initial placement, layer-wise joint placement, routing and scheduling, and code generation, as shown in Fig.~\ref{fig:overall-framework}. Gate scheduling determines which interactions can share a two-qubit layer. Initial placement assigns storage traps to atoms. Layer-wise placement selects entanglement sites for gate participants and decides whether other atoms return to storage and where they go. Routing and scheduling convert position changes into executable batches; code generation records instruction dependencies and execution times.
 
-GA-LK performs joint layer-boundary optimization during dynamic placement. Gate scheduling, initial layout, atom routing, and zoned architecture intermediate representation (ZAIR) code generation follow the zoned compilation flow~\cite{lin2025zac}. Scheduling partitions the input into alternating one- and two-qubit layers, and the initial layout assigns atoms to traps. Layer-boundary optimization compares the rearrangement batches and physical costs of candidate solutions. Code generation converts the selected solution into ZAIR instructions in execution order. Fig.~\ref{fig:overall-framework} shows these stages and their inter-layer state relationships.
+Look-ahead guides two stages. Initial placement compares the effects of storage layouts on the first few gate layers. Dynamic placement estimates subsequent execution losses from the positions, occupancy, and clocks produced by each candidate after the current layer. During search, candidates undergo the same constraint checks used in routing. Gate-site and residency choices can therefore be optimized jointly using executable transport costs.
 
 \begin{figure*}[t]
   \centering
-  \includegraphics[width=\textwidth]{../build/paper_zh/figures/overall_framework.pdf}
-  \caption{End-to-end compilation flow for zoned neutral-atom circuits. (a) Input circuit and gate-execution zones; (b) layer scheduling; (c) initial mapping $\pi_0$. (d) Joint layer-boundary decisions produce candidate mapping $\pi'_\ell$. After the physical state transition, finite-horizon evaluation starts from $s_{\ell+1}$. (e) Compatible return and entry trajectories form rearrangement batches $\mathcal B_0$--$\mathcal B_2$. (f) ZAIR instructions are emitted in sequence and independently validated. $\mathcal E$ and $\mathcal S$ denote the entanglement and storage zones, respectively.}
+  \includegraphics[width=\textwidth]{build/paper_zh/figures/overall_framework.pdf}
+  \caption{End-to-end compilation flow of GA-LK. (a) Input gates and their execution zones. (b) Dependency-preserving single- and two-qubit layers. (c) Initial placement selected through look-ahead evaluation. (d) Genetic search jointly determines gate sites, residency, and return locations, evaluating subsequent layers from each candidate's resulting state. (e) Atom $q_3$ returns first; incompatible entry trajectories are then assigned to $B_1$--$B_3$, while $q_0$ remains in place. (f) ZAIR generation and validation of the complete instruction sequence. All device snapshots use the same regular trap arrays and atom labels.}
   \label{fig:overall-framework}
 \end{figure*}
 
-Let $\mathcal Q$ be the logical atom set, and let $\mathcal S$ and $\mathcal E$ contain single-atom traps in the storage and entanglement zones, respectively. Define $\mathcal V=\mathcal S\cup\mathcal E$. The set $\mathcal P^{\rm gate}\subseteq\mathcal E\times\mathcal E$ contains paired gate sites in the entanglement zone. Injectivity of the boundary mapping permits at most one atom per trap:
-\begin{equation}
-\pi_\ell:\mathcal Q\rightarrow\mathcal V,\qquad
-\pi_\ell(q)\ne\pi_\ell(q'),~q\ne q'.
-\label{eq:mapping}
-\end{equation}
-For target gate $g_{\ell,j}=(u_j,v_j)\in\mathcal G_\ell$, the set $\Omega_{\ell,j}\subseteq\mathcal P^{\rm gate}$ specifies legal gate sites and orientations. The resulting candidate mapping $\pi'_{\ell}$ must also satisfy
-\begin{equation}
-\begin{aligned}
-(\pi'_{\ell}(u_j),\pi'_{\ell}(v_j))&\in\Omega_{\ell,j},
-&&\forall g_{\ell,j}\in\mathcal G_\ell,\\
-|\pi_{\ell}^{\prime-1}(\mathcal E)|&\le C_{\mathcal E},
-&|\pi_{\ell}^{\prime-1}(\mathcal S)|&\le C_{\mathcal S},
-\end{aligned}
-\label{eq:placement-constraints}
-\end{equation}
-where $C_{\mathcal E}$ and $C_{\mathcal S}$ are the zone capacities. The set $\mathcal D_\ell$ contains entanglement-zone atoms whose destinations must be decided at the current boundary. These include atoms absent from the target layer and those with no remaining gates. For a target layer containing one two-qubit gate, participating atoms already in the entanglement zone may also enter $\mathcal D_\ell$. Their candidate paths compare in-zone adjustment with temporary relocation through the storage zone. Raman single-qubit rotations update per-atom clocks according to gate dependencies~\cite{lin2025zac}.
+\subsection{Gate Scheduling}
 
-\subsection{Joint Representation and Physical Feasible Domain}
+The compiler preserves same-qubit dependencies in the input circuit and assigns two-qubit gates to their earliest executable layers. Gates within a layer share no atoms; layers exceeding the entanglement-zone capacity are split. For two-qubit gate sets that permit reordering, interaction-graph edge coloring follows the baseline scheduler: gates on edges of the same color share a layer~\cite{lin2025zac}. This stage determines logical parallelism. Transport and resource dependencies determine the actual execution times later.
 
-Target gate sites and resident atoms share the entanglement zone, so both decisions must jointly satisfy occupancy constraints. A layer-boundary solution encodes gate-site and residency choices as
+Single-qubit gates are grouped into execution blocks according to their preceding two-qubit gates. Gates without a two-qubit predecessor appear before the first layer. Fig.~\ref{fig:overall-framework}(a) and (b) use RY, RZ, and U gates for single-qubit operations and CZ gates with control dots for two-qubit interactions. Scheduled single-qubit gates still act on the atoms specified by the input circuit, at locations given by the mapping at execution time. Let $L_\ell$ denote the $\ell$th two-qubit layer and $\mathcal G_\ell$ its gate set. Subsequent placement follows this fixed layer order.
+
+\subsection{Look-Ahead-Aware Initial Placement}
+\label{sec:initial-placement}
+
+The initial layout determines the storage traps from which atoms depart, affecting their first entry and early inter-layer transport. We start from the layer-weighted simulated-annealing layout~\cite{lin2025zac}, retain it, and generate alternatives by swapping the storage positions of a few atoms. These swaps preserve the occupied trap set, with at most one atom per trap. The candidate pool is fixed before evaluation and does not change with the look-ahead horizon.
+
+For each candidate, the compiler constructs placement and routing for the first few two-qubit layers, accumulating trap-transfer, idle-excitation, and coherence losses. This rollout uses the same current-layer optimization policy without recursively invoking multilayer look-ahead. Let $H_{\rm init}$ count the layers considered after the first layer, and let $h_{\rm init}$ be the actual count limited by the remaining circuit. An initial mapping $\pi$ is evaluated as
 \begin{equation}
-\mathbf x_\ell=(z_{\ell,1},\ldots,z_{\ell,m},b_{\ell,1},\ldots,b_{\ell,k}),
+J_{\rm init}(\pi)=
+\sum_{d=0}^{h_{\rm init}}\rho^d\,\Delta C_d(\pi),
+\qquad h_{\rm init}\le H_{\rm init}.
+\label{eq:initial-lookahead}
+\end{equation}
+Here, $\Delta C_d$ is the incremental negative log fidelity loss incurred through layer $d$, and $\rho$ is the layer-distance decay factor. Each increment is the difference between successive cumulative losses for the same candidate. Single-qubit gates and their timing are included according to dependencies. Evaluation stops after the last gate layer in the window; no additional return is scheduled if the circuit is unfinished.
+
+Initialization selects the feasible layout with the smallest $J_{\rm init}$, resolving ties by fixed candidate order. With $H_{\rm init}=0$, only the first two-qubit layer is evaluated; a positive horizon includes the execution costs of subsequent layers. The additional initialization experiment uses four shared candidates, $\rho=0.7$, and a 32-evaluation main-search budget per layer. After selecting the initial mapping, atom positions and execution times are reset to the circuit's starting point for full compilation.
+
+\subsection{Joint Optimization Within Each Layer}
+
+Optimization for each two-qubit layer jointly handles entry placement and inter-layer residency. Let $s_\ell$ contain the atom positions, trap occupancy, and execution clocks at the start of the current optimization step. Executing the target layer and its associated single-qubit gates produces $s_{\ell+1}$. Let $\mathcal Q$ be the atom set, and let $\mathcal S$ and $\mathcal E$ be the storage- and entanglement-zone trap sets, respectively. Mapping $\pi$ assigns each atom a trap and satisfies $\pi(q)\ne\pi(q')$ for distinct atoms, preventing shared occupancy.
+
+\subsubsection{Joint Encoding and Genetic Search}
+
+Target gate sites and resident atoms compete for entanglement-zone space. Separate decisions can leave residents blocking better gate sites or select sites that require unnecessary returns. GA-LK encodes both choices in one chromosome:
+\begin{equation}
+\mathbf x_\ell=
+(z_{\ell,1},\ldots,z_{\ell,m},
+ b_{\ell,1},\ldots,b_{\ell,k}).
 \label{eq:chromosome}
 \end{equation}
-where $m=|\mathcal G_\ell|$ and $k=|\mathcal D_\ell|$. Each $z_{\ell,j}\in\{0,\ldots,|\Omega_{\ell,j}|-1\}$ selects a gate site and orientation; $b_{\ell,i}=0$ denotes residency, whereas $b_{\ell,i}=1$ denotes return to storage. The two encoding segments determine the target gate sites and the set of returning atoms. A storage-site assignment completes the candidate's resulting state. Fig.~\ref{fig:joint-ga} relates the encoding to trajectories using two target gates and the return of $q_3$.
+Here, $m$ is the number of gates in the current layer. Gene $z_{\ell,j}$ selects the gate-site pair and the orientation of the two participants for gate $j$. The $k$ atoms requiring residency decisions use $b_{\ell,i}=0$ to remain in the entanglement zone and $b_{\ell,i}=1$ to return. Decision set $\mathcal D_\ell$ usually contains entanglement-zone atoms absent from the current layer. For a single-gate layer, participating atoms may also be considered for in-zone adjustment or temporary relocation through storage. Fig.~\ref{fig:joint-ga}(a) relates the gate-site encoding to the return decision and storage assignment for $q_3$.
+
+Search starts from diverse seeds, including all-resident, all-return, and physical-greedy solutions. Crossover acts separately on the gate-site and residency segments. Mutation reselects gate sites, flips residency bits, or jointly changes conflicting variables from both segments. Offspring pass occupancy and capacity checks before evaluation; better individuals form the next generation~\cite{holland1975adaptation}. Duplicate encodings reuse cached evaluations. When budget permits, bounded local refinement improves the best candidate. Small encoding spaces use enumeration with the same candidate decoder and objective as genetic search. Fig.~\ref{fig:joint-ga}(b) shows these two solver paths.
+
+Search stops when the evaluation budget is exhausted, the generation limit is reached, or several consecutive generations yield no improvement. Table~\ref{tab:solver-bounds} lists the default budgets and reductions for deep circuits. Complete enumeration covers the specified bounded encoding space. Genetic search seeks better solutions within its budget without enumerating every position combination.
 
 \begin{figure}[!t]
   \centering
   \resizebox{\columnwidth}{!}{\input{figures/joint_ga}}
-  \caption{Joint placement at a two-qubit layer boundary. (a) $z_{\ell,1}$ and $z_{\ell,2}$ select gate sites and orientations. Here, $\mathcal D_\ell=\{q_3\}$, and $b_{\ell,1}=1$ includes $q_3$ in the return set; injective assignment $a_\ell(q_3)=s_1$ selects its storage site. (b) Exact enumeration and genetic search share the same encoding space. (c) The candidate first returns $q_3$ to $s_1$, updates occupancy, and then places target-layer participants at the selected gate sites. Each phase checks AOD row--column relationships, occupancy ordering, and unintended intersections. $\mathcal E$ and $\mathcal S$ denote the entanglement and storage zones, respectively.}
+  \caption{Joint encoding and candidate execution. (a) Two gate-site genes and the return bit for $q_3$ form a chromosome; storage assignment $a_\ell(q_3)=s_1$ completes the candidate. (b) Small encoding spaces use enumeration, and larger spaces use genetic search. (c) Occupied target gate sites are released before target-layer participants enter the selected sites. Each phase checks feasibility against updated occupancy. $\mathcal E$ and $\mathcal S$ denote the entanglement and storage zones, respectively.}
   \label{fig:joint-ga}
 \end{figure}
-
-Genetic search determines gate-site and residency combinations, while a matching subproblem assigns distinct storage sites to returning atoms. For each atom $q$ in the return set $\mathcal R(\mathbf x_\ell)$, candidate storage sites come from three neighborhoods. These are defined by its current entanglement site, initial storage site, and visible future partners, giving the bounded candidate domain
-\begin{equation}
-\mathcal S_q^{\rm cand}=\operatorname{Top}
-\left(\mathcal S_q^{\rm near}\cup
-\mathcal S_q^{\rm home}\cup
-\mathcal S_q^{\rm future}\right),
-\label{eq:storage-domain}
-\end{equation}
-where the three subsets correspond to these neighborhoods in order. The operator $\operatorname{Top}(\cdot)$ retains a limited number of sites according to a deterministic proxy cost, bounding the matching problem size. Linear assignment subproblems and Murty branching yield the first $K$ injective assignments~\cite{murty1968assignment}:
-\begin{equation}
-\begin{aligned}
-\mathcal A_K(\mathbf x_\ell)=K\text{-Best}\{a:\mathcal R(\mathbf x_\ell)\!\rightarrow\!\mathcal S\mid{}&
-a(q)\in\mathcal S_q^{\rm cand},\\[-1mm]
-&a(q)\ne a(q'),~\forall q\ne q'\}.
-\end{aligned}
-\label{eq:kbest}
-\end{equation}
-Each assignment $a\in\mathcal A_K$ combines with $\mathbf x_\ell$ to form a complete candidate. The proxy cost serves only to generate candidates. Final ordering uses the physical state-transition cost and~\eqref{eq:lexicographic}.
-
-Physical constraints fall into four groups: occupancy injectivity, zone capacity, and source-release and destination-occupancy ordering; gate sites and dependencies; AOD capacity, row--column ordering, and preservation; and unintended intersections. Their indicator functions are $\chi_{\rm occ}$, $\chi_{\rm gate}$, $\chi_{\rm AOD}$, and $\chi_{\rm int}$, respectively. The physical feasible domain is
-\begin{equation}
-\mathcal X_\ell^{\rm phys}=\{(\mathbf x,a)\mid
-a\in\mathcal A_K(\mathbf x),
-\chi_{\rm occ}\chi_{\rm gate}\chi_{\rm AOD}\chi_{\rm int}=1\}.
-\label{eq:physical-domain}
-\end{equation}
-If a nonparticipating atom occupies a selected gate site, the candidate must also determine its relocation. Target-layer participants may temporarily use available storage sites to clear entry paths. Candidate decoding determines these auxiliary position adjustments; their trap transfers, transport, and clock increments all contribute to the physical cost. A chromosome is discarded if all its storage-site assignments are infeasible.
-
-\subsection{Physical Cost and Parallel Rearrangement}
-
-Physical cost depends on rearrangement order and the grouping of parallel trajectories. To clear target gate sites, each candidate first removes returning atoms and gate-site blockers from the entanglement zone. It then moves target-layer participants to the selected gate sites. Each phase forms its own parallel rearrangement batches, with occupancy updated after completed movements. Positions, resource occupancy, and per-atom clocks follow the dependencies of rearrangement and gate execution. For a feasible candidate $(\mathbf x,a)$, the state transition is
-\begin{equation}
-(s_{\ell+1},\Gamma_\ell)=
-\mathcal T_\ell(s_\ell;\mathbf x,a),
-\label{eq:state-transition}
-\end{equation}
-where $\Gamma_\ell=(\mathcal B_{\ell,1},\ldots,\mathcal B_{\ell,B_\ell})$ lists rearrangement batches in execution order. The state $s_{\ell+1}$ follows the target layer's Rydberg pulse and corresponding single-qubit gates. This transition includes idle-atom excitation for nonparticipating residents and coherence loss for each atom.
-
-Parallel grouping uses a conflict graph $\mathcal H_\phi=(\mathcal V_\phi,\mathcal E_\phi^{\rm AOD}\cup\mathcal E_\phi^{\rm int})$, whose vertices represent atom trajectories. Edges in $\mathcal E_\phi^{\rm AOD}$ connect trajectories that violate AOD ordering. Edges in $\mathcal E_\phi^{\rm int}$ connect trajectories whose joint activation creates an unintended-intersection conflict. A candidate is infeasible if an individual trajectory violates static occupancy or intersection constraints. DSATUR coloring supplies initial groups for the remaining conflicts~\cite{brelaz1979coloring}. Trajectories of one color may share a batch, while different colors execute separately. Each group is then checked against source-release and destination-occupancy ordering and split when necessary. Let $\tau(\nu)$ and $d(\nu)$ denote the execution time and transport distance of trajectory $\nu$, respectively. Then
-\begin{equation}
-T_\ell^{\rm rr}=\sum_{b=1}^{B_\ell}
-\max_{\nu\in\mathcal B_{\ell,b}}\tau(\nu),\qquad
-D_\ell^{\rm rr}=\sum_{b=1}^{B_\ell}
-\sum_{\nu\in\mathcal B_{\ell,b}}d(\nu).
-\label{eq:rearrangement-metrics}
-\end{equation}
-The batch count measures the number of sequential rearrangement phases. $T_\ell^{\rm rr}$ and $D_\ell^{\rm rr}$ measure rearrangement time and total transport distance, respectively.
-
-For a given circuit, single- and two-qubit gate errors are identical across candidates. Boundary optimization compares each candidate's increment in physical negative log fidelity relative to the preceding state:
-\begin{equation}
-\begin{aligned}
-C_\ell^{\rm cur}={}&-\Delta N_{\rm tran}\log f_{\rm tran}
--\Delta N_{\rm exc}\log f_{\rm exc}\\
-&+\sum_{q\in\mathcal Q}\log\frac{1-t_q^{-}/T_2}{1-t_q^{+}/T_2}.
-\end{aligned}
-\label{eq:current-cost}
-\end{equation}
-Here, $t_q^{-}$ and $t_q^{+}$ denote the accumulated idle times before and after the state transition, respectively.
-
-\subsection{Decayed Multilayer Look-Ahead}
-
-Decayed multilayer physical look-ahead includes interactions several layers ahead in the residency evaluation. It estimates future physical costs from each candidate's resulting state and assigns higher weights to nearer layers. For maximum horizon $H_{\max}$, the weight at layer distance $d$ is
-\begin{equation}
-w_d=\alpha\rho^{d-1},\qquad 1\le d\le H_{\max}.
-\label{eq:decay}
-\end{equation}
-Let $H_{\rm cap}\le H_{\max}$ denote the resource-dependent horizon cap. The finite horizon contains future two-qubit layers that satisfy the layer-distance, remaining-layer, resource-cap, and decay-threshold conditions. Its set of layer distances is
-\begin{equation}
-\mathcal D_\ell^{\rm vis}=\{d\mid 1\le d\le H_{\rm cap},~
-\mathcal G_{\ell+d}\text{ exists},~\rho^{d-1}\ge\epsilon\}.
-\label{eq:visible-depths}
-\end{equation}
-The main configuration uses $(H_{\max},\alpha,\rho,\epsilon)=(8,0.5,0.7,0.05)$, with $H_{\rm cap}$ reduced as the problem size increases. Fig.~\ref{fig:physical-lookahead} illustrates how the candidate's resulting state affects next-layer transport and how weights vary with layer distance.
-
-\begin{figure}[!t]
-  \centering
-  \resizebox{\columnwidth}{!}{\input{figures/physical_lookahead}}
-  \caption{Physical feasibility and finite-horizon evaluation. (a) Coloring the conflict graph of four trajectories yields $\mathcal B_1=\{q_2,q_4\}$ and $\mathcal B_2=\{q_1,q_3\}$. Filled and open circles denote sources and destinations, respectively; stationary atom $q_0$ is excluded from the graph. (b) Candidates $A$ and $B$ have equal current costs but different resulting states. With all other physical increments equal, the illustrated relation $d_B<d_A$ gives candidate $B$ a lower next-layer transport cost. Blue and gray dashed lines denote next-layer and return trajectories, respectively; $\mathcal E$ and $\mathcal S$ denote the entanglement and storage zones. (c) Layer-distance weights decay as $w_d=\alpha\rho^{d-1}$ over the actual visible-layer set $\mathcal D_\ell^{\rm vis}$.}
-  \label{fig:physical-lookahead}
-\end{figure}
-
-Future costs are estimated separately from each candidate's resulting state $s'=s_{\ell+1}$. Starting with $s_{\ell,0}=s'$, deterministic state transition $\mathcal F$ produces future states and incremental costs layer by layer:
-\begin{equation}
-(s_{\ell,d},\widehat C_{\ell,d})=
-\mathcal F(s_{\ell,d-1},\mathcal G_{\ell+d}),
-\qquad d\in\mathcal D_\ell^{\rm vis},
-\label{eq:forecast-transition}
-\end{equation}
-where $\mathcal F$ assigns each gate in the predicted layer an unassigned legal pair of entanglement sites. It returns nonparticipating atoms that block target endpoints or trajectories to the storage zone. The unweighted physical increment at layer distance $d$ is
-\begin{equation}
-\widehat C_{\ell,d}=C_{\ell,d}^{\rm res}
-+C_{\ell,d}^{\rm gate}+C_{\ell,d}^{\rm block},
-\label{eq:forecast-components}
-\end{equation}
-where $C_{\ell,d}^{\rm res}$ accounts for idle-atom excitation and coherence loss of nonparticipating residents. The term $C_{\ell,d}^{\rm gate}$ accounts for physical losses from entry and temporary relocation of gate participants. The term $C_{\ell,d}^{\rm block}$ accounts for physical losses from returning blocking atoms. Both latter terms include trap-transfer, transport, and coherence losses.
-
-The gate site for a future gate $(u,v)$ minimizes the combined travel distances of its two participants and nearest-storage distances of endpoint blockers. Ties are broken by gate-site and orientation indices. If joint entry is infeasible, the predictor tests bounded temporary relocation and then atom-by-atom entry. If neither succeeds, the candidate is marked infeasible within the prediction horizon. Its current-boundary evaluation remains available as a fallback if no candidate has a feasible prediction.
-
-For nonempty $\mathcal D_\ell^{\rm vis}$, let $d_\ell^*=\max\mathcal D_\ell^{\rm vis}$. A terminal clearing potential $\Phi(s_{\ell,d_\ell^*})$ accounts for residency costs remaining at the end of the window:
-\begin{equation}
-\widehat C_\ell^{\rm future}=
-\sum_{d\in\mathcal D_\ell^{\rm vis}}\alpha\rho^{d-1}\widehat C_{\ell,d}
-+\alpha\rho^{d_\ell^*-1}\Phi(s_{\ell,d_\ell^*}).
-\label{eq:lookahead-cost}
-\end{equation}
-When $H_{\max}=0$, the visible set satisfies $\mathcal D_\ell^{\rm vis}=\varnothing$ and the future cost is $\widehat C_\ell^{\rm future}=0$.
-
-The terminal clearing potential $\Phi$ estimates the return cost remaining beyond the window. It constructs feasible returns for entanglement-zone atoms absent from the window's final layer and uses the resulting negative log fidelity increment. It is zero when the visible-layer set is empty.
-
-\subsection{Candidate Ranking and Boundary Selection}
-
-Future savings may require a higher current cost, so candidate selection bounds this trade-off. The solver uses a low-current-cost candidate as an anchor and limits the current-cost increase of other candidates. It then ranks them using the finite-horizon objective:
-\begin{equation}
-\mathbf J_\ell=(C_\ell^{\rm cur}+\widehat C_\ell^{\rm future},B_\ell,
-T_\ell^{\rm rr},D_\ell^{\rm rr},\kappa_\ell)
-\label{eq:lexicographic}
-\end{equation}
-Lexicographic ordering compares the first component, then successive components to break ties. The canonical key $\kappa_\ell=(\overline{\mathbf x}_\ell,\overline a_\ell)$ combines the chromosome and storage-site assignment to order otherwise tied candidates. Total negative log cost, time, and distance are quantized at $10^{-12}$, $10^{-6}\,\mu\mathrm{s}$, and $10^{-6}\,\mu\mathrm{m}$, respectively; batch counts use integer comparison.
-
-Anchor construction includes gate-site projection and residency protection. After the main search, gate-site projection fixes the residency segment of evaluated candidates and adjusts gate-site genes coordinate-wise to reduce current cost. The residency encodings include the current best, all-resident, and return-or-residency recommendations obtained by comparing physical round-trip costs. Resource-limited cases scan bounded gate-site options once; other cases use at most two passes. Each trial candidate is renormalized and checked for physical feasibility. Projected candidates and previously evaluated candidates with the same residency encoding form the neighborhood $\mathcal N_\ell^{\rm guard}$. The number of additional evaluations is denoted by $E_{\rm guard}$.
-
-Residency protection compares an atom's residency loss before visible reuse with the loss of a round trip through storage. The former includes idle-atom excitation and coherence loss; the latter includes trap-transfer, transport, and coherence losses along feasible paths. Atoms with lower residency costs that satisfy mandatory-return and capacity constraints form the protected set $\mathcal P_\ell$. Candidate selection prioritizes their residency; the set is empty when $H_{\max}=0$. For candidate $u=(\mathbf x,a)$, the number of protected atoms returned to storage is
-\begin{equation}
-v_\ell(u)=\sum_{q_i\in\mathcal P_\ell}
-\mathbf 1\!\left[b_{\ell,i}(u)=1\right].
-\label{eq:stay-violation}
-\end{equation}
-Let $\mathcal X_\ell^{\rm eval}\subseteq\mathcal X_\ell^{\rm phys}$ contain physically feasible candidates whose evaluation is complete. Evaluation includes the current state transition and, when look-ahead is enabled, future-layer prediction. The solver examines candidate groups in ascending $v_\ell$ and selects the first group containing a candidate with a feasible prediction. Within this group, the current physical key $\mathbf J_\ell^{\rm cur}=(C_\ell^{\rm cur},B_\ell,T_\ell^{\rm rr},D_\ell^{\rm rr},\overline{\mathbf x}_\ell)$ determines anchor $u^0$. Define $L_\ell(u)=C_\ell^{\rm cur}(u)+\widehat C_\ell^{\rm future}(u)$. Let $\Delta C_{\rm cur}(u)=\max\{0,C_\ell^{\rm cur}(u)-C_\ell^{\rm cur}(u^0)\}$ and $\Delta S_{\rm future}(u)=\max\{0,\widehat C_\ell^{\rm future}(u^0)-\widehat C_\ell^{\rm future}(u)\}$. The admission set is
-\begin{equation}
-\begin{aligned}
-\mathcal X_\ell^{\rm adm}=\{u\in\mathcal X_\ell^{\rm eval}:{}&
-v_\ell(u)=v_\ell(u^0),\\[-1mm]
-&\Delta C_{\rm cur}(u)\le\eta\Delta S_{\rm future}(u),\\[-1mm]
-&L_\ell(u)\le L_\ell(u^0)\}.
-\end{aligned}
-\label{eq:admission-domain}
-\end{equation}
-Here, $\eta=0.25$ limits the current-cost increase to one quarter of the predicted future savings. The admission set is a subset of the physical feasible domain.
-If no candidate passes the finite-horizon feasibility check, selection uses $\mathbf J_\ell^{\rm cur}$ among current-boundary feasible candidates. Otherwise, lexicographic selection is performed over the admission set:
-\begin{equation}
-(\mathbf x_\ell^*,a_\ell^*)=
-\mathop{\mathrm{lexarg\,min}}_{(\mathbf x,a)\in\mathcal X_\ell^{\rm adm}}
-\mathbf J_\ell(\mathbf x,a).
-\label{eq:boundary-objective}
-\end{equation}
-This rule first minimizes the sum of current and future costs. Ties are resolved by batch count, rearrangement time, transport distance, and canonical encoding, in that order.
-
-\subsection{Exact Enumeration and Genetic Search}
-
-Small layer-boundary problems use exhaustive enumeration, while larger problems use genetic search. The boundary encoding set is $\mathcal Z_\ell=\prod_j\{0,\ldots,|\Omega_{\ell,j}|-1\}\times\{0,1\}^{|\mathcal D_\ell|}$, with size $D_\ell=|\mathcal Z_\ell|$. All encodings are enumerated when $D_\ell\le\min(D_{\rm enum},E_{\max})$; otherwise, bounded genetic search is used~\cite{holland1975adaptation}. Here, $D_{\rm enum}$ is the enumeration threshold, and $E_{\max}$ is the evaluation budget for distinct chromosomes. Both approaches assign return storage sites using~\eqref{eq:kbest} and share the same physical evaluation and admission rules.
-
-The deterministic seed set $\mathcal S_\ell^0$ contains all-resident, all-return, physical-greedy, and return-recommendation encodings. Chromosomes in the least-recently-used (LRU) cache with an identical complete boundary-state key receive priority. Single-point crossover is applied separately to the gate-site and residency segments. Offspring not produced by crossover undergo one of four mutations: random single-gene mutation, gate-site reselection for high-cost transport, coupled gate-site--residency mutation, or return-cost-guided residency-bit flipping. Candidates are normalized under the constraints and deduplicated by chromosome key. Cached objective values are reused for chromosomes that have already been evaluated.
-
-Search stops at $E_{\max}$ evaluations, after $I$ generations, or after $p_{\rm stop}$ consecutive generations without improvement. If budget remains, bounded local neighborhood descent refines the current best solution. Random seeds are fixed to make the search reproducible. Let $\mathcal U_\ell=(s_\ell,\mathcal G_\ell)$ denote the current boundary instance. The parameter set $\Theta$ contains zone and AOD parameters, physical model constants, candidate-domain limits, and search budgets. Algorithm~\ref{alg:solver} gives the complete solution procedure.
-
-\begin{algorithm}[t]
-\caption{Joint Layer-Boundary Placement}
-\label{alg:solver}
-\scriptsize
-\begin{algorithmic}[1]
-\Procedure{Evaluate}{$\mathcal U_\ell,\mathbf x,\mathcal D_\ell^{\rm vis},\Theta$}
-  \State $\mathcal A\gets\Call{StorageAssignment}{\mathcal U_\ell,\mathbf x}$; $\mathcal R_{\mathbf x}\gets\varnothing$
-  \For{each storage-site assignment $a\in\mathcal A$}
-    \State Derive blocker relocation, temporary relocation, and atom trajectories
-    \If{occupancy, capacity, AOD, or intersection constraints fail}
-      \State \textbf{continue}
-    \EndIf
-    \State Color the conflict graph; derive executable batches and resulting state $s'$
-    \State Compute current cost $C^{\rm cur}$ and rearrangement metrics $B,T,D$
-    \State $(\widehat C^{\rm future},\zeta)\gets\Call{FutureCost}{s',\mathcal D_\ell^{\rm vis},\Theta}$
-    \State Add the current physical record and prediction-feasibility flag $\zeta$ to $\mathcal R_{\mathbf x}$
-  \EndFor
-  \State \textbf{return} $\mathcal R_{\mathbf x}$
-\EndProcedure
-\Statex
-\Procedure{OptimizeBoundary}{$\mathcal U_\ell,H_{\max},\Theta$}
-  \State Compute encoding bound $D_\ell$
-  \State $\mathcal D_\ell^{\rm vis}\gets\Call{VisibleDepths}{\mathcal U_\ell,H_{\max},\Theta}$
-  \State $\mathcal R\gets\varnothing$
-  \If{$D_\ell\le\min(D_{\rm enum},E_{\max})$}
-    \For{each $\mathbf x\in\mathcal Z_\ell$}
-      \State $\mathcal R\gets\mathcal R\cup\Call{Evaluate}{\mathcal U_\ell,\mathbf x,\mathcal D_\ell^{\rm vis},\Theta}$
-    \EndFor
-  \Else
-    \State $\mathcal C\gets\Call{NormalizeDedup}{\mathcal S_\ell^0,\text{cached seeds, random seeds}}$
-    \For{$g=1,\ldots,I$}
-      \State Generate and evaluate crossover or mutation offspring
-      \State Add feasible offspring records to $\mathcal R$
-      \State Retain the $P$ canonical chromosomes with the best objective values
-      \If{budget is exhausted or stagnation reaches $p_{\rm stop}$ generations}
-        \State \textbf{break}
-      \EndIf
-    \EndFor
-  \EndIf
-  \State Apply bounded local refinement to the current best solution in $\mathcal R$
-  \If{no record in $\mathcal R$ has $\zeta=1$}
-    \State \textbf{return} the record minimizing the current physical key, with $\widehat C^{\rm future}=0$
-  \EndIf
-  \State Merge main-search and gate-site--residency protection records
-  \State Construct the admission set $\mathcal X_\ell^{\rm adm}$ from these records
-  \State \textbf{return} the candidate in $\mathcal X_\ell^{\rm adm}$ minimizing $\mathbf J_\ell$
-\EndProcedure
-\end{algorithmic}
-\end{algorithm}
-
-\subsection{Feasibility and Solver Properties}
-
-Candidate generation, projection, and admission selection share the constraints of $\mathcal X_\ell^{\rm phys}$. Every accepted state transition satisfies the physical constraints and ordering dependencies between rearrangement batches. Occupancy injectivity, zone capacity, AOD ordering, gate dependencies, and per-atom clock consistency are preserved across layer transitions.
-
-If projection and admission selection are inactive and the evaluation budget covers the entire bounded candidate space, exhaustive enumeration returns the lexicographic optimum over $\mathcal X_\ell^{\rm phys}$. When these stages are active, it returns the best candidate in $\mathcal X_\ell^{\rm adm}$. Genetic search terminates within its fixed budget without a global-optimality guarantee.
-
-\subsection{Complexity and Implementation}
-
-The C++17 implementation precomputes coordinate distances, trajectory compatibility, and conflict edges. Deterministic caches support candidate decoding, storage-site assignment, conflict-graph coloring, and future states. Let $N_{\rm bnd}$ denote the number of boundaries between consecutive two-qubit layers. Table~\ref{tab:solver-bounds} specifies budgets by $N_{\rm bnd}$ to bound candidate evaluation, storage-site matching, and prediction depth for long circuits.
 
 \begin{table}[!t]
 \caption{Default and Size-Adaptive Solver Limits for GA-LK}
@@ -279,17 +78,110 @@ $N_{\rm bnd}>512$ & 64 & $(192,\le6,\le4,\le2)$ & $\le4$\\
 $N_{\rm bnd}\ge5000$ & -- & -- & $\le2$\\
 \bottomrule
 \end{tabular*}
-\PaperTableNote{$E$, $P$, $I$, and $K$ denote the candidate evaluation budget, population size, generation count, and number of injective assignments, respectively. ``--'' imposes no additional limit in that row. Overlapping conditions apply jointly, with the tighter limit taking precedence.}
+\PaperTableNote{$N_{\rm bnd}$ is the number of two-qubit layer boundaries, and $n$ is the qubit count. $E$, $P$, $I$, and $K$ denote the encoding evaluation budget, population size, generation count, and number of storage-site assignments, respectively; $H_{\rm cap}$ limits the look-ahead horizon. A dash imposes no additional limit. Overlapping conditions apply the tighter limit.}
 \end{table}
 
-Here, $n=|\mathcal Q|$, and each atom has at most 6 candidate storage sites. Exact conflict-graph refinement handles at most 24 trajectories, with a branch-and-bound limit of $2\times10^5$ nodes. Linear assignment subproblems and Murty branching generate injective storage-site assignments. Constructing pairwise trajectory compatibility has quadratic cost in the number of trajectories.
+\subsubsection{Routing-Aware Gate-Site Selection}
 
-Normally, $\Omega_{\ell,j}$ contains all entanglement-site pairs that pass static-occupancy and single-trajectory intersection checks. For deep circuits with few gates per layer, the first search uses a bounded gate-site domain ordered by distance. The full domain is restored if this search produces no feasible candidate. Table~\ref{tab:solver-bounds} and the code repository provide the size thresholds and complete budgets. Caches are keyed by complete boundary states and canonical encodings. Final rearrangement metrics are computed from the generated ZAIR instruction sequence.
+A gate-site gene selects both endpoints and the transport needed to reach them. If one participant already occupies a suitable gate site, a candidate can leave it in place and move only its partner. When both must move, the candidate jointly selects a gate-site pair and orientation. Available sites must satisfy entanglement-zone geometry, capacity, and single-atom occupancy constraints. Narrow layers in deep circuits first consider a bounded, distance-ordered gate-site domain. The full domain is restored if no feasible solution is found.
 
-Suppose the main search and candidate projection evaluate $E$ and $E_{\rm guard}$ candidates, respectively. Each candidate considers at most $K$ storage-site assignments and predicts $|\mathcal D_\ell^{\rm vis}|$ future layers. The approximate time complexity is
+Candidates are decoded in execution order. Returning atoms and gate-site blockers first receive storage locations to release the target sites. Target-layer participants then enter the zone or move within it, as shown in Fig.~\ref{fig:joint-ga}(c). Necessary temporary relocations also incur trap-transfer and time costs, which are included in the candidate loss. Each phase forms trajectories from current occupancy, checks AOD row--column relationships and unintended intersections, and constructs executable parallel batches. A geometrically closer gate site can therefore be rejected if it requires more sequential transport.
+
+\subsubsection{Residency and Return Storage Sites}
+
+Residency saves round-trip trap transfers but exposes atoms to Rydberg excitation in intervening layers where they do not participate. Returning to storage avoids this loss, with benefits that depend on the return distance and the next entry path. Residency genes let the search compare these choices under the same gate-site assignment, rather than making irreversible decisions atom by atom.
+
+For a given chromosome, returning atoms still need specific storage traps. Each atom receives at most six candidate sites near its current entanglement site, initial storage site, and future partners. Linear assignment and Murty branching~\cite{murty1968assignment} generate the first $K$ distinct storage-site assignments, denoted by $a_\ell$. Injective matching prevents multiple returning atoms from selecting the same storage trap. Each assignment and chromosome form a complete candidate. A location-based proxy cost generates this bounded candidate set, but final selection uses the candidate's execution loss.
+
+\subsubsection{Current Loss and Multilayer Look-Ahead}
+
+For a fixed circuit, gate counts are unchanged, and placement primarily affects trap-transfer, idle-excitation, and coherence losses. Following~\eqref{eq:fidelity}, the incremental cost of completing the current layer is
 \begin{equation}
-O\!\left((E+E_{\rm guard})K
-\left(C_{\rm feas}+|\mathcal D_\ell^{\rm vis}|C_{\rm pred}\right)\right),
-\label{eq:complexity}
+\begin{aligned}
+C_\ell^{\rm cur}={}&-\Delta N_{\rm tran}\log f_{\rm tran}
+-\Delta N_{\rm exc}\log f_{\rm exc}\\
+&+\sum_{q\in\mathcal Q}
+\log\frac{1-t_q^{-}/T_2}{1-t_q^{+}/T_2},
+\end{aligned}
+\label{eq:current-cost}
 \end{equation}
-where $C_{\rm feas}$ and $C_{\rm pred}$ are the costs of physical feasibility evaluation and one-layer future-state estimation, respectively. Wide-layer and deep-circuit instances use bounded gate-site neighborhoods for $E_{\rm guard}$. The generated ZAIR instruction sequence must satisfy occupancy, AOD, and unintended-intersection constraints.
+where $t_q^{-}$ and $t_q^{+}$ are the accumulated idle times before and after the transition, respectively. Transport duration follows the executable batches, and single-qubit gates update timing according to dependencies. Candidates returning the same number of atoms can thus incur different costs because their storage sites and routing groups differ.
+
+Multilayer look-ahead starts independently from each candidate's $s_{\ell+1}$. The predictor processes future gate layers in order and selects unassigned legal gate sites. When nonparticipating atoms block sites or paths, they move to available storage sites before gate participants enter. Each predicted layer updates positions, occupancy, and clocks, so the next layer uses positions produced by the preceding predicted layer. Gate-site selection considers both participants' transport distances and the return distances of blocking atoms, with fixed-order tie-breaking. If joint entry is infeasible, bounded temporary relocation and then atom-by-atom entry are tested.
+
+Suppose $h_\ell$ future layers are predicted, with incremental loss $\widehat C_{\ell,d}$ at layer distance $d$. Each increment includes excitation of nonparticipants, entry and temporary relocation of participants, and movement of blockers. The finite-horizon objective is
+\begin{equation}
+J_\ell=C_\ell^{\rm cur}
++\sum_{d=1}^{h_\ell}\alpha\rho^{d-1}\widehat C_{\ell,d}
++\alpha\rho^{h_\ell-1}\Phi_\ell .
+\label{eq:lookahead-cost}
+\end{equation}
+The parameter $\alpha$ scales future costs, while $\rho$ discounts them with layer distance. Terminal term $\Phi_\ell$ estimates feasible return losses for residents absent from the window's final layer, avoiding a simple deferral of costs beyond the horizon. This estimate is not executed as a current instruction. At zero horizon, both the sum and terminal term are zero.
+
+Prediction depth is limited by the remaining layers, maximum horizon $H_{\max}$, resource caps in Table~\ref{tab:solver-bounds}, and a decay threshold. The main configuration is $(H_{\max},\alpha,\rho,\epsilon)=(8,0.5,0.7,0.05)$; layers with weight $\rho^{d-1}<\epsilon$ are not expanded. The two candidates in Fig.~\ref{fig:physical-lookahead}(b) leave different starting positions for the next interaction. Atom $p$ has a shorter entry path under candidate $B$, but the benefit also depends on routing groups and critical batch durations, which the layer-wise evaluation accounts for together. Fig.~\ref{fig:physical-lookahead}(c) gives the layer-distance weights.
+
+\begin{figure}[!t]
+  \centering
+  \resizebox{\columnwidth}{!}{\input{figures/physical_lookahead}}
+  \caption{Routing groups and subsequent-layer costs. (a) Among four trajectories, two pairs violate row--column relationships and form conflict edges; coloring assigns two compatible batches. Stationary atom $q_0$ has no movement vertex. (b) Two candidates leave different starting positions for the next interaction. Atom $p$ has a shorter transport path under candidate $B$; the loss depends on the layer's batches and their durations. (c) Future-layer weights decay as $w_d=\alpha\rho^{d-1}$. $\mathcal E$ and $\mathcal S$ denote the entanglement and storage zones, respectively. Filled and open circles denote atoms and target traps.}
+  \label{fig:physical-lookahead}
+\end{figure}
+
+\subsubsection{Candidate Selection}
+
+Prediction error can prevent a larger current loss from being recovered in later layers. Candidate selection uses a feasible low-current-loss solution as a reference. An alternative is admitted only when predicted future savings sufficiently compensate for its current-cost increase. Specifically, the increase must be at most $\eta=0.25$ of the predicted future savings, and total objective $J_\ell$ must not exceed the reference value.
+
+The reference also accounts for beneficial residency. For atoms reused within the visible window, the solver compares the loss of remaining until the next use against a round trip through storage. Atoms with cheaper residency receive priority when capacity and mandatory-return constraints permit. This residency priority is disabled at zero horizon. The solver first considers candidate groups that return fewer such atoms, makes bounded local adjustments to their gate sites, and selects a low-current-loss reference. Admitted candidates are ranked by $J_\ell$, breaking ties by batch count, rearrangement time, transport distance, and finally fixed encoding order. If every future rollout is infeasible, selection falls back to executable current-layer cost. Algorithm~\ref{alg:solver} summarizes the procedure.
+
+\begin{algorithm}[t]
+\caption{Joint Optimization of One Two-Qubit Layer}
+\label{alg:solver}
+\small
+\begin{algorithmic}[1]
+\Require Current mapping and clocks $s_\ell$, target layer $\mathcal G_\ell$, future gate layers
+\Ensure Selected gate sites, residency decisions, and executable rearrangement batches
+\State Build gate-site and residency domains; generate initial candidates
+\While{unevaluated encodings remain and the search budget is not exhausted}
+  \State Take encoding $\mathbf x_\ell$; generate the first $K$ injective storage-site assignments
+  \For{each storage-site assignment $a_\ell$}
+    \State Form return, temporary-relocation, and entry paths; update occupancy in sequence
+    \If{executable batches satisfy AOD and occupancy constraints}
+      \State Compute current loss $C_\ell^{\rm cur}$ and resulting state $s_{\ell+1}$
+      \State Predict future layers from $s_{\ell+1}$; compute $J_\ell$
+      \State Store the candidate, current batches, and prediction feasibility
+    \EndIf
+  \EndFor
+  \State Enumerate the next encoding or generate offspring by selection, crossover, and mutation, according to the search-space size
+\EndWhile
+\State Refine evaluated candidates locally within bounds; determine the reference
+\State Select a candidate using the current-cost bound and finite-horizon objective
+\State \Return Selected current execution batches and $s_{\ell+1}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Routing and Scheduling}
+
+Routing and scheduling convert candidate position changes into executable batches satisfying AOD constraints. Each atom trajectory is a conflict-graph vertex. An edge joins two trajectories if they violate the row--column relationships in~\eqref{eq:aod-relations} or their joint activation creates an unintended intersection over a stationary atom. DSATUR coloring~\cite{brelaz1979coloring} supplies initial groups: same-color trajectories share a batch, and different colors execute separately, as in Fig.~\ref{fig:physical-lookahead}(a). Candidate evaluation invokes this routing process; conflict checking does not begin only after placement is selected.
+
+Each same-color group is also checked for source-trap release, destination occupancy, and AOD capacity. Groups failing these collective constraints are split further. If an individual trajectory violates static occupancy or unintended-intersection constraints, its path is changed or the candidate is rejected. The scheduler sets start times from dependencies on atoms, SLM traps, AODs, and Rydberg operations, ensuring a source trap is released before another atom uses it. Rearrangement time at a layer boundary is
+\begin{equation}
+T_\ell^{\rm rr}=\sum_{b=1}^{B_\ell}
+\max_{\nu\in\mathcal B_{\ell,b}}\tau(\nu),
+\label{eq:rearrangement-metrics}
+\end{equation}
+where $B_\ell$ is the batch count, $\mathcal B_{\ell,b}$ contains the trajectories in batch $b$, and $\tau(\nu)$ is a trajectory's duration. The longest trajectory determines batch duration, which is why gate-site optimization must account for parallel grouping.
+
+A C++17 kernel implements candidate decoding, storage-site matching, conflict grouping, and future-layer prediction, caching repeated position relationships and candidate evaluations. Pairwise trajectory-compatibility checks scale quadratically with the number of trajectories. The budgets in Table~\ref{tab:solver-bounds} control per-layer cost by bounding candidates, assignments, and predicted layers. The public code repository provides the complete implementation and parameter settings.
+
+\subsection{Instruction Generation and Output}
+
+Compilation results use ZAIR~\cite{lin2025zac}. The initial mapping is recorded in \texttt{init}, single-qubit gates in \texttt{1qGate}, and two-qubit gates in the same entanglement zone in \texttt{rydberg}. Atom transport is encapsulated in \texttt{rearrangeJob}. Each rearrangement job specifies atom labels, source and destination traps, and an AOD identifier. It expands into three lower-level operations: \texttt{activate}, \texttt{move}, and \texttt{deactivate}, which transfer atoms into mobile optical traps, transport them, and release them, respectively. Fig.~\ref{fig:zair-output} lists the principal output fields.
+
+\begin{figure}[!t]
+  \centering
+  \input{figures/zair_output}
+  \caption{Principal fields in ZAIR output. (a) Four high-level instruction types. (b) Lower-level instructions within a rearrangement job. Location fields retain atom labels and SLM trap sites; row and column fields specify AOD beam identifiers and coordinates. Common identifier, timing, and dependency fields are omitted to emphasize the structure; the complete output includes them.}
+  \label{fig:zair-output}
+\end{figure}
+
+Code generation preserves the correspondence between gate dependencies and position changes. Single-qubit \texttt{locs} use atom positions at execution time, not their initial locations. The \texttt{rydberg} instruction records target gates and the entanglement-zone identifier. Rearrangement jobs record their internal operation order and start and end times. After all gate layers, terminal returns follow the compilation flow, and the complete sequence is emitted. An independent verifier checks gates, occupancy, and AOD constraints and computes fidelity and rearrangement metrics from that sequence. Evaluation thus uses the same executable instructions delivered by the compiler.

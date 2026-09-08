@@ -26,24 +26,28 @@ CORE_FIGURES = (
     "overall_framework.tex",
     "joint_ga.tex",
     "physical_lookahead.tex",
+    "zair_output.tex",
     "experimental_summary.tex",
 )
 CORE_FIGURE_PANEL_MARKERS = {
-    "architecture_preliminaries.tex": ("(a)", "(b)", "(c)", "(d)"),
+    "architecture_preliminaries.tex": ("(a)", "(b)", "(c)"),
     "baseline_motivation.tex": ("(a)", "(b)", "(c)"),
     "overall_framework.tex": ("(a)", "(b)", "(c)", "(d)", "(e)", "(f)"),
     "joint_ga.tex": ("(a)", "(b)", "(c)"),
     "physical_lookahead.tex": ("(a)", "(b)", "(c)"),
+    "zair_output.tex": ("(a)", "(b)"),
     "experimental_summary.tex": (
         "(a) Overall fidelity improvement",
-        "(b) Selected circuit improvements"),
+        "(b) Controlled comparisons", "(c) QFT-18 vs. ZAC"),
 }
 CORE_FIGURE_SEMANTIC_MARKERS = {
     "architecture_preliminaries.tex": {
         "atom_identities": ("q_0", "q_1", "q_2", "q_3"),
-        "three_constraints": (
-            "Non-crossing constraint", "Preservation constraint",
-            "Ghost-spot constraint"),
+        "two_constraint_classes": (
+            "Row/column relation constraint", "Unintended-intersection constraint"),
+        "relation_examples": ("Valid", "Order reversal", "Row merging"),
+        "noncrossing_but_incompatible": (r"y_0<y_1", r"y'_0=y'_1"),
+        "stationary_atom_protection": ("Unintended pickup of", "leaves $q_2$ in the SLM"),
         "serialized_batches": ("$B_1$", "$B_2$"),
     },
     "baseline_motivation.tex": {
@@ -51,44 +55,71 @@ CORE_FIGURE_SEMANTIC_MARKERS = {
             r"\mathrm{CZ}(q,p)", r"\mathrm{CZ}(u,v)",
             r"\mathrm{CZ}(w,x)", r"\mathrm{CZ}(q,r)"),
         "storage_sites": ("s_1", "s_2"),
-        "path_outcomes": (
-            "direct path infeasible", "reselect site or add waypoint",
-            "direct path feasible"),
+        "path_outcomes": ("Blocked", "Clear"),
+        "consistent_layer_notation": (
+            r"L_{\ell}", r"L_{\ell+1}", r"L_{\ell+2}", r"L_{\ell+3}"),
     },
     "overall_framework.tex": {
         "five_atom_identities": ("q_0", "q_1", "q_2", "q_3", "q_4"),
-        "physical_states": (r"\pi_0", r"\pi_\ell", r"\pi'_\ell"),
-        "real_zair_sequence": (
-            "init", "1qGate q0,q3", "rearrangeJob B1",
-            "rearrangeJob B2", "rydberg G1", "1qGate q2,q3"),
+        "physical_states": ("Selected layout", r"\mathbf{s}_\ell", r"\mathbf{s}_{\ell+1}"),
+        "initialization_lookahead": (
+            "Initial candidates", r"\PaperRevision{Look-ahead}\\\PaperRevision{initialization}", "initialMap"),
+        "candidate_evaluation": (
+            "Joint genetic search", "Physical evaluation", "stateAfter",
+            "Multi-layer look-ahead", r"J_\ell", "current + future loss"),
+        "real_zair_sequence": ("init", "1qGate", "rearrangeJob", "rydberg"),
     },
     "joint_ga.tex": {
         "tracked_atoms": ("q_3", "q_4"),
         "joint_variables": (r"z_{\ell,1}", r"z_{\ell,2}", r"b_{\ell,1}"),
-        "solver_regimes": ("Exact enumeration", "Budgeted genetic search"),
+        "depicted_gate_sites": (r"T_1^{+}", r"T_2^{+}", "gate atoms: left to right"),
+        "storage_assignment": ("storage assignment", r"a_\ell"),
+        "solver_regimes": ("Search with a common objective", "Enumeration", "Genetic search"),
         "ordered_execution": (
-            "Ordered physical evaluation", "phase I", "phase II",
-            r"s_\ell^{\rm sto}", r"\chi_{\rm AOD}"),
+            "Decoding and ordered execution", r"Return to\\storage", r"Place gate\\atoms",
+            "After staging", r"\mathbf{s}_{\ell+1}", r"q_3@s_1"),
     },
     "physical_lookahead.tex": {
-        "five_atom_context": ("q_0", "q_1", "q_2", "q_3", "q_4"),
-        "compatible_batches": (r"\mathcal B_1", r"\mathcal B_2"),
-        "candidate_states": (r"A:\ s_{\ell+1}", r"B:\ s_{\ell+1}"),
-        "real_gate_pairs": (r"\mathrm{CZ}(q,r)", r"\mathrm{CZ}(q,p)"),
-        "decay_weight": (r"w_d=\alpha\rho^{d-1}",),
+        "single_atom_reuse": ("{$q$}", "Resident", "Via storage", "$r$ inactive layers"),
+        "component_only_illustration": (
+            "Transfer and excitation factors only", "Loss ($10^{-3}$)",
+            "Coherence and other atoms excluded"),
+        "roundtrip_accounting": ("Transfers per leg: 2", r"f_{\rm tran}^{\,4}"),
+        "model_derived_losses": (
+            r"\ArgumentStayOneLoss", r"\ArgumentStayTwoLoss", r"\ArgumentRoundtripLoss"),
+        "candidate_poststate": ("postCandidate", r"\mathbf{s}_{\ell+1}"),
+        "ordered_decayed_prediction": (
+            "firstFuture", "secondFuture", r"\alpha\widehat C_{\ell,1}",
+            r"\alpha\rho\widehat C_{\ell,2}"),
+    },
+    "zair_output.tex": {
+        "high_level_instruction_types": ("{init}", "{1qGate}", "{rydberg}", "{rearrangeJob}"),
+        "physical_instruction_types": ("{activate}", "{move}", "{deactivate}"),
+        "mapping_and_gate_fields": (r"init\_locs", "unitary", "locs", "gates", r"zone\_id"),
+        "transport_fields": (r"aod\_id", r"aod\_qubits", r"begin\_locs", r"end\_locs", "insts"),
+        "aod_geometry_fields": (r"row\_id", r"col\_id", r"row\_y\_begin", r"row\_y\_end",
+                                r"col\_x\_begin", r"col\_x\_end"),
     },
     "experimental_summary.tex": {
         "direct_aggregate_ratios": (
             r"\FigSixZACvsZAC", r"\FigSixZACvsICCAD",
             r"\FigSixQMAPvsZAC", r"\FigSixQMAPvsICCAD"),
-        "selected_circuit_ratios": (
-            "fig6_selected_cases.dat", "ratio_zac", "ratio_iccad"),
+        "controlled_comparisons": (
+            r"\AblationGARatio", r"\AblationHRatio", r"\AblationGAN", r"\AblationHN",
+            "GA vs. greedy", "$H=8$ vs. $H=0$"),
+        "qft_loss_components": (
+            r"\MechanismQFTTransferGain", r"\MechanismQFTExcitationGain",
+            r"\MechanismQFTCoherenceGain", "Change in log fidelity"),
         "benchmark_identity": ("ZAC18", "QMAP154"),
     },
 }
 CORE_FIGURE_FORBIDDEN_MARKERS = {
     "overall_framework.tex": (r"d_{\min}", r"d_{\mathrm{safe}}"),
-    "joint_ga.tex": (r"d_{\min}", r"d_{\mathrm{safe}}"),
+    "joint_ga.tex": (r"d_{\min}", r"d_{\mathrm{safe}}", r"D_{\rm cap}", r"\chi_", "phase I"),
+    "physical_lookahead.tex": (
+        r"\mathcal D_{\rm vis}", r"D_{\rm vis}", "d_B<d_A", "DSATUR",
+        r"A:\ \mathbf{s}_{\ell+1}", r"B:\ \mathbf{s}_{\ell+1}"),
+    "experimental_summary.tex": ("fig6_selected_cases.dat", "Selected circuit improvements"),
 }
 FIG_SIX_SOURCE = "experimental_summary.tex"
 FIG_SIX_FORBIDDEN_RENDER_PATTERNS = {
@@ -115,9 +146,12 @@ FIG_SIX_REQUIRED_STRUCTURE_PATTERNS = {
 }
 OVERALL_FIGURE_SOURCE = Path("figures/overall_framework.tex")
 OVERALL_FIGURE_WRAPPER = Path("figures/overall_framework_standalone.tex")
-BUILD_DIRECTORY = Path("../build/paper_zh")
+BUILD_DIRECTORY = Path("build/paper_zh")
 OVERALL_FIGURE_PDF = BUILD_DIRECTORY / "figures/overall_framework.pdf"
 SOURCE_MANIFEST_NAME = "source_build_manifest.json"
+DEFAULT_PUBLICATION_DIRECTORY = Path("../ZAC_zzx/results/default_initial_v1/paper_exports")
+DEFAULT_PUBLICATION_FILES = ("default_initial_values.json", "default_initial_values.tex", "main_rows.csv",
+                             "analysis_units.csv", "mechanism.csv", "representative_cases.tex")
 SCIENTIFIC_SOURCE_SUFFIXES = {".tex", ".bib", ".cls", ".sty", ".dat", ".bst"}
 SOURCE_EXCLUDED_DIRECTORIES = {
     ".git", "build", "tmp", "__pycache__", ".pytest_cache", ".mypy_cache",
@@ -153,6 +187,7 @@ FORBIDDEN_PDF_METHOD_LABEL = re.compile(
     re.IGNORECASE,
 )
 FORBIDDEN_PDF_TONE_PATTERNS = {
+    "retired_horizon_term": re.compile(r"视\s*界"),
     "result_label": re.compile(r"结\s*果\s*标\s*签\s*为"),
     "current_manifest": re.compile(r"当\s*前\s*manifest", re.IGNORECASE),
     "pre_experiment_freeze": re.compile(r"补\s*实\s*验\s*前\s*冻\s*结"),
@@ -164,7 +199,7 @@ FORBIDDEN_PDF_TONE_PATTERNS = {
         r"严\s*格\s*计\s*时\s*结\s*论\s*为"),
     "implementation_event_code": re.compile(
         r"(?<![A-Za-z])(?:LOAD|MOVE|STORE|STAY|RETURN|RESEAT)"
-        r"(?![A-Za-z])", re.IGNORECASE),
+        r"(?![A-Za-z])"),
     "implementation_replay_term": re.compile(
         r"(?:物\s*理|真\s*实|候\s*选)\s*重\s*放|ghost_hits|"
         r"ghost-safe|cost-to-go",
@@ -196,6 +231,7 @@ LOG_FAILURE_PATTERNS = {
     "undefined_citation": r"Citation .* undefined|There were undefined citations",
     "overfull_box": r"Overfull \\hbox|Overfull \\vbox",
     "float_too_large": r"Float too large",
+    "invalid_column_balance": r"(?m)^Split:\s*-\d+(?:\.\d+)?pt",
 }
 
 
@@ -262,7 +298,7 @@ def _audit_overall_figure_pdf(root: Path, *,
         method.read_text(encoding="utf-8") if method.is_file() else "")
     uses_external_pdf = bool(re.search(
         r"\\includegraphics(?:\[[^\]]*\])?\s*"
-        r"\{\.\./build/paper_zh/figures/overall_framework\.pdf\}", method_text))
+        r"\{" + re.escape(OVERALL_FIGURE_PDF.as_posix()) + r"\}", method_text))
     directly_inputs_source = bool(re.search(
         r"\\input\s*\{figures/overall_framework(?:\.tex)?\}", method_text))
 
@@ -383,6 +419,15 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _uses_default_publication(root: Path) -> bool:
+    main = root / "paper_zh.tex"
+    if not main.is_file():
+        return False
+    text = _strip_tex_comments(main.read_text(encoding="utf-8"))
+    return "default_initial_values" in text or bool(re.search(
+        r"\\Default(?:ZAC|QMAP|Max|Mechanism|Representative)", text))
+
+
 def _scientific_source_hashes(root: Path) -> dict[str, str]:
     """Content identity of every local scientific source, independent of mtime."""
     sources: dict[str, str] = {}
@@ -394,6 +439,13 @@ def _scientific_source_hashes(root: Path) -> dict[str, str]:
         if path.is_symlink():
             raise ValueError(f"symbolic_link_scientific_source:{relative.as_posix()}")
         if path.is_file():
+            sources[relative.as_posix()] = _sha256(path)
+    if _uses_default_publication(root):
+        for name in DEFAULT_PUBLICATION_FILES:
+            relative = DEFAULT_PUBLICATION_DIRECTORY / name
+            path = root / relative
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"missing_or_symlinked_default_publication_source:{name}")
             sources[relative.as_posix()] = _sha256(path)
     return sources
 
@@ -783,6 +835,253 @@ def _paragraph_leading_visual_references(
     return findings
 
 
+def _figure_route_checks(name: str, active: str) -> dict[str, bool]:
+    """Replay the coordinates that draw the five-atom routing examples."""
+    def rows(macro: str) -> list[list[float]]:
+        match = re.search(r"\\def\\" + macro + r"\{([^}]*)\}", active)
+        return [[float(value) for value in row.split("/")]
+                for row in match.group(1).split(",")] if match else []
+
+    checks = dict.fromkeys(("routing_five_atom_conservation", "routing_trap_coordinates",
+                            "routing_source_release", "routing_aod_relations",
+                            "routing_ghost_safe", "routing_static_path_clear",
+                            "routing_temporary_storage", "routing_staged_snapshot",
+                            "routing_states_drive_drawing"), False)
+    try:
+        initial = {int(q): (x, y) for q, x, y in rows("routeInitial")}
+        final = {int(q): (x, y) for q, x, y in rows("routeFinal")}
+        moves = [(int(b), int(q), (sx, sy), (tx, ty))
+                 for b, q, sx, sy, tx, ty in rows("routeMoves")]
+        staged = {int(q): (x, y) for q, x, y in rows("routeStaged")}
+    except (ValueError, TypeError):
+        return checks
+    if set(initial) != set(range(5)) or set(final) != set(initial) or not moves:
+        return checks
+    compact = re.sub(r"\s+", "", active)
+    drawn_macros = ("routeInitial", "routeFinal") + (("routeStaged",) if staged else ())
+    checks["routing_states_drive_drawing"] = all(
+        (r"\foreach\qq/\xx/\yyin" + "\\" + macro) in compact for macro in drawn_macros)
+    if name == "overall_framework.tex":
+        checks["routing_states_drive_drawing"] &= (
+            r"\foreach\bb/\qq/\sx/\sy/\tx/\tyin\routeMoves" in compact)
+    if name == "overall_framework.tex":
+        gate_x, gate_y = (.24, .56, 1.44, 1.76), 1.70
+        store_x, store_y = (.24, 1.00, 1.76), (.20, .52, .84)
+    else:
+        gate_x, gate_y = (.36, .58, 1.02, 1.24), 1.91
+        store_x, store_y = (.28, .63, .98, 1.33), (.70, 1.08)
+    sites = {(x, gate_y) for x in gate_x} | {(x, y) for x in store_x for y in store_y}
+    checks["routing_trap_coordinates"] = all(
+        point in sites for point in list(initial.values()) + list(final.values())
+        + [p for _, _, src, dst in moves for p in (src, dst)])
+    state = initial.copy()
+    source_clear = relation_safe = ghost_safe = path_clear = True
+    staged_matches = not staged
+    sign = lambda value: 0 if abs(value) < 1e-9 else (1 if value > 0 else -1)
+    for batch in sorted({b for b, _, _, _ in moves}):
+        group = [(q, src, dst) for b, q, src, dst in moves if b == batch]
+        moving = {q for q, _, _ in group}
+        stationary = {point for q, point in state.items() if q not in moving}
+        source_clear &= len(moving) == len(group) and all(
+            state.get(q) == src and dst not in stationary for q, src, dst in group)
+        source_clear &= len({dst for _, _, dst in group}) == len(group)
+        for i, (_, src, dst) in enumerate(group):
+            for _, src2, dst2 in group[i + 1:]:
+                relation_safe &= all(sign(src[k] - src2[k]) == sign(dst[k] - dst2[k])
+                                     for k in (0, 1))
+            dx, dy = dst[0] - src[0], dst[1] - src[1]
+            for px, py in stationary:
+                collinear = abs(dx * (py - src[1]) - dy * (px - src[0])) < 1e-9
+                between = ((px - src[0]) * (px - dst[0])
+                           + (py - src[1]) * (py - dst[1])) <= 1e-9
+                path_clear &= not (collinear and between)
+        for end in (1, 2):
+            intersections = {(a[end][0], b[end][1]) for a in group for b in group}
+            ghost_safe &= not bool(intersections & stationary)
+        state.update({q: dst for q, _, dst in group})
+        source_clear &= len(set(state.values())) == 5
+        if batch == 0 and staged:
+            staged_matches = state == staged
+    q1_moves = [(b, src, dst) for b, q, src, dst in moves if q == 1]
+    checks.update(
+        routing_five_atom_conservation=state == final and len(set(final.values())) == 5,
+        routing_source_release=source_clear,
+        routing_aod_relations=relation_safe,
+        routing_ghost_safe=ghost_safe,
+        routing_static_path_clear=path_clear,
+        routing_temporary_storage=len(q1_moves) == 2 and q1_moves[0][0] == 0
+            and q1_moves[0][2][1] in store_y
+            and q1_moves[1][1] == q1_moves[0][2] and q1_moves[1][2][1] == gate_y,
+        routing_staged_snapshot=staged_matches,
+    )
+    return checks
+
+
+def _figure_structure_checks(name: str, text: str) -> dict[str, bool]:
+    """Validate scene relationships, not only the presence of caption words."""
+    active = _strip_tex_comments(text)
+    compact = re.sub(r"\s+", "", active)
+    if name == "physical_lookahead.tex":
+        losses = re.search(
+            r"\\foreach\\xx/\\loss/\\stylein\{(.*?)\}\{", compact)
+        loss_rows = re.findall(r"[\d.]+/(\\[A-Za-z]+)/[A-Za-z]+",
+                               losses.group(1)) if losses else []
+        chain = (("postCandidate", "firstFuture"),
+                 ("firstFuture", "secondFuture"),
+                 ("secondFuture", "laterFuture"))
+        return {
+            "single_atom_component_scope": "{$q$}" in compact
+                and not re.search(r"q_[0-9]", compact)
+                and "Transferandexcitationfactorsonly" in compact
+                and "Coherenceandotheratomsexcluded" in compact,
+            "roundtrip_four_transfers": compact.count("{$+2$}") == 2
+                and "Transfersperleg:2" in compact
+                and r"f_{\rmtran}^{\,4}" in compact,
+            "model_losses_drive_bars": loss_rows == [
+                r"\ArgumentStayOneLoss", r"\ArgumentRoundtripLoss",
+                r"\ArgumentStayTwoLoss", r"\ArgumentRoundtripLoss"]
+                and bool(re.search(r"rectangle\([^,]+,[^)]*\*\\loss\)", compact))
+                and bool(re.search(r"\\pgfmathprintnumber\[[^\]]*precision=2[^\]]*\]"
+                                   r"\{\\loss\}", compact))
+                and all(token in compact for token in ("{$r=1$}", "{$r=2$}",
+                    r"Loss($10^{-3}$)")),
+            "lookahead_starts_at_candidate_poststate": bool(re.search(
+                r"\(postCandidate\)[^;]*\\mathbf\{s\}_\{\\ell\+1\}", active))
+                and all(f"({a}.east)--({b}.west)" in compact for a, b in chain)
+                and bool(re.search(r"\(firstFuture\)[^;]*L_\{\\ell\+1\}", active))
+                and bool(re.search(r"\(secondFuture\)[^;]*L_\{\\ell\+2\}", active)),
+            "future_increments_are_decayed":
+                r"\alpha\widehatC_{\ell,1}" in compact
+                and r"\alpha\rho\widehatC_{\ell,2}" in compact,
+        }
+    if name == "experimental_summary.tex":
+        definitions = {
+            "FigSixZACvsZAC": r"100*(\DefaultZACMFourF/\DefaultZACMOneF-1)",
+            "FigSixZACvsICCAD": r"100*(\DefaultZACMFourF/\DefaultZACMTwoF-1)",
+            "FigSixQMAPvsZAC": r"100*(\DefaultQMAPMFourF/\DefaultQMAPMOneF-1)",
+            "FigSixQMAPvsICCAD": r"100*(\DefaultQMAPMFourF/\DefaultQMAPMTwoF-1)",
+            "ArgumentGAGain": r"100*(\AblationGARatio-1)",
+            "ArgumentLookaheadGain": r"100*(\AblationHRatio-1)",
+        }
+        axes = re.findall(r"\\begin\{axis\}(.*?)\\end\{axis\}", compact, re.S)
+        qft = axes[2] if len(axes) == 3 else ""
+        minimum = re.search(r"\bymin=([-+\d.]+)", qft)
+        maximum = re.search(r"\bymax=([-+\d.]+)", qft)
+        plots = re.findall(r"\\addplot\b.*?coordinates\{(.*?)\};", qft, re.S)
+        qft_points = "".join(plots)
+        return {
+            "aggregate_and_control_values_are_derived": all(
+                rf"\edef\{macro}{{\fpeval{{{formula}}}}}" in compact
+                for macro, formula in definitions.items()),
+            "aggregate_and_control_macros_drive_plots": len(axes) == 3
+                and all(point in axes[0] for point in (
+                    r"(1,\FigSixZACvsZAC)", r"(2,\FigSixQMAPvsZAC)",
+                    r"(1,\FigSixZACvsICCAD)", r"(2,\FigSixQMAPvsICCAD)"))
+                and all(point in axes[1] for point in (
+                    r"(1,\ArgumentGAGain)", r"(2,\ArgumentLookaheadGain)")),
+            "default_cohort_labels_are_marked": len(axes) == 3 and all(
+                token in axes[0] for token in (r"\PaperRevision{$N=\DefaultZACStrictN$}",
+                                               r"\PaperRevision{$N=\DefaultQMAPStrictN$}")),
+            "default_bar_values_are_marked": len(axes) == 3 and
+                r"nodesnearcoords={\PaperRevision{\pgfmathprintnumber{\pgfplotspointmeta}}}" in axes[0],
+            "qft_signed_components_drive_plots": all(point in qft_points for point in (
+                r"(1,\MechanismQFTTransferGain)", r"(2,\MechanismQFTExcitationGain)",
+                r"(3,\MechanismQFTCoherenceGain)"))
+                and "ylabel={Changeinlogfidelity}" in qft,
+            "qft_axis_preserves_negative_component": bool(minimum and maximum)
+                and float(minimum.group(1)) < 0 < float(maximum.group(1))
+                and "(axiscs:.5,0)--(axiscs:3.5,0)" in qft,
+        }
+    if name not in ("overall_framework.tex", "joint_ga.tex"):
+        return {}
+    route_checks = _figure_route_checks(name, active)
+    if name == "joint_ga.tex":
+        return {
+            **route_checks,
+            "encoding_uses_depicted_gate_sites": all(token in compact for token in (
+                r"0/{$z_{\ell,1}$}/{$T_1^{+}$}/gatecell",
+                r"1/{$z_{\ell,2}$}/{$T_2^{+}$}/gatecell", "{$T_1$}", "{$T_2$}",
+                "{$(q_0,q_2)$}", "{$(q_1,q_4)$}", "gateatoms:lefttoright"))
+                and bool(re.search(r"\\def\\routeFinal\{0/\.36/1\.91,"
+                    r"1/1\.02/1\.91,2/\.58/1\.91,3/1\.33/1\.08,4/1\.24/1\.91\}", compact)),
+            "return_gene_matches_storage_assignment":
+                r"2/{$b_{\ell,1}$}/{1}/bitcell" in compact
+                and compact.count(r"{$q_3@s_1$}") == 2,
+        }
+    macro = re.search(r"\\def\\czGate(?:#\d)+\{(.*?)\n\s*\}", active, re.S)
+    cz_body = macro.group(1) if macro else ""
+    cz_compact = re.sub(r"\s+", "", cz_body)
+    boxed = lambda body, gate: bool(re.search(
+        r"\\node\[gate(?:,[^\]]*)?\][^;]*\{" + gate + r"\}", body))
+    positions = [active.find(f"({node})")
+                 for node in ("candidates", "initialEval", "initialMap")]
+    return {
+        **route_checks,
+        # Standard controlled-Z: the filled control, connecting wire and boxed
+        # Z must share the same source/target coordinates inside one macro.
+        "boxed_cz_macro": bool(macro)
+            and bool(re.search(r"\\node\[gate(?:,[^\]]*)?\]at\(#1,#3\)\{Z\};", cz_compact))
+            and r"\draw[wire](#1,#2)--(#1,#3);" in cz_compact
+            and r"\fill[galkInk](#1,#2)circle(.8pt);" in cz_compact
+            and "gate/.style={draw=" in compact,
+        "boxed_rz": boxed(active, "RZ"),
+        "boxed_u_no_v": len(re.findall(
+            r"\\node\[gate(?:,[^\]]*)?\][^;]*\{U\}", active)) == 4
+            and not re.search(r"\{\s*V\s*\}", active),
+        "initial_candidates_before_selection": all(index >= 0 for index in positions)
+            and positions == sorted(positions)
+            and "(candidates.south)--(initialEval.north)" in compact
+            and "(initialEval.south)--(initialMap.north)" in compact
+            and "(initialMap.east)--" in compact,
+        "lookahead_starts_at_candidate_poststate":
+            bool(re.search(r"\(stateAfter\)[^;]*\\mathbf\{s\}_\{\\ell\+1\}", active))
+            and "(stateAfter.south)--" in compact
+            and "(future)" in compact and "(futureOne)" in compact
+            and "\\draw[feedback]" in compact,
+    }
+
+
+def _audit_argument_values(root: Path, *, errors: list[str]) -> dict[str, Any]:
+    """Require current model/circuit-derived macros without generating files."""
+    script = root / "writing/generate_argument_values.py"
+    audit: dict[str, Any] = {"status": "fail", "read_only": True,
+                             "script": "writing/generate_argument_values.py"}
+    if not script.is_file():
+        errors.append("argument_values_checker_missing")
+        return audit
+    result = _run([sys.executable, str(script), "--check"], cwd=root)
+    try:
+        report = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        report = None
+    valid = isinstance(report, dict) and report.get("status") == "pass"
+    valid = valid and report.get("read_only") is True and report.get("stale_files") == []
+    if result.returncode != 0 or not valid:
+        errors.append("argument_values_not_current")
+        audit["output_tail"] = result.stdout[-2000:]
+    else:
+        audit.update(report)
+    return audit
+
+
+def _audit_default_initial_publication(root: Path, *, errors: list[str]) -> dict[str, Any]:
+    """Run the independent full source closure without replacing accepted QA."""
+    if not _uses_default_publication(root):
+        return {"status": "not_used", "read_only": True}
+    script = root / "writing/verify_default_initial_publication.py"
+    if not script.is_file():
+        errors.append("default_initial_publication_checker_missing")
+        return {"status": "fail", "read_only": True}
+    result = _run([sys.executable, "-B", str(script), "--paper-root", str(root)], cwd=root)
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        report = {"status": "fail", "output_tail": result.stdout[-2000:]}
+    if result.returncode != 0 or report.get("status") != "pass" or report.get("read_only") is not True:
+        errors.append("default_initial_publication_not_verified")
+    return report
+
+
 def verify(root: Path, *, compile_pdf: bool,
            allow_experiment_placeholders: bool,
            expected_pages: int | None,
@@ -840,6 +1139,15 @@ def verify(root: Path, *, compile_pdf: bool,
             "paragraph_leading_visual_reference:"
             f"{finding['file']}:{finding['line']}")
     active_manuscript_text = _strip_tex_comments(manuscript_text)
+    float_counts = {
+        kind: len(re.findall(r"\\begin\{" + kind + r"\*?\}", active_manuscript_text))
+        for kind in ("figure", "table")
+    }
+    if float_counts != {"figure": 7, "table": 4}:
+        errors.append("chinese_requires_seven_figures_four_tables")
+    if (len(re.findall(r"\\label\{fig:zair-output\}", active_manuscript_text)) != 1
+            or len(re.findall(r"\\input\{figures/zair_output(?:\.tex)?\}", active_manuscript_text)) != 1):
+        errors.append("zair_output_requires_unique_figure_label_and_input")
     for token in FORBIDDEN_EXPERIMENT_SCOPES:
         if re.search(
                 rf"(?<![A-Za-z]){re.escape(token)}(?![A-Za-z])",
@@ -870,6 +1178,11 @@ def verify(root: Path, *, compile_pdf: bool,
         missing_panels = [
             marker for marker in required_panels if marker not in active_text
         ]
+        semantic_markers = CORE_FIGURE_SEMANTIC_MARKERS.get(name, {})
+        if name == FIG_SIX_SOURCE and r"\DefaultMechanismQFT" in active_text:
+            semantic_markers = {label: tuple(marker.replace(r"\MechanismQFT", r"\DefaultMechanismQFT")
+                                            for marker in markers)
+                                for label, markers in semantic_markers.items()}
         semantic_checks = {
             label: {
                 "required": list(markers),
@@ -878,18 +1191,23 @@ def verify(root: Path, *, compile_pdf: bool,
                 ],
             }
             for label, markers in
-            CORE_FIGURE_SEMANTIC_MARKERS.get(name, {}).items()
+            semantic_markers.items()
         }
         forbidden_semantics = [
             marker for marker in CORE_FIGURE_FORBIDDEN_MARKERS.get(name, ())
             if marker in active_text
         ]
+        structure_checks = _figure_structure_checks(name, text)
         figure_audit[name].update({
             "required_panel_markers": list(required_panels),
             "missing_panel_markers": missing_panels,
             "semantic_checks": semantic_checks,
             "forbidden_semantics": forbidden_semantics,
+            "structure_checks": structure_checks,
         })
+        for label, passed in structure_checks.items():
+            if not passed:
+                errors.append(f"core_figure_invalid_structure:{name}:{label}")
         for marker in missing_panels:
             errors.append(f"core_figure_missing_panel:{name}:{marker}")
         for label, check in semantic_checks.items():
@@ -968,6 +1286,8 @@ def verify(root: Path, *, compile_pdf: bool,
     evidence_audit = _audit_evidence(
         root, macros, evidence_root=evidence_root,
         evidence_manifest=evidence_manifest, errors=errors)
+    argument_values_audit = _audit_argument_values(root, errors=errors)
+    default_publication_audit = _audit_default_initial_publication(root, errors=errors)
 
     log_findings: dict[str, int] = {}
     if log.is_file():
@@ -1075,11 +1395,14 @@ def verify(root: Path, *, compile_pdf: bool,
         "experiment_placeholders": placeholder_count,
         "allow_experiment_placeholders": allow_experiment_placeholders,
         "core_figures": figure_audit,
+        "manuscript_float_counts": float_counts,
         "overall_figure_build": overall_figure_build,
         "overall_figure_pdf": overall_figure_pdf_audit,
         "fig6_derived_data": fig_six_data_audit,
         "fig6_metadata_consistency": fig_six_metadata_consistency,
         "evidence_audit": evidence_audit,
+        "argument_values": argument_values_audit,
+        "default_initial_publication": default_publication_audit,
         "numerical_presentation": numerical_presentation,
         "source_build_manifest": source_build_manifest,
         "forbidden_pdf_tokens": forbidden_pdf_tokens,
@@ -1104,14 +1427,14 @@ def main() -> int:
         type=Path, help="explicit paper_zh_v2 final_manifest.json")
     parser.add_argument(
         "--json-output", type=Path,
-        help="QA report within ../build/paper_zh (default: final_paper_qa.json)")
+        help="QA report within the manuscript build/paper_zh (default: final_paper_qa.json)")
     args = parser.parse_args()
     build_directory = (args.root.resolve() / BUILD_DIRECTORY).resolve()
     destination = (
         args.json_output.resolve() if args.json_output is not None
         else build_directory / "final_paper_qa.json")
     if not destination.is_relative_to(build_directory):
-        parser.error("--json-output must be inside the repository build/paper_zh directory")
+        parser.error("--json-output must be inside the manuscript build/paper_zh directory")
     payload = verify(
         args.root, compile_pdf=args.compile,
         allow_experiment_placeholders=args.allow_experiment_placeholders,

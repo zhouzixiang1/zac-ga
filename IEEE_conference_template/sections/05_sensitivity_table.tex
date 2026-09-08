@@ -1,24 +1,18 @@
 \begin{table}[!t]
-\caption{单因素参数敏感性}
+\caption{前瞻层数上限与编译质量}
 \label{tab:sensitivity}
 \centering
 \PaperTableSetup
-\begin{tabular*}{\columnwidth}{@{}l@{\extracolsep{\fill}}crr@{}}
+\begin{tabular*}{\columnwidth}{@{}l@{\extracolsep{\fill}}rr@{}}
 \toprule
-参数 & 取值 & $F/F_0$ & $t/t_0$\\
+前瞻层数上限 $H$ & 保真度比 & 重排批次比\\
 \midrule
-\multirow{2}{*}{评价预算 $E_{\max}$} & 192 & \SensitivityBudgetLowFidelityRatio & \SensitivityBudgetLowTimeRatio\\
- & 1152 & \SensitivityBudgetHighFidelityRatio & \SensitivityBudgetHighTimeRatio\\
-\addlinespace[4pt]
-\multirow{2}{*}{存储位域/匹配数} & $(4,2)$ & \SensitivityReturnSmallFidelityRatio & \SensitivityReturnSmallTimeRatio\\
- & $(10,8)$ & \SensitivityReturnLargeFidelityRatio & \SensitivityReturnLargeTimeRatio\\
-\addlinespace[4pt]
-\multirow{2}{*}{最大视界 $H_{\max}$} & 2 & \SensitivityHorizonTwoFidelityRatio & \SensitivityHorizonTwoTimeRatio\\
- & 4 & \SensitivityHorizonFourFidelityRatio & \SensitivityHorizonFourTimeRatio\\
-\addlinespace[4pt]
-\multirow{2}{*}{衰减权重 $(\alpha,\rho)$} & $(0.2,0.5)$ & \SensitivityDecayWeakFidelityRatio & \SensitivityDecayWeakTimeRatio\\
- & $(0.35,0.6)$ & \SensitivityDecayMiddleFidelityRatio & \SensitivityDecayMiddleTimeRatio\\
+0 & \HorizonExtZeroFidelityRatio & \HorizonExtZeroBatchRatio\\
+1 & \HorizonExtOneFidelityRatio & \HorizonExtOneBatchRatio\\
+2 & \HorizonExtTwoFidelityRatio & \HorizonExtTwoBatchRatio\\
+4 & \HorizonExtFourFidelityRatio & \HorizonExtFourBatchRatio\\
+8 & \HorizonExtEightFidelityRatio & \HorizonExtEightBatchRatio\\
 \bottomrule
 \end{tabular*}
-\PaperTableNote{注：$F/F_0$、$t/t_0$为相对默认配置的逐电路比值的几何均值，分别含\SensitivityFidelityN、\SensitivityTimeN 个有效电路。默认配置见实验设置与表~\ref{tab:solver-bounds}，存储位域/匹配数为$(6,4)$。}
+\PaperTableNote{注：\HorizonExtTargetN 个预定电路中，\HorizonExtCompleteN 个在各配置下均有有效模型评分，两列使用这一共同集合。每个配置取\HorizonExtSeedN 次运行的中位数，再相对$H=8$按电路计算后取几何均值。保真度比越大越好，重排批次比越小越好。}
 \end{table}

@@ -39,23 +39,15 @@
 \usepackage{array}
 \usepackage{tabularx}
 \usepackage{placeins}
-\usepackage{balance}
-\usepackage{etoolbox}
-% balance sizes split boxes by height alone. Reserve a baseline for CJK line
-% depth when reboxing the two columns; this adds footer space, not text scaling.
-\makeatletter
-\patchcmd{\@BAlancecol}
-  {\setbox\@leftcolumn=\vbox to \@tempdima}
-  {\advance\@tempdima by \baselineskip
-   \setbox\@leftcolumn=\vbox to \@tempdima}
-  {}{\PackageError{paper-zh}{Cannot apply CJK column-balance adjustment}{Check balance.sty before building.}}
-\makeatother
+% The final body/reference pages have no footnotes; avoid mistaking table rules for them.
+\usepackage[nospread,noshrink,nocheckfootnote]{flushend}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,fit,calc,shapes.geometric,shapes.misc,
   backgrounds,decorations.pathreplacing,matrix,patterns.meta}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.18}
 \usepackage[hidelinks]{hyperref}
+\input{revision_marks}
 
 \newcommand{\method}{\textsc{GA-LK}}
 \newcommand{\etal}{\textit{et al.}}
@@ -79,14 +71,23 @@
 
 \input{figures/tikz_style}
 \input{results_values_zh}
+\input{initial_lookahead_extension_values}
+\input{method_argument_values}
+\input{horizon_extension_values}
+\input{../ZAC_zzx/results/default_initial_v1/paper_exports/default_initial_values.tex}
+\input{../ZAC_zzx/results/default_initial_v1/paper_exports/representative_cases.tex}
 \newcommand{\PaperPercentGain}[2]{%
   \edef\pgfmathresult{\fpeval{100*((#1)/(#2)-1)}}%
+  \pgfmathprintnumber[fixed,precision=2,zerofill]{\pgfmathresult}\%%
+}
+\newcommand{\PaperPercentReduction}[2]{%
+  \edef\pgfmathresult{\fpeval{100*(1-(#1)/(#2))}}%
   \pgfmathprintnumber[fixed,precision=2,zerofill]{\pgfmathresult}\%%
 }
 
 \begin{document}
 
-\title{分区中性原子量子架构的\\层边界联合优化与多层物理前瞻}
+\title{GA-LK：面向分区中性原子架构的\\多层前瞻联合放置}
 
 \author{
 \IEEEauthorblockN{周子翔}
@@ -98,11 +99,11 @@ zhouzixiang@hdu.edu.cn}
 \maketitle
 
 \begin{abstract}
-分区中性原子量子处理器通过存储隔离降低空闲原子的受激误差，层间原子放置与重排则影响阱转移损耗和执行时延。现有复用感知和路由感知方法利用相邻门层或下一交互伙伴指导放置，但非相邻门层之间的原子驻留还会改变纠缠位占用、回迁位置及后续重排的并行性。本文提出联合放置与多层前瞻编译方法GA-LK，在每个层边界联合选择门位、驻留原子和回迁存储位。该方法采用有界遗传搜索求解联合决策，以轨迹冲突图着色构造满足声光偏转器约束的重排批次，并从候选转换后的物理状态估计后续门层的代价，按层距衰减其权重。评估采用两个基准集，分别包含18个11--98量子比特电路和154个3--16量子比特输入电路。在三种编译器共同有效的电路上，相对复用感知ZAC编译器，模型保真度几何均值分别提高\PaperPercentGain{\ZACMFourF}{\ZACMOneF}和\PaperPercentGain{\QMAPMFourF}{\QMAPMOneF}；相对路由感知放置编译器，分别提高\PaperPercentGain{\ZACMFourF}{\ZACMTwoF}和\PaperPercentGain{\QMAPMFourF}{\QMAPMTwoF}。两个基准集的平均重排批次和重排时延也均有所降低。
+分区中性原子量子处理器通过存储隔离降低空闲原子的受激误差，层间原子放置与重排则影响阱转移损耗和执行时延。现有复用感知方法侧重相邻门层的原子复用，路由感知方法则依据输运并行性选择位置，两者均利用后续双比特门的配对关系辅助放置。这些方法尚未将非相邻门层之间的驻留、双比特门位和回迁存储位纳入统一搜索，也未逐层评价不同放置方案引起的后续执行损失。本文提出结合遗传算法与多层前瞻的联合放置方法GA-LK。该方法通过遗传搜索联合确定双比特门在纠缠区的执行位置及原子的驻留或回迁选择，再通过匹配为回迁原子分配互不重复的存储阱位。候选评价先检验占位与声光偏转器约束，再根据完成当前层后的原子位置、阱位占用与执行时间，逐层估计后续输运、空闲受激和相干损失，并按层距衰减其权重，使当前放置兼顾后续多个门层的执行代价。\PaperRevision{相较现有编译方法，基准集的模型保真度几何均值最高提高\PaperPercentGain{\DefaultQMAPMFourF}{\DefaultQMAPMOneF}，平均重排批次最多减少\PaperPercentReduction{\DefaultQMAPMFourB}{\DefaultQMAPMOneB}。}
 \end{abstract}
 
 \begin{IEEEkeywords}
-中性原子量子计算，分区架构，量子编译，原子重排，多层前瞻
+中性原子量子计算，分区架构，量子编译，原子重排
 \end{IEEEkeywords}
 
 \input{sections/01_introduction}
@@ -112,9 +113,10 @@ zhouzixiang@hdu.edu.cn}
 \input{sections/06_related_work}
 \input{sections/07_conclusion}
 
+% Balance the last body page and the bibliography without changing text size.
+\flushcolsend
 \clearpage
-\nobalance
-\IEEEtriggeratref{13}
+\flushcolsend\flushend
 \bibliographystyle{IEEEtran}
 \bibliography{references}
 

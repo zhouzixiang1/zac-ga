@@ -1,0 +1,1338 @@
+{
+  "schema": "zac-archive-relocation-index-v1",
+  "status": "moved_and_hash_verified",
+  "date": "2026-09-07",
+  "post_archive_regression": {
+    "status": "passed",
+    "passed": 306,
+    "failed": 0,
+    "skipped": 0,
+    "report": "archive/_manifests/archive-20260907-v1/post_archive_regression/test_summary.json",
+    "report_sha256": "aedfd89f96171d1ac7f6793b57c9cf12b41474424b5592491c9c2b00a923465f"
+  },
+  "active_project": ".",
+  "branch": "main",
+  "head_before_archival": "08effb4a124d928cf3028f820422d9d67997f28b",
+  "move_count": 178,
+  "moved_file_count": 69545,
+  "moved_logical_bytes": 20856159692,
+  "tracking": {
+    "archive_git_ignored": true,
+    "removed_from_git_index": 3120,
+    "data_deleted": false,
+    "commit_created": false,
+    "push_performed": false
+  },
+  "audit": {
+    "persistent_directory": "archive/_manifests/archive-20260907-v1",
+    "original_execution_directory": "build/repository-reorganization/archive-20260907-v1",
+    "seal_sha256": "14588bb026b673fd1851359c4d363ee0847d4e6751061f1471a9be3a99fa50cb",
+    "plan_sha256": "b05fd725a66979492036f56574c06f74195218a0b33f7b614a9c3a0062d710d8",
+    "tool_sha256": "b5a629d8b342268cc055ee6de417fa9e3ed2db4176579fed5524dfba4f010fa2",
+    "preservation_report_sha256": "bca426015482d83f61515ace737ac45682f283b7a3bc3780ca85a00a17429085",
+    "preservation_summary": {
+      "accepted_seal": {
+        "checked": 20676,
+        "matched": 20676,
+        "relocated": 3916,
+        "verified_file_bytes": 5610917090
+      },
+      "keep_paths": {
+        "checked": 28,
+        "present_at_original_path": 28
+      },
+      "move_state": {
+        "completed_paths": 178,
+        "planned": 178
+      },
+      "paper_artifacts": {
+        "checked": 2,
+        "matched": 2,
+        "relocated": 0,
+        "verified_file_bytes": 604236
+      },
+      "paper_sources": {
+        "checked": 45,
+        "matched": 45,
+        "relocated": 0,
+        "verified_file_bytes": 484302
+      },
+      "primary_files": {
+        "checked": 14,
+        "matched": 14,
+        "relocated": 0,
+        "verified_file_bytes": 1130229
+      },
+      "primary_manifest": {
+        "checked": 1,
+        "matched": 1,
+        "relocated": 0,
+        "verified_file_bytes": 54732
+      }
+    }
+  },
+  "retained_current_result_roots": [
+    "ZAC_zzx/results/paper_zh_v2",
+    "ZAC_zzx/results/initial_lookahead_v1",
+    "ZAC_zzx/results/horizon_extension_v1",
+    "ZAC_zzx/results/supplementary_20260907"
+  ],
+  "notes": [
+    "Paths are relative to the single active repository root.",
+    "Resolve historical paths using the longest source-prefix match; do not rewrite frozen manifests.",
+    "The pre-existing root archive was retained in place and excluded from Git; it is not included in moved byte counts.",
+    "Current paper evidence and its frozen inputs, runtimes and reused selection runs remain at their original paths.",
+    "The shared-runtime absolute symlink fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/node_modules remains in place; its 14 neighboring historical items were archived.",
+    "Same-filesystem relocation reorganizes data without reclaiming the corresponding disk space.",
+    "Index deletions stop versioning local archival payloads; existing Git history is unchanged.",
+    "Full inventories, execution receipts and preservation reports remain in the ignored persistent audit directory."
+  ],
+  "moves": [
+    {
+      "source": "fidelity-lookahead-v2/artifacts/.DS_Store",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/.DS_Store",
+      "file_count": 1,
+      "logical_bytes": 8196,
+      "inventory_sha256": "2e434679ffdbe80933dea17c7189729fa9aa18668349c42dce0db67b807af449"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/_resolved_ablation_configs",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/_resolved_ablation_configs",
+      "file_count": 30,
+      "logical_bytes": 46460,
+      "inventory_sha256": "9d99131f406e0cb0a37d2d3a90fcf2011f27442bfec9e35ada0b535554c05b7d"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/_resolved_configs",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/_resolved_configs",
+      "file_count": 12,
+      "logical_bytes": 11796,
+      "inventory_sha256": "c12a3806b01dd6bd4ca76495b1777290ffd802808802a3216669a9b2985a0b29"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/archive",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/archive",
+      "file_count": 36048,
+      "logical_bytes": 6041138119,
+      "inventory_sha256": "ec5fe3ed90fc83b3ff70d8e295b632c2a1bc7c937f32ae0635beb58f30bdbcfd"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/deliveries",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/deliveries",
+      "file_count": 76,
+      "logical_bytes": 21585800,
+      "inventory_sha256": "0ddbec35cedfd0403dad68aa867e42e0f3f7c15ada8cbb21d8ec884554de50d9"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/legacy",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/legacy",
+      "file_count": 108,
+      "logical_bytes": 3353093,
+      "inventory_sha256": "caee2dd432761ab3d8bcb3fafc8d56d36af9247977019327532798420672d2a8"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/outputs",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/outputs",
+      "file_count": 6,
+      "logical_bytes": 2590462,
+      "inventory_sha256": "fee588573252ebd526a04156a5d4f30013eed85394cf1e2502f50fc0bc09dace"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/qasmbench-upstream",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/qasmbench-upstream",
+      "file_count": 560,
+      "logical_bytes": 841126433,
+      "inventory_sha256": "bb043b2aa32e5ca6c63961957cc739120794bfbffcf5908fd26b1685bcc5a149"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reproduction",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reproduction",
+      "file_count": 107,
+      "logical_bytes": 3262287,
+      "inventory_sha256": "6d62d0dec7d6bbe1465f468286d6868d44a3e2f584a809083a6a248e9a2275ab"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-qmap154-1efee0b.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-qmap154-1efee0b.json",
+      "file_count": 1,
+      "logical_bytes": 1006344,
+      "inventory_sha256": "b55e6ef83fa9bf35d8048444a08e1804f651e7e5bee48a99a2d8c503f045fbd2"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18",
+      "file_count": 38,
+      "logical_bytes": 3401351,
+      "inventory_sha256": "b6c966247b65708f8de41f19ce398fe13b8d880cf9dba5fb2138dc52242379b2"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-1e5426f",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-1e5426f",
+      "file_count": 38,
+      "logical_bytes": 3376290,
+      "inventory_sha256": "cec0d5bf051dd94725491118cce41ff4d9684981d929fd22f2446fc817577196"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-1e5426f.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-1e5426f.json",
+      "file_count": 1,
+      "logical_bytes": 122592,
+      "inventory_sha256": "61138c7933a70c05041eb59924cadb082a24c97b4cffd84cf43ef2518e653fd6"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-1efee0b.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-1efee0b.json",
+      "file_count": 1,
+      "logical_bytes": 122574,
+      "inventory_sha256": "3adbda246f612dd7f944afbe4580cde1c28e3d66c9082d2bb60797a5e39c2149"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-4f86429",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-4f86429",
+      "file_count": 38,
+      "logical_bytes": 3379657,
+      "inventory_sha256": "893e3194830dec421b9c6efa208a89ea68c77cb7a9c67d6d6589d65b19f77069"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-4f86429.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-4f86429.json",
+      "file_count": 1,
+      "logical_bytes": 122585,
+      "inventory_sha256": "8f4c9002525509350caf432f7c96cd50f8085abb5a57be1b8b4435592d695f0d"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-5dbbcae",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-5dbbcae",
+      "file_count": 38,
+      "logical_bytes": 3376740,
+      "inventory_sha256": "ceb343980c5e4fdb73b159d3826bee5efb77630dad0a671969aa0512a83eb0de"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-5dbbcae.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-5dbbcae.json",
+      "file_count": 1,
+      "logical_bytes": 122677,
+      "inventory_sha256": "06211db13e142bcc094216651ad3b569f88e4a754f3f1cb8bcca5dff04c0f6ca"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-792ce4e",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-792ce4e",
+      "file_count": 38,
+      "logical_bytes": 3377834,
+      "inventory_sha256": "4c018dc8458c1d7e043ea03c00cfe6bcb8c3cb5ebfd839c51e087802e0483b50"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-792ce4e.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-792ce4e.json",
+      "file_count": 1,
+      "logical_bytes": 122654,
+      "inventory_sha256": "c8611147b0af9684b33291531d154a5c25a0de8ef9d45754196c1c03475f9ff9"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-f64f07d",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-f64f07d",
+      "file_count": 38,
+      "logical_bytes": 3375348,
+      "inventory_sha256": "42baf13af70d8ed3434e61b8fc3296c6ab20a151b61d6afbf2d7b3fe16e53cef"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-f64f07d.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18-f64f07d.json",
+      "file_count": 1,
+      "logical_bytes": 122641,
+      "inventory_sha256": "28801bac427fe532dafb8b583de55360fb8637823860b235f6eb90bef4cdcf1c"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/aggregate-coverage-zac18.json",
+      "file_count": 1,
+      "logical_bytes": 122492,
+      "inventory_sha256": "438ea70ec4e9e5feaa1abb445bfcc285ee6c3e7f8467f33810ed106d10497cbc"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/run-coverage.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/run-coverage.json",
+      "file_count": 1,
+      "logical_bytes": 329214,
+      "inventory_sha256": "91eccb0f6e96611cbc370a5ac9551278c4b12d5cbc34b15c3aa6079bccf0f8f5"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/reports/run-main.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/reports/run-main.json",
+      "file_count": 1,
+      "logical_bytes": 68826,
+      "inventory_sha256": "c92f3bb635b2bb8ae98eebdedc6cdffeff9d703d91815f6171396d5c00ceaaf8"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.DS_Store",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.DS_Store",
+      "file_count": 1,
+      "logical_bytes": 14340,
+      "inventory_sha256": "dcc42b7524c1bc4791e5f897a1338d3509ce378034031fd072050480d4552da9"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/__pycache__",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/__pycache__",
+      "file_count": 1,
+      "logical_bytes": 14328,
+      "inventory_sha256": "fd48d238064c9e54b35d5f85f68edb226e27e517e12316eaa57613c1844150b9"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/aggregate_baselines.py",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/aggregate_baselines.py",
+      "file_count": 1,
+      "logical_bytes": 4054,
+      "inventory_sha256": "d230615541401e6816a8436895af6b8c30e564122429f81a661b3e567ec43cc0"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/aggregate_current.py",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/aggregate_current.py",
+      "file_count": 1,
+      "logical_bytes": 3564,
+      "inventory_sha256": "57226c209bfb245bbb6c959a6fd0417131f9ff800f6baf2efc3a009d8f170334"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/aggregate_four_methods.py",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/aggregate_four_methods.py",
+      "file_count": 1,
+      "logical_bytes": 12406,
+      "inventory_sha256": "c5cec3a5fae9ca859bc13b989399ad470f6fc3a369974519c632fddf7906f618"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/baseline_inventory.py",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/baseline_inventory.py",
+      "file_count": 1,
+      "logical_bytes": 3164,
+      "inventory_sha256": "699960425b3525ead93650ae4c078025384371802c86b9742f248736c016cdd4"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/build_final_workbook.mjs",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/build_final_workbook.mjs",
+      "file_count": 1,
+      "logical_bytes": 9800,
+      "inventory_sha256": "bcc24115787b36fb39bd82e565220a5ab44a7bd287067e618ef39438aec04fdb"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/extract_existing.mjs",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/extract_existing.mjs",
+      "file_count": 1,
+      "logical_bytes": 754,
+      "inventory_sha256": "719c80e0ab781654380f8943ff22db1f150abf769f8b70954bc4f31024734182"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/group_baselines.py",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/group_baselines.py",
+      "file_count": 1,
+      "logical_bytes": 3376,
+      "inventory_sha256": "9ec3af06ef7539a4720c4b3682d04de63d82be6c6e1b3a4e9f65b6acfe94e0ec"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/inspect_existing.mjs",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/inspect_existing.mjs",
+      "file_count": 1,
+      "logical_bytes": 391,
+      "inventory_sha256": "6910e3b65d3d297742c9a3dd7b446c4051b850363e437559e269f9ab1035b26b"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/old-1efee0b-rows.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/old-1efee0b-rows.json",
+      "file_count": 1,
+      "logical_bytes": 119435,
+      "inventory_sha256": "ecf70923074dfbe6cb0346e276200f1991ed6c89f0da5b70638f7622b5c9b61c"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/old_fourway_values.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/old_fourway_values.json",
+      "file_count": 1,
+      "logical_bytes": 115994,
+      "inventory_sha256": "be64db91fb90bcfd5b2abfeff082c8bb724b71d0e71afe46a0c25f285a85cc32"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/previews",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/previews",
+      "file_count": 2,
+      "logical_bytes": 442011,
+      "inventory_sha256": "6c7853ffaf753652c8a9d6f626a50e25ad3751eabfce360d1f8951b00733d08f"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/qmap154_aggregate.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/qmap154_aggregate.json",
+      "file_count": 1,
+      "logical_bytes": 265475,
+      "inventory_sha256": "17eac9f2c4e2a836b2097f47aa8bbb4e99e4a817d5e385d155695ba83ed602ab"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/zac18_aggregate.json",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/.sheet_work/zac18_aggregate.json",
+      "file_count": 1,
+      "logical_bytes": 34443,
+      "inventory_sha256": "bf7ac68a6a8117ca07b8ec15f25ba6cd8a24d0b5a18fe1a6afb7e2ad1649d660"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/_resolved_ablation_configs",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/_resolved_ablation_configs",
+      "file_count": 1,
+      "logical_bytes": 2767,
+      "inventory_sha256": "3fb21183ccd86bd059707959e940e1d56a5ebca271d4bc60ed6751e4b44aefdb"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/_resolved_configs",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/_resolved_configs",
+      "file_count": 12,
+      "logical_bytes": 23144,
+      "inventory_sha256": "c8dfffe8b2c172e11419b49d883b7a9f506e24f40ff52bea90be6bbfd5d3ba4f"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v1",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v1",
+      "file_count": 126,
+      "logical_bytes": 3278021,
+      "inventory_sha256": "d617b5c482024cbc428baa0883333dbcdcf60e05db7bdcd499139231cac1c1ba"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v10-pm-factors",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v10-pm-factors",
+      "file_count": 90,
+      "logical_bytes": 7143178,
+      "inventory_sha256": "036687526daf358ab9f2bee2a7688ff1873cf417f84382bfabdad2e9dd07ca04"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v11-soft-stay",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v11-soft-stay",
+      "file_count": 85,
+      "logical_bytes": 6076500,
+      "inventory_sha256": "e101ebc00f5bd2606ddc3dcb98c5900f62761b3cc09b34d544ad10ef049a9c6f"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v12-pm-budget",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v12-pm-budget",
+      "file_count": 45,
+      "logical_bytes": 3562710,
+      "inventory_sha256": "4086fe71449f442a8d67e26cb1c80bfd8da2866af40da37ea5f90f5880a32213"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v13-pm-operators",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v13-pm-operators",
+      "file_count": 72,
+      "logical_bytes": 5698558,
+      "inventory_sha256": "d446c5a3401710a7a80ea576b2cc03664a909614112b02a8273d6d15488409a2"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v14-pin4",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v14-pin4",
+      "file_count": 49,
+      "logical_bytes": 850167,
+      "inventory_sha256": "4c9d81244aa64fee34b8a4730152e4770421c303a0cc1dd205e5122476a54bcc"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v15-pm-pin",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v15-pm-pin",
+      "file_count": 36,
+      "logical_bytes": 2847648,
+      "inventory_sha256": "900f4a4b9e671776cb3f749a202ae30e3dd01b8019a8591cff23e0334926ff7c"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v16-current",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v16-current",
+      "file_count": 56,
+      "logical_bytes": 1549514,
+      "inventory_sha256": "86139e7b75603acce9e5689203d95da8be687263bdf36b05ab9b86d62296fba8"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v17-pm-combine",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v17-pm-combine",
+      "file_count": 72,
+      "logical_bytes": 5693713,
+      "inventory_sha256": "9d9498ce45e6161ff87218001e789dd4250529727e27e899f4591a2cc30cb0c9"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v19-bounded-guard",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v19-bounded-guard",
+      "file_count": 288,
+      "logical_bytes": 2510751,
+      "inventory_sha256": "119c43495cbc360464d266e4e85e407a100b582dfc0e5995b7a7e0b2036404d5"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v19-weak-factors",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v19-weak-factors",
+      "file_count": 117,
+      "logical_bytes": 999824,
+      "inventory_sha256": "10f2c4798051c45c86750c59c27d0644bcee2bc7757eb473f31059a73eae5121"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v2",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v2",
+      "file_count": 112,
+      "logical_bytes": 3366512,
+      "inventory_sha256": "19efed58187fed724f6795f83eca1ab1294587f80700da4b1df1cc490e53dbfc"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v20-soft1-sentinels",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v20-soft1-sentinels",
+      "file_count": 17,
+      "logical_bytes": 256660,
+      "inventory_sha256": "445846e5d40188ecf6240070f1e0f4c37d6981f09aa417b9806300a14ac6b816"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v21-m4-alpha",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v21-m4-alpha",
+      "file_count": 82,
+      "logical_bytes": 723061,
+      "inventory_sha256": "3d3e8bd79e244f030e526879b30abff1fc8ad209008f728fbacd87b04b61c39d"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v21-soft-high",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v21-soft-high",
+      "file_count": 63,
+      "logical_bytes": 732264,
+      "inventory_sha256": "44c011b2ab1414ef4527e580e756253931c798ea99b7640cb05d92f9f23fc968"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v22-serial-trust",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v22-serial-trust",
+      "file_count": 40,
+      "logical_bytes": 355250,
+      "inventory_sha256": "967bd92de79f453ba7c508c4465729955da3c5a1ad9b61839fa5e9f0655e923f"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v23-v0526-sentinel",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v23-v0526-sentinel",
+      "file_count": 16,
+      "logical_bytes": 146301,
+      "inventory_sha256": "fa81fc489e570dc3148f65d67c68e4868ed7d4c8a9260d2f8d7360f89dfb86d3"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v24-qmap154-seed0",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v24-qmap154-seed0",
+      "file_count": 2191,
+      "logical_bytes": 165042302,
+      "inventory_sha256": "0ba6aab48bbd91daff674d3f719b36b58faff73a3e0ec4d1758ada5f8aecf169"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v3",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v3",
+      "file_count": 144,
+      "logical_bytes": 5037347,
+      "inventory_sha256": "12cc4cf3804b0c3c041d1eca27848cc8dd2cbf09bfe2368091978d21f9e10d7c"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v3b",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v3b",
+      "file_count": 56,
+      "logical_bytes": 1559835,
+      "inventory_sha256": "784e92a46149c9368e3fe6a662e7b30fc8f0e96345b2f98f33202ba279602b79"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v4",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v4",
+      "file_count": 468,
+      "logical_bytes": 18390985,
+      "inventory_sha256": "49e1a62767cb9ef69fc65cbb8825eaa79e31ed9bcf0185edc3d5c0001213f17c"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v5",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v5",
+      "file_count": 112,
+      "logical_bytes": 3333911,
+      "inventory_sha256": "fb5cd15d5f261ec96d37c7ea96142665b33a44f511ba7f19a25b152706142ef8"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v6-h0-rent",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v6-h0-rent",
+      "file_count": 57,
+      "logical_bytes": 1555637,
+      "inventory_sha256": "5d11e89094b243f6b0e6119562cafcf110c7c4cdb37257854651ffc030607576"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v7-terminal-rent",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v7-terminal-rent",
+      "file_count": 24,
+      "logical_bytes": 861131,
+      "inventory_sha256": "a4fce0e0e73c0abdb4f59f909ca2fe3013ce897a62d9d7ceed0aa2c2217e11b0"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v8-state-weight",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v8-state-weight",
+      "file_count": 68,
+      "logical_bytes": 4815142,
+      "inventory_sha256": "5a6a5b488f13b1bb2869d6b6a27946eb76543de320f90c4dbd334ff3ef7c3e50"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v9-bary-weight",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/analysis-v9-bary-weight",
+      "file_count": 51,
+      "logical_bytes": 464300,
+      "inventory_sha256": "fb30bba68309fe58b55a29b9522ebb9555ea10b09af47b30b09e76a23ea50ec7"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostic-abi6-sentinel",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostic-abi6-sentinel",
+      "file_count": 40,
+      "logical_bytes": 4639255,
+      "inventory_sha256": "fe47513c0ff8288273eadbd4609f3e8d4a37199e76c7e3397750d973415626a1"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-always-return-probe-v21",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-always-return-probe-v21",
+      "file_count": 3,
+      "logical_bytes": 6166,
+      "inventory_sha256": "bcb6a99958edda945d58d3419856fd285d3609441830516eac809a5403ceb8aa"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-balanced-probe-v22",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-balanced-probe-v22",
+      "file_count": 8,
+      "logical_bytes": 4368476,
+      "inventory_sha256": "011104a9250800719afcf659bfce66d475d4129eaed9b125ab2011f5f596a276"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-hazard-w005-probe-v20",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-hazard-w005-probe-v20",
+      "file_count": 8,
+      "logical_bytes": 4355400,
+      "inventory_sha256": "c33797d0aa47ef245e5d481ce9f0f9284bc60fb603c095985773957932ac08d9"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-hazard-w025-probe-v19",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-hazard-w025-probe-v19",
+      "file_count": 8,
+      "logical_bytes": 4343408,
+      "inventory_sha256": "11d960ba848c4bdc8ab766b9b8d33e34e8269a5bc48c373d7b5e6757cbc2009e"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-hazard-w1-probe-v18",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-hazard-w1-probe-v18",
+      "file_count": 8,
+      "logical_bytes": 4335454,
+      "inventory_sha256": "d20c143192c5e10605ebe8ec5361b2ecc60c830223c9024f81805ffeb283a463"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-history-gap-w1-probe-v24",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-history-gap-w1-probe-v24",
+      "file_count": 8,
+      "logical_bytes": 4382114,
+      "inventory_sha256": "eea22d2c0049450f10e39f0b663ba6e5aa3fb7d3b839e46517f69c657d4e7e33"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-home-probe-v23",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-home-probe-v23",
+      "file_count": 8,
+      "logical_bytes": 4466312,
+      "inventory_sha256": "cdb3a71879b71ab7c54947608600a2950ea9805cb863f94bfc498f8e8574068e"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-parity-diagnostic-v15",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-parity-diagnostic-v15",
+      "file_count": 3,
+      "logical_bytes": 8557,
+      "inventory_sha256": "1a814b6b71ccc2b1843bae6cd3017775e0beb2123f12513f82dac6d40ac0354d"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-qmap154-h0fix-retries-v16",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-qmap154-h0fix-retries-v16",
+      "file_count": 11,
+      "logical_bytes": 31575412,
+      "inventory_sha256": "3e2b48455d964be9bdb64c93b609564dea9d0fac55c4c18818c6019fdc1215f9"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-qmap154-h0fix-sentinel-v15",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-qmap154-h0fix-sentinel-v15",
+      "file_count": 8,
+      "logical_bytes": 5003641,
+      "inventory_sha256": "0796d79eb175096d91abf4d81db17214de3e251acbe806c9b3a2a170f870ad78"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-qmap154-selective-final-v14",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-qmap154-selective-final-v14",
+      "file_count": 1254,
+      "logical_bytes": 330520382,
+      "inventory_sha256": "d93a1c836c064741ad7387b806212f805062ccf074eb405d0b98887e1cd3cc97"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-roundtrip-racing-v10",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-roundtrip-racing-v10",
+      "file_count": 233,
+      "logical_bytes": 47269269,
+      "inventory_sha256": "04fe1551098786f2ecb0dcdbaea70101cf229f6e508f0191f3cfa7494d2ff2e5"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-selective-gated-cohort-v13",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-selective-gated-cohort-v13",
+      "file_count": 24,
+      "logical_bytes": 14480986,
+      "inventory_sha256": "326374015593f1d85a7bdbb2f639bf13cc1db8a83576552d4871cc63b923f55d"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-selective-gated-validation-v12",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-selective-gated-validation-v12",
+      "file_count": 25,
+      "logical_bytes": 9423025,
+      "inventory_sha256": "c509fe8c92713b486011d98a48ec09cea9fdfb82a44ed4aa42562d2e722914fd"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/m3-selective-validation-v11",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/m3-selective-validation-v11",
+      "file_count": 34,
+      "logical_bytes": 10292609,
+      "inventory_sha256": "f5c0ce9b776b52e4ec3180d4667a65dc14596fcc99cb9160a6e3f9823ff6ddfd"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/probes",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/probes",
+      "file_count": 3,
+      "logical_bytes": 139627396,
+      "inventory_sha256": "9f6435bd73c772fdd5f3a2815b884c104202f547d0b29f939b1149631af84f47"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qasmbench-v1",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qasmbench-v1",
+      "file_count": 1034,
+      "logical_bytes": 750868763,
+      "inventory_sha256": "62cf6f40691ac1d7fe6dd3c70cf5cd8eb496caa819bc4ca641dddecb4593b55c"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qasmbench-v1-sentinel-bv_n30-5d1325c",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qasmbench-v1-sentinel-bv_n30-5d1325c",
+      "file_count": 6,
+      "logical_bytes": 16516,
+      "inventory_sha256": "16a08a571545e07575ad915d9de0f889266e30d1bd876bdf8348c957d88133fd"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qasmbench-v1-sentinel-qv_n32-5d1325c",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qasmbench-v1-sentinel-qv_n32-5d1325c",
+      "file_count": 6,
+      "logical_bytes": 10931,
+      "inventory_sha256": "026a6f0968671650329c63d1ff559d0c393583f570ea655b803d334b799e37b3"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap126-regression-rerun",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap126-regression-rerun",
+      "file_count": 24,
+      "logical_bytes": 12094414,
+      "inventory_sha256": "a75599717e9ec85ad5018bb5cc91ba258850ad745bbbfb6d876a5cfed35204e4"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap126-unified-c5-local8-v3",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap126-unified-c5-local8-v3",
+      "file_count": 1149,
+      "logical_bytes": 236395736,
+      "inventory_sha256": "8233205f2062a076b45476b4577a2fcb9c095fd4fcf2018db1af47838399912f"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-fast-audit-v7",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-fast-audit-v7",
+      "file_count": 11,
+      "logical_bytes": 9319039,
+      "inventory_sha256": "b9a1588073b60b07e5ec7c116392a7a68e24361f60e03993b8f0cb8804a441b4"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-fast-current-v8",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-fast-current-v8",
+      "file_count": 3,
+      "logical_bytes": 7384,
+      "inventory_sha256": "25ac8a6864c83af229770ca8bdd9ac76218e7a925d64f4f98506367d0498238d"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-fast-current-v8b",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-fast-current-v8b",
+      "file_count": 3,
+      "logical_bytes": 7636,
+      "inventory_sha256": "2336f418c0d8d95392f6862e9c02a91b499e821b15f29af60ab62c37ef5938d8"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-fast-current-v8c",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-fast-current-v8c",
+      "file_count": 16,
+      "logical_bytes": 173786851,
+      "inventory_sha256": "36f2cc1018af2298d1a1312ad89038694a9af18ef489fa9b1b56336ef1eecf5a"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-m3-cpp-fast-v8c",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-m3-cpp-fast-v8c",
+      "file_count": 1198,
+      "logical_bytes": 752740282,
+      "inventory_sha256": "f0360618865d6f38a182d955bdcbf2db4ac189c3415c90040c1f456ef87984d9"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-m3-retry-fixed-v9",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-m3-retry-fixed-v9",
+      "file_count": 72,
+      "logical_bytes": 191177616,
+      "inventory_sha256": "1e28e86fb5752542e5706cba58071a5f9c4aed962a203e6103761140a709c554"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-m4-tail-fast-v8c",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-m4-tail-fast-v8c",
+      "file_count": 200,
+      "logical_bytes": 757590664,
+      "inventory_sha256": "5d429b18ab2f54dc634d6df88d5c1c6575b298234ebacf00ea0005cc20522477"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-native-recovery-v5",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-native-recovery-v5",
+      "file_count": 113,
+      "logical_bytes": 562288740,
+      "inventory_sha256": "623b444421d688b68918dc2f21b98a39e3a0b33a44820f857d0a85cf043ba1f8"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-native-recovery-v6",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-native-recovery-v6",
+      "file_count": 16,
+      "logical_bytes": 181665319,
+      "inventory_sha256": "31bbea616b5066b0d3e1267d70b4fc4d5dff4904f7f93c9b7b9b46959dcc61f6"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-recovery-v4",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/qmap154-recovery-v4",
+      "file_count": 14,
+      "logical_bytes": 7406228,
+      "inventory_sha256": "383ad6ffc604f44a260b491e928176683d7c427c3b1c03d755300bd76e3df69a"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/timing-breakdown-smoke-v11",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/timing-breakdown-smoke-v11",
+      "file_count": 8,
+      "logical_bytes": 32344,
+      "inventory_sha256": "6eeb45f2079636c74a74468ea8f6e22a5921b28242b806afa2ddac713ac52412"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning",
+      "file_count": 7002,
+      "logical_bytes": 4895212411,
+      "inventory_sha256": "6f38fbe6d9df05ee95a0a411cb32a5db500058224436e929e0b548d1c5dc6d1f"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1",
+      "file_count": 722,
+      "logical_bytes": 14591739,
+      "inventory_sha256": "e631c3ba909a2eb12b7d100da35dfeeb926c1851370ee576bcde0932327c157f"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-0.5.1-sentinel",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-0.5.1-sentinel",
+      "file_count": 5,
+      "logical_bytes": 14184,
+      "inventory_sha256": "3f5bdec40b13bf76490793b38a260ba3aab1cbac250dba9ed5e9f5cd3eace6e5"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-08669bc-sentinel",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-08669bc-sentinel",
+      "file_count": 68,
+      "logical_bytes": 962748,
+      "inventory_sha256": "3d1381d4cd0faaee8d8ba4dd2d14f08577a8b04558beffa7807c02a2922f3c01"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-0983c32-sentinel",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-0983c32-sentinel",
+      "file_count": 43,
+      "logical_bytes": 2750665,
+      "inventory_sha256": "95f7b81595f1b54bc6f68150a3d104b86299b78a9249769a6b6a59f13a592599"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-1d00352",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-1d00352",
+      "file_count": 1807,
+      "logical_bytes": 456048883,
+      "inventory_sha256": "71f75b23ebaf8668795a10e7f90838be3e618d5655f20115a642105b6378d127"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-1d00352-sentinel",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-1d00352-sentinel",
+      "file_count": 23,
+      "logical_bytes": 976423,
+      "inventory_sha256": "4cb026683ede21601ad30230b66eff90212e6298b377f85d59145138ce44078b"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-365bdc3",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-365bdc3",
+      "file_count": 1875,
+      "logical_bytes": 587187844,
+      "inventory_sha256": "a248ada582a5b61c0944ee6134013dd029bfa5f1b4c93040294192c545318158"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-6de4564",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-6de4564",
+      "file_count": 1306,
+      "logical_bytes": 339593275,
+      "inventory_sha256": "40e41d7225ce1dafc43e8ba4606b966ef7c170bcfe12556036d4094838139a88"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-b40524f-sentinel",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-b40524f-sentinel",
+      "file_count": 33,
+      "logical_bytes": 795791,
+      "inventory_sha256": "c4a4e34f1d48cf496c975b6adbe6f5692f2a3211114650ffc1c0026b501ab006"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-hash-hwb9-sentinel",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-hash-hwb9-sentinel",
+      "file_count": 9,
+      "logical_bytes": 47825198,
+      "inventory_sha256": "699a9097aa2a9df7ac6301b95a9baf86eea1dcaa3eb2768a2e2aa403afc21ff2"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-hash-sentinel",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-hash-sentinel",
+      "file_count": 9,
+      "logical_bytes": 15946957,
+      "inventory_sha256": "447777c46dbfa37438a2a3a972f24752da41567d16b268c6c5c90c03af8250c2"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-prune-cache-sentinel",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-prune-cache-sentinel",
+      "file_count": 9,
+      "logical_bytes": 15954991,
+      "inventory_sha256": "66a73f8fb09357bbf681d117c4dccaa81e3db7849eafd63d2d3a581647340cbc"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-prune-sentinel",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/tuning-quality-v1-prune-sentinel",
+      "file_count": 9,
+      "logical_bytes": 47876833,
+      "inventory_sha256": "49d22adf0c8672bcf62e12e3a691f67076c133687ae9c3794313d67aabf8c246"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/zac18-cpp-current-v9",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/zac18-cpp-current-v9",
+      "file_count": 290,
+      "logical_bytes": 2540518,
+      "inventory_sha256": "86a5c67221c0774fa49d5f7c1543036934670efd7089ed273c5621493e25ec3d"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/paper-zh-v1/archive",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/paper-zh-v1/archive",
+      "file_count": 3916,
+      "logical_bytes": 1584998427,
+      "inventory_sha256": "edd9202280687f4254411fbce4c367598ad6addc3723708cb215825cc19ca709"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/.DS_Store",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/.DS_Store",
+      "file_count": 1,
+      "logical_bytes": 8196,
+      "inventory_sha256": "d745c756bee5000243c2636fadc60fbdfe4bfacd9db6645cd872d754ad91006c"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi7-sentinel-ea723d75d8f6-60893195432f-20260824T192235Z",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi7-sentinel-ea723d75d8f6-60893195432f-20260824T192235Z",
+      "file_count": 105,
+      "logical_bytes": 1663993,
+      "inventory_sha256": "21bea147134163025db13d3f9cf0edf54150ac34b6618b014e3f0470cd27312f"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi7-smoke-4f417f5f36ac-2b3daac0f2f2-20260824T204116Z",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi7-smoke-4f417f5f36ac-2b3daac0f2f2-20260824T204116Z",
+      "file_count": 85,
+      "logical_bytes": 850498,
+      "inventory_sha256": "b7c6f502a4dc09ad53e4bfc63be25daec1a4f64d478b5cf29faa84e2a8fdf1f9"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-bellman-pair-v2-ghz",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-bellman-pair-v2-ghz",
+      "file_count": 10,
+      "logical_bytes": 2193210,
+      "inventory_sha256": "95a61d11b24962d4257ff44395c3c4373ee5b70d399ed61594986d51d7cc8f3f"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-cycle-v1-ghz",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-cycle-v1-ghz",
+      "file_count": 6,
+      "logical_bytes": 2360900,
+      "inventory_sha256": "15da57478d6d1d7bda3cf09fb7b03d91c3066420ab067482de565ba434d4437c"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-cycle-v1-ghz-direct2048",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-cycle-v1-ghz-direct2048",
+      "file_count": 6,
+      "logical_bytes": 2528539,
+      "inventory_sha256": "bd7531b2a7e1c6e688494193d0c358e070a5efd879d8e2bbe46214310936ca05"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-guard-p0-v1",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-guard-p0-v1",
+      "file_count": 8,
+      "logical_bytes": 102880,
+      "inventory_sha256": "11d3b1ed28d72ea75a07edd6c4a4da16511226f0829b49fc042b21eeec107b2d"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-guard-p1-cm85a-probes",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-guard-p1-cm85a-probes",
+      "file_count": 12,
+      "logical_bytes": 20304,
+      "inventory_sha256": "12a0cc7596318d45a08c27eae991522fa8158c9248872a4424bd05ad3559ec1c"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-hotpath-p2-cm85a",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-hotpath-p2-cm85a",
+      "file_count": 6,
+      "logical_bytes": 9061,
+      "inventory_sha256": "827bb02daf6f216018ccd873fcddb201cda3a8eaa463a9f5d9ab34dcea75bdbd"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-long-depth-v1",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-long-depth-v1",
+      "file_count": 15,
+      "logical_bytes": 321739824,
+      "inventory_sha256": "19ff4b9e9a489d2518cffd70e430e6330eccfb98a3215ee83b4cb7cb6175c8cd"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-smoke-a6bc58ad9ab5-49cc94c68c81-20260824T213929Z",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-smoke-a6bc58ad9ab5-49cc94c68c81-20260824T213929Z",
+      "file_count": 72,
+      "logical_bytes": 797717,
+      "inventory_sha256": "7d7ea064723bf816e248c73efe07d0959762cdc0ecb038836ce8b10f442ce01a"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-stay-guard-v1",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/abi8-stay-guard-v1",
+      "file_count": 25,
+      "logical_bytes": 49466297,
+      "inventory_sha256": "696223fd2e8be3eb04756016e1e113478330eb5e0d7db3efb2a3915932f74345"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/baseline-raw-replay-dirty-20260825",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/baseline-raw-replay-dirty-20260825",
+      "file_count": 1204,
+      "logical_bytes": 246173135,
+      "inventory_sha256": "19d9c32ab899497422fc162512fa1e5e4bc86f32972875ae4964a793f888aa9f"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/bounded-joint-v2",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/bounded-joint-v2",
+      "file_count": 6,
+      "logical_bytes": 172680893,
+      "inventory_sha256": "d2a37e3e81ed478a10557d7c661f82237bcc04c38d9105a60e6541c87658a28c"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/bounded-narrow-v3",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/bounded-narrow-v3",
+      "file_count": 6,
+      "logical_bytes": 172888136,
+      "inventory_sha256": "767e4c599800d6009c5490dfd80c1e350cb08dcece745ad06202edf01ba596ff"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/python-fork-fast-h4",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/python-fork-fast-h4",
+      "file_count": 15,
+      "logical_bytes": 314094977,
+      "inventory_sha256": "d93d51c77c754cf2302b65728fce7f80ee6c5b4d4ca1ba598650788a9a31325b"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/rent-guard-prewheel-a6bc58a-v1",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/rent-guard-prewheel-a6bc58a-v1",
+      "file_count": 16,
+      "logical_bytes": 201449,
+      "inventory_sha256": "55c96aab33a7085d1f8faa285c067cf53ff0e38bfc40c6bf32c75fb3b83223e0"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-0630474-partial-timeouts",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-0630474-partial-timeouts",
+      "file_count": 1246,
+      "logical_bytes": 26833461,
+      "inventory_sha256": "d8f0c2ef696131e9c9cfd8a1fe14f5645ca62b2505be6183fda5e4fd3fa5dad7"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-781d2aa-partial",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-781d2aa-partial",
+      "file_count": 568,
+      "logical_bytes": 5155016,
+      "inventory_sha256": "2bcf4cac979f30d90d78bf3254f34110895e4dd2a0496744af129a2fd920a645"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-7e90d57-preimport",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-7e90d57-preimport",
+      "file_count": 6,
+      "logical_bytes": 17261,
+      "inventory_sha256": "fd477aad5430a2fe73089d73147a8cde95d5206969acbcb8df34842c830d4f0f"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-8a7a2bb-partial-site-dep",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-8a7a2bb-partial-site-dep",
+      "file_count": 1108,
+      "logical_bytes": 13447016,
+      "inventory_sha256": "988630bb7aa364bec6e2088e951af40818692867944f9b5b9fd85bebb2ef9bd9"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-b85ec99",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-b85ec99",
+      "file_count": 105,
+      "logical_bytes": 598271,
+      "inventory_sha256": "a6ce2748079d6d305826d1f1f561d2d2489b9df9b7a4b724dba62a52811335bb"
+    },
+    {
+      "source": "fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-fdd604c-preimport",
+      "destination": "archive/fidelity-lookahead-v2/artifacts/native-ga-v1/diagnostics/tuning-quality-v2-fdd604c-preimport",
+      "file_count": 6,
+      "logical_bytes": 17261,
+      "inventory_sha256": "d988f8a796d2d08ce07aff1be3ced76362c4a93b73d25574b9ee278c9afaea69"
+    },
+    {
+      "source": "ZAC_zzx/archive",
+      "destination": "archive/zac-zzx-legacy/prior-archive",
+      "file_count": 322,
+      "logical_bytes": 24111506,
+      "inventory_sha256": "08a309c6104cb6bb1dca19e9d31eb001392d9b1b1c8423c06a72ec5113006931"
+    },
+    {
+      "source": "ZAC_zzx/compare.py",
+      "destination": "archive/zac-zzx-legacy/scripts/compare.py",
+      "file_count": 1,
+      "logical_bytes": 6540,
+      "inventory_sha256": "14c8ea32183081a5e46fac7e5b2b6aae449247b9a163401edc8b2275607a2ccb"
+    },
+    {
+      "source": "ZAC_zzx/compare_table.py",
+      "destination": "archive/zac-zzx-legacy/scripts/compare_table.py",
+      "file_count": 1,
+      "logical_bytes": 4197,
+      "inventory_sha256": "dd530549b016e7dbc694a7f0fce59b70d19f2eb1cf292bd689e358eb5dfb108a"
+    },
+    {
+      "source": "ZAC_zzx/build_xlsx.py",
+      "destination": "archive/zac-zzx-legacy/scripts/build_xlsx.py",
+      "file_count": 1,
+      "logical_bytes": 5097,
+      "inventory_sha256": "abe47121d1cae3035f9f19333cc2e9af8692220a5a4254e78e9d1b393e2b1f17"
+    },
+    {
+      "source": "ZAC_zzx/fourway_full_xlsx.py",
+      "destination": "archive/zac-zzx-legacy/scripts/fourway_full_xlsx.py",
+      "file_count": 1,
+      "logical_bytes": 9563,
+      "inventory_sha256": "375ebb7d2afe61914caac9333a4007542593d2e8abc94ab7b88bca2c77ecfe12"
+    },
+    {
+      "source": "ZAC_zzx/fourway_paper_xlsx.py",
+      "destination": "archive/zac-zzx-legacy/scripts/fourway_paper_xlsx.py",
+      "file_count": 1,
+      "logical_bytes": 7586,
+      "inventory_sha256": "097208da9610e9beb39af68f97f546f77bd96767cab7b925246daa8b4fc6c810"
+    },
+    {
+      "source": "ZAC_zzx/fourway_qmap.py",
+      "destination": "archive/zac-zzx-legacy/scripts/fourway_qmap.py",
+      "file_count": 1,
+      "logical_bytes": 3643,
+      "inventory_sha256": "e45e2d244831571b337ec1205da4314444926b8cb4bb60d63ca952e356b3ebb9"
+    },
+    {
+      "source": "ZAC_zzx/fourway_steps_xlsx.py",
+      "destination": "archive/zac-zzx-legacy/scripts/fourway_steps_xlsx.py",
+      "file_count": 1,
+      "logical_bytes": 9900,
+      "inventory_sha256": "4011534c2c23c68765c1d6565f29db7e643d9f39232e60f8fe692c8e51ce99ba"
+    },
+    {
+      "source": "ZAC_zzx/fourway_table.py",
+      "destination": "archive/zac-zzx-legacy/scripts/fourway_table.py",
+      "file_count": 1,
+      "logical_bytes": 10256,
+      "inventory_sha256": "554a4202ff1f54c74eae6b6c0cf2f3439ae4671e28daf0cdeaf9b2be70033a93"
+    },
+    {
+      "source": "ZAC_zzx/run_three_way.py",
+      "destination": "archive/zac-zzx-legacy/scripts/run_three_way.py",
+      "file_count": 1,
+      "logical_bytes": 4796,
+      "inventory_sha256": "4d569b590efe7eb05439b89696bc7c8d728fae2e3d621b194715200f7a956b25"
+    },
+    {
+      "source": "ZAC_zzx/run_qmap_suite.py",
+      "destination": "archive/zac-zzx-legacy/scripts/run_qmap_suite.py",
+      "file_count": 1,
+      "logical_bytes": 7175,
+      "inventory_sha256": "ab26e6678c3ae51d4ef9060278d06327cc035ae4e22ff3a5223de62cedb884b8"
+    },
+    {
+      "source": "ZAC_zzx/paper_suite.py",
+      "destination": "archive/zac-zzx-legacy/scripts/paper_suite.py",
+      "file_count": 1,
+      "logical_bytes": 7291,
+      "inventory_sha256": "333b9cf86d78792444f3a15e9078fb58d970e6b1746c7056944c7cb29a94af22"
+    },
+    {
+      "source": "ZAC_zzx/qmap_score.py",
+      "destination": "archive/zac-zzx-legacy/scripts/qmap_score.py",
+      "file_count": 1,
+      "logical_bytes": 7317,
+      "inventory_sha256": "ac7e2534b5155ada3975ed3cb990248dcba2f608813bdd25436ae910ebd67991"
+    },
+    {
+      "source": "ZAC_zzx/na_score.py",
+      "destination": "archive/zac-zzx-legacy/scripts/na_score.py",
+      "file_count": 1,
+      "logical_bytes": 4323,
+      "inventory_sha256": "6bd957a4a4402de722a75fbab57e9fb751793d56b24f872446f53b8bdb873f17"
+    },
+    {
+      "source": "ZAC_zzx/table1_align.py",
+      "destination": "archive/zac-zzx-legacy/scripts/table1_align.py",
+      "file_count": 1,
+      "logical_bytes": 10494,
+      "inventory_sha256": "63c0f8c038c94f00b5202f3063aa9b204f87038d2650f79833bfd389efa8a3d6"
+    },
+    {
+      "source": "ZAC_zzx/exp_setting/zzx_ghost_gh.json",
+      "destination": "archive/zac-zzx-legacy/exp_setting/zzx_ghost_gh.json",
+      "file_count": 1,
+      "logical_bytes": 525,
+      "inventory_sha256": "7355bffb46d8d6a79dff6a06a0d1bf76ebf93a8ea279735b6cb3de76ac4545b7"
+    },
+    {
+      "source": "ZAC_zzx/exp_setting/zzx_ghost_grh.json",
+      "destination": "archive/zac-zzx-legacy/exp_setting/zzx_ghost_grh.json",
+      "file_count": 1,
+      "logical_bytes": 526,
+      "inventory_sha256": "01f559fa27188d0282aba347935e92e8c09d385419af9a09c122fd8c26a1aa0a"
+    },
+    {
+      "source": "ZAC_zzx/exp_setting/zzx_ghost_h.json",
+      "destination": "archive/zac-zzx-legacy/exp_setting/zzx_ghost_h.json",
+      "file_count": 1,
+      "logical_bytes": 488,
+      "inventory_sha256": "ccef4d6f96998806c4de342cffd3fa5e3801051cfb332a73cfafde4c93a0bff7"
+    },
+    {
+      "source": "ZAC_zzx/exp_setting/zzx_ghost_rh.json",
+      "destination": "archive/zac-zzx-legacy/exp_setting/zzx_ghost_rh.json",
+      "file_count": 1,
+      "logical_bytes": 525,
+      "inventory_sha256": "e306fe9376d201bcc5ca182eceadb3990086f8a70a3d2423ae787383e4dc67fa"
+    },
+    {
+      "source": "ZAC_zzx/exp_setting/zzx_main_ga.json",
+      "destination": "archive/zac-zzx-legacy/exp_setting/zzx_main_ga.json",
+      "file_count": 1,
+      "logical_bytes": 548,
+      "inventory_sha256": "407dd5881ab27b2e12882a3b0e09eecf2d592a40ed4ce99220c9886f326b08d1"
+    },
+    {
+      "source": "ZAC_zzx/exp_setting/zzx_nolook.json",
+      "destination": "archive/zac-zzx-legacy/exp_setting/zzx_nolook.json",
+      "file_count": 1,
+      "logical_bytes": 523,
+      "inventory_sha256": "117905cdf97b3bb4a1ae37769e078788862d5717f13e27ff62d8f49c83949f9e"
+    },
+    {
+      "source": "ZAC_zzx/exp_setting/zzx_nolook_ga.json",
+      "destination": "archive/zac-zzx-legacy/exp_setting/zzx_nolook_ga.json",
+      "file_count": 1,
+      "logical_bytes": 550,
+      "inventory_sha256": "576cf6f6775bd634e191efce5a3439ea7c5c2635e44ebbee9f156a5502ae4213"
+    },
+    {
+      "source": "experiments/compare_all.py",
+      "destination": "archive/baseline-pilots/experiments/compare_all.py",
+      "file_count": 1,
+      "logical_bytes": 6645,
+      "inventory_sha256": "3762da14583c398107769f82e5ea6cf6f9ee0e13ff788cfc5eee35e4f3fa9572"
+    },
+    {
+      "source": "experiments/summarize.py",
+      "destination": "archive/baseline-pilots/experiments/summarize.py",
+      "file_count": 1,
+      "logical_bytes": 2837,
+      "inventory_sha256": "810cd861a677911be8862f50b3488ed5c4456bae344131be4e561c65407107ca"
+    },
+    {
+      "source": "experiments/parse_zair.py",
+      "destination": "archive/baseline-pilots/experiments/parse_zair.py",
+      "file_count": 1,
+      "logical_bytes": 2113,
+      "inventory_sha256": "0f383e27dc650549308e78ddb2f8287f1cf2349b4b56611a0934115a08bdaa0b"
+    },
+    {
+      "source": "experiments/run_neat.py",
+      "destination": "archive/baseline-pilots/experiments/run_neat.py",
+      "file_count": 1,
+      "logical_bytes": 3533,
+      "inventory_sha256": "d21e0eef0366c2a3cf38123a256f8a66b0b0a755f70c132f19379fd614fd6e7e"
+    },
+    {
+      "source": "experiments/paper_truth/neat_table2.csv",
+      "destination": "archive/baseline-pilots/experiments/paper_truth/neat_table2.csv",
+      "file_count": 1,
+      "logical_bytes": 589,
+      "inventory_sha256": "537c92624975b940c539e6e79817dddb581282babbbca4c568dcf08e07295769"
+    },
+    {
+      "source": "experiments/results/neat_3DColor",
+      "destination": "archive/baseline-pilots/experiments/results/neat_3DColor",
+      "file_count": 2,
+      "logical_bytes": 9108,
+      "inventory_sha256": "b6cb21c7a228cb0b0fac250224da560c9a9c0194b9ea9065fa1cd8c26d500d40"
+    },
+    {
+      "source": "experiments/results/neat_C4",
+      "destination": "archive/baseline-pilots/experiments/results/neat_C4",
+      "file_count": 2,
+      "logical_bytes": 3324,
+      "inventory_sha256": "57332233f99a5a8fd74c580af1256cf5c398ac5c9f7f1187c2b1507ce88d25d1"
+    },
+    {
+      "source": "experiments/results/neat_C6",
+      "destination": "archive/baseline-pilots/experiments/results/neat_C6",
+      "file_count": 2,
+      "logical_bytes": 5382,
+      "inventory_sha256": "3673ce06fd1aa8f3b1644c89c2e88862d3105ab0a6d5a1b38dcb67b711b71ff2"
+    },
+    {
+      "source": "experiments/results/neat_Shor",
+      "destination": "archive/baseline-pilots/experiments/results/neat_Shor",
+      "file_count": 2,
+      "logical_bytes": 8761,
+      "inventory_sha256": "1da2c73d6a5d6950e0c24d899a11798c568ff28ce9ce224c41ed807fa60edbe7"
+    },
+    {
+      "source": "experiments/results/neat_Steane",
+      "destination": "archive/baseline-pilots/experiments/results/neat_Steane",
+      "file_count": 2,
+      "logical_bytes": 8498,
+      "inventory_sha256": "e8791e747860dd896a43028c64a569be71b5b4461c77f358b402426cbf6c18cb"
+    },
+    {
+      "source": "experiments/results/neat_runs.csv",
+      "destination": "archive/baseline-pilots/experiments/results/neat_runs.csv",
+      "file_count": 1,
+      "logical_bytes": 194,
+      "inventory_sha256": "3b1935757055a5617573c18cbe66f1efd2490492d4489f81523fe70d90f11bc7"
+    },
+    {
+      "source": "experiments/results/compare_all.csv",
+      "destination": "archive/baseline-pilots/experiments/results/compare_all.csv",
+      "file_count": 1,
+      "logical_bytes": 1847,
+      "inventory_sha256": "82e755e234edccb6d8d22faed2bf006a63477c1daf7bc8f5840b2e5ccc7fd6ad"
+    },
+    {
+      "source": "experiments/results/compare_all.md",
+      "destination": "archive/baseline-pilots/experiments/results/compare_all.md",
+      "file_count": 1,
+      "logical_bytes": 2696,
+      "inventory_sha256": "d7f3c2d4706a83bc12d0dec74a586c33397f5d4824248c6547143ba7574164a6"
+    },
+    {
+      "source": "experiments/results/summary_m5.txt",
+      "destination": "archive/baseline-pilots/experiments/results/summary_m5.txt",
+      "file_count": 1,
+      "logical_bytes": 2291,
+      "inventory_sha256": "0060a4375d8f1d95b8dcb111976f5c10276b7fd8d92e4cef2074cde127f64734"
+    },
+    {
+      "source": "tmp/pdfs",
+      "destination": "archive/manuscript-reviews/pdfs",
+      "file_count": 28,
+      "logical_bytes": 22793778,
+      "inventory_sha256": "d70b6e1efb1615f6d40ef029179b1bf9b2528a30155a972e28f3ca0740eb123d"
+    },
+    {
+      "source": "tmp/paper-upgrade-review.1yxHa0",
+      "destination": "archive/manuscript-reviews/paper-upgrade-review.1yxHa0",
+      "file_count": 81,
+      "logical_bytes": 23870087,
+      "inventory_sha256": "c4d09f7e63710a099b89c816dbe79beb9b9a8a7440438e9159fbcdb9a0967419"
+    }
+  ]
+}

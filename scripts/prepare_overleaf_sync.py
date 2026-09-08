@@ -2,7 +2,7 @@
 """Prepare an Overleaf-compatible checkout without committing or pushing.
 
 Run ``make paper`` first, then this script. The active manuscript remains in
-IEEE_conference_template; only build/overleaf-sync is adapted for Overleaf.
+IEEE_conference_template; only its build/overleaf-sync checkout is adapted for Overleaf.
 An existing sync checkout must be clean. The remote tip must exactly match
 the explicitly reviewed commit before any manuscript file is overwritten.
 """
@@ -24,8 +24,11 @@ from typing import Sequence
 REMOTE_URL = "https://git@git.overleaf.com/6a866ce86ea64496e2ae01a5"
 BRANCH = "main"
 KEYCHAIN_HELPER = "/Applications/Xcode.app/Contents/Developer/usr/libexec/git-core/git-credential-osxkeychain"
-LOCAL_FIGURE_PATH = b"../build/paper_zh/figures/overall_framework.pdf"
+LOCAL_FIGURE_PATH = b"build/paper_zh/figures/overall_framework.pdf"
 OVERLEAF_FIGURE_PATH = b"figures/overall_framework.pdf"
+LOCAL_FIGURE_REFERENCE = re.compile(rb"(?<![\w./-])" + re.escape(LOCAL_FIGURE_PATH) + rb"(?![\w./-])")
+LOCAL_LATEXMK_PATH = re.compile(
+    r"\.\./build\b|(?<![\w-])build/(?:paper_zh|paper_en|overleaf-sync)(?![\w-])")
 EXCLUDED_DIRECTORIES = {
     ".git", "build", "tmp", "__pycache__", ".pytest_cache", ".mypy_cache",
     ".ruff_cache", ".venv", "venv", "node_modules",
@@ -125,7 +128,7 @@ def read_sources(root: Path, files: Sequence[PurePosixPath]) -> dict[PurePosixPa
 
 
 def check_build(root: Path, snapshot: dict[PurePosixPath, bytes]) -> bytes:
-    build = root / "build/paper_zh"
+    build = root / "IEEE_conference_template/build/paper_zh"
     try:
         qa = json.loads((build / "final_paper_qa.json").read_text(encoding="utf-8"))
         if (qa.get("status") != "pass" or qa.get("page_count") != 9
@@ -145,7 +148,7 @@ def check_build(root: Path, snapshot: dict[PurePosixPath, bytes]) -> bytes:
             # whose digest is checked, even if another process replaces it.
             captured[name] = path.read_bytes()
             digest = hashlib.sha256(captured[name]).hexdigest()
-            expected = qa["artifacts"][f"../build/paper_zh/{name}"]["sha256"]
+            expected = qa["artifacts"][f"build/paper_zh/{name}"]["sha256"]
             if digest != expected or digest != manifest["artifacts"][name]["sha256"]:
                 raise PreparationError(f"Build/QA hash mismatch for {name}; run make paper.")
         return captured["figures/overall_framework.pdf"]
@@ -159,13 +162,13 @@ def require_clean_checkout(checkout: Path) -> None:
 
 
 def prepare_checkout(root: Path, expected_remote: str) -> tuple[Path, str, list[str]]:
-    checkout = root / "build/overleaf-sync"
+    checkout = root / "IEEE_conference_template/build/overleaf-sync"
     checkout.parent.mkdir(parents=True, exist_ok=True)
     if checkout.is_symlink():
         raise PreparationError("The sync checkout must not be a symbolic link.")
     if checkout.exists():
         if not (checkout / ".git").is_dir():
-            raise PreparationError("build/overleaf-sync exists but is not a dedicated Git checkout.")
+            raise PreparationError("IEEE_conference_template/build/overleaf-sync exists but is not a dedicated Git checkout.")
         require_clean_checkout(checkout)
         origin = git(["remote", "get-url", "origin"], cwd=checkout).stdout.strip()
         if origin != REMOTE_URL:
@@ -194,9 +197,10 @@ def prepare_checkout(root: Path, expected_remote: str) -> tuple[Path, str, list[
     if head != remote_tip:
         raise PreparationError("The sync checkout contains local commits ahead of origin/main; review them before another export.")
     require_clean_checkout(checkout)
-    existing_rc = checkout / ".latexmkrc"
-    if existing_rc.is_file() and "../build" in existing_rc.read_text(encoding="utf-8"):
-        raise PreparationError("The remote .latexmkrc contains a local ../build path; resolve it before export.")
+    for name in (".latexmkrc", "latexmkrc"):
+        existing_rc = checkout / name
+        if existing_rc.is_file() and LOCAL_LATEXMK_PATH.search(existing_rc.read_text(encoding="utf-8")):
+            raise PreparationError(f"The remote {name} contains a local build path; resolve it before export.")
     return checkout, remote_tip, []
 
 
@@ -221,11 +225,12 @@ def export_payload(snapshot: dict[PurePosixPath, bytes],
     # Validate both counterparts before constructing the export. A partial
     # English source tree must not silently retain a local-only figure path.
     for method in methods:
-        if snapshot.get(method, b"").count(LOCAL_FIGURE_PATH) != 1:
+        source = snapshot.get(method, b"")
+        if source.count(LOCAL_FIGURE_PATH) != 1 or len(LOCAL_FIGURE_REFERENCE.findall(source)) != 1:
             raise PreparationError(f"Expected exactly one local build path in {method}.")
     export = dict(snapshot)
     for method in methods:
-        export[method] = snapshot[method].replace(LOCAL_FIGURE_PATH, OVERLEAF_FIGURE_PATH)
+        export[method] = LOCAL_FIGURE_REFERENCE.sub(OVERLEAF_FIGURE_PATH, snapshot[method])
     export[PurePosixPath("figures/overall_framework.pdf")] = figure
     return export
 

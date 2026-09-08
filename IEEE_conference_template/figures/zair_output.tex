@@ -1,0 +1,24 @@
+\input{figures/tikz_style}
+\begin{tikzpicture}[x=1cm,y=1cm,galk/base,
+  code/.style={font=\ttfamily\fontsize{8.5pt}{11pt}\selectfont,
+    anchor=north west,inner sep=0pt,text=galkInk},
+  head/.style={galk/panel title}]
+  \path[use as bounding box] (0,0) rectangle (8.35,5.80);
+  \node[head] at (.04,5.65) {(a) High-level instructions};
+  \path[fill=galkInk!5] (0,2.80) rectangle (8.35,5.30);
+  \node[code] at (.20,5.12) {\begin{tabular}{@{}l@{}}
+    \textcolor{galkData}{init} \{init\_locs\}\\[2pt]
+    \textcolor{galkData}{1qGate} \{unitary, locs, gates\}\\[2pt]
+    \textcolor{galkData}{rydberg} \{zone\_id, gates\}\\[2pt]
+    \textcolor{galkData}{rearrangeJob} \{aod\_id, aod\_qubits,\\
+    \quad begin\_locs, end\_locs, insts\}
+  \end{tabular}};
+  \node[head] at (.04,2.54) {(b) Instructions within a rearrangement};
+  \path[fill=galkInk!5] (0,.05) rectangle (8.35,2.18);
+  \node[code] at (.20,2.00) {\begin{tabular}{@{}l@{}}
+    \textcolor{galkData}{activate} \{row\_id, row\_y, col\_id, col\_x\}\\[2pt]
+    \textcolor{galkData}{move} \{row\_id, row\_y\_begin, row\_y\_end,\\
+    \quad col\_id, col\_x\_begin, col\_x\_end\}\\[2pt]
+    \textcolor{galkData}{deactivate} \{row\_id, col\_id\}
+  \end{tabular}};
+\end{tikzpicture}

@@ -1,292 +1,228 @@
 \input{figures/tikz_style}
+\providecommand{\PaperRevision}[1]{#1}
 \begin{tikzpicture}[
-  x=1cm,y=1cm,
-  font=\rmfamily\fontsize{9.0pt}{10.0pt}\selectfont,
-  stage title/.style={font=\rmfamily\bfseries\fontsize{9.2pt}{10.2pt}\selectfont,
-                     text=galkInk},
-  subhead/.style={font=\rmfamily\fontsize{9.0pt}{10.0pt}\selectfont,
-                  text=galkInk,align=center},
-  small text/.style={font=\rmfamily\fontsize{9.0pt}{10.0pt}\selectfont,
-                    text=galkInk},
-  note text/.style={font=\rmfamily\itshape\fontsize{8.7pt}{9.7pt}\selectfont,
-                   text=galkMuted},
-  zone label/.style={font=\rmfamily\bfseries\fontsize{8.5pt}{9.5pt}\selectfont,
-                    text=galkInk},
-  wire/.style={draw=galkInk!78,line width=.45pt},
-  divider/.style={draw=galkInk!24,line width=.42pt},
-  flow/.style={-{Stealth[length=1.20mm,width=.78mm]},draw=galkInk,line width=.65pt},
-  gate/.style={draw=galkInk!78,fill=white,line width=.42pt,
-               minimum width=3.25mm,minimum height=2.75mm,inner sep=.15pt,
-               font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont},
-  trap/.style={circle,draw=galkInk!48,fill=white,line width=.38pt,
-               minimum size=1.55mm,inner sep=0pt},
-  atom/.style={circle,draw=white,fill=galkInk,line width=.30pt,
-               minimum size=1.95mm,inner sep=0pt},
-  q label/.style={font=\rmfamily\itshape\fontsize{8.3pt}{9.3pt}\selectfont,
-                  text=galkInk,inner sep=.2pt},
-  pair label/.style={font=\rmfamily\itshape\fontsize{8.0pt}{9.0pt}\selectfont,
-                     text=galkInk,inner sep=.1pt},
-  path one/.style={-{Stealth[length=1.02mm,width=.66mm]},draw=galkInk,line width=.68pt},
-  path two/.style={-{Stealth[length=1.02mm,width=.66mm]},draw=galkMuted,
-                   densely dashed,line width=.68pt},
-  feedback/.style={-{Stealth[length=1.05mm,width=.70mm]},draw=galkLook,
-                   densely dashed,line width=.62pt}
+  galk/base,x=1cm,y=1cm,
+  title/.style={galk/panel title,anchor=center},
+  small/.style={font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont},
+  qlabel/.style={galk/q label},
+  wire/.style={draw=galkInk!75,line width=.42pt},
+  divider/.style={draw=galkInk!25,line width=.38pt},
+  flow/.style={galk/accepted path},
+  gate/.style={draw=galkInk!75,fill=white,line width=.42pt,
+    minimum width=3.5mm,minimum height=2.8mm,inner sep=.35pt,
+    font=\rmfamily\fontsize{8.0pt}{9.0pt}\selectfont},
+  module/.style={draw=galkInk!65,fill=white,line width=.45pt,
+    align=center,font=\rmfamily\fontsize{9pt}{10pt}\selectfont},
+  trap/.style={galk/site},
+  atom/.style={galk/occupied atom},
+  feedback/.style={draw=galkLook,densely dashed,line width=.50pt,
+    -{Stealth[length=.95mm,width=.62mm]}}
 ]
-  \path[use as bounding box] (-.05,0) rectangle (18.05,6.25);
+  \path[use as bounding box] (0,0) rectangle (17.80,6.80);
+  \foreach \xx in {2.95,6.15,8.60,13.25,15.70}
+    \draw[divider] (\xx,.27)--(\xx,6.34);
+  \node[title] at (1.475,6.59) {(a) Input};
+  \node[title] at (4.55,6.59) {(b) Gate scheduling};
+  \node[title] at (7.375,6.59) {(c) Placement};
+  \node[title] at (10.925,6.59) {(d) Joint optimization};
+  \node[title] at (14.475,6.59) {(e) Routing};
+  \node[title] at (16.75,6.59) {(f) Output};
 
-  % Six-stage, line-based pipeline. The drawing is set at its final print size.
-  \foreach \x in {2.45,5.05,7.15,13.00,15.55}
-    \draw[divider] (\x,.28)--(\x,5.92);
-  \node[stage title] at (1.22,6.08) {(a) Input};
-  \node[stage title] at (3.75,6.08) {(b) Scheduling};
-  \node[stage title] at (6.10,6.08) {(c) Placement};
-  \node[stage title] at (10.07,6.08) {(d) Layer-boundary optimization};
-  \node[stage title] at (14.27,6.08) {(e) Routing};
-  \node[stage title] at (16.78,6.08) {(f) Output};
-
-  % (1) Illustrative unscheduled circuit.
-  \foreach \q/\y in {0/5.18,1/4.75,2/4.32,3/3.89,4/3.46} {
-    \node[small text,anchor=east,inner sep=0pt] at (.27,\y) {$q_{\q}$};
-    \draw[wire] (.32,\y)--(2.27,\y);
+  % A CZ gate uses the standard control dot, connector, and boxed Z target.
+  \def\czGate#1#2#3{%
+    \draw[wire] (#1,#2)--(#1,#3);
+    \fill[galkInk] (#1,#2) circle (.8pt);
+    \node[gate] at (#1,#3) {Z};
   }
-  \node[gate] at (.55,5.18) {RY};
-  \node[gate] at (.55,3.89) {RZ};
-  \draw[wire,line width=.58pt] (.95,5.18)--(.95,4.75);
-  \fill[galkInk] (.95,5.18) circle (.78pt);
-  \fill[galkInk] (.95,4.75) circle (.78pt);
-  \draw[wire,line width=.58pt] (1.05,4.32)--(1.05,3.89);
-  \fill[galkInk] (1.05,4.32) circle (.78pt);
-  \fill[galkInk] (1.05,3.89) circle (.78pt);
-  \node[gate,circle,minimum size=2.75mm] at (1.35,4.75) {V};
-  \node[gate] at (1.35,3.46) {RY};
-  \draw[wire,line width=.58pt] (1.72,5.18)--(1.72,4.32);
-  \fill[galkInk] (1.72,5.18) circle (.78pt);
-  \fill[galkInk] (1.72,4.32) circle (.78pt);
-  \draw[wire,line width=.58pt] (1.82,4.75)--(1.82,3.46);
-  \fill[galkInk] (1.82,4.75) circle (.78pt);
-  \fill[galkInk] (1.82,3.46) circle (.78pt);
-  \node[gate] at (2.09,4.32) {RZ};
-  \node[gate,circle,minimum size=2.75mm] at (2.09,3.89) {V};
-
-  % Device component: identical zone geometry is reused in all state snapshots.
-  \path[fill=galkEntangleFill,draw=galkEntangle,line width=.55pt]
-    (.20,1.95) rectangle (2.28,2.95);
-  \path[fill=galkStorageFill,draw=galkStorage,line width=.55pt]
-    (.20,.55) rectangle (2.28,1.80);
-  \node[zone label,anchor=north west,fill=galkEntangleFill,inner sep=.4pt]
-    at (.22,2.90) {$\mathcal E$};
-  \node[zone label,anchor=north west,fill=galkStorageFill,inner sep=.4pt]
-    at (.22,1.79) {$\mathcal S$};
-  \foreach \x in {.45,.77,1.09,1.41,1.73,2.05}
-    \foreach \y in {2.20,2.55}
-      \node[trap] at (\x,\y) {};
-  \foreach \x in {.45,.77,1.09,1.41,1.73,2.05}
-    \foreach \y in {.82,1.17,1.52}
-      \node[trap] at (\x,\y) {};
-  \draw[galk/rydberg pair] (.93,2.20) ellipse (.25 and .15);
-  \node[atom] at (.77,2.20) {};
-  \node[atom] at (1.09,2.20) {};
-  \draw[galkInk,line width=.68pt] (.77,2.20)--(1.09,2.20);
-  \node[q label,anchor=south east] at (.76,2.32) {$q_0$};
-  \node[q label,anchor=south west] at (1.10,2.32) {$q_1$};
-  \node[small text,fill=galkEntangleFill,inner sep=.35pt] at (1.70,2.62) {CZ};
-  \node[atom] at (.77,1.17) {};
-  \node[gate] at (1.16,1.17) {RZ};
-  \node[q label,fill=galkStorageFill,inner sep=1.3pt,anchor=east]
-    at (.67,1.17) {$q_2$};
-  \node[atom] at (1.41,.82) {};
-  \node[q label,fill=galkStorageFill,inner sep=1.3pt,anchor=east]
-    at (1.31,.82) {$q_3$};
-  \node[atom] at (1.73,1.52) {};
-  \node[q label,fill=galkStorageFill,inner sep=1.3pt,anchor=west]
-    at (1.83,1.52) {$q_4$};
-  \node[note text] at (1.24,3.18) {device model};
-
-  % (2) The same gates partitioned into five executable layers.
-  \foreach \q/\y in {0/5.10,1/4.54,2/3.98,3/3.42,4/2.86} {
-    \node[small text,anchor=east,inner sep=0pt] at (2.65,\y) {$q_{\q}$};
-    \draw[wire] (2.81,\y)--(4.88,\y);
+  % One fixed device glyph: entanglement above storage, with regular traps.
+  \def\device#1#2{%
+    \begin{scope}[shift={(#1,#2)}]
+      \path[galk/entanglement zone] (0,1.15) rectangle (2.00,2.25);
+      \path[galk/storage zone] (0,0) rectangle (2.00,1.04);
+      \foreach \xx in {.24,.56,1.44,1.76}
+        \node[trap] at (\xx,1.70) {};
+      \foreach \xx in {.24,1.00,1.76}
+        \foreach \yy in {.20,.52,.84}
+          \node[trap] at (\xx,\yy) {};
+      \draw[galk/rydberg pair] (.40,1.70) ellipse (.26 and .18);
+      \draw[galk/rydberg pair] (1.60,1.70) ellipse (.26 and .18);
+    \end{scope}%
   }
-  \foreach \x in {3.13,3.54,3.95,4.36}
-    \draw[galkInk!28,densely dashed,line width=.38pt] (\x,2.55)--(\x,5.34);
-  \node[gate] at (2.94,5.10) {RY};
-  \node[gate] at (2.94,3.42) {RZ};
-  \draw[wire,line width=.58pt] (3.34,5.10)--(3.34,4.54);
-  \fill[galkInk] (3.34,5.10) circle (.78pt);
-  \fill[galkInk] (3.34,4.54) circle (.78pt);
-  \draw[wire,line width=.58pt] (3.45,3.98)--(3.45,3.42);
-  \fill[galkInk] (3.45,3.98) circle (.78pt);
-  \fill[galkInk] (3.45,3.42) circle (.78pt);
-  \node[gate,circle,minimum size=2.75mm] at (3.75,4.54) {V};
-  \node[gate] at (3.75,2.86) {RY};
-  \draw[wire,line width=.58pt] (4.16,5.10)--(4.16,3.98);
-  \fill[galkInk] (4.16,5.10) circle (.78pt);
-  \fill[galkInk] (4.16,3.98) circle (.78pt);
-  \draw[wire,line width=.58pt] (4.27,4.54)--(4.27,2.86);
-  \fill[galkInk] (4.27,4.54) circle (.78pt);
-  \fill[galkInk] (4.27,2.86) circle (.78pt);
-  \node[gate] at (4.57,3.98) {RZ};
-  \node[gate,circle,minimum size=2.75mm] at (4.57,3.42) {V};
-  \foreach \x/\lab in {2.94/{$1Q_0$},3.39/{$2Q_0$},3.75/{$1Q_1$},
-                         4.22/{$2Q_1$},4.57/{$1Q_2$}}
-    \node[rotate=90,small text] at (\x,2.16) {\lab};
-  \draw[flow] (2.28,4.32)--(2.73,4.32);
-  \draw[flow] (4.92,3.98)--(5.19,3.98);
-
-  % (3) Initial ZAC placement: all five atoms occupy storage traps.
-  \path[fill=galkEntangleFill,draw=galkEntangle,line width=.55pt]
-    (5.24,4.15) rectangle (6.96,4.98);
-  \path[fill=galkStorageFill,draw=galkStorage,line width=.55pt]
-    (5.24,2.90) rectangle (6.96,4.13);
-  \foreach \x in {5.45,5.75,6.40,6.70}
-    \node[trap] at (\x,4.55) {};
-  \foreach \x in {5.45,6.10,6.75}
-    \foreach \y in {3.25,3.55,3.85}
-      \node[trap] at (\x,\y) {};
-  \draw[galk/rydberg pair] (5.60,4.55) ellipse (.25 and .15);
-  \draw[galk/rydberg pair] (6.55,4.55) ellipse (.25 and .15);
-  \foreach \x/\y in {5.45/3.85,6.10/3.25,6.75/3.85,6.75/3.25,6.10/3.55}
-    \node[atom] at (\x,\y) {};
-  \node[q label,anchor=west] at (5.58,3.85) {$q_0$};
-  \node[q label,anchor=east] at (5.97,3.25) {$q_1$};
-  \node[q label,anchor=east] at (6.62,3.85) {$q_2$};
-  \node[q label,anchor=east] at (6.62,3.25) {$q_3$};
-  \node[q label,anchor=west] at (6.23,3.55) {$q_4$};
-  \node[note text] at (6.10,2.66) {initial $\pi_0$};
-  \draw[flow] (6.99,3.30)--(7.16,3.30);
-
-  % (4a) Joint gate-site, residency, and storage-site decision.
-  \node[subhead] at (8.50,5.48) {joint placement\\and residency};
-  \node[subhead] at (10.66,5.48) {physical\\transition};
-  \node[subhead] at (12.20,5.48) {future-layer\\score};
-  \draw[divider] (9.91,.72)--(9.91,5.24);
-  \draw[divider] (11.40,.72)--(11.40,5.24);
-
-  \foreach \left/\state in {7.18/{$\pi_\ell$},8.60/{$\pi'_\ell$}} {
-    \path[fill=galkEntangleFill,draw=galkEntangle,line width=.50pt]
-      (\left,3.52) rectangle (\left+1.24,4.58);
-    \path[fill=galkStorageFill,draw=galkStorage,line width=.50pt]
-      (\left,2.58) rectangle (\left+1.24,3.46);
-    \foreach \x in {.22,.47,.81,1.06}
-      \node[trap] at (\left+\x,4.03) {};
-    \foreach \x in {.24,.64,1.04}
-      \foreach \y in {3.04,3.24}
-        \node[trap] at (\left+\x,\y) {};
-    \node[note text] at (\left+.64,2.36) {\state};
+  \def\pair#1#2#3#4{%
+    \draw[galkInk,line width=.45pt] (#1-.16,#2)--(#1+.16,#2);
+    \node[qlabel,anchor=south] at (#1,#2+.21) {$#3,#4$};
+    \node[gate] at (#1,#2-.35) {CZ};
   }
-  \draw[galk/rydberg pair] (7.525,4.03) ellipse (.20 and .14);
-  \draw[galk/rydberg pair] (8.115,4.03) ellipse (.20 and .14);
-  \draw[galkInk,line width=.68pt] (7.40,4.03)--(7.65,4.03);
-  \draw[galkInk,line width=.68pt] (7.99,4.03)--(8.24,4.03);
-  \foreach \x in {7.40,7.65,7.99,8.24} \node[atom] at (\x,4.03) {};
-  \node[pair label,anchor=south] at (7.55,4.17) {$q_0,q_1$};
-  \node[pair label,anchor=north] at (8.03,3.93) {$q_2,q_3$};
-  \node[atom] at (7.42,3.04) {};
-  \node[q label,anchor=north] at (7.42,2.92) {$q_4$};
+  % Local trap coordinates drive the snapshots and the routing audit.
+  \def\routeInitial{0/.24/1.70,1/.56/1.70,2/1.44/1.70,3/1.76/1.70,4/1.00/.20}
+  \def\routeFinal{0/.24/1.70,1/1.44/1.70,2/.56/1.70,3/1.76/.52,4/1.76/1.70}
+  % batch / atom / source x,y / target x,y; B0 also stages q1.
+  \def\routeMoves{0/1/.56/1.70/.24/.52,0/3/1.76/1.70/1.76/.52,1/2/1.44/1.70/.56/1.70,2/1/.24/.52/1.44/1.70,3/4/1.00/.20/1.76/1.70}
 
-  \draw[galk/rydberg pair] (8.945,4.03) ellipse (.20 and .14);
-  \draw[galk/rydberg pair] (9.535,4.03) ellipse (.20 and .14);
-  \draw[galkInk,line width=.68pt] (8.82,4.03)--(9.07,4.03);
-  \draw[galkInk,line width=.68pt] (9.41,4.03)--(9.66,4.03);
-  \foreach \x in {8.82,9.07,9.41,9.66} \node[atom] at (\x,4.03) {};
-  \node[pair label,anchor=south] at (8.97,4.17) {$q_0,q_2$};
-  \node[pair label,anchor=north] at (9.45,3.93) {$q_1,q_4$};
-  \node[atom] at (9.64,3.04) {};
-  \node[q label,anchor=north] at (9.54,2.92) {$q_3$};
-  \node[small text] at (8.50,4.78) {$(\mathbf x_\ell,a_\ell)$};
-  \draw[galkInk!55,-{Stealth[length=.80mm,width=.52mm]},line width=.42pt]
-    (8.50,4.64)--(8.50,4.36);
-  \draw[flow] (9.86,3.46)--(10.02,3.46);
-
-  % (4b) Candidate execution follows two ordered physical phases.  Each phase
-  % is checked before its occupancy update is committed.
-  \node[small text] (stateCur) at (10.66,4.74) {$s_\ell$};
-  \node[note text] (storageStep) at (10.66,4.15) {storage};
-  \node[small text] (stateSto) at (10.66,3.52) {$s_\ell^{\rm sto}$};
-  \node[note text] (gateStep) at (10.66,2.90) {gate sites};
-  \node[small text] (statePost) at (10.66,2.27) {$s_{\ell+1}$};
-  \draw[flow,shorten <=1pt,shorten >=1pt] (stateCur.south)--(storageStep.north);
-  \draw[flow,shorten <=1pt,shorten >=1pt] (storageStep.south)--(stateSto.north);
-  \draw[flow,shorten <=1pt,shorten >=1pt] (stateSto.south)--(gateStep.north);
-  \draw[flow,shorten <=1pt,shorten >=1pt] (gateStep.south)--(statePost.north);
-  \node[small text,align=center,font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont]
-    at (10.66,1.17)
-    {$\chi_{\rm gate}=1$\\[-1.5pt]$\chi_{\rm AOD}=1$\\[-1.5pt]
-     $\chi_{\rm occ}=1$\\[-1.5pt]$\chi_{\rm int}=1$};
-  \draw[flow] (11.22,3.46)--(11.50,3.46);
-
-  % (4c) The score is evaluated from the candidate post-state.
-  \node[font=\rmfamily\fontsize{8.3pt}{9.3pt}\selectfont]
-    at (12.20,4.84) {$s_{\ell,0}=s_{\ell+1}$};
-  \node[trap,minimum size=2.35mm] at (11.75,4.44) {};
-  \node[small text,anchor=west] at (11.91,4.44) {$s_{\ell,0}$};
-  \draw[flow] (11.75,4.28)--(11.75,3.92);
-  \node[trap,minimum size=2.35mm] at (11.75,3.72) {};
-  \node[small text,anchor=west] at (11.91,3.72) {$s_{\ell,1}$};
-  \draw[flow] (11.75,3.55)--(11.75,3.22);
-  \node[small text] at (11.75,3.05) {$\vdots$};
-  \draw[flow] (11.75,2.87)--(11.75,2.56);
-  \node[trap,minimum size=2.35mm] at (11.75,2.36) {};
-  \node[small text,anchor=west,font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont]
-    at (11.91,2.36) {$s_{\ell,d_\ell^*}$};
-  \node[small text] at (12.20,1.62) {$L_\ell=C_\ell^{\rm cur}$};
-  \node[small text] at (12.20,1.28) {$+\widehat C_\ell^{\rm future}$};
-  \node[note text] at (12.20,.86) {$w_d=\alpha\rho^{d-1}$};
-  \draw[feedback] (12.20,.62)--(12.20,.26)--(8.50,.26)--(8.50,4.64);
-  \node[small text,fill=white,inner sep=.5pt,text=galkLook]
-    at (9.95,.26) {select by $\mathbf J_\ell$};
-
-  % (5) Atom identities are preserved while the return and incoming phases are
-  % routed separately.  The crossing incoming paths belong to different batches.
-  \node[small text] at (14.27,5.50) {phase I};
-  \node[note text] at (14.27,5.21) {storage transfer};
-  \draw[galkInk!35,line width=.42pt] (13.12,4.15) rectangle (15.42,5.02);
-  \node[atom] at (13.55,4.78) {};
-  \node[q label,anchor=east] at (13.42,4.78) {$q_3$};
-  \node[trap,minimum size=1.95mm] at (14.95,4.38) {};
-  \node[q label,anchor=west] at (15.07,4.38) {$q_3$};
-  \draw[path one] (13.65,4.78) to[out=-18,in=168]
-    node[pos=.52,above,small text,fill=white,inner sep=.25pt] {$\mathcal B_0$}
-    (14.85,4.38);
-
-  \node[small text] at (14.27,3.80) {phase II};
-  \node[note text] at (14.27,3.53) {gate-site placement};
-  \draw[galkInk!35,line width=.42pt] (13.12,1.34) rectangle (15.42,3.36);
-  \foreach \q/\y in {0/3.12,1/2.58,2/2.04,4/1.50} {
-    \node[atom] at (13.55,\y) {};
-    \node[q label,anchor=east] at (13.42,\y) {$q_{\q}$};
+  % (a) Input gate sequence, and the first 1Q layer on storage-zone atoms.
+  \foreach \qq/\yy in {0/5.98,1/5.41,2/4.84,3/4.27,4/3.70} {
+    \node[qlabel,anchor=east] at (.33,\yy) {$q_{\qq}$};
+    \draw[wire] (.40,\yy)--(2.85,\yy);
   }
-  \foreach \q/\y in {0/3.12,2/2.58,1/2.04,4/1.50} {
-    \node[trap,minimum size=1.95mm] at (14.95,\y) {};
-    \node[q label,anchor=west] at (15.07,\y) {$q_{\q}$};
-  }
-  \draw[galkInk!55,line width=.56pt] (13.65,3.12)--(14.85,3.12);
-  \draw[path one] (13.65,2.58) to[out=-10,in=180] (14.85,2.04);
-  \draw[path one] (13.65,1.50)--(14.85,1.50);
-  \draw[path two] (13.65,2.04) to[out=10,in=180] (14.85,2.58);
-  \node[small text,fill=white,inner sep=.30pt] at (13.96,2.75) {$\mathcal B_1$};
-  \node[small text,fill=white,inner sep=.30pt] at (13.96,1.84) {$\mathcal B_2$};
-  \draw[galkBad,line width=.75pt] (14.16,2.22)--(14.36,2.42);
-  \draw[galkBad,line width=.75pt] (14.16,2.42)--(14.36,2.22);
-  \draw[flow] (12.87,3.30)--(13.18,3.30);
+  \node[gate] at (.57,5.98) {RY};
+  \node[gate] at (.57,4.27) {RZ};
+  \czGate{.88}{5.98}{5.41}
+  \czGate{1.23}{4.84}{4.27}
+  \node[gate] at (1.59,5.41) {U};
+  \node[gate] at (1.59,3.70) {RY};
+  \czGate{1.91}{5.98}{4.84}
+  \czGate{2.25}{5.41}{3.70}
+  \node[gate] at (2.68,4.84) {RZ};
+  \node[gate] at (2.68,4.27) {U};
+  \node[small] at (1.46,3.22) {Storage-zone 1Q};
+  \device{.46}{.63}
+  \foreach \xx/\yy in {.70/1.15,.70/1.47,2.22/1.47,2.22/1.15,1.46/.83}
+    \node[atom] at (\xx,\yy) {};
+  \node[qlabel] at (1.06,.83) {$q_0$};
+  \node[gate] at (1.06,1.15) {RY};
+  \draw[flow] (.91,1.15)--(.80,1.15);
+  \node[qlabel] at (1.06,1.47) {$q_1$};
+  \node[qlabel] at (1.86,1.47) {$q_2$};
+  \node[qlabel] at (1.84,1.15) {$q_3$};
+  \node[qlabel] at (1.84,.83) {$q_4$};
+  \path[galk/entanglement zone] (.69,.27) rectangle (.88,.42);
+  \node[small,anchor=west] at (.99,.345) {$\mathcal E$};
+  \path[galk/storage zone] (1.68,.27) rectangle (1.87,.42);
+  \node[small,anchor=west] at (1.98,.345) {$\mathcal S$};
 
-  % (6) Typeset ZAIR instructions and independent trace validation.
-  \foreach \y/\txt in {
-      5.20/{init},
-      4.82/{1qGate q0,q3},
-      4.44/{rearrangeJob initial},
-      4.06/{rydberg G0},
-      3.68/{1qGate q1,q4},
-      3.30/{rearrangeJob B0},
-      2.92/{rearrangeJob B1},
-      2.54/{rearrangeJob B2},
-      2.16/{rydberg G1},
-      1.78/{1qGate q2,q3}}
-    \node[anchor=west,font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont,
-          text=galkInk,inner sep=0pt] at (15.67,\y) {\txt};
-  \draw[galkInk!45,line width=.42pt] (15.64,5.43)--(17.82,5.43);
-  \draw[galkInk!45,line width=.42pt] (15.64,1.47)--(17.82,1.47);
-  \node[small text,align=center] at (16.78,1.04) {independent\\validation};
-  \draw[galkInk,line width=.60pt] (16.48,.45)--(16.68,.25)--(17.08,.68);
-  \draw[flow] (15.42,3.30)--(15.59,3.30);
+  % (b) Identical gate multiset, with five disjoint executable layers.
+  \foreach \qq/\yy in {0/5.98,1/5.41,2/4.84,3/4.27,4/3.70} {
+    \node[qlabel,anchor=east] at (3.30,\yy) {$q_{\qq}$};
+    \draw[wire] (3.40,\yy)--(6.06,\yy);
+  }
+  \foreach \xx in {3.85,4.37,4.85,5.68}
+    \draw[divider,densely dashed] (\xx,3.48)--(\xx,6.22);
+  \node[gate] at (3.60,5.98) {RY};
+  \node[gate] at (3.60,4.27) {RZ};
+  \czGate{4.11}{5.98}{5.41}
+  \czGate{4.11}{4.84}{4.27}
+  \node[gate] at (4.63,5.41) {U};
+  \node[gate] at (4.63,3.70) {RY};
+  \czGate{5.10}{5.98}{4.84}
+  \czGate{5.43}{5.41}{3.70}
+  \node[gate] at (5.89,4.84) {RZ};
+  \node[gate] at (5.89,4.27) {U};
+  \foreach \xx/\lab in {3.60/$1Q_0$,4.63/$1Q_1$,5.82/$1Q_2$}
+    \node[font=\rmfamily\fontsize{8pt}{9pt}\selectfont] at (\xx,3.19) {\lab};
+  \foreach \xx/\lab in {4.11/$2Q_0$,5.265/$2Q_1$}
+    \node[font=\rmfamily\fontsize{8pt}{9pt}\selectfont] at (\xx,2.96) {\lab};
+  \begin{scope}[shift={(3.65,.65)},scale=.90]
+    \device{0}{0}
+    \foreach \qq/\xx/\yy in \routeInitial
+      \node[atom] at (\xx,\yy) {};
+    \pair{.40}{1.70}{q_0}{q_1}
+    \pair{1.60}{1.70}{q_2}{q_3}
+    \node[qlabel] at (1.38,.20) {$q_4$};
+  \end{scope}
+  \node[small] at (4.55,.32) {Entanglement-zone 2Q};
+  \draw[flow] (2.83,3.46)--(3.10,3.46);
+  \draw[flow] (6.05,3.46)--(6.32,3.46);
+
+  % (c) The baseline-generated initial mappings are evaluated by routed layers.
+  \node[small] at (7.375,6.04) {Initial candidates};
+  \device{6.375}{3.53}
+  \foreach \xx/\yy in {6.615/4.05,6.615/4.37,8.135/4.37,8.135/4.05,7.375/3.73}
+    \node[atom] at (\xx,\yy) {};
+  \node[qlabel] at (6.975,4.05) {$q_0$};
+  \node[qlabel] at (6.975,4.37) {$q_1$};
+  \node[qlabel] at (7.775,4.37) {$q_2$};
+  \node[qlabel] at (7.775,4.05) {$q_3$};
+  \node[qlabel] at (7.755,3.73) {$q_4$};
+  \node[small] (candidates) at (7.375,3.27) {Candidates};
+  \node[module,densely dashed,minimum width=2.04cm,minimum height=.80cm] (initialEval)
+    at (7.375,2.36) {\PaperRevision{Look-ahead}\\\PaperRevision{initialization}};
+  \node[small] (initialMap) at (7.375,1.29) {Selected layout};
+  \draw[flow] (candidates.south)--(initialEval.north);
+  \draw[flow] (initialEval.south)--(initialMap.north);
+  \draw[flow] (initialMap.east)--(8.47,1.29)--(8.47,3.76)--(8.77,3.76);
+
+  % (d) The candidate post-state is the origin of the multi-layer estimate.
+  \node[module,minimum width=4.14cm,minimum height=.43cm] (jointSearch)
+    at (10.925,6.04) {Joint genetic search};
+  \node[small] at (10.925,5.60) {Physical evaluation};
+  \device{8.82}{3.17}
+  \device{11.13}{3.17}
+  \foreach \qq/\xx/\yy in \routeInitial
+    \node[atom] at (8.82+\xx,3.17+\yy) {};
+  \foreach \qq/\xx/\yy in \routeFinal
+    \node[atom] at (11.13+\xx,3.17+\yy) {};
+  \pair{9.22}{4.87}{q_0}{q_1}
+  \pair{10.42}{4.87}{q_2}{q_3}
+  \pair{11.53}{4.87}{q_0}{q_2}
+  \pair{12.73}{4.87}{q_1}{q_4}
+  \node[qlabel] at (10.19,3.37) {$q_4$};
+  \node[qlabel] at (12.53,3.69) {$q_3$};
+  \node[small] (stateBefore) at (9.82,2.94) {$\mathbf{s}_\ell$};
+  \node[small] (stateAfter) at (12.13,2.94) {$\mathbf{s}_{\ell+1}$};
+  \draw[flow] (9.12,5.45)--(9.12,5.79);
+  \draw[flow] (12.73,5.79)--(12.73,5.45);
+  \draw[flow] (10.85,4.12)--(11.10,4.12);
+  \node[module,minimum width=3.88cm,minimum height=1.44cm] (future)
+    at (10.925,1.53) {};
+  \node[small] at (10.925,2.03) {Multi-layer look-ahead};
+  \node[small] (futureOne) at (9.64,1.51) {$L_{\ell+1}$};
+  \node[small] (futureTwo) at (10.79,1.51) {$L_{\ell+2}$};
+  \node[small] (futureMore) at (12.10,1.51) {$\cdots$};
+  \draw[flow] (futureOne.east)--(futureTwo.west);
+  \draw[flow] (futureTwo.east)--(futureMore.west);
+  \node[small] at (10.925,1.03) {$J_\ell$: current + future loss};
+  \draw[flow] (stateAfter.south)--(12.13,2.28);
+  \draw[feedback] (8.975,1.53)--(8.69,1.53)--(8.69,6.04)--(8.83,6.04);
+  \draw[flow] (13.16,3.76)--(13.45,3.76);
+
+  % (e) B0 stages q1 and returns q3 before the occupied-site permutation.
+  % Its scaled array uses the same trap coordinates as panel (d).
+  \node[small] at (14.475,6.05) {$B_0:\ \mathcal E\to\mathcal S$};
+  \begin{scope}[shift={(13.64,4.02)},scale=.83]
+    \device{0}{0}
+    \foreach \qq/\xx/\yy in \routeInitial {
+      \ifnum\qq=1\else\ifnum\qq=3\else
+        \node[atom,fill=galkInk!35] at (\xx,\yy) {};
+      \fi\fi
+    }
+  \end{scope}
+  \foreach \bb/\qq/\sx/\sy/\tx/\ty in \routeMoves {
+    \ifnum\bb=0
+      \node[atom] (route-\bb-\qq-source) at (13.64+.83*\sx,4.02+.83*\sy) {};
+      \node[trap] (route-\bb-\qq-target) at (13.64+.83*\tx,4.02+.83*\ty) {};
+      \node[qlabel,anchor=south] at (13.64+.83*\sx,4.18+.83*\sy) {$q_{\qq}$};
+      \draw[flow] (route-\bb-\qq-source)--(route-\bb-\qq-target);
+    \else
+      \pgfmathsetmacro{\routeY}{4.20-.90*\bb}
+      \node[small,anchor=east] at (13.89,\routeY) {$B_{\bb}$};
+      \node[atom] at (14.12,\routeY) {};
+      \node[trap] at (15.13,\routeY) {};
+      \node[qlabel,anchor=south] at (14.12,\routeY+.12) {$q_{\qq}$};
+      \node[qlabel,anchor=south] at (15.13,\routeY+.12) {$q_{\qq}$};
+      \draw[flow] (14.22,\routeY)--(15.04,\routeY);
+      \ifnum\bb=1
+        \node[small] at (14.64,\routeY-.29) {$\mathcal E\to\mathcal E$};
+      \else
+        \node[small] at (14.64,\routeY-.29) {$\mathcal S\to\mathcal E$};
+      \fi
+    \fi
+  }
+  \node[qlabel,anchor=west] at (14.00,4.45) {$q_1$};
+  \node[qlabel,anchor=east] at (14.94,4.45) {$q_3$};
+  \node[small] at (14.475,3.80) {$q_1$: temporary};
+  \node[small] at (14.475,.57) {$q_0$: stationary};
+  \draw[flow] (15.56,3.76)--(15.83,3.76);
+
+  % (f) Actual instruction types, without implementation-level JSON fields.
+  \node[small] at (16.75,6.05) {ZAIR};
+  \draw[divider] (15.92,5.75)--(17.61,5.75);
+  \foreach \yy/\txt in {5.41/init,4.87/1qGate,4.33/rearrangeJob,
+                       3.79/rydberg,3.25/1qGate,2.71/rearrangeJob,
+                       2.17/rydberg} {
+    \node[small,anchor=west] at (15.96,\yy) {\txt};
+  }
+  \draw[divider] (15.92,1.87)--(17.61,1.87);
+  \node[module,minimum width=1.70cm,minimum height=.76cm] (validation)
+    at (16.75,.97) {Trace\\validation};
+  \draw[flow] (16.75,1.82)--(validation.north);
 \end{tikzpicture}

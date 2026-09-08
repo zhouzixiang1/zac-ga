@@ -1,0 +1,93 @@
+{
+  "ablation_protocol": 2,
+  "ablation_variant": "horizon_extension_h1_ga",
+  "base_config": {
+    "animation": false,
+    "qasm_list": [
+      "benchmark/hpca/"
+    ],
+    "simulation": false,
+    "tuning": {
+      "algorithm_revision": "native-ga-v1",
+      "candidate_id": "a154ed0e7a553726",
+      "protocol_id": "resident-ga-quality-racing-v3",
+      "selection_status": "provisional_default_pending_validation",
+      "track": "independent"
+    },
+    "zac_setting": [
+      {
+        "algorithm_revision": "native-ga-v1",
+        "alpha_lookahead": 0.5,
+        "arch_spec": "hardware_spec/full_architecture.json",
+        "backend": "native",
+        "box_ratio": 3,
+        "crossover_rate": 0.25,
+        "dependency": true,
+        "dir": "results/horizon_extension_v2/isolated/",
+        "direct_enumeration_limit": 512,
+        "dynamic_placement": true,
+        "early_stop_patience": 3,
+        "elite_count": 2,
+        "engine": "ga",
+        "experiment_schema": 2,
+        "final_return_home": false,
+        "fitness_cache": true,
+        "fitness_mode": "phase",
+        "forecast_gate_candidate_budget": 4,
+        "formal_native": true,
+        "init_engine": "sa",
+        "init_gens": 150,
+        "init_pop": 40,
+        "iterations": 6,
+        "local_polish_sweeps": 1,
+        "lookahead_horizon": {
+          "decay": "geometric",
+          "epsilon": 0.05,
+          "max_horizon": 1,
+          "mode": "decay",
+          "policy": "physical_terminal_decay_v1",
+          "rho": 0.7
+        },
+        "max_unique_evaluations": 576,
+        "method_id": "ours_lk",
+        "native_abi_version": 9,
+        "native_fail_closed": true,
+        "native_wheel_sha256": "1d6c66cc852ec6b1136bbe50d2b0977c144730dbf93a1e6f233fac3602d12b04",
+        "neighbor_sample_size": 12,
+        "neighbors_per_solution": 2,
+        "objective": "physical_log_fidelity",
+        "operator_profile": "tuned",
+        "pin_radius": 2,
+        "placer": "resident",
+        "population_size": 8,
+        "resyn": false,
+        "return_assignment_k": 4,
+        "return_candidate_limit": 6,
+        "reuse": true,
+        "rng_version": "python-random-mt19937-v1",
+        "routing_strategy": "coloring",
+        "scheduling": "asap",
+        "seed": 2,
+        "theta_capacity": 0.9,
+        "trivial_placement": false,
+        "tuning_protocol_id": "resident-ga-quality-racing-v3",
+        "use_verifier": false,
+        "use_window": true,
+        "w_pin": 0.0,
+        "w_resident": 0.3,
+        "window_size": 1000
+      }
+    ]
+  },
+  "base_method": "M4",
+  "controls": {
+    "decision_policy": "optimize",
+    "fitness_phase_mode": "phase",
+    "lookahead_horizon": 1,
+    "routing_batcher": "coloring",
+    "search_policy": "ga"
+  },
+  "experiment_schema": 2,
+  "run_kind": "ablation",
+  "search_policy": "ga"
+}

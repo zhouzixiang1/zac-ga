@@ -1,11 +1,11 @@
 \input{figures/tikz_style}
 \begin{tikzpicture}[
-  galk/base,x=1cm,y=1cm,
-  panel title/.style={galk/panel title},
-  label/.style={galk/small label},
-  note/.style={font=\rmfamily\itshape\fontsize{8.7pt}{9.7pt}\selectfont,
+  galk/base,x=1.04cm,y=1cm,
+  panel title/.style={galk/panel title,font=\rmfamily\bfseries\fontsize{9.6pt}{10.6pt}\selectfont},
+  label/.style={font=\rmfamily\fontsize{9.2pt}{10.2pt}\selectfont},
+  note/.style={font=\rmfamily\itshape\fontsize{9.0pt}{10.0pt}\selectfont,
                text=galkMuted},
-  tiny/.style={font=\rmfamily\fontsize{8.7pt}{9.7pt}\selectfont,
+  tiny/.style={font=\rmfamily\fontsize{9.0pt}{10.0pt}\selectfont,
                text=galkInk},
   rule/.style={draw=galkInk!30,line width=.38pt},
   flow/.style={-{Stealth[length=1.0mm,width=.66mm]},draw=galkInk,line width=.50pt},
@@ -16,36 +16,32 @@
   trap/.style={galk/site},
   atom/.style={galk/occupied atom,minimum size=1.85mm},
   target/.style={galk/target site,minimum size=1.85mm},
-  q label/.style={galk/q label}
+  q label/.style={galk/q label,font=\rmfamily\itshape\fontsize{9.0pt}{10.0pt}\selectfont}
 ]
-  \path[use as bounding box] (0,-.10) rectangle (8.35,7.35);
+  \path[use as bounding box] (0,.40) rectangle (8.35,7.35);
   \draw[rule] (.10,5.12)--(8.25,5.12);
-  \draw[rule] (.10,2.95)--(8.25,2.95);
+  \draw[rule] (.10,4.05)--(8.25,4.05);
 
   % ---------------------------------------------------------------------
   % A joint chromosome and the induced injective storage assignment.
-  \node[panel title] at (.12,7.15) {(a) Joint decision variables};
-  \node[note] at (2.10,6.79) {chromosome $\mathbf x_\ell$};
+  \node[panel title] at (.12,7.15) {(a) Encoding a placement candidate};
+  \node[note] at (1.93,6.83) {chromosome $\mathbf x_\ell$};
   \foreach \i/\head/\value/\cellstyle in {
-      0/{$z_{\ell,1}$}/{2$^{+}$}/gate cell,
-      1/{$z_{\ell,2}$}/{4$^{-}$}/gate cell,
+      0/{$z_{\ell,1}$}/{$T_1^{+}$}/gate cell,
+      1/{$z_{\ell,2}$}/{$T_2^{+}$}/gate cell,
       2/{$b_{\ell,1}$}/{1}/bit cell} {
-    \node[tiny] at (.82+.86*\i,6.46) {\head};
-    \node[\cellstyle] at (.82+.86*\i,6.10) {\value};
+    \node[tiny] at (.76+1.17*\i,6.46) {\head};
+    \node[\cellstyle] at (.76+1.17*\i,6.10) {\value};
   }
-  \draw[decorate,decoration={brace,mirror,amplitude=2.2pt},
-        galkInk!70,line width=.36pt]
-    (.39,5.82)--(1.67,5.82)
-    node[midway,below=3.2pt,tiny] {gate sites};
-  \draw[decorate,decoration={brace,mirror,amplitude=2.2pt},
-        galkInk!70,line width=.36pt]
-    (2.11,5.82)--(2.97,5.82)
-    node[midway,below=3.2pt,tiny] {$\mathcal D_\ell=\{q_3\}$};
+  \node[tiny] at (.76,5.68) {$(q_0,q_2)$};
+  \node[tiny] at (1.93,5.68) {$(q_1,q_4)$};
+  \node[tiny] at (3.10,5.68) {$q_3$};
+  \node[note] at (1.93,5.30) {gate atoms: left to right};
 
-  \draw[flow] (3.05,6.10)--(4.12,6.10);
-  \node[label] at (6.14,6.90) {$K$-best storage matching};
-  \node[tiny,anchor=west] at (4.25,6.57)
-    {$\mathcal R(\mathbf x_\ell)=\{q_3\}$};
+  \draw[flow] (3.58,6.10)--(4.12,6.10);
+  \node[label] at (6.14,6.90) {$K$-best storage assignment};
+  \node[tiny,anchor=west] at (4.25,6.53)
+    {$q_3$ to storage};
   \node[atom] at (4.47,6.12) {};
   \node[q label,anchor=north] at (4.47,5.99) {$q_3$};
   \foreach \y/\site in {6.55/{$s_1$},6.10/{$s_2$},5.65/{$s_3$}} {
@@ -56,66 +52,32 @@
   \draw[galkInk!34,line width=.34pt] (4.57,6.12)--(7.29,6.10);
   \draw[galkInk!34,line width=.34pt] (4.57,6.12)--(7.29,5.65);
   \draw[galkInk,line width=.62pt] (4.57,6.12)--(7.29,6.55);
-  \node[label,anchor=east] at (8.15,5.38)
+  \node[label,anchor=east] at (8.15,5.30)
     {joint candidate $(\mathbf x_\ell,a_\ell)$};
 
   % ---------------------------------------------------------------------
-  % The same variables are optimized by enumeration or a genetic search.
-  \node[panel title] at (.12,4.91) {(b) Search of the common decision space};
-  \node[label] at (1.45,4.51) {Exact enumeration};
-  \node[tiny] at (1.45,4.22) {$D_\ell\leq D_{\rm cap}$};
-  \node[trap,minimum size=1.65mm] (e0) at (.55,3.72) {};
-  \foreach \x/\y in {1.08/3.95,1.08/3.49}
-    \node[trap,minimum size=1.65mm] at (\x,\y) {};
-  \foreach \x/\y in {1.62/4.08,1.62/3.82,1.62/3.58,1.62/3.34}
-    \node[trap,minimum size=1.65mm] at (\x,\y) {};
-  \draw[galkInk!48,line width=.34pt] (.63,3.72)--(.99,3.95);
-  \draw[galkInk!48,line width=.34pt] (.63,3.72)--(.99,3.49);
-  \draw[galkInk!48,line width=.34pt] (1.17,3.95)--(1.53,4.08);
-  \draw[galkInk!48,line width=.34pt] (1.17,3.95)--(1.53,3.82);
-  \draw[galkInk!48,line width=.34pt] (1.17,3.49)--(1.53,3.58);
-  \draw[galkInk!48,line width=.34pt] (1.17,3.49)--(1.53,3.34);
-  \node[atom,minimum size=1.72mm] at (1.62,3.82) {};
-  \node[tiny,anchor=west] at (1.83,3.82) {$\mathbf x_\ell^{\rm inc}$};
-
-  \draw[rule] (2.63,3.18)--(2.63,4.63);
-  \node[label] at (5.35,4.51) {Budgeted genetic search};
-  \node[tiny] at (5.35,4.22) {$D_\ell>D_{\rm cap}$};
-  \foreach \col/\val in {0/{2$^+$},1/{4$^-$},2/{1}}
-    \node[cell,minimum width=.44cm,minimum height=.25cm,
-          draw={\ifnum\col<2 galkEntangle\else galkResident\fi},
-          fill={\ifnum\col<2 white\else galkResidentFill\fi}]
-      at (3.13+.45*\col,3.82) {\val};
-  \foreach \col/\val in {0/{4$^-$},1/{2$^+$},2/{0}}
-    \node[cell,minimum width=.44cm,minimum height=.25cm,
-          draw={\ifnum\col<2 galkEntangle\else galkResident\fi},
-          fill={\ifnum\col<2 white\else galkResidentFill\fi}]
-      at (3.13+.45*\col,3.49) {\val};
-  \draw[flow] (4.86,3.66)--(5.22,3.66);
-  \draw[galkInk,line width=.48pt] (5.48,3.43)--(5.48,3.89);
-  \draw[galkInk,line width=.48pt] (5.35,3.66)--(5.61,3.66);
-  \node[tiny] at (5.48,3.99) {variation};
-  \draw[flow] (5.74,3.66)--(6.10,3.66);
-  \foreach \col/\val in {0/{2$^+$},1/{4$^-$},2/{1}}
-    \node[cell,minimum width=.44cm,minimum height=.25cm,
-          draw={\ifnum\col<2 galkEntangle\else galkResident\fi},
-          fill={\ifnum\col<2 white\else galkResidentFill\fi}]
-      at (6.31+.45*\col,3.66) {\val};
-  \node[tiny,anchor=north] at (6.99,3.42)
-    {incumbent $\mathbf x_\ell^{\rm inc}$};
-  \node[tiny] at (3.57,3.14)
-    {$D_{\rm cap}=\min(D_{\rm enum},E_{\max})$};
+  % Enumeration and genetic search share the same executable evaluation.
+  \node[panel title] at (.12,4.88) {(b) Search with a common objective};
+  \node[tiny] at (2.20,4.39) {Enumeration / Genetic search};
+  \draw[flow] (4.46,4.39)--(4.93,4.39);
+  \node[tiny] at (6.67,4.39) {Candidate evaluation};
 
   % ---------------------------------------------------------------------
-  % Candidate execution follows the implementation's two ordered phases.
-  % The return phase is committed before the incoming participants are checked.
-  \node[panel title] at (.12,2.73) {(c) Ordered physical evaluation};
+  % Release the target sites, including temporary storage for the q1/q2 swap.
+  \def\routeInitial{0/.36/1.91,1/.58/1.91,2/1.02/1.91,3/1.24/1.91,4/.63/.70}
+  \def\routeStaged{0/.36/1.91,1/.28/1.08,2/1.02/1.91,3/1.33/1.08,4/.63/.70}
+  \def\routeFinal{0/.36/1.91,1/1.02/1.91,2/.58/1.91,3/1.33/1.08,4/1.24/1.91}
+  \def\routeMoves{0/1/.58/1.91/.28/1.08,0/3/1.24/1.91/1.33/1.08,1/2/1.02/1.91/.58/1.91,2/1/.28/1.08/1.02/1.91,3/4/.63/.70/1.24/1.91}
+  \begin{scope}[shift={(0,.30)},x=1.18cm]
+  \node[panel title] at (.12,3.40) {(c) Decoding and ordered execution};
 
-  \foreach \left in {.18,3.34,6.50} {
+  \foreach \left in {.18,2.93,5.68} {
     \path[galk/entanglement zone]
-      (\left,1.56) rectangle (\left+1.60,2.26);
+      (\left,1.63) rectangle (\left+1.60,2.80);
     \path[galk/storage zone]
-      (\left,.30) rectangle (\left+1.60,1.43);
+      (\left,.20) rectangle (\left+1.60,1.55);
+    \node[tiny] at (\left+.47,2.55) {$T_1$};
+    \node[tiny] at (\left+1.13,2.55) {$T_2$};
     \draw[galk/rydberg pair] (\left+.47,1.91) ellipse (.20 and .13);
     \draw[galk/rydberg pair] (\left+1.13,1.91) ellipse (.20 and .13);
     \foreach \dx in {.36,.58,1.02,1.24}
@@ -123,60 +85,44 @@
     \foreach \dx in {.28,.63,.98,1.33}
       \foreach \yy in {.70,1.08}
         \node[trap] at (\left+\dx,\yy) {};
-    \node[font=\rmfamily\fontsize{8.0pt}{9.0pt}\selectfont,
-          text=galkInk,anchor=north west,inner sep=0pt]
-      at (\left+.035,2.22) {$\mathcal E$};
-    \node[font=\rmfamily\fontsize{8.0pt}{9.0pt}\selectfont,
-          text=galkInk,anchor=north west,inner sep=0pt]
-      at (\left+.035,1.39) {$\mathcal S$};
   }
-  \node[label] at (.98,2.47) {$s_\ell$};
-  \node[label] at (4.14,2.47) {$s_\ell^{\rm sto}$};
-  \node[label] at (7.30,2.47) {$s_{\ell+1}$};
+  \node[label] at (.98,3.00) {$\mathbf{s}_\ell$};
+  \node[label] at (3.73,3.00) {After staging};
+  \node[label] at (6.48,3.00) {$\mathbf{s}_{\ell+1}$};
 
   % Source state before G_l placement: two occupied pairs and q4 in storage.
-  \foreach \x in {.54,.76,1.20,1.42}
-    \node[atom] at (\x,1.91) {};
-  \node[q label,anchor=south] at (.90,2.01) {$q_0,q_1$};
-  \node[q label,anchor=north] at (1.31,1.81) {$q_2,q_3$};
+  \foreach \qq/\xx/\yy in \routeInitial
+    \node[atom] at (.18+\xx,\yy) {};
+  \node[q label,font=\fontsize{8.5pt}{9.5pt}\selectfont] at (.65,2.20) {$q_0,q_1$};
+  \node[q label,font=\fontsize{8.5pt}{9.5pt}\selectfont] at (1.31,2.20) {$q_2,q_3$};
   \draw[galkInk,line width=.46pt] (.54,1.91)--(.76,1.91);
   \draw[galkInk,line width=.46pt] (1.20,1.91)--(1.42,1.91);
-  \node[atom] at (.81,.70) {};
-  \node[q label,anchor=north] at (.81,.61) {$q_4$};
+  \node[q label,anchor=north] at (.81,.58) {$q_4$};
 
-  % Intermediate state after the return phase.
-  \foreach \x in {3.70,3.92,4.36}
-    \node[atom] at (\x,1.91) {};
-  \node[q label,anchor=south] at (4.06,2.01) {$q_0,q_1$};
-  \node[q label,anchor=north] at (4.36,1.81) {$q_2$};
-  \node[atom] at (3.97,.70) {};
-  \node[q label,anchor=north] at (3.97,.61) {$q_4$};
-  \node[atom] at (4.67,1.08) {};
-  \node[q label,anchor=south] at (4.67,1.18) {$q_3$};
-  \node[font=\rmfamily\fontsize{8.0pt}{9.0pt}\selectfont,
-        text=galkInk,inner sep=0pt]
-    at (4.67,.86) {$s_1$};
+  % Intermediate state: q1 is temporarily stored; q3 remains in storage.
+  \foreach \qq/\xx/\yy in \routeStaged
+    \node[atom] at (2.93+\xx,\yy) {};
+  \node[q label] at (3.40,2.20) {$q_0$};
+  \node[q label] at (4.06,2.20) {$q_2$};
+  \node[q label,anchor=north] at (3.56,.58) {$q_4$};
+  \node[q label,anchor=south] at (3.21,1.20) {$q_1$};
+  \node[q label,anchor=south east] at (4.44,1.20) {$q_3@s_1$};
 
   % Target state: q0-q2 and q1-q4 occupy the selected gate pairs.
-  \foreach \x in {6.86,7.08,7.52,7.74}
-    \node[atom] at (\x,1.91) {};
-  \node[q label,anchor=south] at (7.22,2.01) {$q_0,q_2$};
-  \node[q label,anchor=north] at (7.63,1.81) {$q_1,q_4$};
-  \draw[galkInk,line width=.46pt] (6.86,1.91)--(7.08,1.91);
-  \draw[galkInk,line width=.46pt] (7.52,1.91)--(7.74,1.91);
+  \foreach \qq/\xx/\yy in \routeFinal
+    \node[atom] at (5.68+\xx,\yy) {};
+  \node[q label,font=\fontsize{8.5pt}{9.5pt}\selectfont] at (6.15,2.20) {$q_0,q_2$};
+  \node[q label,font=\fontsize{8.5pt}{9.5pt}\selectfont] at (6.81,2.20) {$q_1,q_4$};
+  \draw[galkInk,line width=.46pt] (6.04,1.91)--(6.26,1.91);
+  \draw[galkInk,line width=.46pt] (6.70,1.91)--(6.92,1.91);
   % The same s_1 trap (storage row 1, column 4) remains occupied by q3.
-  \node[atom] at (7.83,1.08) {};
-  \node[q label,anchor=south] at (7.83,1.18) {$q_3$};
-  \node[font=\rmfamily\fontsize{8.0pt}{9.0pt}\selectfont,
-        text=galkInk,inner sep=0pt]
-    at (7.83,.86) {$s_1$};
+  \node[q label,anchor=south east] at (7.19,1.20) {$q_3@s_1$};
 
-  \draw[flow] (1.92,1.43)--(3.20,1.43);
-  \node[tiny] at (2.56,1.76) {phase I};
-  \node[tiny] at (2.56,1.20) {$q_3\rightarrow s_1$};
-  \draw[flow] (5.08,1.43)--(6.36,1.43);
-  \node[tiny] at (5.72,1.76) {phase II};
-  \node[tiny] at (5.72,1.20) {gate sites};
-  \node[label] at (4.14,.06)
-    {$\chi_{\rm gate}\,\chi_{\rm AOD}\,\chi_{\rm occ}\,\chi_{\rm int}=1$};
+  \draw[flow] (1.91,1.58)--(2.80,1.58);
+  \node[tiny,align=center] at (2.35,2.20) {Return to\\storage};
+  \node[tiny] at (2.35,1.30) {$B_0$};
+  \draw[flow] (4.66,1.58)--(5.55,1.58);
+  \node[tiny,align=center] at (5.10,2.20) {Place gate\\atoms};
+  \node[tiny] at (5.10,1.30) {$B_1$--$B_3$};
+  \end{scope}
 \end{tikzpicture}

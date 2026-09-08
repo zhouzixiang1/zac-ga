@@ -24,7 +24,7 @@ class PaperBuildPathsTest(unittest.TestCase):
         self.project = Path(self.temp.name).resolve()
         self.paper = self.project / "IEEE_conference_template"
         self.paper.mkdir()
-        self.build = self.project / "build/paper_zh"
+        self.build = self.paper / "build/paper_zh"
         self.figure = self.build / "figures/overall_framework.pdf"
         self.wrapper = self.paper / verifier.OVERALL_FIGURE_WRAPPER
 
@@ -36,12 +36,35 @@ class PaperBuildPathsTest(unittest.TestCase):
         self.figure.parent.mkdir(parents=True, exist_ok=True)
         self.figure.write_bytes(b"stale generated figure")
 
-    def test_paths_are_under_repository_build(self):
+    def test_paths_are_under_manuscript_build(self):
         self.assertEqual((self.paper / verifier.BUILD_DIRECTORY).resolve(), self.build)
         self.assertEqual((self.paper / verifier.OVERALL_FIGURE_PDF).resolve(), self.figure)
         self.assertEqual(
             verifier._reported_relative_path(self.figure, self.paper),
-            "../build/paper_zh/figures/overall_framework.pdf")
+            "build/paper_zh/figures/overall_framework.pdf")
+
+    def test_latexmk_and_bilingual_figure_paths_match_the_build_contract(self):
+        latexmk = (SOURCE_ROOT / ".latexmkrc").read_text(encoding="utf-8")
+        self.assertIn(f"$out_dir = '{verifier.BUILD_DIRECTORY.as_posix()}';", latexmk)
+        for language in ("sections", "sections_en"):
+            source = (SOURCE_ROOT / language / "03_method.tex").read_text(encoding="utf-8")
+            with self.subTest(language=language):
+                self.assertIn("{" + verifier.OVERALL_FIGURE_PDF.as_posix() + "}", source)
+                self.assertNotIn("{../build/", source)
+
+    def test_figure_audit_accepts_only_the_manuscript_build_path(self):
+        method = self.paper / "sections/03_method.tex"
+        method.parent.mkdir()
+        for path, expected in ((verifier.OVERALL_FIGURE_PDF.as_posix(), True),
+                               ("../build/paper_zh/figures/overall_framework.pdf", False)):
+            with self.subTest(path=path):
+                method.write_text(r"\includegraphics[width=\textwidth]{" + path + "}",
+                                  encoding="utf-8")
+                errors = []
+                audit = verifier._audit_overall_figure_pdf(self.paper, errors=errors)
+                self.assertEqual(audit["method_uses_external_pdf"], expected)
+                self.assertEqual("overall_figure_pdf_not_included_by_method" in errors,
+                                 not expected)
 
     def test_fresh_figure_build_uses_build_for_output_and_auxiliaries(self):
         self.make_wrapper()
@@ -96,7 +119,7 @@ class PaperBuildPathsTest(unittest.TestCase):
         self.assertFalse(main_pdf.exists())
         self.assertIn("overall_figure_xelatex_compile_failed", report["errors"])
 
-    def test_main_build_uses_build_directory_and_reports_external_artifact(self):
+    def test_main_build_uses_manuscript_build_and_reports_local_artifact(self):
         main_pdf = self.build / "paper_zh.pdf"
 
         def run(command, *, cwd):
@@ -113,8 +136,9 @@ class PaperBuildPathsTest(unittest.TestCase):
             report = verifier.verify(
                 self.paper, compile_pdf=True, allow_experiment_placeholders=True,
                 expected_pages=9)
-        self.assertIn("../build/paper_zh/paper_zh.pdf", report["artifacts"])
+        self.assertIn("build/paper_zh/paper_zh.pdf", report["artifacts"])
         self.assertFalse((self.paper / "paper_zh.pdf").exists())
+        self.assertFalse((self.project / "build").exists())
 
     def test_read_only_verification_does_not_fall_back_to_source_pdf(self):
         (self.paper / "paper_zh.pdf").write_bytes(b"stale source-directory PDF")
@@ -123,6 +147,17 @@ class PaperBuildPathsTest(unittest.TestCase):
             expected_pages=9)
         self.assertIn("missing_required_file:paper_zh.pdf", report["errors"])
         self.assertFalse(report["artifacts"])
+
+    def test_read_only_verification_does_not_reuse_repository_root_build(self):
+        old_pdf = self.project / "build/paper_zh/paper_zh.pdf"
+        old_pdf.parent.mkdir(parents=True)
+        old_pdf.write_bytes(b"stale repository-root output")
+        report = verifier.verify(
+            self.paper, compile_pdf=False, allow_experiment_placeholders=True,
+            expected_pages=9)
+        self.assertIn("missing_required_file:paper_zh.pdf", report["errors"])
+        self.assertFalse(report["artifacts"])
+        self.assertEqual(old_pdf.read_bytes(), b"stale repository-root output")
 
     def manifest_fixture(self):
         (self.paper / "paper_zh.tex").write_text("original source", encoding="utf-8")
@@ -140,6 +175,38 @@ class PaperBuildPathsTest(unittest.TestCase):
         manifest = json.loads((self.build / verifier.SOURCE_MANIFEST_NAME).read_text())
         self.assertEqual(manifest["source_sha256"], before)
         self.assertEqual(set(manifest["artifacts"]), {"paper_zh.pdf", "figures/overall_framework.pdf"})
+
+    def test_generated_tex_inside_manuscript_build_is_not_a_scientific_source(self):
+        before = self.manifest_fixture()
+        generated = self.build / "figures/generated_wrapper.tex"
+        generated.write_text("generated build-only TeX", encoding="utf-8")
+        self.assertEqual(verifier._scientific_source_hashes(self.paper), before)
+
+    def test_external_default_bundle_is_bound_to_the_pdf_source_manifest(self):
+        self.manifest_fixture()
+        (self.paper / "paper_zh.tex").write_text(r"\input{../ZAC_zzx/results/default_initial_v1/paper_exports/default_initial_values.tex}")
+        bundle = self.paper / verifier.DEFAULT_PUBLICATION_DIRECTORY
+        bundle.mkdir(parents=True)
+        for name in verifier.DEFAULT_PUBLICATION_FILES:
+            (bundle / name).write_text("frozen default fixture")
+        before = verifier._scientific_source_hashes(self.paper)
+        for name in verifier.DEFAULT_PUBLICATION_FILES:
+            self.assertIn((verifier.DEFAULT_PUBLICATION_DIRECTORY / name).as_posix(), before)
+        verifier._source_build_manifest(self.paper, compile_pdf=True, source_before=before, errors=[])
+        (bundle / "default_initial_values.tex").write_text("changed default numeric source")
+        errors = []
+        verifier._source_build_manifest(self.paper, compile_pdf=False, source_before=None, errors=errors)
+        self.assertIn("source_build_manifest_mismatch", errors)
+
+    def test_default_publication_gate_failure_cannot_be_ignored(self):
+        (self.paper / "paper_zh.tex").write_text(r"\DefaultMaxDatasetFidelityGain")
+        script = self.paper / "writing/verify_default_initial_publication.py"
+        script.parent.mkdir()
+        script.write_text("fixture checker")
+        errors = []
+        with patch.object(verifier, "_run", return_value=subprocess.CompletedProcess([], 1, '{"status":"fail","read_only":true}')):
+            verifier._audit_default_initial_publication(self.paper, errors=errors)
+        self.assertIn("default_initial_publication_not_verified", errors)
 
     def test_read_only_check_cannot_create_source_manifest(self):
         self.manifest_fixture()

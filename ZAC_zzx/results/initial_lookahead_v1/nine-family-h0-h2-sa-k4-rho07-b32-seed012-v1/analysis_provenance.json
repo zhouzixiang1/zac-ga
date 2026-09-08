@@ -1,0 +1,71 @@
+{
+  "audit_schema": "initial-lookahead-post-run-provenance-v1",
+  "batch_script_in_run_seal": true,
+  "created_at_utc": "2026-09-06T15:24:20.381065+00:00",
+  "current_file_sha256": {
+    "IEEE_conference_template/initial_lookahead_values.tex": "c31d2fc365353a799284d94c98c352d02c34ebda488a38b838bb8f138b0c8e35",
+    "IEEE_conference_template/paper_initial_lookahead_values.json": "d25037bffb51a4c00bbdfbc0f50bfd01c1219360d97e2047788ef7e1c928bf35",
+    "IEEE_conference_template/writing/generate_initial_lookahead_values.py": "f7311678785b293a4aef6a3f05ff989f8a1a15da2cb5445f279b5357fa777455",
+    "IEEE_conference_template/writing/test_generate_initial_lookahead_values.py": "194304914011b7433aaad4ec17bf0c659ca71e10cebcb0f970075cfb2217813b",
+    "ZAC_zzx/experiments_v2/initial_lookahead_batch.py": "6d3d65a97ca56e04b8c06712a27c3e659ebaee3db68b202aa50588c0ffb0266e",
+    "ZAC_zzx/experiments_v2/initial_lookahead_runner.py": "55fb57105d2aa5a3b88b1236da791688c719e319f2a214fab266f646c5c02e73",
+    "ZAC_zzx/tests/test_evaluation_v2.py": "3cf755e06e8f99fc00d37bfb6ad3becece47ec987433e43ad9ad21e58601d9ff",
+    "ZAC_zzx/tests/test_ga_initial_placer.py": "3d9652bebbe7755f58d04784c04ae2708886ce8c5f726a63bc3d60e59a454468",
+    "ZAC_zzx/tests/test_initial_lookahead.py": "2b7b2d4fafd31b698be945e546c669ce7b6645af6ff1e64ce7166750b7eb5b87",
+    "ZAC_zzx/tests/test_initial_lookahead_batch.py": "3a69af051b7bc88aa71bf7b6eb65c5e7d53f3ea88b1e5bc45d9b9520fc179769",
+    "ZAC_zzx/tests/test_initial_placement_protocol.py": "202da030227a5402808ef4a717e5ea9704300beca7bafb4fc4a62ace82349f68",
+    "ZAC_zzx/tests/test_resident_transition.py": "3251d8901abec2d41ec9ddaecb79ce31c29540334f78f158c22976a7d2ec159f",
+    "ZAC_zzx/tests/test_scheduler_ledger.py": "d6f36204b863b76baebd169710c817016d40d5fbaba5a64cf100ed24ea5d3f25",
+    "ZAC_zzx/tests/test_zac_route_transition.py": "6227b6507a510ade58852b4948e54dabe4c91e17781abe78ea887fb2a2ad22f1",
+    "ZAC_zzx/zzx/initial_lookahead.py": "3cd0299fcbb197350a5c0922f4278609f02bf9ef55470b663cd9582fb4221fe6",
+    "ZAC_zzx/zzx/zac_zzx.py": "05d366a88d6c226951e2eef11ac3918a811a734b11c91390229fb2bfdcf73301"
+  },
+  "current_runtime_scope_source_sha256": "1a2f51f971e75badf2a14fde8670145a4f73123b23eb3641da93b37ec4b3bef3",
+  "post_run_analysis_only": true,
+  "post_run_hashed_files_not_in_runtime_seal": [
+    "ZAC_zzx/tests/test_initial_lookahead.py",
+    "ZAC_zzx/tests/test_initial_lookahead_batch.py",
+    "ZAC_zzx/tests/test_ga_initial_placer.py",
+    "ZAC_zzx/tests/test_initial_placement_protocol.py",
+    "ZAC_zzx/tests/test_resident_transition.py",
+    "ZAC_zzx/tests/test_zac_route_transition.py",
+    "ZAC_zzx/tests/test_scheduler_ledger.py",
+    "ZAC_zzx/tests/test_evaluation_v2.py",
+    "IEEE_conference_template/writing/generate_initial_lookahead_values.py",
+    "IEEE_conference_template/writing/test_generate_initial_lookahead_values.py",
+    "IEEE_conference_template/initial_lookahead_values.tex",
+    "IEEE_conference_template/paper_initial_lookahead_values.json"
+  ],
+  "protocol_sha256": "3f99d0207dcbf87ea44b12810bfeac0f5272f544013d72dffa9802a7342f8f69",
+  "runtime_scope_source_unchanged": true,
+  "runtime_source_sha256": "1a2f51f971e75badf2a14fde8670145a4f73123b23eb3641da93b37ec4b3bef3",
+  "sealed_evidence_modified": false,
+  "snapshot_scope_note": "The run snapshot covered tracked zzx/zac/streaming/evaluation/experiments_v2 files and explicitly the new initializer, single runner, and batch runner. Tests were outside that scope; the manuscript generator and derived values were created after the run. Their present hashes are analysis provenance, not retroactive pre-run sealing. Runtime snapshot code was not changed after the seal.",
+  "summary_sha256": "c4c020e9fb0bf5b4cd8af2027e761df45db28eb1edad7aac7121009470b12477",
+  "tests": {
+    "git_diff_check": "pass",
+    "research_and_evaluation": {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=ZAC_zzx:ZAC_zzx/tests <registered-ABI9-python> -m unittest test_initial_lookahead test_initial_lookahead_batch test_ga_initial_placer test_initial_placement_protocol test_resident_transition test_zac_route_transition test_scheduler_ledger.TestPureSchedulerLedger test_evaluation_v2 -q",
+      "passed": 92
+    },
+    "value_generator": {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=IEEE_conference_template/writing python3 -m unittest test_generate_initial_lookahead_values -q",
+      "passed": 7
+    }
+  },
+  "verification": {
+    "all_planned_circuits_retained": true,
+    "completed_candidates": 212,
+    "errors": [],
+    "job_statuses": {
+      "failed": 0,
+      "missing": 0,
+      "success": 26,
+      "timeout": 1
+    },
+    "prefix_physics_and_atom_ledger_checks": 420,
+    "selection_records": 53,
+    "source_scope_file_hashes_checked": 115,
+    "verified_native_init_mapping_and_instruction_hashes": 78
+  }
+}

@@ -1,22 +1,32 @@
 \section{背景与相关工作}
 \label{sec:background}
 
-\subsection{分区架构与原子重排}
+\subsection{分区中性原子架构}
 
-空间光调制器（Spatial Light Modulator, SLM）在存储区产生密集静态光阱，用于容纳暂不参与双比特门的原子。纠缠区包含彼此隔离的门位对，同一门位对中的两个原子可接受全局Rydberg脉冲并执行受控Z（controlled-Z, CZ）门\cite{evered2023highfidelity,lin2025zac}。双比特门的参与原子由AOD移动光阱送入纠缠区。以图~\ref{fig:architecture-preliminaries}(a)为例，$q_0$与$q_1$占用同一门位对，$q_2$位于存储阱并接受局域Raman旋转，$q_3$由存储区进入纠缠区，分别对应门执行与跨区输运。
+空间光调制器（Spatial Light Modulator, SLM）在存储区和纠缠区形成静态光阱。存储区采用密集阱位保存原子，并与Rydberg照射区域分离；纠缠区的阱位成对设置，同一门位对中的两个原子接受全局Rydberg脉冲，执行受控Z（controlled-Z, CZ）门\cite{evered2023highfidelity,lin2025zac}。单比特旋转由可寻址Raman光束执行。纠缠区内未参与目标门的原子也会受到全局脉冲激发，产生空闲受激误差，因此跨层驻留需要权衡阱转移损耗与额外受激损失\cite{evered2023highfidelity,lin2025zac}。
 
-AOD辅助原子重排包含SLM与AOD之间的阱转移以及AOD行列的连续输运。并行输运受到三类结构约束：活动行列在运动中不得交换相对次序；同行或同列关系在源位置与目标位置之间保持一致；阱转移时，同时激活的行列不得在静止原子处形成非目标交叉光阱（ghost spot，下称非目标交点）\cite{bluvstein2022coherenttransport,stade2024abstractmodel,stade2025routingaware}。交换相对次序的两条轨迹、源端同行而目标端分行的两条轨迹，以及在静止原子$q_2$处形成非目标交点的两次搬运，分别违反上述约束，见图~\ref{fig:architecture-preliminaries}(b)--(d)。编译器将同一层的相容轨迹编入同一重排批次，各批次顺序执行，每批的时延由最长轨迹决定。
+声光偏转器（Acousto-Optic Deflector, AOD）通过控制两个正交方向的光束偏转，形成行列位置可调的移动光阱阵列。原子从SLM阱转入AOD阱后，随移动光阱输运至目标位置，再转入目标SLM阱\cite{bluvstein2022coherenttransport,lin2025zac}。图~\ref{fig:architecture-preliminaries}(a)中，$q_0$、$q_1$在纠缠区执行双比特门，$q_2$在存储区接受单比特旋转，$q_3$通过AOD从存储区进入纠缠区。
 
-单比特旋转由可寻址Raman光束执行，双比特CZ门使用纠缠区的全局Rydberg脉冲。全局脉冲会激发纠缠区内未参与目标门的原子，产生空闲受激误差\cite{evered2023highfidelity,lin2025zac}。跨层驻留可减少阱转移，却也使暂不参与门的原子经历更多Rydberg脉冲。
-
-层间路由需要处理移动原子与静止原子的占位关系。给定源位置和目标位置后，编译器确定轨迹分组及其执行顺序，保证原子离开源位置后再占用相应位置\cite{stade2024abstractmodel,stade2025routingaware}。
-
-\begin{figure}[!t]
+\begin{figure*}[!t]
   \centering
-  \resizebox{\columnwidth}{!}{\input{figures/architecture_preliminaries}}
-  \caption{分区架构与AOD重排约束。(a) 存储区的$q_2$接受Raman单比特门，纠缠区的$q_0$、$q_1$接受Rydberg双比特门，$q_3$跨区输运。(b)--(d) 分别示意行列非交叉约束、同行/同列保持约束及静止原子$q_2$处的非目标交点约束；(d)中的两次装载须分为$B_1$和$B_2$。实线和红色虚线分别表示可行与不兼容移动；区域尺寸和阱位数量为示意。}
+  \resizebox{\textwidth}{!}{\input{figures/architecture_preliminaries}}
+  \caption{分区中性原子架构及两类AOD输运约束。(a) 原子$q_0$、$q_1$执行纠缠门，$q_2$接受局域单比特旋转，$q_3$跨区输运。(b) 行列相对关系约束同时禁止次序交换与行列合并；路径不相交仍可能不满足并行条件。(c) 联合拾取形成的非目标交点覆盖静止原子$q_2$，分为$B_1$、$B_2$可避免干扰；$B_1$后$q_0$的源阱已腾空，而$q_2$仍占原阱。原子标号与轨迹一一对应；区域尺寸和阱位数量为示意。}
   \label{fig:architecture-preliminaries}
-\end{figure}
+\end{figure*}
+
+同一AOD中的并行输运受到两类约束\cite{stade2024abstractmodel,stade2025routingaware}。第一类是\emph{行列相对关系约束}：活动行列在移动中保持次序，同一行或同一列上的原子也不能分离到不同的行列。设两原子的源坐标为$(x_i,y_i)$、$(x_j,y_j)$，目标坐标为$(x'_i,y'_i)$、$(x'_j,y'_j)$。将两条输运编入同一批次，须对任意$\star\in\{<,=,>\}$满足
+\begin{equation}
+\begin{aligned}
+x_i\star x_j&\ \Longleftrightarrow\ x'_i\star x'_j,\\
+y_i\star y_j&\ \Longleftrightarrow\ y'_i\star y'_j.
+\end{aligned}
+\label{eq:aod-relations}
+\end{equation}
+该条件同时排除行列次序交换和同行同列关系改变。源端分行而目标端合并到同一行，即使图上的路径没有相交，也不能并行执行，见图~\ref{fig:architecture-preliminaries}(b)。
+
+第二类是\emph{非目标交点约束}。同时激活的AOD行列会在所有交点形成光阱，其中未用于目标原子阱转移的交点称为非目标交点（ghost spot）。阱转移时，这些交点不能覆盖静止原子。图~\ref{fig:architecture-preliminaries}(c)中，同时拾取$q_0$、$q_1$会在$q_2$处产生非目标交点；分成$B_1$、$B_2$两批拾取可避免这一干扰。编译器将相容输运编入同一重排批次，各批次顺序执行，每批时延由最长轨迹决定。
+
+批次之间还需满足SLM阱位的占用依赖。图~\ref{fig:architecture-preliminaries}(c)中，$B_1$拾取$q_0$后将其源阱标为腾空：该阱从$q_0$转入移动光阱起即可被占用，这一先后关系取决于源阱的释放时刻，而非$q_0$整段输运的结束时刻\cite{lin2025zac}。同一面板里，$q_2$始终占据原SLM阱$s$；$B_1$与$B_2$只安排$q_0$、$q_1$的先后拾取，并不使$q_2$离开$s$。因此，若另有原子要以$s$为目标，须先迁移$q_2$或改选目标阱；对调这两批的次序不能释放$s$。
 
 本文采用分区中性原子架构的保真度模型评价编译结果\cite{lin2025zac}：
 \begin{equation}
@@ -28,37 +38,36 @@ AOD辅助原子重排包含SLM与AOD之间的阱转移以及AOD行列的连续�
 \end{aligned}
 \label{eq:fidelity}
 \end{equation}
-其中，$N_1$、$N_2$分别为单、双比特门数，$N_{\mathrm{exc}}$为纠缠区非参与原子的受激次数，$N_{\mathrm{tran}}$为SLM与AOD之间的逐原子阱转移次数；$f_1$、$f_2$、$f_{\mathrm{exc}}$和$f_{\mathrm{tran}}$为相应的单次保真度因子，$t_q$为原子$q$的累计空闲时间，$T_2$为相干时间。门数固定时，编译主要通过减少阱转移、空闲受激和相干损失提高保真度。参照Stade等人的路由评价\cite{stade2025routingaware}，本文统计重排批次与重排时延。重排批次为必须顺序执行的相容轨迹组数，批次越少，路由并行性越高；重排时延为各批次关键轨迹持续时间之和，反映完成原子输运所需的时间。
+其中，$\mathcal Q$为原子集合，$N_1$、$N_2$分别为单、双比特门数，$N_{\mathrm{exc}}$为纠缠区非参与原子的受激次数，$N_{\mathrm{tran}}$为SLM与AOD之间的逐原子阱转移次数；$f_1$、$f_2$、$f_{\mathrm{exc}}$和$f_{\mathrm{tran}}$为相应的单次保真度因子，$t_q$为原子$q$的累计空闲时间，$T_2$为相干时间。门数固定时，编译主要通过减少阱转移、空闲受激和相干损失提高保真度。参照Stade等人的路由评价\cite{stade2025routingaware}，本文统计重排批次与重排时延。重排批次为必须顺序执行的相容轨迹组数，批次越少，路由并行性越高；重排时延为各批次关键轨迹持续时间之和，反映完成原子输运所需的时间。
 
 \subsection{中性原子编译方法}
 
-固定阵列编译通过电路分块和原子布局适配硬件门集与连接条件。Geyser围绕原生多比特门进行电路分块，GRAPHINE依据带权交互图构造面向特定应用的Rydberg原子排列\cite{patel2022geyser,patel2023graphine}。Schmid等人的混合映射方法结合长程门与原子输运，以适配具有多种连接能力的中性原子设备\cite{schmid2024hybrid}。
+\begin{figure*}[t]
+  \centering
+  \resizebox{\textwidth}{!}{\input{figures/baseline_motivation}}
+  \caption{非相邻交互下的驻留与存储位选择。(a) $q$在$L_\ell$与$L_{\ell+3}$参与交互。(b) 驻留承担中间层受激损失，回迁承担往返输运损失；橙色虚线标示中间两层对驻留原子的Rydberg脉冲，仅保留$q$及相关门对。(c) $s_1$、$s_2$为实际存储光阱，$q$的回迁位置决定$u$的后续直达路径是否可行。各状态共用相同区域几何，尺寸与阱位数量为示意。}
+  \label{fig:baseline-motivation}
+\end{figure*}
 
-可重构阵列允许在电路执行过程中改变原子位置，其编译器联合安排门操作与原子输运。OLSQ-DPQA联合求解门调度、放置与移动，Enola将双比特门调度和并行搬运分解处理\cite{tan2022mapping,tan2024olsqdpqa,tan2025enola}。Atomique与PARALLAX分别利用多AOD阵列和无SWAP移动扩大并行性\cite{wang2024atomique,ludmir2024parallax}。Q-Pilot将数据原子固定于静态阱，通过可回收的移动辅助原子完成双比特交互；Weaver通过FPQA专用中间表示和可扩展优化通道支持跨设备重定向\cite{wang2024qpilot,kirmemis2025weaver}。这些方法着重改善可重构阵列的连通性与并行性，而分区架构还需要在存储隔离、Rydberg暴露与跨区转移之间作出选择。
+在原子位置基本保持固定的阵列上，编译器通过电路分块和初始布局，使电路匹配器件能够执行的门类型及其静态连接。Patel等人\cite{patel2022geyser}的Geyser围绕原生多比特门划分电路，GRAPHINE\cite{patel2023graphine}依据带权交互图选择原子在阵列中的位置。Schmid等人\cite{schmid2024hybrid}结合长程门与原子输运，以适配同时具有多种连接方式的中性原子器件。
 
-面向分区架构，Stade等人给出了抽象模型与重排算法\cite{stade2024abstractmodel}。ZAC通过相邻层匹配复用纠缠区原子，并以带下一伙伴项的最小权匹配选择门位和存储位\cite{lin2025zac}。Stade等人的路由感知放置（下称ICCAD/QMAP）采用A*搜索门放置和中间放置，其代价考虑兼容移动分组、组内最长轨迹和下一交互伙伴\cite{stade2025routingaware}。PowerMove联合优化门调度、放置、移动与跨区通信，Mantra通过程序重写和抢先调度减少原子往返\cite{ruan2025powermove,jang2025mantra}。ZAC与ICCAD/QMAP分别代表复用感知匹配和路由感知A*放置。本文选择二者作为外部基线，在相同分区架构、输入和保真度模型下比较端到端编译结果。
+不区分存储区与纠缠区的可重构阵列主要通过原子移动改善连通性。OLSQ-DPQA联合求解门调度、放置与移动，Enola将双比特门调度和并行搬运分解处理\cite{tan2022mapping,tan2024olsqdpqa,tan2025enola}。Atomique与PARALLAX分别利用多AOD阵列和无SWAP移动扩大并行性\cite{wang2024atomique,ludmir2024parallax}。Q-Pilot将数据原子固定于静态阱，通过可回收的移动辅助原子完成双比特交互；Weaver通过专用中间表示支持不同可重构阵列之间的编译适配\cite{wang2024qpilot,kirmemis2025weaver}。这些方法关注门交互的实现与并行执行，分区架构则还需考虑存储隔离和跨区输运。
+
+面向分区架构，Lin等人\cite{lin2025zac}提出复用感知（Reuse-Aware）编译器ZAC，以相邻层匹配保留可复用的纠缠区原子，并在门位与存储位匹配中计入后续双比特门的配对关系及其距离代价。Stade等人\cite{stade2025routingaware}在AOD抽象模型\cite{stade2024abstractmodel}上提出路由感知（Routing-Aware）放置，用A*搜索门放置和中间放置，代价包含相容移动分组、组内最长轨迹，以及后续双比特门配对原子的间距。前者着重减少重复阱转移，后者使位置选择与路由并行性相联系。Huang等人\cite{huang2026zap}的ZAP同样面向分区架构：层序加权初始化并估计早期移动冲突，动态放置先按下次使用前的受激损失决定驻留或回迁，再逐门选择目标位置，以距离和冲突数作顺序贪心估价。ZAP公布的阵列间距、相干损失模型和保真度统计项与本文设置不同，故不将其原文数值纳入直接比较；实验在统一输入、架构与评分模型下比较GA-LK、复用感知编译和路由感知放置。
 
 \subsection{跨层驻留与存储位选择}
 
 跨层驻留决定原子在两次交互之间所在的区域。留在纠缠区可减少往返转移，回到存储区可避免中间层的Rydberg暴露。回迁存储位决定后续搬运的起点，以及是否占用其他原子的通道。驻留、回迁存储位与后续门位共同决定了层间重排的物理代价。
 
-考虑原子$q$的两次非相邻交互：在$L_\ell$与$p$执行CZ门后，经过两个中间双比特层，再与$r$交互，层序见图~\ref{fig:baseline-motivation}(a)。驻留会经历两次空闲受激，回迁需要一次往返存储区的转移序列，二者的代价见图~\ref{fig:baseline-motivation}(b)。两次交互间隔的层数越多，驻留原子累积的空闲受激越多；回迁存储位影响后续重排。若$q$占据直达通道上的$s_1$，$u\to u'$轨迹会受到阻挡；通道之外的$s_2$允许直达输运，见图~\ref{fig:baseline-motivation}(c)。静止原子$q$与单条$u\to u'$轨迹之间的占位冲突，需要通过重选存储位释放通道，或增加中转改变路径。
+原子是否值得驻留，取决于它何时再次参与交互。原子$q$在$L_\ell$与$p$执行CZ门，到$L_{\ell+3}$才与$r$交互，中间两层的门均不包含$q$，见图~\ref{fig:baseline-motivation}(a)。若$q$留在纠缠区，就会经历这两层的空闲受激；若回到存储区，则需要为下一次交互再进入纠缠区，增加阱转移和输运，见图~\ref{fig:baseline-motivation}(b)。因此，驻留选择需要同时考虑再次使用的层距和实际往返代价。
 
-\begin{figure*}[t]
-  \centering
-  \resizebox{\textwidth}{!}{\input{figures/baseline_motivation}}
-  \caption{非相邻交互下的驻留与存储位选择。(a) $q$在两个中间双比特层之后再次参与CZ门。(b) 留在纠缠区可减少阱转移，回到存储区可避免中间层的空闲受激。(c) 当静止原子$q$占据直达通道上的$s_1$时，$u\to u'$直达轨迹不可行；将$q$放置在通道之外的$s_2$后，该轨迹可行。前一种状态需重新选择存储位或增加中转。各状态采用相同区域几何，尺寸与阱位数量不按比例。}
-  \label{fig:baseline-motivation}
-\end{figure*}
-
-选择$s_1$与$s_2$的当前阱转移数相同，后续可行轨迹却不同。层间状态需要记录原子的具体位置；从候选产生的新状态继续评价未来门层，才能将存储位对后续输运的影响计入当前选择。
+回迁位置同时会改变其他原子的可行路径。图~\ref{fig:baseline-motivation}(c)中的$s_1$、$s_2$是存储阵列内两个不同的静态光阱，空心圆表示原子$u$在下一层的目标位置。$q$回到$s_1$后，会阻挡$u$的直达路径；选择通道之外的$s_2$则可保留该路径。两种选择具有相同的当前阱转移数，但前者需改变后续路径或增加中转。按未来层序更新原子位置和阱位占用，能够在选择回迁位置时计入这种差异。
 
 \subsection{本文贡献}
 \label{sec:contributions}
 
-本文在复用感知编译与路由感知放置\cite{lin2025zac,stade2025routingaware}的基础上提出GA-LK，主要贡献如下：
+本文提出结合遗传算法与多层前瞻的联合放置方法GA-LK。
 \begin{itemize}
-  \item 采用联合遗传搜索协调门位、驻留与回迁存储位。染色体共同表示双比特门位和非相邻层之间的驻留选择，$K$优单射匹配为回迁原子分配互异存储位，使三类位置选择按同一物理目标优化；小规模编码空间采用精确枚举。
-  \item 从候选转换后的物理状态开展衰减多层前瞻。按后续双比特层的执行顺序更新原子位置与时钟，累计阱转移、空闲受激、输运及阻挡原子迁移的代价，以评价当前选择对非相邻交互的影响，并据此选择层边界方案。
-  \item 将轨迹冲突图着色与占位顺序检查用于重排批次构造。依据AOD行列次序、同行同列关系及非目标交点约束建立冲突图，以DSATUR着色\cite{brelaz1979coloring}生成初始分组，再检查源点释放与目标占用顺序。可执行批次及其时延使联合搜索和多层前瞻能够评价放置方案的路由并行性与输运开销。
+  \item \PaperRevision{门位、驻留与回迁存储位相互制约。本文将这些耦合选择建模为保真度损失最小化问题，并以遗传搜索与匹配求解。遗传搜索联合选择双比特门位和原子的驻留或回迁方案，匹配算法为回迁原子分配互不重复的存储阱位；每组完整方案均按阱转移、空闲受激和相干损失评价。}
+  \item \PaperRevision{当前放置会改变后续层的输运与受激条件。本文按各候选完成当前层后的原子位置和阱位占用，逐层估计后续执行损失，再按层距衰减其权重，使驻留和存储位选择兼顾多层执行代价。这一评价还用于默认初始化：比较不同起始存储布局下早期门层的执行损失，在电路开始前选择初始位置。}
 \end{itemize}

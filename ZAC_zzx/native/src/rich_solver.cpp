@@ -733,16 +733,23 @@ class RichSolver {
     const auto search_started = Clock::now();
     std::vector<std::int64_t> winner;
     std::string search_mode;
+    const auto run_search = [&](
+        const std::optional<std::vector<std::int64_t>>& cached_winner) {
     if (cached_winner.has_value() &&
-        config_.operator_profile == RichOperatorProfile::kExact) {
+        config_.operator_profile == RichOperatorProfile::kExact &&
+        config_.mechanism_version == 0) {
       winner = normalize(*cached_winner);
       evaluate_normalized(winner, false);
       search_mode = "lru";
       stats_.early_stop_reason = "lru";
     } else {
       const auto direct_space = direct_search_space();
+      const auto available = config_.mechanism_version == 0
+          ? config_.max_unique_evaluations
+          : stats_.stochastic_budget - std::min(stats_.stochastic_budget,
+                                               stats_.unique_evaluations);
       if (direct_space <= config_.direct_enumeration_limit &&
-          direct_space <= config_.max_unique_evaluations) {
+          direct_space <= available) {
         auto chromosomes = enumerate_chromosomes();
         auto scored = score_direct_exact(chromosomes);
         if (!scored.has_value()) {
@@ -864,6 +871,51 @@ class RichSolver {
         }
       }
     }
+    };
+    if (config_.mechanism_version != 0) {
+      // A common feasible reference seed is prepared for all three experiment
+      // arms, using the same current/forecast objective and candidate domains.
+      // Its actual unique evaluations are charged once to the shared budget.
+      const auto full_budget = config_.max_unique_evaluations;
+      stats_.stochastic_budget = std::max<std::size_t>(1, full_budget / 4);
+      const auto seed = greedy_seed();
+      const auto seed_value = evaluate_normalized(seed, false);
+      if (!seed_value.fitness.feasible) {
+        throw std::runtime_error("mechanism common gate seed is not physically feasible");
+      }
+      stats_.mechanism_seed_evaluations = stats_.unique_evaluations;
+      if (config_.mechanism_sequential_decision &&
+          !problem_.gate_domains.empty() && !problem_.eligible.empty()) {
+        locked_gate_genes_ = std::vector<std::int64_t>(
+            seed.begin(), seed.begin() + problem_.gate_domains.size());
+        normalize_cache_.clear();
+        const auto stage_begin = stats_.unique_evaluations;
+        stats_.stochastic_budget = stage_begin + (full_budget - stage_begin) / 2;
+        run_search(seed);
+        // Apply the same residency recommendations and current-sacrifice
+        // rule while gate choices are still fixed. No gate can change here.
+        winner = guard_forecast_gate_projection(winner);
+        stats_.mechanism_residency_evaluations = stats_.unique_evaluations - stage_begin;
+        locked_residency_genes_ = std::vector<std::int64_t>(
+            winner.begin() + problem_.gate_domains.size(), winner.end());
+        locked_gate_genes_.clear();
+        normalize_cache_.clear();
+        guarded_final_value_.reset();
+        const auto gate_begin = stats_.unique_evaluations;
+        const auto stage_seed = winner;
+        stats_.stochastic_budget = full_budget;
+        run_search(stage_seed);
+        stats_.mechanism_gate_evaluations = stats_.unique_evaluations - gate_begin;
+        search_mode = "sequential-residency-gates/" + search_mode;
+      } else {
+        stats_.stochastic_budget = full_budget;
+        run_search(seed);
+        stats_.mechanism_gate_evaluations = stats_.unique_evaluations -
+            stats_.mechanism_seed_evaluations;
+      }
+    } else {
+      run_search(cached_winner);
+    }
     const auto selection_started = Clock::now();
     const auto pre_guard_stats = stats_;
     const auto pre_guard_fitness_ns = fitness_ns_;
@@ -978,6 +1030,10 @@ class RichSolver {
     result.search_mode = std::move(search_mode);
     result.operator_profile = config_.operator_profile;
     result.stats = stats_;
+    result.stats.mechanism_visited_layers = mechanism_visited_layers_;
+    result.stats.mechanism_expanded_layers = mechanism_expanded_layers_;
+    result.stats.mechanism_snapshot_resets = mechanism_snapshot_resets_;
+    result.stats.mechanism_guard_assignments = mechanism_guard_assignments_;
     result.forecast_nll = final_value.forecast_nll;
     result.search_negative_log_fidelity = final_value.search_nll;
     result.forecast_by_depth = final_value.forecast_by_depth;
@@ -1115,6 +1171,7 @@ class RichSolver {
     std::vector<Evaluated> cohort;
     cohort.reserve(assignments.size());
     for (std::size_t rank = 0; rank < assignments.size(); ++rank) {
+      if (config_.mechanism_version != 0) ++mechanism_guard_assignments_;
       auto value = evaluate_assignment(
           chromosome, initial.decoded, returners, assignments[rank], rank,
           assignments.size(), false);
@@ -1461,7 +1518,7 @@ class RichSolver {
     if (!bounded_parallel_guard) {
       for (const auto& [chromosome, value] : complete_evaluated_archive_) {
         (void)value;
-        if (has_projected_suffix(chromosome)) {
+        if (has_projected_suffix(chromosome) && matches_mechanism_locks(chromosome)) {
           guard_chromosomes.insert(chromosome);
         }
       }
@@ -1640,6 +1697,16 @@ class RichSolver {
   }
 
   void validate() const {
+    if ((config_.mechanism_version != 0 && config_.mechanism_version != 1) ||
+        (config_.mechanism_version == 0 &&
+         (config_.mechanism_static_poststate || config_.mechanism_sequential_decision ||
+          config_.mechanism_terminal_off)) ||
+        (config_.mechanism_version == 1 &&
+         (!config_.mechanism_terminal_off || config_.max_unique_evaluations < 4 ||
+          (config_.mechanism_static_poststate && config_.mechanism_sequential_decision) ||
+          !problem_.forecast_terms.empty()))) {
+      throw std::invalid_argument("invalid mechanism experiment configuration");
+    }
     if (problem_.n_atoms != architecture_.n_atoms() ||
         problem_.current_points.size() != problem_.n_atoms) {
       throw std::invalid_argument("rich atom count differs from architecture");
@@ -1925,10 +1992,12 @@ class RichSolver {
     for (std::size_t gate = 0; gate < gate_count; ++gate) {
       value[gate] = static_cast<std::int64_t>(positive_mod(
           chromosome[gate], problem_.gate_domains[gate].size()));
+      if (!locked_gate_genes_.empty()) value[gate] = locked_gate_genes_[gate];
     }
     std::size_t selected = 0;
     for (std::size_t index = 0; index < eligible_count; ++index) {
       bool bit = chromosome[gate_count + index] != 0;
+      if (!locked_residency_genes_.empty()) bit = locked_residency_genes_[index] != 0;
       if (problem_.decision_policy == RichDecisionPolicy::kAlwaysStay) bit = false;
       if (problem_.decision_policy == RichDecisionPolicy::kAlwaysReturn ||
           problem_.decision_policy == RichDecisionPolicy::kAdjacentOnly) bit = true;
@@ -1954,6 +2023,9 @@ class RichSolver {
       }
     }
     if (config_.fitness_cache) normalize_cache_[chromosome] = value;
+    if (!matches_mechanism_locks(value)) {
+      throw std::logic_error("mechanism frozen decision violated by normalization");
+    }
     normalize_ns_ += elapsed_ns(started);
     return value;
   }
@@ -2652,6 +2724,10 @@ class RichSolver {
       positions[static_cast<std::size_t>(option.q2)] = option.target2;
     }
 
+    const auto snapshot_positions = config_.mechanism_static_poststate
+        ? positions : std::vector<Point>{};
+    const auto snapshot_idle = config_.mechanism_static_poststate
+        ? accumulated_idle : std::vector<double>{};
     const auto state_key = forecast_state_key(positions, accumulated_idle);
     if (config_.fitness_cache) {
       const auto cached = forecast_state_cache_.find(state_key);
@@ -2688,11 +2764,21 @@ class RichSolver {
     std::uint32_t pair_epoch = 0U;
     for (std::size_t layer_index = 0;
          layer_index < problem_.future_layers.size(); ++layer_index) {
+      if (config_.mechanism_version != 0) ++mechanism_visited_layers_;
       const auto& layer = problem_.future_layers[layer_index];
       const auto decay = future_decay_[layer_index];
       if (decay < config_.decay_epsilon) {
         ++stats_.forecast_terms_skipped_cutoff;
         continue;
+      }
+      if (config_.mechanism_version != 0) ++mechanism_expanded_layers_;
+      if (config_.mechanism_static_poststate) {
+        // Each one-layer physical estimate sees this candidate's poststate.
+        // Within-layer routing is unchanged; no positions, occupancy, or idle
+        // clocks propagate from an earlier predicted layer into this layer.
+        positions = snapshot_positions;
+        accumulated_idle = snapshot_idle;
+        if (layer_index != 0) ++mechanism_snapshot_resets_;
       }
       const auto& participant_mask =
           future_participant_masks_[layer_index];
@@ -2908,6 +2994,11 @@ class RichSolver {
       ++stats_.forecast_terms_applied;
     }
 
+    if (config_.mechanism_terminal_off) {
+      result.search_nll = result.fitness.negative_log_fidelity + result.forecast_nll;
+      remember();
+      return;
+    }
     std::size_t endpoint_depth = 0;
     std::vector<unsigned char> endpoint_participant_mask(problem_.n_atoms, 0U);
     std::vector<unsigned char> endpoint_candidate_mask(problem_.n_atoms, 0U);
@@ -4326,11 +4417,13 @@ class RichSolver {
     const auto limit = config_.direct_enumeration_limit;
     std::size_t value = 1;
     for (const auto& domain : problem_.gate_domains) {
+      if (!locked_gate_genes_.empty()) continue;
       if (value > limit / domain.size()) return limit + 1;
       value *= domain.size();
     }
     if (problem_.decision_policy == RichDecisionPolicy::kOptimize) {
       for (std::size_t index = 0; index < problem_.eligible.size(); ++index) {
+        if (!locked_residency_genes_.empty()) continue;
         if (value > limit / 2) return limit + 1;
         value *= 2;
       }
@@ -4349,8 +4442,9 @@ class RichSolver {
       }
       std::size_t domain = 1;
       if (index < problem_.gate_domains.size()) {
-        domain = problem_.gate_domains[index].size();
-      } else if (problem_.decision_policy == RichDecisionPolicy::kOptimize) {
+        domain = locked_gate_genes_.empty() ? problem_.gate_domains[index].size() : 1;
+      } else if (problem_.decision_policy == RichDecisionPolicy::kOptimize &&
+                 locked_residency_genes_.empty()) {
         domain = 2;
       }
       for (std::size_t value = 0; value < domain; ++value) {
@@ -4740,6 +4834,19 @@ class RichSolver {
   }
 
   const ArchitectureSnapshot& architecture_;
+  bool matches_mechanism_locks(const std::vector<std::int64_t>& value) const {
+    const auto gates = problem_.gate_domains.size();
+    if (!locked_gate_genes_.empty() &&
+        !std::equal(locked_gate_genes_.begin(), locked_gate_genes_.end(), value.begin())) return false;
+    return locked_residency_genes_.empty() || std::equal(
+        locked_residency_genes_.begin(), locked_residency_genes_.end(), value.begin() + gates);
+  }
+  std::vector<std::int64_t> locked_gate_genes_;
+  std::vector<std::int64_t> locked_residency_genes_;
+  std::size_t mechanism_visited_layers_{};
+  std::size_t mechanism_expanded_layers_{};
+  std::size_t mechanism_snapshot_resets_{};
+  std::size_t mechanism_guard_assignments_{};
   RichH0Problem problem_;
   const RichSearchConfig& config_;
   std::vector<std::vector<RichReturnOption>> return_domains_;

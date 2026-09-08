@@ -3,227 +3,146 @@
   galk/base,x=1cm,y=1cm,
   trap/.style={galk/site},
   atom/.style={galk/occupied atom},
-  idle/.style={circle,draw=galkInk!55,line width=.35pt,fill=galkInk!18,
-    minimum size=1.45mm,inner sep=0pt},
-  dim/.style={{Stealth[length=.72mm,width=.46mm]}-{Stealth[length=.72mm,width=.46mm]},
-    draw=galkInk,line width=.40pt},
-  trajectory/.style={draw=galkInk,line width=.52pt},
-  alternative/.style={draw=galkMuted,densely dashed,line width=.52pt},
-  pulse/.style={draw=galkEntangle!70,densely dashed,line width=.38pt},
+  transition/.style={galk/accepted path},
   panel title/.style={galk/panel title},
-  zone label/.style={galk/zone label}
+  state note/.style={font=\rmfamily\fontsize{8.7pt}{9.7pt}\selectfont},
+  atom label/.style={galk/q label,font=\rmfamily\itshape\fontsize{8.8pt}{9.8pt}\selectfont},
+  pulse/.style={draw=galkEntangle,densely dashed,line width=.42pt}
 ]
-  \path[use as bounding box] (-.05,.02) rectangle (17.35,5.72);
+  \path[use as bounding box] (0,0) rectangle (17.80,5.85);
 
-  % One device glyph is reused for every physical-state snapshot.  Only the
-  % atom identities and paths change from state to state.
+  % One regular optical-trap geometry is reused without deformation.
   \def\miniDevice#1#2{%
     \begin{scope}[shift={(#1,#2)}]
-      \path[galk/entanglement zone] (0,.66) rectangle (1.05,1.05);
-      \path[galk/storage zone] (0,0) rectangle (1.05,.59);
-      \draw[galk/rydberg pair] (.265,.855) ellipse (.14 and .11);
-      \draw[galk/rydberg pair] (.785,.855) ellipse (.14 and .11);
-      \foreach \xx in {.18,.35,.70,.87}
-        \node[trap] at (\xx,.855) {};
-      \foreach \xx in {.18,.525,.87} {
-        \node[trap] at (\xx,.17) {};
-        \node[trap] at (\xx,.42) {};
+      \path[galk/entanglement zone] (0,.80) rectangle (1.12,1.30);
+      \path[galk/storage zone] (0,0) rectangle (1.12,.70);
+      \draw[galk/rydberg pair] (.27,1.05) ellipse (.15 and .13);
+      \draw[galk/rydberg pair] (.85,1.05) ellipse (.15 and .13);
+      \foreach \xx in {.18,.36,.76,.94}
+        \node[trap] at (\xx,1.05) {};
+      \foreach \xx in {.18,.56,.94} {
+        \node[trap] at (\xx,.20) {};
+        \node[trap] at (\xx,.50) {};
       }
     \end{scope}%
   }
-
-  % Open engineering panels separated by thin rules.
-  \draw[galkInk!28,line width=.38pt] (5.72,.46)--(5.72,5.46);
-  \draw[galkInk!28,line width=.38pt] (11.42,.46)--(11.42,5.46);
-
-  % (a) The same atom participates again after two intervening 2Q layers.
-  \node[panel title] at (.18,5.24) {(a) Non-adjacent interaction};
-  \fill[galkEntangleFill] (.39,.65) rectangle (.57,.79);
-  \draw[galkEntangle,line width=.34pt] (.39,.65) rectangle (.57,.79);
-  \node[anchor=west,font=\rmfamily\fontsize{8.7pt}{9.7pt}\selectfont]
-    at (.63,.72) {entanglement zone};
-  \fill[galkStorageFill] (3.13,.65) rectangle (3.31,.79);
-  \draw[galkStorage,line width=.34pt] (3.13,.65) rectangle (3.31,.79);
-  \node[anchor=west,font=\rmfamily\fontsize{8.7pt}{9.7pt}\selectfont]
-    at (3.37,.72) {storage zone};
-
-  \foreach \cx/\lab in {.905/$L_\ell$,2.215/$L_{\ell+1}$,
-                         3.525/$L_{\ell+2}$,4.835/$L_{\ell+3}$} {
-    \node[anchor=south] at (\cx,4.58) {\lab};
+  \def\gatePair#1#2#3#4{%
+    \node[atom] at (#1,#2) {};
+    \node[atom] at (#1+.18,#2) {};
+    \draw[galkInk,line width=.42pt] (#1,#2)--(#1+.18,#2);
+    \node[atom label,anchor=south] at (#1+.09,#2+.30) {$#3,#4$};
   }
-  \miniDevice{.38}{3.18}
-  \miniDevice{1.69}{3.18}
-  \miniDevice{3.00}{3.18}
-  \miniDevice{4.31}{3.18}
-
-  \node[atom] (aq0) at (.56,4.035) {};
-  \node[atom] at (.73,4.035) {};
-  \node[galk/q label,anchor=south] at (.645,4.125) {$q,p$};
-  \draw[galkInk,line width=.44pt] (.56,4.035)--(.73,4.035);
-
-  \node[atom] (aq1) at (1.87,3.35) {};
-  \node[galk/q label,anchor=east] at (1.77,3.35) {$q$};
-  \node[atom] at (2.39,4.035) {};
-  \node[atom] at (2.56,4.035) {};
-  \node[galk/q label,anchor=south] at (2.475,4.125) {$u,v$};
-  \draw[galkInk,line width=.44pt] (2.39,4.035)--(2.56,4.035);
-
-  \node[atom] (aq2) at (3.18,3.35) {};
-  \node[galk/q label,anchor=east] at (3.08,3.35) {$q$};
-  \node[atom] at (3.70,4.035) {};
-  \node[atom] at (3.87,4.035) {};
-  \node[galk/q label,anchor=south] at (3.785,4.125) {$w,x$};
-  \draw[galkInk,line width=.44pt] (3.70,4.035)--(3.87,4.035);
-
-  \node[atom] (aq3) at (4.49,4.035) {};
-  \node[atom] at (4.66,4.035) {};
-  \node[galk/q label,anchor=south] at (4.575,4.125) {$q,r$};
-  \draw[galkInk,line width=.44pt] (4.49,4.035)--(4.66,4.035);
-  \draw[galkMuted,densely dashed,line width=.42pt]
-    (aq0)--(aq1)--(aq2)--(aq3);
-
-  \node[anchor=north,font=\rmfamily\fontsize{8.2pt}{9.2pt}\selectfont] at (.91,2.95) {$\mathrm{CZ}(q,p)$};
-  \node[anchor=north,font=\rmfamily\fontsize{8.2pt}{9.2pt}\selectfont] at (2.22,2.95) {$\mathrm{CZ}(u,v)$};
-  \node[anchor=north,font=\rmfamily\fontsize{8.2pt}{9.2pt}\selectfont] at (3.53,2.95) {$\mathrm{CZ}(w,x)$};
-  \node[anchor=north,font=\rmfamily\fontsize{8.2pt}{9.2pt}\selectfont] at (4.84,2.95) {$\mathrm{CZ}(q,r)$};
-  \draw[dim] (1.78,2.28)--(4.27,2.28);
-  \node[fill=white,inner sep=.7pt] at (3.03,2.28)
-    {two intervening layers};
-
-  % (b) Two admissible physical histories shown with the same device glyph as
-  % every other state snapshot.  This avoids visually stretching either zone
-  % into a time-series band.
-  \node[panel title] at (5.92,5.24) {(b) Inter-layer physical histories};
-  \node[anchor=west] at (6.05,4.83) {entanglement-resident};
-  \node[anchor=east,galk/small label] at (11.05,2.98)
-    {$N_{\rm exc}^{\rm res}-N_{\rm exc}^{\rm sto}=2$};
-  \node[anchor=west] at (6.05,2.60) {storage-mediated};
-  \node[anchor=east,galk/small label] at (11.05,.35)
-    {$N_{\rm tran}^{\rm sto}>N_{\rm tran}^{\rm res}$};
-
-  \foreach \x/\lab in {6.05/$L_\ell$,7.33/$L_{\ell+1}$,
-                         8.61/$L_{\ell+2}$,9.89/$L_{\ell+3}$} {
-    \miniDevice{\x}{3.20}
-    \miniDevice{\x}{1.18}
-    \node[anchor=north] at (\x+.525,1.06) {\lab};
+  \def\siteAnnotation#1#2#3#4{%
+    \node[state note] at (#1+.56,#2-.27) {$q$ at $#3$};
+    \draw[galkInk!65,line width=.35pt]
+      (#1+.38,#2-.09)--(#1+.38,#2+#4-.16)--(#1+.49,#2+#4-.08);
   }
 
-  % Keeping q in the entanglement zone avoids transfer but exposes it to the
-  % two intervening global pulses.
-  \foreach \x in {6.23,7.51,8.79,10.07} {
-    \node[atom] at (\x,4.055) {};
+  \draw[galkInk!24,line width=.38pt] (5.48,.35)--(5.48,5.58);
+  \draw[galkInk!24,line width=.38pt] (11.15,.35)--(11.15,5.58);
+
+  % (a) The interaction order determines when q is needed again.
+  \node[panel title] at (.15,5.57) {(a) Non-adjacent interaction};
+  \foreach \xx/\lab in {.20/$L_{\ell}$,1.49/$L_{\ell+1}$,
+                       2.78/$L_{\ell+2}$,4.07/$L_{\ell+3}$} {
+    \miniDevice{\xx}{3.08}
+    \node[anchor=south] at (\xx+.56,4.92) {\lab};
   }
-  \node[atom] at (6.40,4.055) {};
-  \node[galk/q label,anchor=south] at (6.315,4.145) {$q,p$};
-  \node[atom] at (8.03,4.055) {};
-  \node[atom] at (8.20,4.055) {};
-  \node[galk/q label,anchor=south] at (8.115,4.145) {$u,v$};
-  \node[atom] at (9.31,4.055) {};
-  \node[atom] at (9.48,4.055) {};
-  \node[galk/q label,anchor=south] at (9.395,4.145) {$w,x$};
-  \node[atom] at (10.24,4.055) {};
-  \node[galk/q label,anchor=south] at (10.155,4.145) {$q,r$};
-  \draw[trajectory,-{Stealth[length=.72mm,width=.46mm]}]
-    (6.31,4.055)--(7.43,4.055);
-  \draw[trajectory,-{Stealth[length=.72mm,width=.46mm]}]
-    (7.59,4.055)--(8.71,4.055);
-  \draw[trajectory,-{Stealth[length=.72mm,width=.46mm]}]
-    (8.87,4.055)--(9.99,4.055);
-  \foreach \x in {7.51,8.79} {
-    \draw[pulse] (\x,3.88)--(\x,4.23);
-    \draw[galkBad,line width=.54pt] (\x-.08,4.18)--(\x+.08,4.34);
-    \draw[galkBad,line width=.54pt] (\x-.08,4.34)--(\x+.08,4.18);
+  \gatePair{.38}{4.13}{q}{p}
+  \gatePair{2.25}{4.13}{u}{v}
+  \gatePair{3.54}{4.13}{w}{x}
+  \gatePair{4.25}{4.13}{q}{r}
+  \foreach \xx in {1.67,2.96} {
+    \node[atom] at (\xx,3.58) {};
+    \node[atom label,anchor=center] at (\xx+.17,3.40) {$q$};
+  }
+  \node[state note,anchor=north] at (.76,2.88) {$\mathrm{CZ}(q,p)$};
+  \node[state note,anchor=north] at (2.05,2.88) {$\mathrm{CZ}(u,v)$};
+  \node[state note,anchor=north] at (3.34,2.88) {$\mathrm{CZ}(w,x)$};
+  \node[state note,anchor=north] at (4.63,2.88) {$\mathrm{CZ}(q,r)$};
+  \draw[galkInk!60,{Stealth[length=.75mm]}-{Stealth[length=.75mm]},line width=.40pt]
+    (1.72,2.18)--(4.09,2.18);
+  \node[fill=white,inner sep=1pt,state note] at (2.91,2.18) {two intervening layers};
+
+  % The two-line zone key uses the same rectangular bands as the snapshots.
+  \path[galk/entanglement zone] (.45,1.13) rectangle (.73,1.34);
+  \node[anchor=west,state note] at (.88,1.235) {entanglement zone};
+  \path[galk/storage zone] (.45,.60) rectangle (.73,.81);
+  \node[anchor=west,state note] at (.88,.705) {storage zone};
+
+  % (b) The gate sequence is identical; only q's inter-layer location differs.
+  \node[panel title] at (5.68,5.57) {(b) Inter-layer residency};
+  % Layer headers share the same top band as panels (a) and (c).
+  % Place each residency description below its own row of snapshots.
+  \node[anchor=west] at (5.73,2.80) {Entanglement-resident};
+  \node[anchor=west] at (5.73,.53) {Storage-mediated};
+  \foreach \xx/\lab in {5.73/$L_{\ell}$,7.04/$L_{\ell+1}$,
+                       8.35/$L_{\ell+2}$,9.66/$L_{\ell+3}$} {
+    \miniDevice{\xx}{3.08}
+    \miniDevice{\xx}{.87}
+    \node[anchor=south] at (\xx+.56,4.92) {\lab};
+  }
+  \gatePair{5.91}{4.13}{q}{p}
+  \gatePair{7.80}{4.13}{u}{v}
+  \gatePair{9.11}{4.13}{w}{x}
+  \gatePair{9.84}{4.13}{q}{r}
+  \foreach \xx in {7.22,8.53} {
+    \node[atom] at (\xx,4.13) {};
+    \node[atom label,anchor=south] at (\xx,4.43) {$q$};
+    \draw[pulse] (\xx-.13,3.94)--(\xx-.13,4.32);
+    \draw[pulse] (\xx+.13,3.94)--(\xx+.13,4.32);
+  }
+  \gatePair{5.91}{1.92}{q}{p}
+  \gatePair{7.80}{1.92}{u}{v}
+  \gatePair{9.11}{1.92}{w}{x}
+  \gatePair{9.84}{1.92}{q}{r}
+  \foreach \xx in {7.22,8.53} {
+    \node[atom] at (\xx,1.37) {};
+    \node[atom label,anchor=center] at (\xx+.17,1.19) {$q$};
   }
 
-  % Returning q to storage adds transfer operations while avoiding those two
-  % pulses.  All four snapshots retain exactly the same zone geometry.
-  \node[atom] at (6.23,2.035) {};
-  \node[atom] at (7.51,1.60) {};
-  \node[atom] at (8.79,1.60) {};
-  \node[atom] at (10.07,2.035) {};
-  \node[atom] at (6.40,2.035) {};
-  \node[galk/q label,anchor=south] at (6.315,2.125) {$q,p$};
-  \node[atom] at (8.03,2.035) {};
-  \node[atom] at (8.20,2.035) {};
-  \node[galk/q label,anchor=south] at (8.115,2.125) {$u,v$};
-  \node[atom] at (9.31,2.035) {};
-  \node[atom] at (9.48,2.035) {};
-  \node[galk/q label,anchor=south] at (9.395,2.125) {$w,x$};
-  \node[atom] at (10.24,2.035) {};
-  \node[galk/q label,anchor=south] at (10.155,2.125) {$q,r$};
-  \draw[alternative,-{Stealth[length=.72mm,width=.46mm]}]
-    (6.31,2.00)--(7.43,1.64);
-  \draw[alternative,-{Stealth[length=.72mm,width=.46mm]}]
-    (7.59,1.60)--(8.71,1.60);
-  \draw[alternative,-{Stealth[length=.72mm,width=.46mm]}]
-    (8.87,1.64)--(9.99,2.00);
+  % (c) s1 and s2 are real traps on the same regular storage lattice.
+  \node[panel title] at (11.35,5.57) {(c) Storage-site dependence};
+  \foreach \xx/\lab in {11.48/$L_{\ell}$,13.84/$L_{\ell+1}$,16.20/$L_{\ell+2}$} {
+    \miniDevice{\xx}{3.08}
+    \miniDevice{\xx}{.94}
+    \node[anchor=south] at (\xx+.56,4.92) {\lab};
+  }
 
-  % (c) Two complete two-boundary histories.  If stationary q occupies s_1
-  % on the direct u -> u' corridor, that single trajectory is infeasible;
-  % batching cannot repair it, so the storage site or route must change.
-  \node[panel title] at (11.60,5.24) {(c) Storage-site dependence};
-  \node[anchor=north] at (13.23,4.60) {$\ell\rightarrow\ell+1$};
-  \node[anchor=north] at (15.16,4.60) {$\ell+1\rightarrow\ell+2$};
+  % The source state contains q in the entanglement zone and u in storage.
+  \foreach \yy in {3.08,.94} {
+    \node[atom] at (11.66,\yy+1.05) {};
+    \node[atom label,anchor=south] at (11.66,\yy+1.35) {$q$};
+    \node[atom] at (11.66,\yy+.50) {};
+    \node[atom label,anchor=center] at (11.83,\yy+.32) {$u$};
+  }
+  \draw[transition] (12.78,3.66)--(13.66,3.66);
+  \node[state note,anchor=south] at (13.22,3.80) {$q\to s_1$};
+  \draw[transition] (12.78,1.52)--(13.66,1.52);
+  \node[state note,anchor=south] at (13.22,1.66) {$q\to s_2$};
 
-  % First history: q -> s_1 makes the direct u -> u' path infeasible.
-  \miniDevice{11.80}{3.00}
-  \miniDevice{13.73}{3.00}
-  \miniDevice{15.66}{3.00}
-  \node[atom] at (11.98,3.855) {};
-  \node[galk/q label,anchor=south] at (11.98,3.945) {$q$};
-  \node[atom] at (11.98,3.42) {};
-  \node[galk/q label,anchor=east] at (11.88,3.42) {$u$};
-  \draw[trajectory,-{Stealth[length=.72mm,width=.46mm]}]
-    (12.93,3.63)--(13.53,3.63);
-  \node[anchor=south,inner sep=.4pt] at (13.23,3.64) {$q\!\to\!s_1$};
-  \draw[galkInk!70,densely dashed,line width=.40pt]
-    (13.91,3.42)--(14.60,3.42);
-  \node[atom] at (13.91,3.42) {};
-  \node[atom] at (14.255,3.42) {};
-  \node[trap] at (14.60,3.42) {};
-  \draw[galkBad,line width=.62pt] (14.15,3.31)--(14.36,3.52);
-  \draw[galkBad,line width=.62pt] (14.15,3.52)--(14.36,3.31);
-  \draw[trajectory,-{Stealth[length=.72mm,width=.46mm]}]
-    (14.86,3.63)--(15.46,3.63);
-  \node[anchor=south,inner sep=.4pt] at (15.16,3.64) {$u\!\to\!u'$};
-  \draw[galkInk!70,densely dashed,line width=.40pt]
-    (15.84,3.42)--(16.53,3.42);
-  \node[atom] at (15.84,3.42) {};
-  \node[atom] at (16.185,3.42) {};
-  \node[trap] at (16.53,3.42) {};
-  \draw[galkBad,line width=.62pt] (16.08,3.31)--(16.29,3.52);
-  \draw[galkBad,line width=.62pt] (16.08,3.52)--(16.29,3.31);
-  \node[text=galkBad,anchor=north] at (14.38,2.93)
-    {direct path infeasible};
-  \node[text=galkInk!78,anchor=north,
-    font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont] at (14.38,2.63)
-    {reselect site or add waypoint};
+  % At s1, q occupies the middle trap of u's direct route.
+  \foreach \xx in {13.84,16.20} {
+    \node[atom] at (\xx+.18,3.58) {};
+    \node[atom] at (\xx+.56,3.58) {};
+    \draw[galk/invalid path] (\xx+.26,3.58)--(\xx+.86,3.58);
+    \draw[galkBad,line width=.60pt] (\xx+.48,3.50)--(\xx+.64,3.66);
+    \draw[galkBad,line width=.60pt] (\xx+.48,3.66)--(\xx+.64,3.50);
+  }
+  \siteAnnotation{13.84}{3.08}{s_1}{.50}
+  \siteAnnotation{16.20}{3.08}{s_1}{.50}
+  \draw[galk/invalid path] (15.14,3.66)--(16.02,3.66);
+  \node[state note,anchor=south,text=galkBad] at (15.58,3.80) {Blocked};
 
-  % Second history: q -> s_2 leaves the direct u -> u' path clear.
-  \miniDevice{11.80}{1.15}
-  \miniDevice{13.73}{1.15}
-  \miniDevice{15.66}{1.15}
-  \node[atom] at (11.98,2.005) {};
-  \node[galk/q label,anchor=south] at (11.98,2.095) {$q$};
-  \node[atom] at (11.98,1.57) {};
-  \node[galk/q label,anchor=east] at (11.88,1.57) {$u$};
-  \draw[alternative,-{Stealth[length=.72mm,width=.46mm]}]
-    (12.93,1.78)--(13.53,1.78);
-  \node[anchor=south,inner sep=.4pt] at (13.23,1.79) {$q\!\to\!s_2$};
-  \draw[galkInk!70,densely dashed,line width=.40pt]
-    (13.91,1.57)--(14.60,1.57);
-  \node[atom] at (13.91,1.57) {};
-  \node[trap] at (14.60,1.57) {};
-  \node[atom] at (14.255,1.32) {};
-  \draw[alternative,-{Stealth[length=.72mm,width=.46mm]}]
-    (14.86,1.78)--(15.46,1.78);
-  \node[anchor=south,inner sep=.4pt] at (15.16,1.79) {$u\!\to\!u'$};
-  \draw[galkInk!70,densely dashed,line width=.40pt]
-    (15.84,1.57)--(16.53,1.57);
-  \node[trap] at (15.84,1.57) {};
-  \node[atom] at (16.53,1.57) {};
-  \node[anchor=south,inner sep=.4pt] at (16.53,1.66) {$u'$};
-  \node[atom] at (16.185,1.32) {};
-  \node[text=galkInk,anchor=north] at (14.38,1.04)
-    {direct path feasible};
+  % At s2, the same single-atom route remains clear and u reaches its target.
+  \node[atom] at (14.02,1.44) {};
+  \node[atom] at (14.40,1.14) {};
+  \draw[transition] (14.10,1.44)--(14.70,1.44);
+  \node[atom] at (17.14,1.44) {};
+  \node[atom] at (16.76,1.14) {};
+  \node[atom label,anchor=center] at (16.97,1.26) {$u$};
+  \siteAnnotation{13.84}{.94}{s_2}{.20}
+  \siteAnnotation{16.20}{.94}{s_2}{.20}
+  \draw[transition] (15.14,1.52)--(16.02,1.52);
+  \node[state note,anchor=south] at (15.58,1.66) {Clear};
 \end{tikzpicture}

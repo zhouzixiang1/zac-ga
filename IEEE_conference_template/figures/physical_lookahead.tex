@@ -2,163 +2,112 @@
 \begin{tikzpicture}[galk/base,x=1cm,y=1cm,
   panel title/.style={galk/panel title},
   small label/.style={galk/small label},
-  zone label/.style={galk/zone label},
+  q label/.style={galk/q label},
   site/.style={galk/site},
   occupied/.style={galk/occupied atom},
-  target/.style={galk/target site},
   route/.style={galk/accepted path},
-  graph vertex/.style={circle,draw=galkInk,line width=.42pt,
-                       minimum size=2.25mm,inner sep=0pt}
+  rule/.style={draw=galkInk!25,line width=.35pt},
+  plot label/.style={font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont}
 ]
-  \path[use as bounding box] (0,-.22) rectangle (8.50,8.22);
+  \path[use as bounding box] (0,-.20) rectangle (8.50,8.13);
 
-  % (a) Physical trajectories, their conflict graph, and the resulting groups.
-  \node[panel title] at (.08,7.98) {(a) Compatibility at $\pi_\ell\!\to\!\pi_{\ell+1}$};
-  \node[small label] at (1.50,7.62) {trajectories};
-  \node[small label,anchor=east] at (.53,7.50) {$\pi_\ell$};
-  \node[small label,anchor=west] at (2.54,7.50) {$\pi_{\ell+1}$};
-
-  \coordinate (s1) at (.58,7.20);
-  \coordinate (s2) at (.58,6.82);
-  \coordinate (s3) at (.58,6.42);
-  \coordinate (s4) at (.58,6.04);
-  \coordinate (t1) at (2.48,6.82);
-  \coordinate (t2) at (2.48,7.20);
-  \coordinate (t3) at (2.48,6.04);
-  \coordinate (t4) at (2.48,6.42);
-  \foreach \i in {1,2,3,4} {
-    \node[occupied] at (s\i) {};
-    \node[target] at (t\i) {};
-    \node[small label,anchor=east] at ([xshift=-1.4pt]s\i) {$q_{\i}$};
-    \node[small label,anchor=west] at ([xshift=1.4pt]t\i) {$q_{\i}$};
+  % Only q is tracked. Both alternatives are assumed feasible; all other
+  % atoms and time-dependent losses are outside the two-factor illustration.
+  \def\device#1#2{%
+    \begin{scope}[shift={(#1,#2)}]
+      \path[galk/entanglement zone] (0,.46) rectangle (1.60,.90);
+      \path[galk/storage zone] (0,0) rectangle (1.60,.39);
+      \foreach \xx in {.40,.68,1.12,1.40}
+        \node[site] at (\xx,.68) {};
+      \foreach \xx in {.40,.88,1.36}
+        \node[site] at (\xx,.20) {};
+      \draw[galk/rydberg pair] (.54,.68) ellipse (.22 and .13);
+      \draw[galk/rydberg pair] (1.26,.68) ellipse (.22 and .13);
+    \end{scope}%
   }
-  \draw[route] (s1)--(t1);
-  \draw[route] (s2)--(t2);
-  \draw[route] (s3)--(t3);
-  \draw[route] (s4)--(t4);
+  \def\trackedAtom#1#2#3{%
+    \node[occupied] at (#1+.40,#2+#3) {};
+    \node[q label,anchor=east] at (#1+.26,#2+#3) {$q$};
+  }
 
-  \draw[-{Stealth[length=.85mm,width=.55mm]},galkInk,line width=.42pt]
-    (2.95,6.61)--(3.35,6.61);
-  \node[small label] at (4.25,7.62) {conflict graph};
+  \node[panel title] at (.08,7.89) {(a) Reuse after inactive layers};
+  \node[small label] at (.81,6.75) {Resident};
+  \foreach \xx/\label in {2.70/{$L_\ell$},5.00/{$r$ inactive layers},7.30/{$L_{\ell+r+1}$}}
+    \node[small label] at (\xx,7.48) {\label};
 
-  \node[graph vertex,fill=galkGroupTwo!18] (v1) at (3.68,7.18) {};
-  \node[graph vertex,fill=galkGroupOne!18] (v2) at (4.15,6.43) {};
-  \node[graph vertex,fill=galkGroupTwo!18] (v3) at (4.83,6.94) {};
-  \node[graph vertex,fill=galkGroupOne!18] (v4) at (4.89,6.10) {};
-  \node[small label,anchor=east] at ([xshift=-1.5pt]v1.west) {$q_1$};
-  \node[small label,anchor=east] at ([xshift=-1.5pt]v2.west) {$q_2$};
-  \node[small label,anchor=west] at ([xshift=1.5pt]v3.east) {$q_3$};
-  \node[small label,anchor=west] at ([xshift=1.5pt]v4.east) {$q_4$};
-  \draw[galkBad,line width=.46pt] (v1)--(v2);
-  \draw[galkBad,line width=.46pt] (v3)--(v4);
-  \node[small label] at (4.25,5.73)
-    {$\{q_1,q_2\},\ \{q_3,q_4\}$};
+  \foreach \xx in {1.90,4.20,6.50} {
+    \device{\xx}{6.30}
+    \trackedAtom{\xx}{6.30}{.68}
+  }
+  \draw[route] (3.62,6.75)--(4.07,6.75);
+  \draw[route] (5.92,6.75)--(6.37,6.75);
+  % Repeated global pulses illuminate a resident inactive atom.
+  \draw[galkEntangle,densely dashed,line width=.70pt]
+    (4.60,6.77)--(4.60,7.15);
 
-  \draw[-{Stealth[length=.85mm,width=.55mm]},galkInk,line width=.42pt]
-    (5.34,6.61)--(5.77,6.61);
-  \node[small label] at (6.88,7.62) {DSATUR coloring};
-  \node[small label,anchor=west] at (5.92,7.20)
-    {$\mathcal B_1=\{q_2,q_4\}$};
-  \node[small label,anchor=west] at (5.92,6.67)
-    {$\mathcal B_2=\{q_1,q_3\}$};
-  \draw[galkGroupOne,line width=1.05pt] (5.92,7.03)--(6.32,7.03);
-  \draw[galkGroupTwo,line width=1.05pt] (5.92,6.50)--(6.32,6.50);
-  \node[small label,anchor=west,align=left] at (5.92,6.10)
-    {$q_0$: stationary\\no trajectory};
+  \node[small label] at (.81,5.45) {Via storage};
+  \foreach \xx in {1.90,4.20,6.50}
+    \device{\xx}{5.00}
+  \trackedAtom{1.90}{5.00}{.68}
+  \trackedAtom{4.20}{5.00}{.20}
+  \trackedAtom{6.50}{5.00}{.68}
+  \draw[route] (3.62,5.45)--(4.07,5.45);
+  \draw[route] (5.92,5.45)--(6.37,5.45);
+  \node[plot label] at (3.85,5.72) {$+2$};
+  \node[plot label] at (6.15,5.72) {$+2$};
+  \node[plot label,text=galkMuted] at (4.25,4.73)
+    {Transfers per leg: 2; other atoms omitted};
 
-  \draw[galkInk!32,line width=.35pt] (.08,5.47)--(8.20,5.47);
+  \draw[rule] (.08,4.50)--(8.25,4.50);
+  \node[panel title] at (.08,4.25) {(b) Transfer and excitation factors only};
+  \path[draw=galkEntangle,fill=galkEntangle!65]
+    (1.60,3.82) rectangle (1.84,3.97);
+  \node[plot label,anchor=west] at (1.96,3.895)
+    {Resident: $f_{\rm exc}^{\,r}$};
+  \path[draw=galkStorage,fill=galkStorage!65]
+    (4.73,3.82) rectangle (4.97,3.97);
+  \node[plot label,anchor=west] at (5.09,3.895)
+    {Round trip: $f_{\rm tran}^{\,4}$};
 
-  % (b) Equal immediate costs may lead to different finite-horizon costs.
-  \node[panel title] at (.08,5.31) {(b) Dependence on the post-layer state};
-  \node[small label] at (4.17,4.96)
-    {$C_{\ell}^{\rm cur}(A)=C_{\ell}^{\rm cur}(B)$};
-
-  \foreach \xzero in {.42,4.65} {
-    \path[galk/entanglement zone]
-      (\xzero,3.70) rectangle (\xzero+3.22,4.64);
-    \path[galk/storage zone]
-      (\xzero,2.08) rectangle (\xzero+3.22,3.54);
-    \node[zone label,fill=galkEntangleFill]
-      at (\xzero+.08,4.58) {$\mathcal E$};
-    \node[zone label,fill=galkStorageFill]
-      at (\xzero+.08,3.48) {$\mathcal S$};
-    \foreach \dx in {.38,.98,1.58,2.18,2.78} {
-      \foreach \yy in {2.38,2.80,3.22} {
-        \node[site] at (\xzero+\dx,\yy) {};
-      }
+  % The root-generated method_argument_values.tex supplies the three losses.
+  % Values are 1000 times the negative logarithm of the indicated product.
+  \begin{scope}[shift={(0,2.10)}]
+    \draw[route] (1.35,0)--(8.06,0);
+    \draw[route] (1.35,0)--(1.35,1.47);
+    \node[plot label,rotate=90] at (.53,.71) {Loss ($10^{-3}$)};
+    \foreach \value in {0,2,4,6} {
+      \draw[galkInk!13,line width=.30pt]
+        (1.35,.225*\value)--(7.94,.225*\value);
+      \draw[galkInk,line width=.35pt]
+        (1.30,.225*\value)--(1.35,.225*\value);
+      \node[plot label,anchor=east] at (1.22,.225*\value) {\value};
     }
-    \foreach \px in {.72,2.18} {
-      \node[site] at (\xzero+\px,3.95) {};
-      \node[site] at (\xzero+\px+.26,3.95) {};
-      \draw[galk/rydberg pair]
-        (\xzero+\px+.13,3.95) ellipse (.21 and .13);
+    \foreach \xx/\loss/\style in {
+      2.35/\ArgumentStayOneLoss/galkEntangle,
+      3.03/\ArgumentRoundtripLoss/galkStorage,
+      5.59/\ArgumentStayTwoLoss/galkEntangle,
+      6.27/\ArgumentRoundtripLoss/galkStorage} {
+      \path[draw=\style,fill=\style!65,line width=.40pt]
+        (\xx-.235,0) rectangle (\xx+.235,.225*\loss);
+      \node[plot label,anchor=south] at (\xx,.225*\loss+.035)
+        {\pgfmathprintnumber[fixed,fixed zerofill,precision=2]{\loss}};
     }
-  }
-  \node[small label] at (1.10,4.94)
-    {$A:\ s_{\ell+1}$};
-  \node[small label] at (7.18,4.94)
-    {$B:\ s_{\ell+1}$};
+    \node[plot label,anchor=north] at (2.69,-.11) {$r=1$};
+    \node[plot label,anchor=north] at (5.93,-.11) {$r=2$};
+  \end{scope}
+  \node[plot label,text=galkMuted] at (4.25,1.46)
+    {Coherence and other atoms excluded};
 
-  % Candidate A: q and r occupy the current gate pair.  The next layer moves
-  % q and p to the second pair after r returns to storage.
-  \node[occupied] (ar) at (1.14,3.95) {};
-  \node[occupied] (aq) at (1.40,3.95) {};
-  \node[target] (aqt) at (2.60,3.95) {};
-  \node[target] (apt) at (2.86,3.95) {};
-  \node[occupied] (ap) at (3.20,2.38) {};
-  \node[target] (art) at (2.00,3.22) {};
-  \node[galk/q label,anchor=north east] at ([xshift=-2.8pt,yshift=-1.4pt]ar) {$r$};
-  \node[galk/q label,anchor=north west] at ([xshift=2.8pt,yshift=-1.4pt]aq) {$q$};
-  \node[galk/q label,anchor=west] at ([xshift=3.2pt]ap) {$p$};
-  \node[small label] at (1.27,4.18) {$\mathrm{CZ}(q,r)$};
-  \node[small label] at (2.73,4.18) {$\mathrm{CZ}(q,p)$};
-  \draw[galk/alternative path]
-    (ar) .. controls (1.45,3.72) and (1.76,3.48) .. (art);
-  \draw[galk/future path] (aq)--(aqt);
-  \draw[galk/future path]
-    (ap) .. controls (3.25,3.12) and (3.10,3.57) ..
-    node[pos=.44,left,small label] {$d_A$} (apt);
-
-  % Candidate B has the same current gate pair and target pair, but places p
-  % nearer the target used by CZ(q,p).
-  \node[occupied] (br) at (5.37,3.95) {};
-  \node[occupied] (bq) at (5.63,3.95) {};
-  \node[target] (bqt) at (6.83,3.95) {};
-  \node[target] (bpt) at (7.09,3.95) {};
-  \node[occupied] (bp) at (6.83,3.22) {};
-  \node[target] (brt) at (6.23,3.22) {};
-  \node[galk/q label,anchor=north east] at ([xshift=-2.8pt,yshift=-1.4pt]br) {$r$};
-  \node[galk/q label,anchor=north west] at ([xshift=2.8pt,yshift=-1.4pt]bq) {$q$};
-  \node[galk/q label,anchor=west] at ([xshift=3.2pt]bp) {$p$};
-  \node[small label] at (5.50,4.18) {$\mathrm{CZ}(q,r)$};
-  \node[small label] at (6.96,4.18) {$\mathrm{CZ}(q,p)$};
-  \draw[galk/alternative path]
-    (br) .. controls (5.68,3.72) and (5.99,3.48) .. (brt);
-  \draw[galk/future path] (bq)--(bqt);
-  \draw[galk/future path]
-    (bp)--node[pos=.70,right,small label,fill=white,inner sep=.2pt] {$d_B$} (bpt);
-
-  \node[small label] at (4.17,1.82)
-    {$d_B<d_A\ \Rightarrow\ C_{\ell,1}^{\rm gate}(B)<C_{\ell,1}^{\rm gate}(A)$};
-
-  \draw[galkInk!32,line width=.35pt] (.08,1.55)--(8.20,1.55);
-
-  % (c) Conventional axis representation of the geometric decay.
-  \node[panel title] at (.08,1.31) {(c) Decayed layer weights};
-  \draw[-{Stealth[length=.8mm,width=.52mm]},galkInk,line width=.42pt]
-    (.72,.27)--(5.14,.27) node[right,small label] {$d$};
-  \draw[-{Stealth[length=.8mm,width=.52mm]},galkInk,line width=.42pt]
-    (.72,.27)--(.72,1.05);
-  \node[small label,rotate=90] at (.49,.69) {$w_d$};
-  \draw[galkData,line width=.55pt]
-    (1.23,1.02)--(2.08,.82)--(2.93,.66)--(3.78,.53)--(4.63,.43);
-  \foreach \x/\y/\lab in {1.23/1.02/1,2.08/.82/2,2.93/.66/3,
-                            3.78/.53/\cdots,4.63/.43/d_\ell^*} {
-    \node[circle,draw=galkData,fill=white,line width=.45pt,
-          minimum size=1.35mm,inner sep=0pt] at (\x,\y) {};
-    \draw[galkInk,line width=.35pt] (\x,.23)--(\x,.31);
-    \node[small label,anchor=north] at (\x,.20) {$\lab$};
-  }
-  \node[small label,anchor=west] at (5.38,.72)
-    {$w_d=\alpha\rho^{d-1}$};
+  \draw[rule] (.08,1.20)--(8.25,1.20);
+  \node[panel title] at (.08,.93) {(c) Candidate-dependent prediction};
+  \node[small label] (postCandidate) at (.93,.48) {$\mathbf{s}_{\ell+1}$};
+  \node[small label] (firstFuture) at (3.15,.48) {$L_{\ell+1}$};
+  \node[small label] (secondFuture) at (5.35,.48) {$L_{\ell+2}$};
+  \node[small label] (laterFuture) at (7.49,.48) {$\cdots$};
+  \draw[galk/future path] (postCandidate.east)--(firstFuture.west);
+  \draw[galk/future path] (firstFuture.east)--(secondFuture.west);
+  \draw[galk/future path] (secondFuture.east)--(laterFuture.west);
+  \node[plot label] at (.93,.02) {updated state};
+  \node[plot label] at (3.15,.02) {$\alpha\widehat C_{\ell,1}$};
+  \node[plot label] at (5.35,.02) {$\alpha\rho\widehat C_{\ell,2}$};
 \end{tikzpicture}

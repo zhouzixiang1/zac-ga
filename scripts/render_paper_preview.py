@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render either built manuscript into its root build/paper_<language>/preview."""
+"""Render either manuscript into IEEE_conference_template/build/paper_<language>/preview."""
 
 import argparse
 from pathlib import Path
@@ -14,7 +14,8 @@ def main() -> None:
     parser.add_argument("--language", choices=("zh", "en"), default="zh")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    output = root / "build" / f"paper_{args.language}"
+    build = root / "IEEE_conference_template/build"
+    output = build / f"paper_{args.language}"
     pdf = output / f"paper_{args.language}.pdf"
     if not pdf.is_file():
         raise SystemExit("Build the paper first with make paper" + ("-en." if args.language == "en" else "."))
@@ -50,7 +51,7 @@ def main() -> None:
         sheet.paste(page, (x, y + label_height))
     sheet.save(output / "page_overview.png")
     subprocess.run(["pdftoppm", "-r", "180", "-png", "-singlefile",
-                    str(root / "build/paper_zh/figures/overall_framework.pdf"),
+                    str(build / "paper_zh/figures/overall_framework.pdf"),
                     str(preview / "overall_framework")], check=True)
     print(f"Preview: {output / 'page_overview.png'}")
 

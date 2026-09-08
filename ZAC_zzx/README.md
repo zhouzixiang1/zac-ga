@@ -1,75 +1,78 @@
-# ZAC_zzx: GA-LK compiler and experiment pipeline
+# GA-LK compiler
 
-`ZAC_zzx` contains the current GA-LK implementation used by the manuscript on
-zoned neutral-atom compilation. All maintained development and experiment
-history has been consolidated into the repository's default `main` branch.
-
-## Current scope
-
-GA-LK optimizes each two-qubit layer boundary by jointly selecting gate sites,
-cross-layer atom residency, and storage sites. Complete candidates undergo the
-same AOD-aware physical transition checks before ranking. The objective combines
-the current transition cost with a decayed finite-horizon physical estimate.
-Small decision spaces use exact enumeration; larger spaces use a bounded genetic
-search.
-
-The manuscript evaluation is restricted to ZAC18 and QMAP154. It compares
-GA-LK with the original ZAC compiler and the routing-aware ICCAD/QMAP method.
-Controlled comparisons separately examine the finite-horizon configuration and
-the search strategy.
-
-## Maintained entry points
-
-| Path | Purpose |
-|---|---|
-| [`zzx/`](zzx/) | Python compiler integration and state management |
-| [`native/`](native/) | C++17 layer-boundary solver and native tests |
-| [`experiments_v2/`](experiments_v2/) | Schema-v2 runners, aggregation, provenance, and validation |
-| [`exp_setting/native_ga_v1/`](exp_setting/native_ga_v1/) | Frozen paper experiment configurations |
-| [`tests/`](tests/) | Python regression and evidence-contract tests |
-| [`results/paper_zh_v2/`](results/paper_zh_v2/) | Current paper results and final evidence manifest |
-| [`third_party/qmap32_streaming/`](third_party/qmap32_streaming/) | Frozen QMAP 3.2 patch and verification material |
-
-The authoritative result package is
-[`results/paper_zh_v2/final_manifest.json`](results/paper_zh_v2/final_manifest.json).
-Only this current result directory is tracked at the repository tip. Earlier
-pilot, diagnostic, and intermediate result trees remain available through Git
-history and are not valid substitutes for the current manuscript evidence.
-
-## Result interpretation
-
-The final package reports complete per-circuit results, independent analysis
-units, aggregate statistics, controlled comparisons, timing summaries, and a
-two-sheet workbook for ZAC18 and QMAP154. Individual QMAP154 circuits exhibit
-particularly large fidelity gains. Aggregate ratios, per-circuit statistics,
-and compilation time are reported separately so that result quality and
-compiler cost retain their respective meanings.
-
-## Regression checks
-
-From `ZAC_zzx/`, run the maintained paper-facing checks in an environment with
-the ZAC and experiment dependencies:
+`ZAC_zzx` contains the Python compiler, C++ search backend, independent physical
+evaluation and experiment protocols. Run the portable quick start from the
+repository root:
 
 ```bash
-python -m pytest -q -p no:cacheprovider \
-  tests/test_final_results.py \
-  tests/test_cli_v2.py \
-  tests/test_native_resident_integration.py \
-  tests/test_native_rich_solver.py \
-  tests/test_resident_rent_guard.py \
-  tests/test_qmap_legacy_regression.py
+python3 scripts/portable_reproduce.py bootstrap --name runtime-v1
+python3 scripts/portable_reproduce.py smoke --runtime runtime-v1 --name smoke-v1
+python3 scripts/portable_reproduce.py audit-artifacts
 ```
 
-Native build instructions and the ABI contract are documented in
-[`native/README.md`](native/README.md). Experiment schemas and provenance rules
-are documented in [`experiments_v2/README.md`](experiments_v2/README.md).
+The [reproduction guide](../docs/REPRODUCIBILITY.md) distinguishes a working
+current-source demo from historical experiment reproduction. All new output
+belongs in `../IEEE_conference_template/build/`.
 
-## Reproducibility boundary
+## Public interface
 
-The tracked result package contains the paper-facing aggregates and hashes.
-Some raw executions, environments, and build products are intentionally kept
-outside Git because of their size. The final manifest records their provenance;
-it does not make a fresh clone a one-command reproduction of every raw run.
+[ga_lk_default.json](exp_setting/ga_lk_default.json) is the public template.
+Bootstrap produces a copy bound to its actually built wheel. Use that copy with
+[run.py](run.py), or pass `zac_setting[0]` to
+`ZAC_zzx().parse_setting(...)`. A historical wheel hash is not an optional label.
 
-See the repository-level [`README.md`](../README.md) for the method overview,
-reported result snapshot, baseline attribution, and release constraints.
+Standard ABI9 GA-LK defaults to physical-prefix initialization with
+H_init=2, K=4, rho=0.7 and 32 rollout evaluations. Explicit
+`init_strategy="legacy"` selects the original initializer; remove the
+`initial_lookahead` object in that case. Layer-boundary look-ahead is separate.
+Historical ABI8 and explicitly frozen configurations retain their semantics.
+The public path needs no private paper-ablation parser contract.
+
+## Implementation map
+
+| Location | Role |
+|---|---|
+| [zzx/initial_lookahead.py](zzx/initial_lookahead.py) | Initial candidate pool and physical-prefix evaluation |
+| [zzx/zac_zzx.py](zzx/zac_zzx.py) | Scheduling, initialization, optimization and routing |
+| [zzx/native_backend.py](zzx/native_backend.py) | Typed native interface and byte-verified wheel registration |
+| [native](native/) | C++ search and physical candidate evaluation |
+| [verify_batches.py](verify_batches.py) | Independent replay of actual ZAIR instructions |
+| [evaluation](evaluation/) | Canonical events, physical checks and fidelity model |
+| [experiments_v2](experiments_v2/) | Canonicalization, runners and provenance |
+| [results/paper_zh_v2](results/paper_zh_v2/) | Unmodified accepted processed results |
+| [results/default_initial_v1/paper_exports](results/default_initial_v1/paper_exports/) | Audited current Chinese main-result inputs |
+| [results/initial_lookahead_v1](results/initial_lookahead_v1/) | Paired initialization ablation and complete outcomes |
+| [results/horizon_extension_v2](results/horizon_extension_v2/) | Completed horizon quality study; serial timing stage disabled |
+
+Smoke checks actual instructions, physical feasibility and per-qubit operation
+ordering; it is not a full matrix-equivalence proof or a performance benchmark.
+
+## Evidence and tests
+
+The main comparison covers ZAC18 and QMAP154, with reuse-aware ZAC and
+routing-aware placement as baselines. The [final manifest](results/paper_zh_v2/final_manifest.json)
+indexes the original accepted workbook and provenance, which remain unchanged.
+The completed full-suite initialization study now supplies the Chinese
+abstract, Table II, Table III and Fig. 7(a) through the six-file
+[publication bundle](results/default_initial_v1/paper_exports/). Its common
+comparison cohorts and baseline aggregates are recorded in that bundle.
+
+Initialization, layer-horizon and genetic-search ablations, plus strict serial
+timing, retain their respective evidence sources. Failed and incomplete runs
+remain visible in the study records. Rejected refinements never overwrite the
+accepted package or justify a changed default. The older horizon v1 queue was
+superseded by v2 and is not an active resume target.
+
+Portable contract tests use only the Python standard library:
+
+```bash
+python3 -B -m unittest discover -s scripts -p 'test_portable_reproduce.py' -v
+```
+
+Run from the repository root. Broader compiler tests need the runtime and,
+for some historical checks, frozen evidence. See [native build documentation](native/README.md)
+and the [code/data inventory](../docs/DATA_AND_CODE.md). Do not replace an
+accepted environment while testing a new extension.
+
+Upstream ZAC's BSD-3-Clause notice is retained at [../ZAC/LICENSE](../ZAC/LICENSE).
+The author has not yet assigned a license to newly authored additions or data.

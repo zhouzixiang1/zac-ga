@@ -24,7 +24,7 @@ class OverleafPreparationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
-        self.checkout = self.root / "build/overleaf-sync"
+        self.checkout = self.root / "IEEE_conference_template/build/overleaf-sync"
         (self.checkout / ".git").mkdir(parents=True)
         self.tip = "7ee6faf19c41a249d93a7f3a689dda35d367119e"
 
@@ -65,6 +65,26 @@ class OverleafPreparationTests(unittest.TestCase):
         for source in (b"wrong path", sync.LOCAL_FIGURE_PATH * 2):
             with self.subTest(source=source), self.assertRaises(sync.PreparationError):
                 sync.export_payload({PurePosixPath("sections/03_method.tex"): source}, b"figure")
+
+    def test_legacy_or_prefixed_local_figure_path_is_not_partially_replaced(self):
+        for source in (b"{../" + sync.LOCAL_FIGURE_PATH + b"}",
+                       b"{IEEE_conference_template/" + sync.LOCAL_FIGURE_PATH + b"}",
+                       b"{" + sync.LOCAL_FIGURE_PATH + b".backup}",
+                       b"{" + sync.LOCAL_FIGURE_PATH + b"} {../" + sync.LOCAL_FIGURE_PATH + b"}"):
+            with self.subTest(source=source), self.assertRaises(sync.PreparationError):
+                sync.export_payload({PurePosixPath("sections/03_method.tex"): source}, b"figure")
+
+    def test_nested_build_checkout_and_generated_sources_are_not_exported(self):
+        listing = "\0".join((
+            "IEEE_conference_template/paper_zh.tex",
+            "IEEE_conference_template/sections/03_method.tex",
+            "IEEE_conference_template/build/overleaf-sync/paper_zh.tex",
+            "IEEE_conference_template/build/overleaf-sync/.git/config",
+            "IEEE_conference_template/build/paper_zh/figures/overall_framework.pdf",
+            "IEEE_conference_template/build/paper_en/paper_en.pdf", ""))
+        with patch.object(sync, "git", return_value=subprocess.CompletedProcess([], 0, listing, "")):
+            self.assertEqual(sync.local_files(self.root), [PurePosixPath("paper_zh.tex"),
+                                                          PurePosixPath("sections/03_method.tex")])
 
     def test_bilingual_export_only_changes_both_method_include_paths(self):
         methods = [PurePosixPath("sections/03_method.tex"),
@@ -168,6 +188,28 @@ class OverleafPreparationTests(unittest.TestCase):
         self.assertEqual(network_calls, [["fetch", "--prune", "origin"]])
         self.assertTrue(any(call.args[0] == ["merge", "--ff-only", "refs/remotes/origin/main"]
                             for call in git.call_args_list))
+        self.assertFalse((self.root / "build").exists())
+
+    def test_cloud_latexmkrc_rejects_old_and_new_local_build_paths(self):
+        for name in (".latexmkrc", "latexmkrc"):
+            for local_path in ("../build/paper_zh", "build/paper_zh", "./build/paper_en",
+                               "IEEE_conference_template/build/paper_zh",
+                               "build/overleaf-sync"):
+                rc = self.checkout / name
+                rc.write_text(f"$out_dir = '{local_path}';\n")
+                with self.subTest(name=name, local_path=local_path), \
+                        patch.object(sync, "git", side_effect=self.mock_git), \
+                        self.assertRaisesRegex(sync.PreparationError, "local build path"):
+                    sync.prepare_checkout(self.root, self.tip)
+                rc.unlink()
+
+    def test_cloud_latexmkrc_without_local_paths_is_preserved(self):
+        rc = self.checkout / ".latexmkrc"
+        original = "$pdf_mode = 5;\n$max_repeat = 5;\n"
+        rc.write_text(original)
+        with patch.object(sync, "git", side_effect=self.mock_git):
+            sync.prepare_checkout(self.root, self.tip)
+        self.assertEqual(rc.read_text(), original)
 
     def test_network_uses_absolute_keychain_helper_and_suppresses_tracing(self):
         result = subprocess.CompletedProcess([], 0, "", "")
@@ -211,9 +253,9 @@ class OverleafPreparationTests(unittest.TestCase):
 
     def build_fixture(self):
         source = self.root / "IEEE_conference_template/paper_zh.tex"
-        source.parent.mkdir(parents=True)
+        source.parent.mkdir(parents=True, exist_ok=True)
         source.write_bytes(b"original source")
-        build = self.root / "build/paper_zh"
+        build = self.root / "IEEE_conference_template/build/paper_zh"
         (build / "figures").mkdir(parents=True)
         (build / "paper_zh.pdf").write_bytes(b"paper PDF")
         (build / "figures/overall_framework.pdf").write_bytes(b"verified figure")
@@ -229,10 +271,24 @@ class OverleafPreparationTests(unittest.TestCase):
         (build / "source_build_manifest.json").write_text(json.dumps(manifest))
         (build / "final_paper_qa.json").write_text(json.dumps({
             "status": "pass", "page_count": 9, "references_on_last_page": True,
-            "artifacts": {f"../build/paper_zh/{name}": declaration
+            "artifacts": {f"build/paper_zh/{name}": declaration
                           for name, declaration in artifacts.items()},
         }))
         return source, build, snapshot
+
+    def test_verified_build_is_read_from_manuscript_build_only(self):
+        _, _, snapshot = self.build_fixture()
+        self.assertEqual(sync.check_build(self.root, snapshot), b"verified figure")
+        self.assertFalse((self.root / "build").exists())
+
+    def test_legacy_qa_artifact_keys_are_rejected(self):
+        _, build, snapshot = self.build_fixture()
+        qa_file = build / "final_paper_qa.json"
+        qa = json.loads(qa_file.read_text())
+        qa["artifacts"] = {f"../{name}": value for name, value in qa["artifacts"].items()}
+        qa_file.write_text(json.dumps(qa))
+        with self.assertRaisesRegex(sync.PreparationError, "incomplete verified build"):
+            sync.check_build(self.root, snapshot)
 
     def test_old_mtime_new_source_is_rejected_by_content_hash(self):
         source, _, snapshot = self.build_fixture()

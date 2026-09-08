@@ -291,6 +291,7 @@ PYBIND11_MODULE(zac_native_core, module) {
   module.attr("FLAT_WIRE_VERSION") = 1;
   module.attr("RICH_H0_WIRE_VERSION") = 1;
   module.attr("RICH_BOUNDARY_WIRE_VERSION") = 7;
+  module.attr("MECHANISM_CONTROL_VERSION") = 1;
   module.attr("RNG_VERSION") = "python-random-mt19937-v1";
   module.def("build_info", []() {
     py::dict value;

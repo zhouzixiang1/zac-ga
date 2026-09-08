@@ -1,27 +1,32 @@
-% Display aliases only: the frozen rows, circuit identities, and numbers are unchanged.
+% Display aliases accept both raw and escaped underscores from generated rows.
 \ExplSyntaxOn
-\NewExpandableDocumentCommand{\PaperCircuitLabel}{m}{
-  \str_case_e:nnF {#1} {
+\NewDocumentCommand{\PaperCircuitLabel}{m}{
+  \tl_set:Nn \l_tmpa_tl {#1}
+  \tl_replace_all:Nnn \l_tmpa_tl {\_} {_}
+  \str_case_e:nnF {\tl_to_str:V \l_tmpa_tl} {
     {qft_n18}{QFT-18}
     {ising_n42}{Ising-42}
+    {wstate_n27}{Wstate-27}
     {ising_model_16}{Ising-16}
     {ising_model_13}{Ising-13}
   } {#1}
 }
 \ExplSyntaxOff
-\begin{table}[!t]
+\begin{table}[!htb]
 \caption{典型高增益电路的模型保真度比较}
 \label{tab:representative-circuits}
 \centering
 \PaperTableSetup
 \let\PaperRawTexttt\texttt
 \renewcommand{\texttt}[1]{\PaperRawTexttt{\PaperCircuitLabel{#1}}}
+\begin{PaperRevisionBlock}
 \begin{tabularx}{\columnwidth}{@{}lLcrrr@{}}
 \toprule
-基准集 & 电路 & $n/g_2$ & ZAC & ICCAD & GA-LK\\
+基准集 & 电路 & $n/N_2$ & ZAC & ICCAD & GA-LK\\
 \midrule
-\RepresentativeCircuitRows
+\DefaultRepresentativeCircuitRows
 \bottomrule
 \end{tabularx}
-\PaperTableNote{注：电路简称与图~\ref{fig:experimental-summary}一致；$n/g_2$为量子比特数/双比特门数。ICCAD指ICCAD/QMAP，粗体为该电路的最高模型保真度。选例条件见正文，总体结果见表~\ref{tab:main-results}。}
+\end{PaperRevisionBlock}
+\PaperTableNote{注：$n$为量子比特数，$N_2$为双比特门数。ICCAD指ICCAD/QMAP，粗体为该电路的最高模型保真度。选例条件见正文，总体结果见表~\ref{tab:main-results}。}
 \end{table}

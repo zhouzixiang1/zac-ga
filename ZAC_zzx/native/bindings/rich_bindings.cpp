@@ -488,6 +488,27 @@ RichSearchConfig parse_search_config(const py::dict& value) {
   config.alpha_lookahead = py::cast<double>(value["alpha_lookahead"]);
   config.decay_rho = py::cast<double>(value["decay_rho"]);
   config.decay_epsilon = py::cast<double>(value["decay_epsilon"]);
+  if (value.contains("mechanism_controls")) {
+    const auto controls = py::cast<py::dict>(value["mechanism_controls"]);
+    if (controls.size() != 4 || !controls.contains("version") ||
+        !controls.contains("propagation") || !controls.contains("terminal") ||
+        !controls.contains("decision")) {
+      throw std::invalid_argument("incomplete mechanism controls");
+    }
+    config.mechanism_version = py::cast<std::size_t>(controls["version"]);
+    const auto propagation = py::cast<std::string>(controls["propagation"]);
+    const auto terminal = py::cast<std::string>(controls["terminal"]);
+    const auto decision = py::cast<std::string>(controls["decision"]);
+    if (config.mechanism_version != 1 || terminal != "off" ||
+        (propagation != "sequential" && propagation != "static_poststate") ||
+        (decision != "joint" && decision != "sequential") ||
+        (propagation == "static_poststate" && decision == "sequential")) {
+      throw std::invalid_argument("unregistered mechanism controls");
+    }
+    config.mechanism_static_poststate = propagation == "static_poststate";
+    config.mechanism_sequential_decision = decision == "sequential";
+    config.mechanism_terminal_off = true;
+  }
   return config;
 }
 
@@ -607,6 +628,21 @@ void bind_rich_solver(py::module_& module) {
             result.stats.direct_lower_bound_prunes;
         operator_stats["forecast_state_cache_hits"] =
             result.stats.forecast_state_cache_hits;
+        if (config.mechanism_version != 0) {
+          operator_stats["mechanism_control_version"] = config.mechanism_version;
+          operator_stats["mechanism_static_poststate"] =
+              static_cast<int>(config.mechanism_static_poststate);
+          operator_stats["mechanism_sequential_decision"] =
+              static_cast<int>(config.mechanism_sequential_decision);
+          operator_stats["mechanism_terminal_off"] = 1;
+          operator_stats["mechanism_seed_evaluations"] = result.stats.mechanism_seed_evaluations;
+          operator_stats["mechanism_residency_evaluations"] = result.stats.mechanism_residency_evaluations;
+          operator_stats["mechanism_gate_evaluations"] = result.stats.mechanism_gate_evaluations;
+          operator_stats["mechanism_visited_layers"] = result.stats.mechanism_visited_layers;
+          operator_stats["mechanism_expanded_layers"] = result.stats.mechanism_expanded_layers;
+          operator_stats["mechanism_snapshot_resets"] = result.stats.mechanism_snapshot_resets;
+          operator_stats["mechanism_guard_assignments"] = result.stats.mechanism_guard_assignments;
+        }
         stats["operator_stats"] = operator_stats;
         stats["return_assignment_evaluated"] =
             result.stats.return_assignment_evaluated;

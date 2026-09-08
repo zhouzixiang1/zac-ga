@@ -1,93 +1,86 @@
-% The same frozen aggregate and circuit values, on zero-based gain axes.
-% Setup executes inside resizebox's horizontal box. Suppress setup line ends
-% (including generated definitions) so they cannot become leading figure glue.
+% Three questions: overall quality, controlled comparisons, loss components.
 \begingroup\endlinechar=-1\relax%
 \input{figures/tikz_style}
 \providecommand{\FigSixDataRoot}{figures/data}
 \input{\FigSixDataRoot/fig6_meta.tex}
-\input{\FigSixDataRoot/fig6_selected_cases.tex}
-\edef\FigSixZACvsZAC{\fpeval{100*(\ZACMFourF/\ZACMOneF-1)}}
-\edef\FigSixZACvsICCAD{\fpeval{100*(\ZACMFourF/\ZACMTwoF-1)}}
-\edef\FigSixQMAPvsZAC{\fpeval{100*(\QMAPMFourF/\QMAPMOneF-1)}}
-\edef\FigSixQMAPvsICCAD{\fpeval{100*(\QMAPMFourF/\QMAPMTwoF-1)}}
-
+\edef\FigSixZACvsZAC{\fpeval{100*(\DefaultZACMFourF/\DefaultZACMOneF-1)}}
+\edef\FigSixZACvsICCAD{\fpeval{100*(\DefaultZACMFourF/\DefaultZACMTwoF-1)}}
+\edef\FigSixQMAPvsZAC{\fpeval{100*(\DefaultQMAPMFourF/\DefaultQMAPMOneF-1)}}
+\edef\FigSixQMAPvsICCAD{\fpeval{100*(\DefaultQMAPMFourF/\DefaultQMAPMTwoF-1)}}
+\edef\ArgumentGAGain{\fpeval{100*(\AblationGARatio-1)}}
+\edef\ArgumentLookaheadGain{\fpeval{100*(\AblationHRatio-1)}}
 \pgfplotsset{
-  figsix axis/.style={
-    axis lines=left,
-    axis line style={draw=galkInk,line width=.5pt},
-    tick style={draw=galkInk,line width=.45pt},
-    tick align=outside,
-    tick label style={font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont},
-    label style={font=\rmfamily\fontsize{9pt}{10pt}\selectfont},
+  argument axis/.style={
+    axis lines=left,axis line style={draw=galkInk,line width=.45pt},
+    tick style={draw=galkInk,line width=.4pt},tick align=outside,
+    tick label style={font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont},
+    label style={font=\rmfamily\fontsize{8pt}{9pt}\selectfont},
     grid=none,clip=false,scaled ticks=false,
-    ymin=0,ymax=45,ytick={0,10,20,30,40},
-    ylabel={Fidelity improvement (\%)},
-    ybar,bar width=10pt,
-    nodes near coords,
-    point meta=y,
+    nodes near coords,point meta=y,
     every node near coord/.style={
-      font=\rmfamily\fontsize{8pt}{9pt}\selectfont,text=galkInk,
-      /pgf/number format/fixed,/pgf/number format/precision=1,
-      /pgf/number format/zerofill,
-      anchor=south,yshift=1pt}
+      font=\rmfamily\fontsize{7.2pt}{8pt}\selectfont,text=galkInk,
+      /pgf/number format/fixed,/pgf/number format/precision=2,
+      /pgf/number format/zerofill,anchor=south,yshift=1pt}
   },
-  figsix zac/.style={draw=galkData,fill=galkData!85,line width=.45pt},
-  figsix iccad/.style={draw=galkTail,fill=galkTail!65,line width=.45pt}
+  argument blue/.style={draw=galkData,fill=galkData!85,line width=.45pt},
+  argument orange/.style={draw=galkTail,fill=galkTail!65,line width=.45pt}
 }
-
 \endlinechar=13\relax%
 \begin{tikzpicture}[galk/base]
-  \path[use as bounding box] (-.05,-.30) rectangle (17.85,5.92);
+  \path[use as bounding box] (-.02,-.15) rectangle (17.82,5.55);
   \begin{pgfinterruptboundingbox}
-  % The legend names the baseline in each direct comparison.
-  \filldraw[draw=galkData,fill=galkData!85,line width=.45pt]
-    (5.05,5.63) rectangle +(0.30,.16);
-  \node[anchor=west,font=\rmfamily\fontsize{9pt}{10pt}\selectfont]
-    at (5.43,5.71) {relative to ZAC};
-  \filldraw[draw=galkTail,fill=galkTail!65,line width=.45pt]
-    (8.30,5.63) rectangle +(0.30,.16);
-  \node[anchor=west,font=\rmfamily\fontsize{9pt}{10pt}\selectfont]
-    at (8.68,5.71) {relative to ICCAD/QMAP};
-
-  \node[galk/panel title] at (.82,5.17)
-    {(a) Overall fidelity improvement};
+  \node[galk/panel title,font=\rmfamily\bfseries\fontsize{8.5pt}{9.5pt}\selectfont]
+    at (.65,5.27) {(a) Overall fidelity improvement};
+  \node[galk/panel title,font=\rmfamily\bfseries\fontsize{8.5pt}{9.5pt}\selectfont]
+    at (6.83,5.27) {(b) Controlled comparisons};
+  \node[galk/panel title,font=\rmfamily\bfseries\fontsize{8.5pt}{9.5pt}\selectfont]
+    at (12.69,5.27) {(c) QFT-18 vs. ZAC};
+  \filldraw[draw=galkData,fill=galkData!85,line width=.45pt] (1.04,4.87) rectangle +(.22,.12);
+  \node[anchor=west,font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont]
+    at (1.35,4.93) {vs. ZAC};
+  \filldraw[draw=galkTail,fill=galkTail!65,line width=.45pt] (2.81,4.87) rectangle +(.22,.12);
+  \node[anchor=west,font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont]
+    at (3.12,4.93) {vs. ICCAD/QMAP};
   \begin{axis}[
-    figsix axis,at={(.98cm,.68cm)},anchor=south west,
-    width=5.90cm,height=4.00cm,scale only axis,
-    xmin=.55,xmax=2.45,xtick={1,2},
-    xticklabels={\shortstack{ZAC18\\$N=\FigSixZACN$},
-                 \shortstack{QMAP154\\$N=\FigSixQMAPN$}}
+    argument axis,at={(.92cm,.78cm)},anchor=south west,
+    width=4.56cm,height=3.63cm,scale only axis,
+    ybar,bar width=8pt,ymin=0,ymax=30,ytick={0,10,20,30},
+    ylabel={Fidelity improvement (\%)},xmin=.5,xmax=2.5,xtick={1,2},
+    nodes near coords={\PaperRevision{\pgfmathprintnumber{\pgfplotspointmeta}}},
+    xticklabels={\shortstack{ZAC18\\\PaperRevision{$N=\DefaultZACStrictN$}},
+                 \shortstack{QMAP154\\\PaperRevision{$N=\DefaultQMAPStrictN$}}}
   ]
-    \addplot[figsix zac,bar shift=-7.5pt,
-      every node near coord/.append style={anchor=south east,xshift=1pt}]
+    \addplot[argument blue,bar shift=-6.3pt,
+      every node near coord/.append style={anchor=south east}]
       coordinates {(1,\FigSixZACvsZAC) (2,\FigSixQMAPvsZAC)};
-    \addplot[figsix iccad,bar shift=7.5pt,
-      every node near coord/.append style={anchor=south west,xshift=-1pt}]
+    \addplot[argument orange,bar shift=6.3pt,
+      every node near coord/.append style={anchor=south west}]
       coordinates {(1,\FigSixZACvsICCAD) (2,\FigSixQMAPvsICCAD)};
   \end{axis}
-
-  \node[galk/panel title] at (8.27,5.17)
-    {(b) Selected circuit improvements};
   \begin{axis}[
-    figsix axis,at={(8.42cm,.68cm)},anchor=south west,
-    width=8.92cm,height=4.00cm,scale only axis,
-    xmin=.45,xmax=4.55,xtick={1,2,3,4},
-    xticklabels={\shortstack{\FigSixLabelA\\ZAC18},
-                 \shortstack{\FigSixLabelB\\ZAC18},
-                 \shortstack{\FigSixLabelC\\QMAP154},
-                 \shortstack{\FigSixLabelD\\QMAP154}},
-    bar width=8pt
+    argument axis,at={(7.02cm,.78cm)},anchor=south west,
+    width=4.10cm,height=3.63cm,scale only axis,
+    ybar,bar width=16pt,ymin=0,ymax=30,ytick={0,10,20,30},
+    ylabel={Fidelity improvement (\%)},xmin=.45,xmax=2.55,xtick={1,2},
+    xticklabels={\shortstack{GA vs. greedy\\$N=\AblationGAN$},
+                 \shortstack{$H=8$ vs. $H=0$\\$N=\AblationHN$}}
   ]
-    \draw[draw=galkGrid,line width=.4pt]
-      (axis cs:2.5,0) -- (axis cs:2.5,43);
-    \addplot[figsix zac,bar shift=-5pt,
-      every node near coord/.append style={anchor=south east,xshift=1pt}]
-      table[x=x,y expr={100*(\thisrow{ratio_zac}-1)}]
-      {\FigSixDataRoot/fig6_selected_cases.dat};
-    \addplot[figsix iccad,bar shift=5pt,
-      every node near coord/.append style={anchor=south west,xshift=-1pt}]
-      table[x=x,y expr={100*(\thisrow{ratio_iccad}-1)}]
-      {\FigSixDataRoot/fig6_selected_cases.dat};
+    \addplot[argument blue] coordinates {(1,\ArgumentGAGain) (2,\ArgumentLookaheadGain)};
+  \end{axis}
+  \begin{axis}[
+    argument axis,at={(13.04cm,.78cm)},anchor=south west,
+    width=4.25cm,height=3.63cm,scale only axis,
+    ybar,bar width=15pt,ymin=-.055,ymax=.30,ytick={0,.1,.2,.3},
+    ylabel={Change in log fidelity},xmin=.45,xmax=3.55,xtick={1,2,3},
+    xticklabels={Transfer,Excitation,Coherence},
+    every node near coord/.append style={/pgf/number format/precision=3}
+  ]
+    \draw[draw=galkGrid,line width=.45pt] (axis cs:.5,0)--(axis cs:3.5,0);
+    \addplot[argument blue,bar shift=0pt]
+      coordinates {(1,\MechanismQFTTransferGain) (3,\MechanismQFTCoherenceGain)};
+    \addplot[argument orange,bar shift=0pt,
+      every node near coord/.append style={anchor=north,yshift=-1pt}]
+      coordinates {(2,\MechanismQFTExcitationGain)};
   \end{axis}
   \end{pgfinterruptboundingbox}
 \end{tikzpicture}%

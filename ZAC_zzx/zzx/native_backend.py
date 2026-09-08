@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
 from zipfile import ZipFile
@@ -31,6 +33,35 @@ class NativeBackendUnavailable(RuntimeError):
 
 class NativeBackendError(RuntimeError):
     pass
+
+
+_MECHANISM_CONTROLS: ContextVar[dict | None] = ContextVar(
+    "zac_mechanism_controls", default=None)
+
+
+@contextmanager
+def mechanism_controls(*, propagation: str = "sequential", terminal: str = "off",
+                       decision: str = "joint"):
+    """Opt in to one versioned mechanism-only experiment for this context.
+
+    This changes neither frozen configuration objects nor the installed native
+    runtime. An extension lacking the explicit feature version is rejected.
+    The runner must record these controls with its independent evidence.
+    """
+    if (propagation not in {"sequential", "static_poststate"}
+            or terminal != "off" or decision not in {"joint", "sequential"}
+            or (propagation == "static_poststate" and decision == "sequential")):
+        raise ValueError("unregistered mechanism controls")
+    if _MECHANISM_CONTROLS.get() is not None:
+        raise ValueError("mechanism contexts must not be nested")
+    token = _MECHANISM_CONTROLS.set({
+        "version": 1, "propagation": propagation, "terminal": terminal,
+        "decision": decision,
+    })
+    try:
+        yield dict(_MECHANISM_CONTROLS.get())
+    finally:
+        _MECHANISM_CONTROLS.reset(token)
 
 
 def _sha256(path: Path) -> str:
@@ -203,6 +234,9 @@ class NativeResidentBackend:
             require_registered_wheel=require_registered_wheel,
             expected_wheel_sha256=expected_wheel_sha256,
         )
+        if (_MECHANISM_CONTROLS.get() is not None
+                and getattr(self._module, "MECHANISM_CONTROL_VERSION", None) != 1):
+            raise NativeBackendUnavailable("native runtime lacks mechanism controls version 1")
         self.runtime_build_info = build_info(
             require_registered_wheel=require_registered_wheel,
             expected_wheel_sha256=expected_wheel_sha256,
@@ -419,6 +453,10 @@ class NativeResidentBackend:
                 "strict M3 boundary can contain only depth-zero state terms")
         marshal_started = perf_counter_ns()
         exact_cache_key = None
+        controls = _MECHANISM_CONTROLS.get()
+        if (controls is not None
+                and getattr(self._module, "MECHANISM_CONTROL_VERSION", None) != 1):
+            raise NativeBackendUnavailable("native runtime lacks mechanism controls version 1")
         direct_space = 1
         for domain in problem.gate_domains:
             direct_space *= len(domain)
@@ -429,6 +467,7 @@ class NativeResidentBackend:
             direct_space *= 2 ** len(problem.eligible)
         can_reuse_exact = (
             config.fitness_cache
+            and controls is None
             and config.operator_profile == "tuned"
             and direct_space <= config.direct_enumeration_limit
             and direct_space <= config.resolved_unique_budget
@@ -505,6 +544,8 @@ class NativeResidentBackend:
         try:
             buffers = problem.flat_buffers()
             config_value = config.to_wire()
+            if controls is not None:
+                config_value["mechanism_controls"] = dict(controls)
             cached_value = (None if cached_winner is None else
                             tuple(int(value) for value in cached_winner))
             marshal_in_stopped = perf_counter_ns()

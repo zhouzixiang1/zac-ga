@@ -1,253 +1,216 @@
 <div align="center">
 
-# ZAC-GA
+# GA-LK
 
-**Fidelity-aware layer-boundary compilation for zoned neutral-atom architectures**
+**Genetic search and look-ahead for zoned neutral-atom quantum compilation**
 
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](ZAC_zzx/experiments_v2/environment_zac_qiskit124.lock.txt)
-[![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)](ZAC_zzx/native/CMakeLists.txt)
-[![Experiment schema](https://img.shields.io/badge/experiment%20schema-v2-6B7280)](ZAC_zzx/experiments_v2/README.md)
-[![Paper artifacts](https://img.shields.io/badge/paper%20artifacts-v2-2F855A)](ZAC_zzx/results/paper_zh_v2/final_manifest.json)
+[![Python](https://img.shields.io/badge/Python-3.10–3.12-3776AB?logo=python&logoColor=white)](scripts/requirements-current-source.txt)
+[![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)](ZAC_zzx/native/)
+[![Figures](https://img.shields.io/badge/figures-TikZ%20%2F%20PGFPlots-526B4E)](IEEE_conference_template/figures/)
 
-[Overview](#overview) · [Paper](#manuscript) · [Repository map](#repository-map) · [Results](#paper-result-snapshot) · [Build and test](#build-and-test) · [Reproducibility](#reproducibility-boundaries)
+[Quick start](#quick-start) · [Method](#how-it-works) · [Results](#current-manuscript-results) · [Reproduction](#three-reproduction-levels) · [Paper](#manuscript)
 
 </div>
 
-> [!NOTE]
-> The implementation, manuscript sources, and verified artifacts live on the
-> default `main` branch. Edit the paper in `IEEE_conference_template/`;
-> new compilation outputs belong in the repository-root `build/` directory.
-> The repository is currently private;
-> access and anonymization should be configured for the relevant review stage.
+GA-LK combines **genetic search** with **look-ahead evaluation** to compile
+quantum circuits for architectures with separate storage and entanglement zones.
+Look-ahead first selects the initial atom placement. As the circuit advances,
+genetic search coordinates gate sites, inter-layer residency and return storage
+sites using current and future execution costs. The output is an executable
+ZAIR instruction stream checked by a separate physical verifier.
 
-## Overview
+This repository contains current source, editable manuscript and processed
+research evidence. **Running the current source is not the same as reproducing
+historical paper runs**, whose native binaries and protocols are separately
+identified in the evidence manifests.
 
-ZAC-GA studies compilation for **zoned neutral-atom quantum architectures**,
-where atoms move between storage and entanglement zones under constrained AOD
-control. At each two-qubit layer boundary, the compiler must balance atom
-transfer, idle Rydberg excitation, coherence loss, and the routing consequences
-of the resulting physical state.
+### Project snapshot · September 2026
 
-The main method, **GA-LK**, jointly chooses two-qubit gate sites, cross-layer
-residency, and storage locations. Every complete candidate is subjected to the
-same physical state-transition checks before it is ranked by its current
-physical cost and a decayed finite-horizon estimate. Small decision spaces are
-enumerated exactly; larger spaces use a bounded genetic search.
+| Component | Status |
+|---|---|
+| Chinese manuscript | Nine-page, red-marked review draft; editable TeX and vector figures included |
+| Initialization and horizon studies | Scheduled quality runs finished; complete comparisons and failed outcomes retained |
+| Current-source demo | Fresh-environment build and 14-qubit compilation verified on macOS arm64 |
+| Evidence | Current manuscript tables and original accepted results are separately versioned |
+| English / Overleaf | English alignment is paused; the Overleaf mirror is synchronized separately |
 
-The main paper comparison includes two baselines and GA-LK:
+This `main` branch is the only maintained project. Generated output and local
+history stay outside Git; see the [repository map](docs/REPOSITORY_MAP.md).
 
-| Configuration | Role | Layer-boundary objective |
-|---|---|---|
-| **ZAC** | Baseline from Lin *et al.* | Adjacent-layer reuse and partner-aware matching |
-| **ICCAD/QMAP** | Routing-aware A* baseline from Stade *et al.* | Compatible movement groups and routing cost |
-| **GA-LK** | Full method | Joint placement with decayed finite-horizon evaluation |
+## Quick start
 
-**GA-NL** is an independently configured internal method retained in the full
-experiment workbook. It is distinct from the controlled **H = 0** configuration:
-the H = 8 / H = 0 comparison shares the remaining parameters and isolates the
-finite-horizon contribution. The matched-objective GA / greedy comparison
-examines the search strategy.
-
-## Manuscript
-
-The maintained Chinese IEEE manuscript is
-[`IEEE_conference_template/paper_zh.tex`](IEEE_conference_template/paper_zh.tex).
-Section sources, editable TikZ figures, numerical macros, and verification
-scripts are kept alongside it. The earlier desktop copy is retained as a
-snapshot; future paper edits belong in this repository.
-
-The [English counterpart](IEEE_conference_template/paper_en.tex) has matching
-section files in `sections_en/` and shares the Chinese draft's figures, numerical
-macros and bibliography. Use `make paper-en` to build it into
-`build/paper_en/paper_en.pdf`; see the [bilingual review workflow](IEEE_conference_template/README_en.md).
-
-From the repository root:
+Use CPython **3.10–3.12**, CMake **3.20+**, a C++17 compiler and network access
+to the Python package index. TeX and QMAP are not needed for the GA-LK demo.
+Run from the repository root:
 
 ```bash
-make paper
-make paper-test
-make paper-preview
+python3 scripts/portable_reproduce.py bootstrap --name runtime-v1
+python3 scripts/portable_reproduce.py smoke --runtime runtime-v1 --name smoke-v1
+python3 scripts/portable_reproduce.py audit-artifacts
 ```
 
-The compiled manuscript is `build/paper_zh/paper_zh.pdf`. The standalone
-framework figure, compilation logs, verification reports, and page previews
-also remain under `build/paper_zh/`. Generated build files are not tracked.
-The frozen experiment evidence stays in `ZAC_zzx/results/paper_zh_v2/`.
+Bootstrap creates a **new isolated environment**, installs the declared direct
+dependencies, builds the current extension and verifies its installed bytes
+against the wheel. It never changes an existing environment. The smoke compiles
+the bundled toy circuit, verifies actual ZAIR constraints and per-qubit gate
+ordering, and independently scores the physical trace.
 
-The [Overleaf project](https://www.overleaf.com/project/6a866ce86ea64496e2ae01a5)
-is a publication mirror of this manuscript directory, not a second source
-repository. The [sync procedure](docs/REPOSITORY_MAP.md#overleaf-同步) prepares a
-separate checkout under `build/`, checks the remote revision, and adapts only the
-standalone figure path. It never writes to the retained desktop copy.
+All generated output stays under `IEEE_conference_template/build/portable/`:
 
-## Method at a glance
+| Output | Contents |
+|---|---|
+| `runtime-v1/bootstrap.json` | Source digests, native identity and provenance |
+| `runtime-v1/current_config.json` | Public example bound to the new wheel |
+| `runtime-v1/resolved-packages.txt` | Complete resolved package set |
+| `smoke-v1/smoke.json` | Effective initializer, physical checks and model score |
+| `smoke-v1/trace.json` | Complete executable ZAIR |
+| `smoke-v1/compiler.log` | Diagnostic compiler output |
+
+Run names are immutable; choose a new name for another attempt. A passing
+smoke is **not a performance claim or a reproduction of the paper tables**.
+See the [clean-export procedure](docs/REPRODUCIBILITY.md#clean-source-export)
+to test without the author's ignored source trees, environments or raw runs.
+
+## How it works
 
 ```mermaid
 flowchart LR
-    A[QASM circuit] --> B[Gate scheduling]
-    B --> C[Initial placement]
-    C --> D[Layer-boundary candidate space]
-    D --> E{Decision-space size}
-    E -->|small| F[Exact enumeration]
-    E -->|large| G[Bounded genetic search]
-    F --> H[Constrained physical transition]
-    G --> H
-    H --> I[Current physical cost]
-    H --> J[Finite-horizon estimate]
-    I --> K[Candidate selection]
-    J --> K
-    K --> L[AOD routing and ZAIR stream]
-    L --> M[Independent validation]
-    M --> N[CSV · JSON · XLSX · SHA-256 manifest]
+    A[QASM] --> B[Gate layers]
+    B --> C[Initial placement: physical-prefix look-ahead]
+    C --> D[Joint gate-site and residency search]
+    D --> E[Feasible physical transition]
+    E --> F[Current loss and future-layer estimate]
+    F --> D
+    D --> G[AOD batches and ZAIR]
+    G --> H[Independent checks and scoring]
 ```
 
-The implementation keeps candidate generation, physical feasibility, and
-future-state evaluation separate from the independent trace validator. This
-separation prevents a compiler decision from being accepted solely because it
-passes its own internal bookkeeping.
+The public [GA-LK configuration](ZAC_zzx/exp_setting/ga_lk_default.json) uses
+`physical_prefix` initialization: `H_init=2`, up to four candidates including
+the simulated-annealing layout, decay `0.7` and 32 evaluations per rollout
+layer. Layer-boundary optimization uses bounded genetic search, bounded
+return-site assignment and decayed future-layer evaluation; small decision
+spaces are enumerated.
+
+For the simulated-annealing initialization control, set `"init_strategy": "legacy"`
+and remove `initial_lookahead` in a **copy** of the generated configuration.
+The layer-boundary look-ahead remains independent. Frozen ABI8 and explicit
+historical configurations retain their recorded behavior.
+
+## Current manuscript results
+
+The Chinese review draft uses the completed
+[initialization-look-ahead result bundle](ZAC_zzx/results/default_initial_v1/paper_exports/)
+for its abstract, overall comparison, representative circuits and Fig. 7(a).
+The quality study contains 507 canonical circuit/seed jobs: 484 successes,
+four independently verified recovered results and 19 failed outcomes, with
+no pending jobs. The [outcome summary](ZAC_zzx/results/default_initial_v1/quality_summary.json)
+retains all of them.
+
+| Suite | Common circuit units | Compared with | Fidelity gain | MOVE-batch reduction |
+|---|---:|---|---:|---:|
+| ZAC18 | 16 | Reuse-aware ZAC | 8.90% | 19.19% |
+| ZAC18 | 16 | Routing-aware placement | 11.45% | 9.89% |
+| QMAP154 | 120 | Reuse-aware ZAC | 26.24% | 25.85% |
+| QMAP154 | 120 | Routing-aware placement | 26.11% | 25.20% |
+
+Values come from [the generated summary](ZAC_zzx/results/default_initial_v1/paper_exports/default_initial_values.json):
+fidelity is a geometric mean and MOVE batches an arithmetic mean, with both
+baselines evaluated on the same eligible circuit set. QMAP aliases are combined
+into independent circuit units. These are aggregate model-based quality results,
+not per-circuit guarantees or compiler speedups. Compilation time is reported
+separately in the manuscript and is higher than the baselines.
+
+| Evidence | What it supports |
+|---|---|
+| [Current main rows](ZAC_zzx/results/default_initial_v1/paper_exports/main_rows.csv) and [analysis units](ZAC_zzx/results/default_initial_v1/paper_exports/analysis_units.csv) | Overall and per-circuit quality comparisons |
+| [Initialization control](ZAC_zzx/results/initial_lookahead_v1/) | First-layer versus multi-layer initialization; 36 complete circuit comparisons |
+| [Horizon study](ZAC_zzx/results/horizon_extension_v2/combined_quality_summary.json) | Layer-look-ahead comparison; 10 complete circuit comparisons across five settings |
+| [Original accepted package](ZAC_zzx/results/paper_zh_v2/) | Preserved original results, controlled search/look-ahead comparisons and serial timing |
+
+The original package is unchanged. Controlled ablations retain their own
+settings and populations; overall configuration gains are not attributed to
+initialization alone. Unsuccessful refinement candidates remain diagnostic
+records and are not incorporated into GA-LK.
+
+## Three reproduction levels
+
+| Task | Entry point | Meaning of a pass |
+|---|---|---|
+| Run current source | `bootstrap` + `smoke` | Working fresh toolchain, current defaults and valid toy trace |
+| Audit distributed historical results | `audit-artifacts` | Size/SHA-256 agreement of 14 processed files with the accepted manifest |
+| Recompute historical experiments | Frozen protocols plus their declared input/runtime closure | Requires corresponding canonical inputs, binaries and baseline dependencies; not supplied by the toy workflow |
+
+The original accepted package is [paper_zh_v2](ZAC_zzx/results/paper_zh_v2/).
+It retains the earlier GA-LK configuration and the two baseline results on
+ZAC18 and QMAP154. The newer manuscript bundle above is separate: the original
+workbook below is **not** a workbook of the updated initialization study.
+GA-NL in that workbook is an independent configuration, not the shared-parameter
+H=0 ablation. No study rewrites the earlier acceptance manifest.
+
+- [Two-sheet workbook](ZAC_zzx/results/paper_zh_v2/four_methods_results.xlsx): complete circuit rows and timing breakdowns.
+- [Final manifest](ZAC_zzx/results/paper_zh_v2/final_manifest.json): processed-file hashes and provenance.
+- [Analysis units](ZAC_zzx/results/paper_zh_v2/main_primary_analysis_units.csv): exact independent circuit units.
+- [Original summary](ZAC_zzx/results/paper_zh_v2/main_summary.json): original aggregate and paired statistics.
+
+The [code/data inventory](docs/DATA_AND_CODE.md) records formats, units, access
+and unresolved release requirements. Hashes identify evidence; they do not
+replace distributing it.
+
+The [benchmark acquisition guide](docs/REPRODUCIBILITY.md#obtain-and-normalize-the-exact-inputs)
+provides 172 original/canonical input hashes, official-source acquisition and
+normalization checks. A separate preparation command creates the current-default
+suite configuration; it does not pretend to reproduce historical baseline runs.
+
+## Manuscript
+
+The active Chinese source is
+[paper_zh.tex](IEEE_conference_template/paper_zh.tex). Figures are editable
+TikZ/PGFPlots; the overall framework is built separately as a vector PDF.
+
+- **Source-only rendering:** see the [bundled rendering procedure](docs/REPRODUCIBILITY.md#render-the-bundled-paper). This is a layout build, not a revalidation of historical experiments.
+- **Author's strict audit:** `make paper` and `make paper-test` retain their full evidence requirements, including local frozen dependencies. They are not unconditional fresh-clone quick-start commands.
+
+English files are a **pending translation snapshot**, not a verified translation
+of the latest Chinese revision. The desktop copy is also a retained snapshot;
+edit only the in-repository manuscript. Overleaf is a manuscript mirror, not
+the compiler-code remote.
 
 ## Repository map
 
-| Path | Purpose |
+| Path | Responsibility |
 |---|---|
-| [`IEEE_conference_template/`](IEEE_conference_template/) | Maintained Chinese IEEE manuscript, TikZ sources, numerical presentation, and paper checks |
-| [`ZAC_zzx/native/`](ZAC_zzx/native/) | C++17 layer-boundary search backend and native tests |
-| [`ZAC_zzx/zzx/`](ZAC_zzx/zzx/) | Python compiler integration, state handling, and routing logic |
-| [`ZAC_zzx/experiments_v2/`](ZAC_zzx/experiments_v2/) | Schema-v2 experiment drivers, statistics, export, and provenance checks |
-| [`ZAC_zzx/exp_setting/native_ga_v1/`](ZAC_zzx/exp_setting/native_ga_v1/) | Frozen experiment configurations and circuit splits |
-| [`ZAC_zzx/results/paper_zh_v2/`](ZAC_zzx/results/paper_zh_v2/) | Current paper aggregates, independent analysis units, workbook QA, and final evidence manifest |
-| [`ZAC/`](ZAC/) | Original ZAC baseline and its environment |
-| [`experiments/`](experiments/) | Baseline reproduction helpers and reference evidence |
-| [`archive/`](archive/) | Earlier compiler prototypes and external reference workspaces |
-| [`documents/`](documents/) | Local copies of the baseline papers used by this study |
-| `build/` | Ignored output directory for new paper and native builds |
+| [ZAC_zzx/zzx](ZAC_zzx/zzx/) | Python integration, placement and physical state |
+| [ZAC_zzx/native](ZAC_zzx/native/) | C++17 search and candidate evaluation |
+| [ZAC_zzx/evaluation](ZAC_zzx/evaluation/) | Trace normalization, independent checks and scoring |
+| [ZAC_zzx/experiments_v2](ZAC_zzx/experiments_v2/) | Canonicalization, protocols and provenance |
+| [ZAC_zzx/results](ZAC_zzx/results/) | Current manuscript bundle, preserved accepted package and compact study evidence |
+| [ZAC](ZAC/) | Upstream ZAC source and BSD-3-Clause notice |
+| [IEEE_conference_template](IEEE_conference_template/) | Manuscript, figures and presentation checks |
+| [scripts](scripts/) / [docs](docs/) | Portable entry points and documentation |
+| `IEEE_conference_template/build/` | Generated environments, wheels, traces, PDFs and QA; ignored |
+| `archive/`, `fidelity-lookahead-v2/` | Local history and frozen raw dependencies; not in portable exports |
 
-See the [repository guide](docs/REPOSITORY_MAP.md) for entry points, local-only
-dependencies, historical artifacts, and the paper editing workflow.
+See the [maintenance map](docs/REPOSITORY_MAP.md) for historical path recovery
+and Overleaf synchronization. This repository's `main` is the source of truth.
 
-Only the current `paper_zh_v2` result package is tracked at the repository tip.
-Earlier diagnostic and intermediate result trees remain recoverable from Git
-history, but are not part of the current evidence surface.
+## Troubleshooting and release status
 
-## Paper result snapshot
+- **Missing compiler/CMake:** install platform development tools first; bootstrap never installs system packages.
+- **Wheel/ABI mismatch:** create a new runtime and use its generated configuration. Never bypass a historical wheel pin.
+- **Download failure:** inspect `install-dependencies.log`; use a new name after fixing package-index access.
+- **Source changed after building:** rebuild under a new name; do not combine edited Python with an old native extension.
+- **Strict paper checks lack raw evidence:** obtain the declared closure, or use source-only rendering without a scientific-QA claim.
 
-The primary comparison requires valid ZAC, ICCAD/QMAP A*, and GA-LK results;
-GA-NL is an internal configuration and does not determine this cohort. QMAP
-aliases with the same canonical QASM hash are averaged before inference, while
-compiler coverage continues to count every frozen input file.
-The snapshot below retains the artifact audit's per-circuit strongest-baseline
-reference; the manuscript reports comparisons with ZAC and ICCAD/QMAP separately.
+Direct dependencies are pinned; complete resolved packages and platform details
+are recorded per build. Cross-platform bitwise equivalence is not assumed.
+See the [validation record](docs/PORTABLE_VALIDATION.md) for the tested platform,
+clean-export smoke, source-only paper build and remaining release gaps.
 
-| Evidence | ZAC18 | QMAP154 |
-|---|---:|---:|
-| Valid files in the primary cohort | 18 | 122 |
-| Independent analysis units | 18 circuit files | 120 canonical-hash clusters |
-| Fidelity geometric-mean ratio | 1.0795 | 1.2478 |
-| Independent-unit bootstrap 95% confidence interval | [1.0024, 1.2198] | [1.0461, 1.5865] |
-| Median ratio per independent unit | 1.0052 | 0.9976 |
-| Win / tie / loss | 12 / 0 / 6 | 49 / 0 / 71 |
+Retain upstream [ZAC/LICENSE](ZAC/LICENSE). A license for newly authored code
+and research data awaits the author's decision. Third-party PDFs are excluded
+from portable exports; see [rights and availability](docs/DATA_AND_CODE.md#rights-and-release-decisions).
 
-The aggregate ratios summarize the complete common cohort, while the
-per-circuit statistics retain its circuit-level variation. GA-LK achieves
-particularly large fidelity gains on individual QMAP154 circuits. Compilation
-time is reported separately from result quality because the bounded search and
-finite-horizon evaluation require additional compiler work.
-
-Authoritative artifacts:
-
-- [`final_manifest.json`](ZAC_zzx/results/paper_zh_v2/final_manifest.json) - file hashes and evidence protocol;
-- [`main_primary_analysis_units.csv`](ZAC_zzx/results/paper_zh_v2/main_primary_analysis_units.csv) - exact circuit or canonical-cluster means used by bootstrap and Wilcoxon;
-- [`four_methods_results.xlsx`](ZAC_zzx/results/paper_zh_v2/four_methods_results.xlsx) - complete file-level ZAC18 and QMAP154 tables;
-- [`main_summary.json`](ZAC_zzx/results/paper_zh_v2/main_summary.json) - primary and internal-configuration statistics;
-- [`paper_workbook_qa/`](ZAC_zzx/results/paper_zh_v2/paper_workbook_qa/) - workbook structure, formula scan, and rendered previews.
-
-## Build and test
-
-All commands in this section start at the repository root unless stated
-otherwise. Use `PYTHON=/path/to/env/python` to select an existing environment.
-
-### Manuscript
-
-```bash
-make paper          # Rebuild the standalone figure and manuscript; run verification
-make paper-check    # Check the existing paper build without recompiling
-make paper-test     # Numerical-presentation and figure-data regression tests
-make paper-preview  # Render pages for visual inspection
-```
-
-The paper build requires XeLaTeX, BibTeX, the manuscript's TeX packages and
-fonts, Python, and the PDF inspection tools used by its verifier. Build and
-preview dependencies are described in
-[`IEEE_conference_template/README_zh.md`](IEEE_conference_template/README_zh.md).
-
-### Native backend
-
-```bash
-make native-build PYTHON=/path/to/env/python
-make native-test PYTHON=/path/to/env/python
-make native-wheel PYTHON=/path/to/env/python
-```
-
-The selected environment needs the native build dependencies, including
-`pybind11` (plus `build` and `scikit-build-core` for wheel packaging), and the
-system needs CMake, Make, and a C++17 compiler.
-The root build targets direct new native outputs to `build/native/`; they do
-not install a wheel, replace a registered experimental binary, or promote a
-build to frozen evidence. Historical attested builds and existing environments
-remain in their recorded locations.
-
-### Paper-facing regression checks
-
-Run from `ZAC_zzx/` in an environment containing the ZAC and experiment
-dependencies:
-
-```bash
-python -m pytest -q -p no:cacheprovider \
-  tests/test_final_results.py \
-  tests/test_cli_v2.py \
-  tests/test_native_resident_integration.py \
-  tests/test_native_rich_solver.py \
-  tests/test_resident_rent_guard.py \
-  tests/test_qmap_legacy_regression.py
-```
-
-See [`ZAC_zzx/native/README.md`](ZAC_zzx/native/README.md) for the native ABI
-contract and [`ZAC_zzx/experiments_v2/README.md`](ZAC_zzx/experiments_v2/README.md)
-for the experiment protocol.
-
-## Reproducibility boundaries
-
-- Main quality and timing results are bound to the frozen **ABI8** build;
-  ablation and sensitivity tracks use the frozen **ABI9** build. Their wheel
-  hashes and validation records are separated in the final manifest.
-- The paper evaluates only **ZAC18** and **QMAP154**. QASMBench and large-circuit
-  pilot runs are not part of the manuscript evidence.
-- MQT QMAP 3.2 is an external dependency and is not vendored as a complete
-  standalone build in this repository.
-- Some experiment-plan provenance records retain machine-specific paths. The
-  checked-in manifests support artifact auditing, but a fresh clone is not yet
-  a one-command reproduction of every raw run.
-- Local raw artifacts in `fidelity-lookahead-v2/artifacts/` and their historical
-  build products are preserved in place. The root `build/` convention applies
-  to new compilation outputs, not to relocation of frozen experiment evidence.
-- No repository-level license has been selected. The code should be treated as
-  research software with all rights reserved until a license is added.
-
-## Baselines and attribution
-
-This work builds on the zoned architecture and reuse-aware compilation model in
-ZAC, and on routing-aware placement in MQT QMAP. The corresponding local paper
-copies are available under [`documents/`](documents/). Please cite the original
-works when using their methods or reported results.
-
-## Repository reference
-
-When referring to the implementation, use the repository URL together with an
-exact commit hash:
-
-```text
-https://github.com/zhouzixiang1/zac-ga
-```
-
-Publication metadata and a formal citation file will be added when the
-manuscript record is finalized.
+Cite the [repository](https://github.com/zhouzixiang1/zac-ga) with an exact commit
+and relevant evidence manifest. No release DOI or publication identifier is
+asserted before one exists.

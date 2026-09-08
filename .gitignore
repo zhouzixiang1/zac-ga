@@ -23,23 +23,44 @@ neat/
 .venv_qmap32/
 .venv_neat/
 
-# 动画文件较大不入库
-FABLE/results/figs/anim/*.mp4
-archive/FABLE/results/figs/anim/*.mp4
+# The only maintained project is this root. Archives are local, never a release.
+/archive/
 
-# Physics-Layer-Compiler：巨型 tech_eval 产物 JSON 不入库（单文件可达 37MB；
-# fidelity/time 小体积参照保留，完整数据以 zip 为准）
-Physics-Layer-Compiler/*/result/zac/tech_eval/*/code/
-archive/Physics-Layer-Compiler/*/result/zac/tech_eval/*/code/
-# zip 为解压内容的存档源（193MB），已解压入库，不再重复跟踪
-Physics-Layer-Compiler.zip
+# Newly supplied reference PDF stays local; no redistribution permission recorded.
+/documents/ZAP_Zoned_Architecture_and_Performant_Compiler_for_Field-Programmable_Atom_Array.pdf
 
-# Independent local repositories and render-only QA artifacts.
-archive/neat/
-archive/6a866ce86ea64496e2ae01a5/
+# Render-only scratch material.
 tmp/
 
-# Unified generated output; manuscript source is tracked on main.
-/build/
+# Unified generated output lives within the active manuscript directory.
+/IEEE_conference_template/build/
 # Machine-local frozen raw runs and historic worktree material.
 /fidelity-lookahead-v2/
+
+# Current supplementary studies: keep protocols, summaries and per-job scores
+# reviewable; retain full native traces and compiler logs locally only.
+/ZAC_zzx/results/initial_lookahead_v1/*/jobs/*/*
+!/ZAC_zzx/results/initial_lookahead_v1/*/jobs/*/protocol.json
+!/ZAC_zzx/results/initial_lookahead_v1/*/jobs/*/summary.json
+!/ZAC_zzx/results/initial_lookahead_v1/*/jobs/*/h0_result.json
+!/ZAC_zzx/results/initial_lookahead_v1/*/jobs/*/h2_result.json
+!/ZAC_zzx/results/initial_lookahead_v1/*/jobs/*/sa_reference_result.json
+/ZAC_zzx/results/initial_lookahead_v1/*/receipts/*
+!/ZAC_zzx/results/initial_lookahead_v1/*/receipts/*.json
+/ZAC_zzx/results/initial_lookahead_v1/**/raw/
+/ZAC_zzx/results/initial_lookahead_v1/**/runs/
+/ZAC_zzx/results/horizon_extension_v1/runs/
+/ZAC_zzx/results/horizon_extension_v1/raw/
+/ZAC_zzx/results/horizon_extension_v2/runs/
+/ZAC_zzx/results/horizon_extension_v2/.quality.lock
+# Independent refinement keeps compact scores/receipts in Git, raw ZAIR locally.
+/ZAC_zzx/results/refinement_v1/**/*.json.gz
+/ZAC_zzx/results/refinement_v1/**/compiler.log
+# Default-initialization study: preserve compact evidence, keep raw output local.
+/ZAC_zzx/results/default_initial_v1/**/native_trace.json.gz
+/ZAC_zzx/results/default_initial_v1/**/compiler.log
+/ZAC_zzx/results/default_initial_v1/.execution.lock
+/ZAC_zzx/results/default_initial_v1/.expansion.lock
+/ZAC_zzx/results/default_initial_v1/recovery/.recovery.lock
+/ZAC_zzx/results/default_initial_v1/**/receipts/*.log
+/ZAC_zzx/results/supplementary_20260907/

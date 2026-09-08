@@ -1,16 +1,22 @@
 # English IEEE manuscript
 
 The maintained English counterpart is [paper_en.tex](paper_en.tex), with section
-sources in [sections_en/](sections_en/). It translates the Chinese manuscript
-after the Table IV layout revision. It does not replace the Chinese source.
+sources in [sections_en/](sections_en/). It follows the Chinese manuscript's
+chronological methods revision and merged discussion/conclusion. It does not replace the Chinese source.
 
 ## Correspondence
 
 Each file in `sections_en/` corresponds to the same filename in `sections/`.
 The title, author block, abstract, and keywords are in the respective main files.
-Both versions use the same six TikZ/PGFPlots figures, numerical macros in
-`results_values_zh.tex`, figure data, and `references.bib`. The English tables
+Both versions use the same seven TikZ/PGFPlots figures, numerical macros in
+`results_values_zh.tex`, separate `initial_lookahead_values.tex`, figure data, and `references.bib`. The English tables
 reuse the original result macros; no results are re-entered manually.
+
+The initialization extension is a separate nine-circuit study, not a replacement
+for the frozen main comparison. Its complete and incomplete outcomes are kept
+in `ZAC_zzx/results/initial_lookahead_v1/`. The build checks the separately
+generated values before compilation. The new ZAIR schema is Fig. 6; the result
+plot is now Fig. 7, while frozen data filenames retain their historical prefix.
 
 The [terminology ledger](writing/08_translation_ledger.md) records the chosen
 English terms. Translation preserves the sequence of sections, all equations
@@ -30,7 +36,7 @@ make paper-test PYTHON=/path/to/environment/bin/python
 
 `paper-en` first verifies the Chinese manuscript and rebuilds the shared
 standalone Fig. 3, then compiles and verifies the English version. All generated
-files remain under the repository-root `build/`:
+files remain under the manuscript-local `build/`:
 
 | Output | Path |
 |---|---|

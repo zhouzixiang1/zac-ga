@@ -1,0 +1,17 @@
+% Author-review markup for changes made from the 2026-09-08 review baseline.
+% Set the single switch below to false after accepting the revisions.
+% Both paper_zh.tex and the standalone Figure 3 wrapper load this file.
+\ifdefined\PaperRevisionMarksLoaded\else
+\def\PaperRevisionMarksLoaded{1}
+\newif\ifPaperShowRevisions
+\PaperShowRevisionstrue
+% A separate clean-preview build may opt out without editing the source.
+\ifdefined\PaperHideRevisions\PaperShowRevisionsfalse\fi
+\definecolor{PaperRevisionRed}{HTML}{C00000}
+\DeclareRobustCommand{\PaperRevision}[1]{%
+  \ifPaperShowRevisions\textcolor{PaperRevisionRed}{#1}\else#1\fi
+}
+\newenvironment{PaperRevisionBlock}{%
+  \begingroup\ifPaperShowRevisions\color{PaperRevisionRed}\fi
+}{\endgroup}
+\fi

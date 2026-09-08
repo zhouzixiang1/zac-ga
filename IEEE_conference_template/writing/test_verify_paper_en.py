@@ -1,6 +1,7 @@
 """Offline guards for the independent English manuscript and its build."""
 
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -27,7 +28,7 @@ class EnglishPaperTests(unittest.TestCase):
         self.root = self.project / "paper"
         (self.root / "sections").mkdir(parents=True)
         (self.root / "sections_en").mkdir()
-        self.build = self.project / "build/paper_en"
+        self.build = self.root / "build/paper_en"
         self.build.mkdir(parents=True)
         self.source_section = self.root / "sections/01_intro.tex"
         self.target_section = self.root / "sections_en/01_intro.tex"
@@ -38,7 +39,7 @@ class EnglishPaperTests(unittest.TestCase):
         (self.root / "paper_en.tex").write_text(main.replace("sections/", "sections_en/"))
         floats = "\n".join(
             rf"\begin{{{kind}}}\label{{{kind}:{index}}}\end{{{kind}}}"
-            for kind, count in (("figure", 6), ("table", 4)) for index in range(count))
+            for kind, count in (("figure", 7), ("table", 4)) for index in range(count))
         source = (r"中文\label{sec:intro}\cite{zac,iccad}\Fidelity\Fidelity" + floats
                   + r"\begin{equation}a+b=\text{存在}\label{eq:test}\end{equation}")
         self.source_section.write_text(source)
@@ -55,7 +56,33 @@ class EnglishPaperTests(unittest.TestCase):
     def test_complete_correspondence_and_explicit_formula_translation_pass(self):
         result, errors = self.audit()
         self.assertFalse(errors)
-        self.assertEqual(result["floats"]["en"], {"figure": 6, "table": 4})
+        self.assertEqual(result["floats"]["en"], {"figure": 7, "table": 4})
+
+    def test_english_paths_are_under_manuscript_build(self):
+        self.assertEqual((self.root / english.BUILD_DIRECTORY).resolve(), self.build)
+        self.assertEqual((self.root / english.zh.OVERALL_FIGURE_PDF).resolve(),
+                         self.root / "build/paper_zh/figures/overall_framework.pdf")
+        self.assertFalse((self.project / "build").exists())
+
+    def test_shared_chinese_qa_is_read_only_from_manuscript_build(self):
+        payload = {"status": "pass", "page_count": 9, "overall_figure_pdf": {"pages": 1},
+                   "core_figures": {name: {"tikz": True, "includegraphics": False,
+                                           "contains_han": False}
+                                    for name in english.zh.CORE_FIGURES}}
+        current = self.root / "build/paper_zh/final_paper_qa.json"
+        old = self.project / "build/paper_zh/final_paper_qa.json"
+        for path in (current, old):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        with patch.object(english.zh, "_source_build_manifest", return_value={}):
+            errors = []
+            english.audit_shared_figure(self.root, errors)
+            self.assertFalse(errors)
+            current.unlink()
+            errors = []
+            english.audit_shared_figure(self.root, errors)
+            self.assertIn("shared_chinese_build_not_verified", errors)
+        self.assertTrue(old.is_file())
 
     def test_comments_do_not_introduce_chinese_or_false_citations(self):
         self.target_section.write_text(self.target_section.read_text() + "\n% 中文 \\cite{fake} \\label{fake}\n")
@@ -106,10 +133,10 @@ class EnglishPaperTests(unittest.TestCase):
 
     def test_missing_float_fails(self):
         self.change_target(r"\begin{table}\label{table:3}\end{table}", "")
-        self.assertIn("english_requires_six_figures_four_tables", self.audit()[1])
+        self.assertIn("english_requires_seven_figures_four_tables", self.audit()[1])
 
     def test_external_figure_must_use_the_same_verified_pdf(self):
-        source = r"\includegraphics{../build/paper_zh/figures/overall_framework.pdf}"
+        source = r"\includegraphics{build/paper_zh/figures/overall_framework.pdf}"
         target = r"\includegraphics{unverified.pdf}"
         self.source_section.write_text(self.source_section.read_text() + source)
         self.target_section.write_text(self.target_section.read_text() + target)
@@ -173,6 +200,115 @@ class EnglishPaperTests(unittest.TestCase):
             result = english.verify(self.root, compile_pdf=False)
         self.assertEqual(result["references_pages"], [10])
         self.assertIn("english_references_not_on_last_page", result["errors"])
+
+
+class CurrentFigureContractsTests(unittest.TestCase):
+    def framework(self):
+        return (SOURCE_ROOT / "figures/overall_framework.tex").read_text(encoding="utf-8")
+
+    def test_current_framework_relationships_pass(self):
+        checks = english.zh._figure_structure_checks("overall_framework.tex", self.framework())
+        self.assertTrue(checks)
+        self.assertTrue(all(checks.values()), checks)
+
+    def test_unboxed_cz_is_rejected(self):
+        text = self.framework().replace(r"\node[gate] at (#1,#3) {Z}",
+                                        r"\node at (#1,#3) {Z}")
+        self.assertFalse(english.zh._figure_structure_checks(
+            "overall_framework.tex", text)["boxed_cz_macro"])
+
+    def test_cz_without_control_dot_is_rejected(self):
+        text = self.framework().replace(r"\fill[galkInk] (#1,#2) circle (.8pt);", "")
+        self.assertFalse(english.zh._figure_structure_checks(
+            "overall_framework.tex", text)["boxed_cz_macro"])
+
+    def test_cz_without_connector_is_rejected(self):
+        text = self.framework().replace(r"\draw[wire] (#1,#2)--(#1,#3);", "")
+        self.assertFalse(english.zh._figure_structure_checks(
+            "overall_framework.tex", text)["boxed_cz_macro"])
+
+    def test_cz_target_label_is_not_double_controlled(self):
+        text = self.framework().replace(r"\node[gate] at (#1,#3) {Z}",
+                                        r"\node[gate] at (#1,#3) {CZ}")
+        self.assertFalse(english.zh._figure_structure_checks(
+            "overall_framework.tex", text)["boxed_cz_macro"])
+
+    def test_v_gate_is_rejected(self):
+        text = self.framework().replace("{U}", "{V}", 1)
+        self.assertFalse(english.zh._figure_structure_checks(
+            "overall_framework.tex", text)["boxed_u_no_v"])
+
+    def test_both_five_atom_routing_examples_replay(self):
+        for name in ("overall_framework.tex", "joint_ga.tex"):
+            text = (SOURCE_ROOT / "figures" / name).read_text(encoding="utf-8")
+            checks = english.zh._figure_structure_checks(name, text)
+            with self.subTest(figure=name):
+                self.assertTrue(all(checks.values()), checks)
+
+    def test_routing_without_temporary_release_is_rejected(self):
+        text = self.framework().replace("0/1/.56/1.70/.24/.52,", "")
+        checks = english.zh._figure_structure_checks("overall_framework.tex", text)
+        self.assertFalse(checks["routing_source_release"])
+        self.assertFalse(checks["routing_temporary_storage"])
+
+    def test_routing_row_merge_is_rejected(self):
+        text = self.framework().replace("0/3/1.76/1.70/1.76/.52",
+                                        "0/3/1.76/1.70/1.76/.84")
+        self.assertFalse(english.zh._figure_structure_checks(
+            "overall_framework.tex", text)["routing_aod_relations"])
+
+    def test_routing_cannot_use_nontrap_coordinates(self):
+        text = self.framework().replace("0/1/.56/1.70/.24/.52",
+                                        "0/1/.56/1.70/.30/.52")
+        self.assertFalse(english.zh._figure_structure_checks(
+            "overall_framework.tex", text)["routing_trap_coordinates"])
+
+    def test_routing_transfer_cannot_activate_stationary_q4(self):
+        text = self.framework().replace("0/3/1.76/1.70/1.76/.52",
+                                        "0/3/1.76/1.70/1.00/.20")
+        self.assertFalse(english.zh._figure_structure_checks(
+            "overall_framework.tex", text)["routing_ghost_safe"])
+
+    def test_routing_path_cannot_pass_through_stationary_q0(self):
+        text = self.framework().replace("1/2/1.44/1.70/.56/1.70",
+                                        "1/2/1.44/1.70/.24/1.70")
+        self.assertFalse(english.zh._figure_structure_checks(
+            "overall_framework.tex", text)["routing_static_path_clear"])
+
+    def test_joint_intermediate_snapshot_must_include_staged_q1(self):
+        text = (SOURCE_ROOT / "figures/joint_ga.tex").read_text(encoding="utf-8")
+        text = text.replace("\\def\\routeStaged{0/.36/1.91,1/.28/1.08",
+                            "\\def\\routeStaged{0/.36/1.91,1/.58/1.91")
+        self.assertFalse(english.zh._figure_structure_checks(
+            "joint_ga.tex", text)["routing_staged_snapshot"])
+
+    def test_initial_evaluation_cannot_be_bypassed(self):
+        text = self.framework().replace(
+            "(candidates.south)--(initialEval.north)",
+            "(candidates.south)--(initialMap.north)")
+        self.assertFalse(english.zh._figure_structure_checks(
+            "overall_framework.tex", text)["initial_candidates_before_selection"])
+
+    def test_future_estimation_cannot_start_at_prior_state(self):
+        text = self.framework().replace("(stateAfter.south)--", "(stateBefore.south)--")
+        self.assertFalse(english.zh._figure_structure_checks(
+            "overall_framework.tex", text)["lookahead_starts_at_candidate_poststate"])
+
+    def test_seven_english_vector_figure_sources_satisfy_semantic_contracts(self):
+        self.assertEqual(len(english.zh.CORE_FIGURES), 7)
+        self.assertIn("zair_output.tex", english.zh.CORE_FIGURES)
+        for name in english.zh.CORE_FIGURES:
+            text = (SOURCE_ROOT / "figures" / name).read_text(encoding="utf-8")
+            active = english.zh._strip_tex_comments(text)
+            with self.subTest(figure=name):
+                self.assertIn(r"\begin{tikzpicture}", active)
+                self.assertNotIn(r"\includegraphics", active)
+                self.assertFalse(english.HAN.search(text))
+                for marker in english.zh.CORE_FIGURE_PANEL_MARKERS[name]:
+                    self.assertIn(marker, active)
+                for markers in english.zh.CORE_FIGURE_SEMANTIC_MARKERS[name].values():
+                    for marker in markers:
+                        self.assertIn(marker, active)
 
 
 if __name__ == "__main__":

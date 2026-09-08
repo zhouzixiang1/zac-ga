@@ -309,15 +309,31 @@ def test_emit_records_display_values_and_tail_metadata(tmp_path) -> None:
 def test_figure_uses_zero_based_gains_from_direct_baseline_ratios() -> None:
     figure = (Path(__file__).with_name("experimental_summary.tex")
               .read_text(encoding="utf-8"))
-    assert "Overall fidelity improvement" in figure
-    assert "Selected circuit improvements" in figure
-    assert "\\FigSixZACvsZAC" in figure
-    assert "\\FigSixZACvsICCAD" in figure
-    assert "\\FigSixQMAPvsZAC" in figure
-    assert "\\FigSixQMAPvsICCAD" in figure
-    assert "100*(\\thisrow{ratio_zac}-1)" in figure
-    assert "100*(\\thisrow{ratio_iccad}-1)" in figure
-    assert "ymin=0,ymax=45" in figure
+    for panel in ("(a) Overall fidelity improvement", "(b) Controlled comparisons",
+                  "(c) QFT-18 vs. ZAC"):
+        assert panel in figure
+    for macro, formula in {
+            "FigSixZACvsZAC": r"100*(\DefaultZACMFourF/\DefaultZACMOneF-1)",
+            "FigSixZACvsICCAD": r"100*(\DefaultZACMFourF/\DefaultZACMTwoF-1)",
+            "FigSixQMAPvsZAC": r"100*(\DefaultQMAPMFourF/\DefaultQMAPMOneF-1)",
+            "FigSixQMAPvsICCAD": r"100*(\DefaultQMAPMFourF/\DefaultQMAPMTwoF-1)",
+            "ArgumentGAGain": r"100*(\AblationGARatio-1)",
+            "ArgumentLookaheadGain": r"100*(\AblationHRatio-1)"}.items():
+        assert rf"\edef\{macro}{{\fpeval{{{formula}}}}}" in figure
+    axes = figure.split(r"\begin{axis}")[1:]
+    assert len(axes) == 3
+    assert all("ymin=0,ymax=30" in axis.split(r"\end{axis}", 1)[0]
+               for axis in axes[:2])
+    for point in (r"(1,\ArgumentGAGain)", r"(2,\ArgumentLookaheadGain)"):
+        assert point in axes[1]
+    assert "ymin=-.055,ymax=.30" in axes[2]
+    assert "Change in log fidelity" in axes[2]
+    for point in (r"(1,\MechanismQFTTransferGain)",
+                  r"(2,\MechanismQFTExcitationGain)",
+                  r"(3,\MechanismQFTCoherenceGain)"):
+        assert point in axes[2]
+    assert "Selected circuit improvements" not in figure
+    assert "fig6_selected_cases.dat" not in figure
     assert "W/T/L" not in figure
     assert "Ordered $\\Delta\\log F$ distribution" not in figure
 

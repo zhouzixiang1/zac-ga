@@ -157,6 +157,12 @@ struct RichSearchConfig {
   double alpha_lookahead{0.1};
   double decay_rho{0.6};
   double decay_epsilon{0.05};
+  // Explicit, separately registered mechanism experiments. Zero preserves the
+  // historical ABI9 configuration and its entire selection path.
+  std::size_t mechanism_version{};
+  bool mechanism_static_poststate{false};
+  bool mechanism_sequential_decision{false};
+  bool mechanism_terminal_off{false};
 };
 
 struct RichSearchStats {
@@ -187,6 +193,13 @@ struct RichSearchStats {
   std::size_t forecast_terms_applied{};
   std::size_t forecast_terms_skipped_cutoff{};
   std::size_t forecast_state_cache_hits{};
+  std::size_t mechanism_seed_evaluations{};
+  std::size_t mechanism_residency_evaluations{};
+  std::size_t mechanism_gate_evaluations{};
+  std::size_t mechanism_visited_layers{};
+  std::size_t mechanism_expanded_layers{};
+  std::size_t mechanism_snapshot_resets{};
+  std::size_t mechanism_guard_assignments{};
 };
 
 struct RichSolveResult {

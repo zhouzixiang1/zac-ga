@@ -59,16 +59,20 @@
 
 \input{figures/tikz_style}
 \input{results_values_zh}
+\input{initial_lookahead_values}
 \newcommand{\PaperPercentGain}[2]{%
   \edef\pgfmathresult{\fpeval{100*((#1)/(#2)-1)}}%
+  \pgfmathprintnumber[fixed,precision=2,zerofill]{\pgfmathresult}\%%
+}
+\newcommand{\PaperPercentReduction}[2]{%
+  \edef\pgfmathresult{\fpeval{100*(1-(#1)/(#2))}}%
   \pgfmathprintnumber[fixed,precision=2,zerofill]{\pgfmathresult}\%%
 }
 
 \begin{document}
 
-\title{Joint Layer-Boundary Optimization and\\
-Multilayer Physical Look-Ahead for\\
-Zoned Neutral-Atom Quantum Architectures}
+\title{GA-LK: Joint Placement with Multilayer Look-Ahead\\
+for Zoned Neutral-Atom Architectures}
 
 \author{
 \IEEEauthorblockN{Zixiang Zhou}
@@ -81,7 +85,7 @@ zhouzixiang@hdu.edu.cn}
 \maketitle
 
 \begin{abstract}
-Zoned neutral-atom quantum processors isolate stored atoms to reduce idle-atom excitation, while inter-layer placement and rearrangement affect trap-transfer losses and execution time. Existing reuse-aware and routing-aware methods guide placement using adjacent gate layers or the next interaction partner. However, residency between nonadjacent layers also changes gate-site occupancy, return locations, and subsequent rearrangement parallelism. We present GA-LK, a compiler with multilayer look-ahead that jointly selects gate sites, resident atoms, and return storage sites at each layer boundary. Bounded genetic search explores these decisions, and trajectory conflict-graph coloring constructs rearrangement batches that satisfy acousto-optic deflector constraints. Future-layer costs are evaluated from each candidate's resulting physical state, with weights decaying by layer distance. Evaluation uses two benchmark sets containing 18 circuits with 11--98 qubits and 154 input circuits with 3--16 qubits, respectively. Among circuits with valid results from all three compilers, GA-LK improves the geometric mean of model fidelity over the reuse-aware ZAC compiler by \PaperPercentGain{\ZACMFourF}{\ZACMOneF} and \PaperPercentGain{\QMAPMFourF}{\QMAPMOneF}, respectively. The corresponding improvements over the routing-aware placement compiler are \PaperPercentGain{\ZACMFourF}{\ZACMTwoF} and \PaperPercentGain{\QMAPMFourF}{\QMAPMTwoF}. Mean rearrangement batch counts and rearrangement times also decrease on both benchmark sets.
+Zoned neutral-atom quantum processors isolate stored atoms to reduce idle-atom excitation, while inter-layer placement and rearrangement affect trap-transfer losses and execution time. Two representative reuse-aware and routing-aware placement methods use adjacent layers and the next interaction partner to guide placement. These methods do not jointly search over residency between nonadjacent layers, two-qubit gate sites, and return storage sites. Neither estimates the ensuing rearrangement and idle-excitation losses from each candidate across multiple future gate layers. We present GA-LK, a joint placement method with multilayer look-ahead. Genetic search coordinates gate-site and residency choices, while matching assigns return storage sites, jointly optimizing the three decisions. Each candidate is first checked against occupancy and acousto-optic deflector constraints. Evaluation then uses atom positions, trap occupancy, and clocks after current-layer execution to estimate transport, idle-excitation, and coherence losses over subsequent layers. Weights decay with layer distance, allowing current placement to account for execution costs across multiple future layers. Evaluation uses two benchmark sets containing 18 circuits with 11--98 qubits and 154 input circuits with 3--16 qubits, respectively. Among circuits with valid results from all methods, benchmark-level comparisons show up to \PaperPercentGain{\QMAPMFourF}{\QMAPMOneF} higher geometric-mean model fidelity than existing compilers. The mean rearrangement batch count decreases by up to \PaperPercentReduction{\QMAPMFourB}{\QMAPMOneB}.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -98,8 +102,7 @@ neutral-atom quantum computing, zoned architectures, quantum compilation, atom r
 % Balance the final body output without stretching or shrinking its text.
 \flushcolsend
 \clearpage
-\raggedcolsend\raggedend
-\IEEEtriggeratref{13}
+\flushcolsend\flushend
 \bibliographystyle{IEEEtran}
 \bibliography{references}
 

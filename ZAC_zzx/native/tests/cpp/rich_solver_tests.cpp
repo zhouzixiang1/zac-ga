@@ -1322,6 +1322,93 @@ int main() {
          uncached.stats.forecast_terms_applied);
   ++tests;
 
+  // Mechanism controls are opt-in. A static prediction evaluates the same
+  // future layers independently from the candidate poststate, whereas the
+  // propagating prediction reuses the gate placement achieved in layer one.
+  ArchitectureSnapshot mechanism_architecture(
+      2, {{0.0, 0.0}, {1.0, 0.0}, {0.0, 4.0}, {1.0, 4.0}},
+      {2, 3}, {{0, 1}});
+  RichH0Problem mechanism_problem;
+  mechanism_problem.n_atoms = 2;
+  mechanism_problem.current_points = {{0.0, 4.0}, {1.0, 4.0}};
+  mechanism_problem.future_layers = {{1, {{0, 1}}}, {2, {{0, 1}}}};
+  auto mechanism_config = exact_config();
+  mechanism_config.max_horizon = 2;
+  mechanism_config.alpha_lookahead = 1.0;
+  mechanism_config.decay_rho = 1.0;
+  mechanism_config.decay_epsilon = 0.0;
+  mechanism_config.mechanism_version = 1;
+  mechanism_config.mechanism_terminal_off = true;
+  const auto propagated = solve_rich_h0(
+      mechanism_architecture, mechanism_problem, mechanism_config, rng_fixture());
+  mechanism_config.mechanism_static_poststate = true;
+  const auto snapshot = solve_rich_h0(
+      mechanism_architecture, mechanism_problem, mechanism_config, rng_fixture());
+  assert(propagated.winner.feasible && snapshot.winner.feasible);
+  assert(propagated.winner.chromosome == snapshot.winner.chromosome);
+  assert(propagated.forecast_terminal_nll == 0.0 && snapshot.forecast_terminal_nll == 0.0);
+  assert(propagated.forecast_by_depth[1] == snapshot.forecast_by_depth[1]);
+  assert(snapshot.forecast_by_depth[1] == snapshot.forecast_by_depth[2]);
+  assert(propagated.forecast_by_depth[2] < snapshot.forecast_by_depth[2]);
+  assert(propagated.stats.mechanism_snapshot_resets == 0);
+  assert(snapshot.stats.mechanism_snapshot_resets > 0);
+  assert(snapshot.stats.mechanism_visited_layers == snapshot.stats.mechanism_expanded_layers);
+  ++tests;
+
+  // A second candidate poststate still changes the static prediction. It is
+  // not a constant future term and is not equivalent to the H=0 control.
+  mechanism_problem.current_points = {{0.0, 0.0}, {1.0, 0.0}};
+  const auto already_placed = solve_rich_h0(
+      mechanism_architecture, mechanism_problem, mechanism_config, rng_fixture());
+  assert(already_placed.forecast_nll < snapshot.forecast_nll);
+  ++tests;
+
+  // Sequential decisions must activate even when the full joint domain can
+  // be enumerated. The residency selected in the first stage stays frozen.
+  ArchitectureSnapshot sequential_architecture(
+      6, {{0, 0}, {1, 0}, {10, 0}, {11, 0}, {20, 0}, {21, 0},
+          {10, 5}, {11, 5}, {20, 5}, {21, 5}},
+      {6, 7, 8, 9}, {{0, 1}, {2, 3}, {4, 5}});
+  auto sequential_problem = one_resident_problem();
+  sequential_problem.n_atoms = 6;
+  sequential_problem.current_points = {{0, 0}, {1, 0}, {10, 0}, {11, 0}, {20, 0}, {21, 0}};
+  sequential_problem.eligible = {2, 3, 4, 5};
+  sequential_problem.eviction_order_indices = {0, 1, 2, 3};
+  sequential_problem.forced_return_mask = {false, false, false, false};
+  sequential_problem.return_domains = {
+      {{6, {10, 5}, 1.0}}, {{7, {11, 5}, 1.0}},
+      {{8, {20, 5}, 1.0}}, {{9, {21, 5}, 1.0}}};
+  sequential_problem.gate_domains[0].push_back(
+      {11, 0, 1, {0.0, 0.0}, {1.0, 0.0}, {}, {}, {}});
+  auto sequential_config = exact_config();
+  sequential_config.mechanism_version = 1;
+  sequential_config.mechanism_terminal_off = true;
+  sequential_config.mechanism_sequential_decision = true;
+  const auto sequential = solve_rich_h0(
+      sequential_architecture, sequential_problem, sequential_config, rng_fixture());
+  assert(sequential.winner.feasible);
+  assert(sequential.search_mode.find("sequential-residency-gates/") == 0);
+  assert(sequential.stats.mechanism_residency_evaluations > 0);
+  assert(sequential.stats.unique_evaluations <= sequential_config.max_unique_evaluations);
+  assert(sequential.stats.mechanism_seed_evaluations +
+         sequential.stats.mechanism_residency_evaluations +
+         sequential.stats.mechanism_gate_evaluations == sequential.stats.unique_evaluations);
+  assert(sequential.current_ghost_rejections == 0);
+  ++tests;
+
+  // A flag without the explicit experiment version must never silently
+  // modify the historical default solver.
+  auto invalid_mechanism = exact_config();
+  invalid_mechanism.mechanism_terminal_off = true;
+  bool rejected_mechanism = false;
+  try {
+    solve_rich_h0(small_architecture, one_resident_problem(), invalid_mechanism, rng_fixture());
+  } catch (const std::invalid_argument&) {
+    rejected_mechanism = true;
+  }
+  assert(rejected_mechanism);
+  ++tests;
+
   std::cout << "rich_solver_tests: " << tests << " sections ok\n";
   return 0;
 }

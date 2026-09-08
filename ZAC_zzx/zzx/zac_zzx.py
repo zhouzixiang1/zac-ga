@@ -13,7 +13,8 @@
                                  ② 断言放宽为位置合法性（区内换座 zone→zone 合法）
                                  ③ 依赖账本补丁：回撤腿的非参与者依赖压到本轮门指令之后
                                     （否则陈旧依赖会让搬运与 rydberg/1q 并行——审计 FATAL）
-其余工序（ASAP 调度、SA 初始床位、停车让位、AOD 分配、校验）一行不改。
+标准 GA-LK 在一次 SA 初始化后，用物理前缀评价选择初始映射；
+显式 legacy 配置、原版放置和已注册历史实验保留原初始化路径。
 """
 import time
 from copy import deepcopy
@@ -155,7 +156,8 @@ class ZAC_zzx(ZAC):
                     "h0_rent_policy",
                     "forecast_gate_candidate_budget",
                     # ---- 初始布局引擎（"ga" = GAInitialPlacer 换掉 ZAC 的 SA）----
-                    "init_engine", "init_pop", "init_gens")
+                    "init_engine", "init_pop", "init_gens",
+                    "init_strategy", "initial_lookahead")
     # ZAC 原版认识的键（消费断言用； Zac.parse_setting 同步维护）
     ZAC_KEYS = ("dependency", "routing_strategy", "scheduling", "trivial_placement",
                 "dynamic_placement", "use_window", "window_size", "reuse",
@@ -326,13 +328,24 @@ class ZAC_zzx(ZAC):
                         prior, instruction_id)
 
     def parse_setting(self, setting: dict):
+        from zzx.initial_lookahead import is_standard_ga_lk, resolve_initial_setting
+        paper_contract = getattr(self, "_paper_ablation_contract", None)
+        setting = resolve_initial_setting(
+            setting, historical_contract=paper_contract is not None)
         schema = setting.get("experiment_schema")
         if schema is not None and schema != 2:
             raise ValueError(f"不支持的 experiment_schema: {schema!r}")
         if schema == 2:
-            paper_contract = getattr(
-                self, "_paper_ablation_contract", None)
-            if paper_contract is None:
+            if (paper_contract is None and type(setting.get("native_abi_version")) is int
+                    and setting["native_abi_version"] == 9
+                    and is_standard_ga_lk(setting)):
+                # ABI9 is the public runtime for the current GA-LK initializer.
+                # Reuse every strict Schema-2 check without altering its frozen
+                # ABI8 contract, the actual ABI, or registered-wheel provenance.
+                validation_copy = deepcopy(setting)
+                validation_copy["native_abi_version"] = 8
+                validate_schema2_setting(validation_copy)
+            elif paper_contract is None:
                 validate_schema2_setting(setting)
             else:
                 expected_horizon = int(paper_contract["max_horizon"])
@@ -364,12 +377,33 @@ class ZAC_zzx(ZAC):
 
     # ------------------------------------------------------------ 放置接线
     def place_qubit_initial(self):
-        """第①道工序：初始布局。init_engine="ga" 时用 GA 替换 ZAC 的 SA。
+        """Initialize once, then select a physical-prefix candidate for GA-LK.
 
-        ZAC 的 SAPlacer 占编译时间 97-98% 但邻域生成器有缺陷（README·已知
-        边界），GA 版搜索同一目标（层权重搭档会合距离），座位枚举与原版一致。
-        给定映射 / 平凡放置两条路径仍走原版，不掺和。
+        Explicit legacy uses the original SA initializer. The separate
+        init_engine="ga" option and given/trivial mappings retain their paths.
         """
+        if (self.zzx_params.get("init_strategy", "legacy") == "physical_prefix"
+                and self.given_initial_mapping is None and not self.trivial_placement):
+            from zzx.initial_lookahead import InitialLookaheadConfig, select_initial_mapping
+            started_ns = time.perf_counter_ns()
+            # Exactly one original SA run. Previewing candidates starts only
+            # after this call and cannot perturb the normal SA random stream.
+            super().place_qubit_initial()
+            base_mapping = deepcopy(self.qubit_mapping[-1])
+            sa_ns = time.perf_counter_ns() - started_ns
+            config = InitialLookaheadConfig.from_mapping(
+                self.zzx_params.get("initial_lookahead"), seed=self.zzx_params.get("seed", 0))
+            mapping, report = select_initial_mapping(
+                self.architecture, base_mapping, self.gate_scheduling,
+                leading_one_qubit=tuple(getattr(self, "dict_g_1q_parent", {}).get(-1, ())),
+                one_qubit=tuple(tuple(gates) for gates in getattr(self, "gate_1q_scheduling", ())),
+                params=self.zzx_params, config=config)
+            self.qubit_mapping[-1] = mapping
+            self.zzx_initial_lookahead_report = {**report, "sa_initialization_ns": sa_ns}
+            elapsed_ns = time.perf_counter_ns() - started_ns
+            self.zzx_stage_timing_ns["initial_placement_ns"] = elapsed_ns
+            self.runtime_analysis["initial placement"] = elapsed_ns / 1e9
+            return
         if (self.zzx_params.get("init_engine", "sa") != "ga"
                 or self.given_initial_mapping is not None
                 or self.trivial_placement):

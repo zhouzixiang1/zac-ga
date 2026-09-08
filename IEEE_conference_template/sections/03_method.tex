@@ -1,293 +1,211 @@
+\begin{samepage}
 \section{方法}
 \label{sec:method}
 \label{sec:formulation}
 
-\subsection{总体流程与问题定义}
+\subsection{总体框架}
 
-层边界的原子位置决定当前门的执行条件及后续重排的起点。GA-LK以相邻双比特层之间的状态转换为优化单位，联合确定目标门位及方向、跨层驻留和回迁存储位。记$s_\ell$为目标层$\mathcal G_\ell$的输入状态，包含映射$\pi_\ell$、纠缠区驻留原子、AOD资源、逐原子时钟和门依赖。$\mathcal G_\ell$中的双比特门互不共享原子，完成相应重排与门执行后得到下一层的输入状态$s_{\ell+1}$。
+本文研究分区中性原子架构上的量子电路编译：输入为逻辑电路和分区架构信息（阱阵列、原生门与输运约束），对应图~\ref{fig:overall-framework}(a)；输出为可执行指令序列ZAIR，对应图~\ref{fig:overall-framework}(f)。编译目标是保持电路语义并减少阱转移、空闲受激和相干损失。为此，本文提出结合遗传算法与多层前瞻的联合放置方法GA-LK。
+\par
+\end{samepage}
 
-GA-LK在动态放置阶段求解层边界联合优化，门调度、初始布局、原子路由和分区架构中间表示（zoned architecture intermediate representation, ZAIR）代码生成沿用分区编译流程\cite{lin2025zac}。调度将输入划分为交替的单、双比特门层，初始布局确定原子到阱位的映射。层边界优化比较各候选的轨迹分批与物理代价，代码生成阶段将选定方案按执行顺序转换为ZAIR指令。各阶段及其层间状态关系见图~\ref{fig:overall-framework}。
+编译过程分为门调度、前瞻感知的初始化布局、层内联合优化、路由调度和指令生成五个阶段，对应图~\ref{fig:overall-framework}(b)--(f)。门调度将输入电路组织为满足依赖的单、双比特执行段；初始化布局按早期门层的执行损失为原子选择起始存储阱位。层内联合优化决定目标层的门位、原子驻留及回迁存储位，路由调度将所需输运划分为可执行批次。完成当前层后，以更新后的原子位置继续编译下一层，最终生成分区架构中间表示ZAIR指令序列。
+
+GA-LK的核心位于图~\ref{fig:overall-framework}(d)的放置选择。\emph{遗传搜索}在同一染色体中协调门位与驻留，再由匹配补全回迁存储位，形成完整候选。\emph{多层前瞻}先按该候选执行当前层，再从执行后的原子位置和阱位占用逐层估计后续损失。当前与未来损失共同决定候选优劣，使门位调整、原子回迁及后续再次入区的代价能够一并比较。路由规则既用于候选评价，也用于图~\ref{fig:overall-framework}(e)中选定方案的执行批次。若把剩余门层全部纳入当前评价，每个候选都要为其构造放置与输运，开销随层数增加；较远层经衰减后对当前选择的影响也有限。因此用前瞻层数上限$H$限制最多覆盖的后续双比特门层，不包含当前层。实际预测还受剩余层数和计算预算限制。\PaperRevision{第~\ref{sec:horizon-evaluation}节比较不同前瞻层数上限对编译质量的影响。}
+
+全文用保真度的负对数表示损失。相乘的保真度因子因而可以相加，损失越小表示保真度越高；一个门层的新增损失由其执行前后的累计损失相减得到。初始化评价与动态候选评价均采用这一口径，并使用第~\ref{sec:background}节的误差模型。
 
 \begin{figure*}[t]
   \centering
-  \includegraphics[width=\textwidth]{../build/paper_zh/figures/overall_framework.pdf}
-  \caption{分区中性原子电路的端到端编译流程。(a) 输入电路与门执行区域，(b) 分层调度，(c) 初始映射$\pi_0$；(d) 层边界联合决策产生候选映射$\pi'_\ell$，经物理状态转换后从$s_{\ell+1}$展开有限视界评价；(e) 回迁与入区轨迹按兼容性形成重排批次$\mathcal B_0$--$\mathcal B_2$；(f) 依次输出ZAIR指令并独立验证。$\mathcal E$与$\mathcal S$分别表示纠缠区和存储区。}
+  \includegraphics[width=\textwidth]{build/paper_zh/figures/overall_framework.pdf}
+  \caption{GA-LK的端到端编译流程。(a) 输入电路（未分层）与分区架构；(b) 将(a)的同一组门划为虚线分隔的交替层，标出$1Q_0$、$2Q_0$等；\PaperRevision{两幅下方阵列分别展示首层单比特门和首层双比特门的执行位置}；(c) 带有前瞻感知的初始化布局；(d) 遗传搜索选择门位与驻留，匹配补全回迁存储位，再评价当前与后续层损失；(e) $B_0$暂存$q_1$并回迁$q_3$，$B_1$--$B_3$依次移动$q_2$、$q_1$和$q_4$，$q_0$保持原位；(f) 输出ZAIR并验证完整指令序列，框内仅列指令类型示意。设备快照共用规则阱阵列和原子标号。}
   \label{fig:overall-framework}
 \end{figure*}
 
-令$\mathcal Q$为逻辑原子集合，$\mathcal S$和$\mathcal E$分别为存储区与纠缠区的单原子阱位，$\mathcal V=\mathcal S\cup\mathcal E$。纠缠区门位对构成集合$\mathcal P^{\rm gate}\subseteq\mathcal E\times\mathcal E$。边界映射的单射约束要求每个阱位至多容纳一个原子：
-\begin{equation}
-\pi_\ell:\mathcal Q\rightarrow\mathcal V,\qquad
-\pi_\ell(q)\ne\pi_\ell(q'),~q\ne q'.
-\label{eq:mapping}
-\end{equation}
-对目标门$g_{\ell,j}=(u_j,v_j)\in\mathcal G_\ell$，集合$\Omega_{\ell,j}\subseteq\mathcal P^{\rm gate}$给出合法门位及方向。候选后映射$\pi'_{\ell}$还需满足
-\begin{equation}
-\begin{aligned}
-(\pi'_{\ell}(u_j),\pi'_{\ell}(v_j))&\in\Omega_{\ell,j},
-&&\forall g_{\ell,j}\in\mathcal G_\ell,\\
-|\pi_{\ell}^{\prime-1}(\mathcal E)|&\le C_{\mathcal E},
-&|\pi_{\ell}^{\prime-1}(\mathcal S)|&\le C_{\mathcal S},
-\end{aligned}
-\label{eq:placement-constraints}
-\end{equation}
-其中$C_{\mathcal E}$和$C_{\mathcal S}$为区域容量。集合$\mathcal D_\ell$包含当前边界需确定去向的纠缠区原子，包括暂不参与目标层及后续不再参与门的原子。对于仅含一个双比特门的目标层，已在纠缠区的参与原子也可纳入$\mathcal D_\ell$，比较区内调整与经存储区中转两种路径。Raman单比特旋转按门依赖计入逐原子时钟\cite{lin2025zac}。
+\subsection{门调度}
 
-\subsection{联合表示与物理可行域}
+门调度沿用ZAC的尽早执行策略\cite{lin2025zac}，把输入电路分成单、双比特交替层，见图~\ref{fig:overall-framework}(a)、(b)。双比特门须在同一原子上的前驱完成后才能执行，并进入当前最早可并行的层。同一层内的门不共享原子，以便一次全局Rydberg脉冲并行执行多个CZ门；一层门数超过纠缠区门位对数时，拆成相继多层。允许交换次序的双比特门用交互图边着色分组，同色边进入同一层。记第$\ell$个双比特层为$L_\ell$，门集合为$\mathcal G_\ell$。
 
-目标门位与驻留原子共享纠缠区空间，两类决策须共同满足占位约束。层边界方案将门位与驻留选择编码为
+\PaperRevision{单比特门按原子上的门依赖安排：无双比特前驱的门在首个双比特层之前执行，其余在各自的前驱双比特层完成后执行。编译器根据该时刻的原子映射生成单比特指令中的阱位地址；这些地址可能位于存储区，也可能位于纠缠区。}
+
+\subsection{前瞻感知的初始化布局}
+\label{sec:initial-placement}
+
+初始化要选择适合早期门执行的存储布局。减小执行双比特门的两原子之间的距离，有助于缩短入区输运，但实际开销还取决于门位占用与批次安排。我们在层序加权模拟退火布局\cite{lin2025zac}的基础上，增加前若干层的执行评价：保留原布局，交换少量原子的存储位置形成候选，再比较各候选引起的输运与受激损失。交换保持一阱一原子，且不改变已占用阱位集合；候选池在评价前固定，不随前瞻层数上限变化。
+
+每个候选都从自身的初始映射开始，依次构造早期门层的放置和路由。各层使用相同的当前层优化策略，层间更新位置与时间，不在内部嵌套另一轮多层预测。初始化以首个双比特层为起点，首层之后最多预测$H_{\rm init}$层，实际预测$h_{\rm init}$层。用$\pi$记录各原子的初始存储位置，以$d=0$表示首层，则布局损失为
 \begin{equation}
-\mathbf x_\ell=(z_{\ell,1},\ldots,z_{\ell,m},b_{\ell,1},\ldots,b_{\ell,k}),
+J_{\rm init}(\pi)=
+\sum_{d=0}^{h_{\rm init}}\rho^d\,\Delta C_d(\pi),
+\qquad 0\le h_{\rm init}\le H_{\rm init}.
+\label{eq:initial-lookahead}
+\end{equation}
+其中，$\Delta C_d$为第$d$层新增的负对数保真度损失，包含阱转移、空闲受激和相干损失；单比特门及其时间按依赖计入，$\rho$降低较远门层的权重。评价在所考虑的最后一个门层完成时截止，电路尚未结束时不额外安排回迁。
+
+\PaperRevision{GA-LK选择$J_{\rm init}$最小的可行布局作为原子的初始存储位置，使布局选择兼顾首层输运与后续门层的执行损失。层内联合优化从这一布局开始，随门层推进更新原子位置和放置方案。前瞻初始化布局的效果由第~\ref{sec:init-evaluation}节的消融实验评估。}
+
+\subsection{层内联合优化}
+
+层内优化联合决定当前门层的放置与原子的跨层驻留。一个完整候选由门位、驻留选择和回迁存储位三部分组成；三者确定后，才能构造输运并评价损失。以下先说明候选如何生成，再说明如何用当前与后续层代价选择候选。用粗体$\mathbf{s}_\ell$表示优化开始时全部原子的位置、阱位占用和执行时钟，$\mathbf{s}_{\ell+1}$表示完成目标层及相应单比特门后的整体配置；单个存储阱仍记为$s_1$、$s_2$等。
+
+\subsubsection{联合编码与遗传搜索}
+
+门位和驻留通过占位约束直接关联。图~\ref{fig:joint-ga}中，下一层需执行$(q_0,q_2)$和$(q_1,q_4)$，而$q_3$仍占据门位$T_2$的一侧。若把第二个门放在$T_2$，就必须先移走$q_3$；只有阵列中存在其他可用门位时，才可能保留$q_3$并为该门另选位置。因此，门位选择与$q_3$的驻留选择应在同一候选中确定。GA-LK将它们编码为
+\begin{equation}
+\mathbf x_\ell=
+(z_{\ell,1},\ldots,z_{\ell,m},
+ b_{\ell,1},\ldots,b_{\ell,k}).
 \label{eq:chromosome}
 \end{equation}
-其中$m=|\mathcal G_\ell|$、$k=|\mathcal D_\ell|$；$z_{\ell,j}\in\{0,\ldots,|\Omega_{\ell,j}|-1\}$选择门位及方向，$b_{\ell,i}=0$与$b_{\ell,i}=1$分别表示驻留与回迁。两个编码段确定目标门位和待回迁集合，补充存储位分配后得到候选后状态。图~\ref{fig:joint-ga}以两组目标门和$q_3$的回迁说明编码与轨迹的对应关系。
+前$m$个基因选择各门的纠缠位对和放置方向；后$k$个基因决定待决策原子是否驻留，0表示保留，1表示回迁。待决策原子通常是本层不参与门的纠缠区原子；单门层也比较参与原子的区内调整和经存储区中转。图~\ref{fig:joint-ga}(a)的$(T_1^+,T_2^+,1)$把两门分别放在$T_1,T_2$并回迁$q_3$；正方向按所列门对从左至右放置。回迁存储位由匹配补全，不直接编码。
+
+遗传搜索保留多组门位与驻留组合，通过交叉和变异交换、调整这些选择\cite{holland1975adaptation}。初始种群包含全驻留、全回迁及物理贪心方案；交叉分别作用于门位段和驻留段，变异可重选门位、翻转驻留位，或同时调整相互冲突的两类变量。子代通过占位与容量检查后，按下文的执行损失评价，较优个体进入下一代。这样，某次门位调整可以伴随驻留改变，而不受先前独立决定的限制。
+
+小编码空间直接枚举，较大空间采用遗传搜索，两者共用候选构造与评价，见图~\ref{fig:joint-ga}(b)。重复编码复用已有评价，预算内对最优候选作有限局部调整；达到评价或代数上限、连续若干代无改善时停止。遗传搜索与同目标贪心的比较见第~\ref{sec:ablation}节。
 
 \begin{figure}[!t]
   \centering
   \resizebox{\columnwidth}{!}{\input{figures/joint_ga}}
-  \caption{双比特门层边界的联合放置实例。(a) $z_{\ell,1}$、$z_{\ell,2}$选择门位及方向；本例$\mathcal D_\ell=\{q_3\}$，$b_{\ell,1}=1$将$q_3$纳入待回迁集合，单射分配$a_\ell(q_3)=s_1$确定其存储位。(b) 精确枚举与遗传搜索共用同一编码空间。(c) 候选先将$q_3$回迁至$s_1$，更新占位后再将目标层参与原子送入所选门位；两个阶段分别检验AOD行列关系、占位顺序和非目标交点。$\mathcal E$、$\mathcal S$分别为纠缠区、存储区。}
+  \caption{门位与驻留的联合选择。(a) $T_1,T_2$为图中两处示意门位，正负上标表示两原子的放置方向；所列门对从左至右为正方向，$s_1$标出$q_3$的回迁阱。(b) 枚举和遗传搜索共用候选评价。(c) 选择$T_2$要求释放$q_3$占据的阱位；暂存$q_1$后，再依次放置$q_2,q_1,q_4$。临时中转不增加驻留基因，但其损失计入该候选。}
   \label{fig:joint-ga}
 \end{figure}
 
-遗传搜索确定门位与驻留组合，匹配子问题为回迁原子分配互不重叠的存储位。对于待回迁集合$\mathcal R(\mathbf x_\ell)$中的原子$q$，从当前纠缠位、初始存储位和可见未来伙伴的邻域选取存储位，构成有界候选域：
-\begin{equation}
-\mathcal S_q^{\rm cand}=\operatorname{Top}
-\left(\mathcal S_q^{\rm near}\cup
-\mathcal S_q^{\rm home}\cup
-\mathcal S_q^{\rm future}\right),
-\label{eq:storage-domain}
-\end{equation}
-其中三个子集依次对应上述三类邻域，$\operatorname{Top}(\cdot)$按确定性代理代价仅保留有限个位置，以控制匹配规模。线性分配子问题与Murty分支给出前$K$个单射分配\cite{murty1968assignment}：
-\begin{equation}
-\begin{aligned}
-\mathcal A_K(\mathbf x_\ell)=K\text{-Best}\{a:\mathcal R(\mathbf x_\ell)\!\rightarrow\!\mathcal S\mid{}&
-a(q)\in\mathcal S_q^{\rm cand},\\[-1mm]
-&a(q)\ne a(q'),~\forall q\ne q'\}.
-\end{aligned}
-\label{eq:kbest}
-\end{equation}
-每个分配$a\in\mathcal A_K$与$\mathbf x_\ell$构成完整候选。代理代价仅用于生成候选，最终次序由状态转移得到的物理代价及式~\eqref{eq:lexicographic}确定。
 
-物理约束分为四类：占位单射、区域容量及源点释放和目标占用顺序；门位与门依赖；AOD容量、行列次序及保持关系；非目标交点。分别以$\chi_{\rm occ}$、$\chi_{\rm gate}$、$\chi_{\rm AOD}$和$\chi_{\rm int}$表示其指示函数，物理可行域为
-\begin{equation}
-\mathcal X_\ell^{\rm phys}=\{(\mathbf x,a)\mid
-a\in\mathcal A_K(\mathbf x),
-\chi_{\rm occ}\chi_{\rm gate}\chi_{\rm AOD}\chi_{\rm int}=1\}.
-\label{eq:physical-domain}
-\end{equation}
-所选门位若被非参与原子占据，候选还需确定阻挡原子的重定位。目标层参与原子若需释放入区路径，则经可用存储位临时中转。这些辅助位置调整由候选解码确定，其阱转移、输运和时钟增量均计入物理代价。某一染色体对应的所有存储位分配均不可行时，该染色体被剔除。
 
-\subsection{物理代价与并行重排}
+\subsubsection{路由感知的门位选择}
 
-物理代价取决于重排次序及轨迹的并行分组。为释放目标门位，候选先将待回迁原子及门位阻挡原子移出纠缠区，再将目标层参与原子送入所选门位。两个阶段分别形成并行重排批次，占位随已完成的移动更新；位置、资源占用和逐原子时钟均服从重排与门执行的依赖关系。对可行候选$(\mathbf x,a)$，状态转移写为
-\begin{equation}
-(s_{\ell+1},\Gamma_\ell)=
-\mathcal T_\ell(s_\ell;\mathbf x,a),
-\label{eq:state-transition}
-\end{equation}
-其中$\Gamma_\ell=(\mathcal B_{\ell,1},\ldots,\mathcal B_{\ell,B_\ell})$为按执行顺序排列的重排批次。$s_{\ell+1}$记录目标层Rydberg脉冲及相应单比特门完成后的状态；非参与驻留原子的空闲受激和逐原子相干损失均计入本次转换。
+门位的优劣由到达该位置所需的输运决定。一个参与原子已处于适当门位时，可以仅移动另一原子；两者都需移动时，则联合选择门位对及方向。候选门位满足纠缠区几何、容量及一阱一原子约束。深电路的窄层先搜索距离较近的有限门位，无可行解时再恢复完整门位域。
 
-并行分组通过冲突图$\mathcal H_\phi=(\mathcal V_\phi,\mathcal E_\phi^{\rm AOD}\cup\mathcal E_\phi^{\rm int})$求解。顶点表示原子轨迹；违反AOD次序的轨迹之间加入$\mathcal E_\phi^{\rm AOD}$，共同激活时产生非目标交点冲突的轨迹之间加入$\mathcal E_\phi^{\rm int}$。单条轨迹若违反静态占位或交点约束，则候选不可行。其余冲突采用DSATUR着色生成初始分组\cite{brelaz1979coloring}，同色轨迹可归入同一批次，不同色轨迹分批执行。各组再依据源点释放和目标占用顺序检查，必要时继续拆分。若$\tau(\nu)$和$d(\nu)$分别为轨迹$\nu$的执行时间与输运距离，则
-\begin{equation}
-T_\ell^{\rm rr}=\sum_{b=1}^{B_\ell}
-\max_{\nu\in\mathcal B_{\ell,b}}\tau(\nu),\qquad
-D_\ell^{\rm rr}=\sum_{b=1}^{B_\ell}
-\sum_{\nu\in\mathcal B_{\ell,b}}d(\nu).
-\label{eq:rearrangement-metrics}
-\end{equation}
-批次数刻画串行重排阶段数，$T_\ell^{\rm rr}$与$D_\ell^{\rm rr}$分别刻画重排时延和总输运距离。
+评价前先把位置选择转化为可执行输运。待回迁原子和阻挡目标门位的原子先移至存储区，目标层参与原子随后入区或在区内调整。图~\ref{fig:joint-ga}(c)中，$q_1$先临时进入存储区以释放交换门位，$q_3$按驻留选择回迁，之后才安排目标门对。这一中转的阱转移和时间均计入候选代价。每段输运按更新后的占位检查AOD约束并划分批次，路由方法见第~\ref{sec:routing}节；搜索据此比较完成门操作所需的开销。
 
-同一电路的单、双比特门错误在各候选间相同。边界优化比较候选相对前态的物理负对数保真度增量：
+\subsubsection{驻留与回迁存储位}
+
+驻留取舍随再次交互的层距改变。图~\ref{fig:physical-lookahead}(a)、(b)给出一个模型算例：原子$q$在两次交互之间空闲$r$层，驻留需承担$r$次空闲受激，回迁后再次入区则经历四次SLM--AOD阱转移。假定两种方案均可行，仅比较该原子的转移与受激因子，驻留为$f_{\rm exc}^{r}$，往返为$f_{\rm tran}^{4}$。取$f_{\rm tran}=\ArgumentTransferFidelity$、$f_{\rm exc}=\ArgumentExcitationFidelity$，$r=1$时两者分别为\ArgumentStayOneFactor 和\ArgumentRoundtripFactor；$r=2$时驻留降至\ArgumentStayTwoFactor，低于往返。因此，同一原子的当前位置不足以决定是否回迁，还需要知道它将在何时再次使用。
+
+上述算例说明层距的作用，完整候选还要计入相干损失及其他原子的占位和移动。门位基因与驻留基因共同生成方案，多层评价据此计算完整执行代价。
+
+回迁存储位影响本次移动距离、再次入区的路径以及其他原子的输运通道。候选存储阱取自当前纠缠位和初始存储位附近。若前瞻范围内包含该原子的下一次双比特门，还在该门另一参与原子的当前位置附近补充候选；该原子位于纠缠区时，以距离它最近的存储阱为搜索中心。每个回迁原子最多保留六个候选存储位。通过线性分配与Murty分支\cite{murty1968assignment}得到前$K$个分配$a_\ell$，每个分配让不同原子占用不同存储阱。每个分配与门位、驻留编码组成完整候选，接受后续执行评价。距离代价用于产生候选存储位分配，最终选择依据其阱转移、受激和时间损失。
+
+\subsubsection{当前损失与多层前瞻}
+
+多层前瞻将上述驻留取舍和存储位影响纳入同一评价。若一个候选回迁$q_3$，后续层就从所选存储阱安排它再次入区；若选择驻留，则持续保留它的占位，并在不参与门的中间层累加受激损失。未来层必须从各候选自己的执行结果继续计算，不能共用一个与候选无关的未来距离估计，过程见图~\ref{fig:physical-lookahead}(c)。
+
+同一电路的门数固定，候选间的损失差异来自阱转移、空闲受激和相干损失。按式~\eqref{eq:fidelity}，当前层的新增损失为
 \begin{equation}
 \begin{aligned}
 C_\ell^{\rm cur}={}&-\Delta N_{\rm tran}\log f_{\rm tran}
 -\Delta N_{\rm exc}\log f_{\rm exc}\\
-&+\sum_{q\in\mathcal Q}\log\frac{1-t_q^{-}/T_2}{1-t_q^{+}/T_2}.
+&+\sum_{q\in\mathcal Q}
+\log\frac{1-t_q^{-}/T_2}{1-t_q^{+}/T_2},
 \end{aligned}
 \label{eq:current-cost}
 \end{equation}
-$t_q^{-}$和$t_q^{+}$分别为状态转移前后的累计空闲时间。
+其中，$\Delta N_{\rm tran}$、$\Delta N_{\rm exc}$分别为本次转换增加的阱转移次数和空闲受激次数，$t_q^{-}$、$t_q^{+}$为转换前后的累计空闲时间，$\mathcal Q$为原子集合。时间由可执行批次及门依赖确定。因此，同样数量的回迁原子也可能因存储位和批次安排不同而产生不同损失。
 
-\subsection{衰减多层前瞻}
+未来损失从该候选完成当前层后的$\mathbf{s}_{\ell+1}$开始计算。预测器按层序安排下一层的门位与输运，更新位置、占位和时钟，再用更新后的结果计算后一层；每个候选分别展开这段过程。
 
-衰减多层前瞻将若干层后的原子交互纳入驻留评价，从候选后状态估计未来物理代价，并赋予近层更高权重。设最大视界为$H_{\max}$，距当前边界$d$层的权重为
+预测层使用按距离选择门位的贪心策略，以限制评价开销。门位排序同时考虑两参与原子的输运距离和阻挡原子的回迁距离；每个门使用尚未分配给本层其他门的合法门位，同分时按固定次序选择。门位或路径受阻时先迁移阻挡原子，联合入区不可行时再尝试有限中转和逐原子入区。选定门位后，按预测批次计算该层的阱转移、空闲受激和相干损失，记第$d$个未来层的增量为$\widehat C_{\ell,d}$。
+
+当前损失与衰减后的未来损失组成同一个选择目标。记当前层$L_\ell$之后实际预测的层数为$h_\ell$，满足$0\le h_\ell\le H$；$d$表示距当前层的层数，第一个预测层对应$d=1$。目标为
 \begin{equation}
-w_d=\alpha\rho^{d-1},\qquad 1\le d\le H_{\max}.
-\label{eq:decay}
+J_\ell=C_\ell^{\rm cur}
++\sum_{d=1}^{h_\ell}\alpha\rho^{d-1}\widehat C_{\ell,d}
++\alpha\rho^{h_\ell-1}\Phi_\ell .
+\label{eq:lookahead-cost}
 \end{equation}
-记$H_{\rm cap}\le H_{\max}$为资源上限。有限视界由同时满足层距、剩余门层、资源上限与衰减阈值的未来双比特层构成，其层距集合为
-\begin{equation}
-\mathcal D_\ell^{\rm vis}=\{d\mid 1\le d\le H_{\rm cap},~
-\mathcal G_{\ell+d}\text{存在},~\rho^{d-1}\ge\epsilon\}.
-\label{eq:visible-depths}
-\end{equation}
-主配置取$(H_{\max},\alpha,\rho,\epsilon)=(8,0.5,0.7,0.05)$，$H_{\rm cap}$随问题规模缩减。候选后状态对下一层输运的影响及层距权重见图~\ref{fig:physical-lookahead}。
+$\alpha$控制未来损失相对当前损失的权重，$\rho$使较远层的影响逐渐减小，见图~\ref{fig:physical-lookahead}(c)。最后一个预测层执行后，对仍在纠缠区但未参与该层门操作的原子，末端项$\Phi_\ell$估计其可行回迁损失，补充预测范围之外的回迁代价。未来层与末端项均只用于评价；选定候选后，仅提交当前层指令，到下一层再重新优化。
+
+实际层数$h_\ell$可能小于设定上限$H$：电路剩余层数不足、达到表~\ref{tab:solver-bounds}的规模限制，或较远层权重已低于阈值时，预测提前结束。主配置取$H=8$，未来权重$\alpha=0.5$，衰减因子$\rho=0.7$；$\rho^{d-1}<\epsilon$时停止，阈值$\epsilon=0.05$。当$H=0$或电路已无后续层时，实际预测层数$h_\ell=0$，约定未来层求和项和末端项均为零，目标只保留当前层损失。
+
+较大的$H$允许评价更远门层中的原子复用、持续占位和再次入区代价；当实际预测随之延长时，每个候选也需要构造更多层的放置与输运。较远层采用贪心放置并逐层衰减权重，因此增加预测层数不保证所得布局更优。$H$用于调节后续执行信息的覆盖范围，具体效果由第~\ref{sec:horizon-evaluation}节的配置比较给出。
 
 \begin{figure}[!t]
   \centering
   \resizebox{\columnwidth}{!}{\input{figures/physical_lookahead}}
-  \caption{物理可行性与有限视界评价实例。(a) 四条轨迹的冲突图着色产生$\mathcal B_1=\{q_2,q_4\}$和$\mathcal B_2=\{q_1,q_3\}$；实心、空心圆分别为源点和目标点，静止的$q_0$不入图。(b) 当前代价相同的候选$A$、$B$导致不同后状态；在其余物理增量相同的图示条件下，$d_B<d_A$使候选$B$的下一层输运分量较低。蓝色和灰色虚线分别表示下一层与回迁轨迹，$\mathcal E$、$\mathcal S$分别为纠缠区、存储区。(c) 层距权重按$w_d=\alpha\rho^{d-1}$在实际可见层集合$\mathcal D_\ell^{\rm vis}$内衰减。}
+  \caption{后续交互对驻留选择的影响。(a) 跟踪同一个原子$q$的驻留与往返，两次交互之间有$r$个不参与门的层；其余原子省略。(b) 仅由阱转移与空闲受激因子计算的负对数损失，显示$r=1$与$r=2$时两方案的优劣改变；这是模型分量算例，不是完整候选得分。(c) 完整评价从候选后配置逐层展开，并计入更新后的占位、执行时间和衰减权重。}
   \label{fig:physical-lookahead}
 \end{figure}
 
-未来代价从各候选的后状态$s'=s_{\ell+1}$分别估计。令$s_{\ell,0}=s'$，确定性状态转移$\mathcal F$逐层给出未来状态及增量代价：
-\begin{equation}
-(s_{\ell,d},\widehat C_{\ell,d})=
-\mathcal F(s_{\ell,d-1},\mathcal G_{\ell+d}),
-\qquad d\in\mathcal D_\ell^{\rm vis},
-\label{eq:forecast-transition}
-\end{equation}
-其中，$\mathcal F$为本预测层各门选择尚未分配的合法纠缠位对，并将阻挡目标端点或轨迹的非参与原子迁往存储区。第$d$层的未加权物理增量为
-\begin{equation}
-\widehat C_{\ell,d}=C_{\ell,d}^{\rm res}
-+C_{\ell,d}^{\rm gate}+C_{\ell,d}^{\rm block},
-\label{eq:forecast-components}
-\end{equation}
-其中，$C_{\ell,d}^{\rm res}$为非参与驻留原子的空闲受激和相干损失；$C_{\ell,d}^{\rm gate}$为门参与原子入区及临时中转产生的物理损失；$C_{\ell,d}^{\rm block}$为阻挡原子回迁产生的物理损失。后两项均包含阱转移、输运与相干损失。
+\subsubsection{候选选择}
 
-未来门$(u,v)$的门位由两参与原子的移动距离与端点阻挡原子的最近存储距离之和确定，同分时按门位及方向编号选择。联合入区不可行时，依次考察有限中转与逐原子入区方案。若均不可行，则该候选为预测不可行候选；其当前边界评价仍保留，用于无预测可行候选时的回退选择。
+候选选择在利用未来收益的同时限制当前层的额外损失。求解器先构造一个当前损失较低、兼顾近期复用的参照方案，再判断其他候选能否以未来节省补偿当前增加的开销。
 
-若$\mathcal D_\ell^{\rm vis}$非空，令$d_\ell^*=\max\mathcal D_\ell^{\rm vis}$；窗口末端以清理势$\Phi(s_{\ell,d_\ell^*})$计入尚未完成的驻留代价：
-\begin{equation}
-\widehat C_\ell^{\rm future}=
-\sum_{d\in\mathcal D_\ell^{\rm vis}}\alpha\rho^{d-1}\widehat C_{\ell,d}
-+\alpha\rho^{d_\ell^*-1}\Phi(s_{\ell,d_\ell^*}).
-\label{eq:lookahead-cost}
-\end{equation}
-当$H_{\max}=0$时，$\mathcal D_\ell^{\rm vis}=\varnothing$且$\widehat C_\ell^{\rm future}=0$。
+参照方案的构造考虑近期再次参与交互的原子。对于预测范围内会复用的原子，比较留在纠缠区直至下次使用与往返存储区的损失。在容量和强制回迁条件允许时，优先考察让更多驻留有利原子保留在纠缠区的候选组；经有限门位调整后，从中选取当前损失较低的方案。当$H=0$时不启用这一驻留优先规则。
 
-终端清理势$\Phi$估计窗口结束后尚需承担的回迁损失：对仍留在纠缠区、且未参与窗口末层的原子构造可行回迁，取其负对数保真度增量；可见层集合为空时取零。
-
-\subsection{候选排序与边界选择}
-
-未来收益可能伴随当前代价增加，候选选择需控制两者的交换幅度。求解器以当前代价较低的候选为锚点，限定其他候选的当前代价增量，再按有限视界目标排序：
-\begin{equation}
-\mathbf J_\ell=(C_\ell^{\rm cur}+\widehat C_\ell^{\rm future},B_\ell,
-T_\ell^{\rm rr},D_\ell^{\rm rr},\kappa_\ell)
-\label{eq:lexicographic}
-\end{equation}
-词典序先比较首项，同分时再依次比较后续项。$\kappa_\ell=(\overline{\mathbf x}_\ell,\overline a_\ell)$为染色体与存储位分配的规范键，用于确定完全同分候选的次序。总负对数代价、时延和距离分别按$10^{-12}$、$10^{-6}\,\mu\mathrm{s}$和$10^{-6}\,\mu\mathrm{m}$量化，批次数采用整数比较。
-
-锚点的构造包含门位投影与驻留保护。门位投影在主搜索后固定已评价候选的驻留编码段，逐坐标调整门位基因以降低当前代价。采用的驻留编码包括当前最优、全驻留以及由物理往返比较得到的回迁或驻留建议。规模受限时扫描一轮有界门位选项，其余情形至多扫描两轮；每个试探候选均重新归一化并检查物理可行性。投影结果与采用相同驻留编码的已评价候选构成邻域$\mathcal N_\ell^{\rm guard}$，新增评价数记为$E_{\rm guard}$。
-
-驻留保护比较原子在可见复用层之前的驻留损失与往返存储区损失。前者计入空闲受激与相干损失，后者计入可行路径上的阱转移、输运与相干损失。驻留代价较低且满足强制回迁和容量约束的原子组成保护集合$\mathcal P_\ell$，候选选择优先保留这些原子的驻留；$H_{\max}=0$时该集合为空。候选$u=(\mathbf x,a)$回迁保护集合内原子的数量为
-\begin{equation}
-v_\ell(u)=\sum_{q_i\in\mathcal P_\ell}
-\mathbf 1\!\left[b_{\ell,i}(u)=1\right].
-\label{eq:stay-violation}
-\end{equation}
-记$\mathcal X_\ell^{\rm eval}\subseteq\mathcal X_\ell^{\rm phys}$为已完成评价的物理可行候选集合。评价包括当前状态转换，以及启用前瞻时的未来层预测。求解器按$v_\ell$递增检查候选组，取首个含预测可行候选的组，并按当前物理键$\mathbf J_\ell^{\rm cur}=(C_\ell^{\rm cur},B_\ell,T_\ell^{\rm rr},D_\ell^{\rm rr},\overline{\mathbf x}_\ell)$确定锚点$u^0$。令$L_\ell(u)=C_\ell^{\rm cur}(u)+\widehat C_\ell^{\rm future}(u)$，并令$\Delta C_{\rm cur}(u)=\max\{0,C_\ell^{\rm cur}(u)-C_\ell^{\rm cur}(u^0)\}$、$\Delta S_{\rm future}(u)=\max\{0,\widehat C_\ell^{\rm future}(u^0)-\widehat C_\ell^{\rm future}(u)\}$。准入集合为
-\begin{equation}
-\begin{aligned}
-\mathcal X_\ell^{\rm adm}=\{u\in\mathcal X_\ell^{\rm eval}:{}&
-v_\ell(u)=v_\ell(u^0),\\[-1mm]
-&\Delta C_{\rm cur}(u)\le\eta\Delta S_{\rm future}(u),\\[-1mm]
-&L_\ell(u)\le L_\ell(u^0)\}.
-\end{aligned}
-\label{eq:admission-domain}
-\end{equation}
-其中$\eta=0.25$，即当前代价增量至多为预计未来节省的四分之一。准入集合是物理可行域的子集。
-若不存在通过有限视界可行性检查的候选，则在当前边界可行候选中按$\mathbf J_\ell^{\rm cur}$选择。存在预测可行候选时，在准入集合上进行词典序选择：
-\begin{equation}
-(\mathbf x_\ell^*,a_\ell^*)=
-\mathop{\mathrm{lexarg\,min}}_{(\mathbf x,a)\in\mathcal X_\ell^{\rm adm}}
-\mathbf J_\ell(\mathbf x,a).
-\label{eq:boundary-objective}
-\end{equation}
-该规则优先最小化当前与未来代价之和，同分时依次比较批次数、重排时延、输运距离和规范编码。
-
-\subsection{精确枚举与遗传搜索}
-
-小规模边界采用完整枚举，大规模边界采用遗传搜索。边界编码集合为$\mathcal Z_\ell=\prod_j\{0,\ldots,|\Omega_{\ell,j}|-1\}\times\{0,1\}^{|\mathcal D_\ell|}$，编码数为$D_\ell=|\mathcal Z_\ell|$。当$D_\ell\le\min(D_{\rm enum},E_{\max})$时枚举全部编码，否则采用有界遗传搜索\cite{holland1975adaptation}；$D_{\rm enum}$和$E_{\max}$分别为枚举阈值与不同染色体评价预算。两种方式均通过式~\eqref{eq:kbest}分配回迁存储位，并采用相同的物理评价和准入规则。
-
-遗传搜索的确定性种子集$\mathcal S_\ell^0$包含全驻留编码、全回迁编码、物理贪心编码和回迁建议编码。若LRU缓存中存在与当前完整边界状态键相同的染色体，则优先使用。门位段与驻留段分别进行单点交叉；未交叉的子代采用随机单基因变异、高输运代价门位重选、门位--驻留耦合变异或回迁成本引导的驻留位翻转。候选经约束归一化后按染色体键去重，已评价染色体的目标值由缓存复用。
-
-搜索在达到$E_{\max}$、完成$I$代或最优值连续$p_{\rm stop}$代未改善时终止；预算有余时，对当前最优解执行有限轮局部邻域下降。随机种子固定以保证可复现性。记$\mathcal U_\ell=(s_\ell,\mathcal G_\ell)$为当前边界实例，$\Theta$汇集区域与AOD参数、物理模型常数、候选域上限和求解预算。完整求解过程见算法~\ref{alg:solver}。
+若候选增加当前损失，增加量不超过预计未来节省的四分之一，且总目标$J_\ell$不高于参照方案。满足这一限制的候选按$J_\ell$选择；同分时依次比较批次数、重排时延、输运距离和固定编码次序。若所有候选的未来展开均不可行，则按当前层可执行代价选择。算法~\ref{alg:solver}将候选构造、评价与选择归纳为单层求解过程。
 
 \begin{algorithm}[t]
-\caption{层边界联合放置}
+\caption{单个双比特层的联合优化}
 \label{alg:solver}
-\scriptsize
+\small
 \begin{algorithmic}[1]
-\Procedure{Evaluate}{$\mathcal U_\ell,\mathbf x,\mathcal D_\ell^{\rm vis},\Theta$}
-  \State $\mathcal A\gets\Call{StorageAssignment}{\mathcal U_\ell,\mathbf x}$；$\mathcal R_{\mathbf x}\gets\varnothing$
-  \For{每个存储位分配$a\in\mathcal A$}
-    \State 导出阻挡原子重定位、临时中转和原子轨迹
-    \If{占位、容量、AOD或交点约束不满足}
-      \State \textbf{continue}
+\Require 当前原子映射与时钟$\mathbf{s}_\ell$，目标层$\mathcal G_\ell$，未来门层
+\Ensure 选定门位、驻留方案及可执行重排批次
+\State 构造门位和驻留编码域，生成初始候选
+\While{尚有未评价编码且搜索预算未耗尽}
+  \State 取一个编码$\mathbf x_\ell$，生成前$K$个单射存储位分配
+  \For{每个存储位分配$a_\ell$}
+    \State 构造回迁、中转及入区轨迹，按顺序更新占位
+    \If{可形成满足AOD和占位约束的执行批次}
+      \State 计算当前损失$C_\ell^{\rm cur}$及候选后配置$\mathbf{s}_{\ell+1}$
+      \State 从$\mathbf{s}_{\ell+1}$展开未来层，计算$J_\ell$
+      \State 保存候选、当前批次及预测可行性
     \EndIf
-    \State 对冲突图着色，并确定可执行的重排分组及后状态$s'$
-    \State 计算当前代价$C^{\rm cur}$与重排指标$B,T,D$
-    \State $(\widehat C^{\rm future},\zeta)\gets\Call{FutureCost}{s',\mathcal D_\ell^{\rm vis},\Theta}$
-    \State 将当前物理记录及前瞻可行标志$\zeta$加入$\mathcal R_{\mathbf x}$
   \EndFor
-  \State \textbf{输出} $\mathcal R_{\mathbf x}$
-\EndProcedure
-\Statex
-\Procedure{OptimizeBoundary}{$\mathcal U_\ell,H_{\max},\Theta$}
-  \State 计算编码上界$D_\ell$
-  \State $\mathcal D_\ell^{\rm vis}\gets\Call{VisibleDepths}{\mathcal U_\ell,H_{\max},\Theta}$
-  \State $\mathcal R\gets\varnothing$
-  \If{$D_\ell\le\min(D_{\rm enum},E_{\max})$}
-    \For{每个$\mathbf x\in\mathcal Z_\ell$}
-      \State $\mathcal R\gets\mathcal R\cup\Call{Evaluate}{\mathcal U_\ell,\mathbf x,\mathcal D_\ell^{\rm vis},\Theta}$
-    \EndFor
-  \Else
-    \State $\mathcal C\gets\Call{NormalizeDedup}{\mathcal S_\ell^0,\text{缓存种子、随机种子}}$
-    \For{$g=1,\ldots,I$}
-      \State 生成并评价交叉或变异子代，将可行记录加入$\mathcal R$
-      \State 保留目标值最优的$P$个规范染色体
-      \If{评价预算耗尽或连续$p_{\rm stop}$代未改善}
-        \State \textbf{break}
-      \EndIf
-    \EndFor
-  \EndIf
-  \State 对$\mathcal R$中的当前最优解进行有限轮局部精修
-  \If{$\mathcal R$中不存在$\zeta=1$的记录}
-    \State \textbf{输出} 当前物理键最小的记录，并置$\widehat C^{\rm future}=0$
-  \EndIf
-  \State 合并主搜索与门位--驻留保护邻域中的已评价记录，构造$\mathcal X_\ell^{\rm adm}$
-  \State \textbf{输出}$\mathcal X_\ell^{\rm adm}$中$\mathbf J_\ell$最小的候选
-\EndProcedure
+  \State 按空间规模枚举下一编码，或用选择、交叉和变异生成子代
+\EndWhile
+\State 在已评价候选上进行有限局部调整并确定参照方案
+\State 依据当前增量限制和当前与前瞻损失选择候选
+\State \Return 所选候选的当前执行批次及$\mathbf{s}_{\ell+1}$
 \end{algorithmic}
 \end{algorithm}
-
-\subsection{可行性与求解性质}
-
-候选生成、投影与准入选择共用$\mathcal X_\ell^{\rm phys}$的约束。每次接受的状态转换均满足物理约束及重排批次的顺序依赖，占位单射、区域容量、AOD次序、门依赖和逐原子时钟的一致性在各层转换中保持。
-
-候选投影与准入阶段未激活且评价预算覆盖全部有界候选时，完整枚举返回$\mathcal X_\ell^{\rm phys}$上的词典序最优解；该阶段激活时返回$\mathcal X_\ell^{\rm adm}$中的最优候选。遗传搜索在固定预算内终止，不保证全局最优。
-
-\subsection{复杂度与实现}
-
-实现采用C++17，并预计算坐标距离、轨迹兼容关系和冲突边；候选解码、存储位分配、冲突图着色及未来状态均使用确定性缓存。令$N_{\rm bnd}$表示相邻双比特层的边界数；表~\ref{tab:solver-bounds}给出按$N_{\rm bnd}$分段的求解预算，用于限制长电路的候选评价、存储位匹配和预测层数。
 
 \begin{table}[!t]
 \caption{GA-LK的默认及规模自适应求解上限}
 \label{tab:solver-bounds}
 \centering
 \PaperTableSetup
-\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lccc@{}}
+\setlength{\tabcolsep}{2pt}
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lcccccc@{}}
 \toprule
-配置 & 枚举上限 & $(E,P,I,K)$ & $H_{\rm cap}$\\
+配置 & \shortstack{枚举\\上限} & \shortstack{评价\\预算} & \shortstack{种群\\规模} & \shortstack{迭代\\代数} & \shortstack{分配数\\$K$} & \shortstack{前瞻\\层数上限}\\
 \midrule
-默认配置 & 512 & $(576,8,6,4)$ & 8\\
-$N_{\rm bnd}>512$ & 64 & $(192,\le6,\le4,\le2)$ & $\le4$\\
-\shortstack[l]{$N_{\rm bnd}\ge5000$\\$n\le16$} & 16 & $(32,\le4,\le1,1)$ & --\\
-$N_{\rm bnd}\ge5000$ & -- & -- & $\le2$\\
+默认配置 & 512 & 576 & 8 & 6 & 4 & 8\\
+边界数$>512$ & 64 & 192 & $\le6$ & $\le4$ & $\le2$ & $\le4$\\
+\shortstack[l]{边界数$\ge5000$\\量子比特数$\le16$} & 16 & 32 & $\le4$ & $\le1$ & 1 & --\\
+边界数$\ge5000$ & -- & -- & -- & -- & -- & $\le2$\\
 \bottomrule
 \end{tabular*}
-\PaperTableNote{注：$E$、$P$、$I$和$K$分别为候选评价预算、种群规模、迭代数和单射分配数；“--”表示该行不新增对应项约束，重叠条件同时生效并取更严格上限。}
+\PaperTableNote{注：边界数指双比特层边界数；评价预算按染色体编码计数，$K$为每个编码保留的存储位分配数。末列给出随电路规模施加的前瞻层数限制。“--”表示不新增限制，重叠条件取更严格上限。}
 \end{table}
 
-其中$n=|\mathcal Q|$；各原子的存储位候选域至多含6个位置。冲突图精确改进至多处理24条轨迹，分支限界节点上限为$2\times10^5$。存储位单射分配由线性分配子问题与Murty分支生成，轨迹两两兼容关系的构造对轨迹数呈二次增长。
+\subsection{路由调度}
+\label{sec:routing}
 
-通常，$\Omega_{\ell,j}$包含通过静态占位与单轨迹交点检查的全部纠缠位对。对于深度较大且单层门数较少的电路，首轮求解使用按距离排序的有界门位域；未产生可行候选时恢复完整域。表~\ref{tab:solver-bounds}与代码仓库给出规模阈值和完整预算。缓存以完整边界状态和规范编码为键；最终重排指标由生成的ZAIR指令序列计算。
+路由调度把原子位置变化划分为可执行批次，为前述候选评价提供时间与阱转移开销。候选比较和最终指令构造使用同一套路由规则，相容移动分组及阱位依赖分别沿用路由感知放置和ZAC的处理原则\cite{stade2025routingaware,lin2025zac}。
 
-设主搜索和候选投影阶段分别评价$E$和$E_{\rm guard}$个候选，每个候选考虑至多$K$个存储位分配，并展开$|\mathcal D_\ell^{\rm vis}|$个未来层，则时间复杂度近似为
+每条原子轨迹作为冲突图的顶点。若两条轨迹违反行列关系，或其非目标交点在阱转移时覆盖静止原子，则连接对应顶点。DSATUR着色\cite{brelaz1979coloring}将同色轨迹分为一批，各批再检查源阱释放、目标占用和AOD容量。不能满足整体约束时拆分批次；单条轨迹也不可行时调整路径或否决候选。图~\ref{fig:joint-ga}(c)中的暂存和后续入区遵循同一检查顺序。
+
+调度器根据原子、SLM阱位、AOD和Rydberg操作的依赖确定开始时刻，先释放源阱，再允许其他原子使用。每批时间由其中最长的轨迹决定，各批依次执行，一个层边界的重排时延为
 \begin{equation}
-O\!\left((E+E_{\rm guard})K
-\left(C_{\rm feas}+|\mathcal D_\ell^{\rm vis}|C_{\rm pred}\right)\right),
-\label{eq:complexity}
+T_\ell^{\rm rr}=\sum_{b=1}^{B_\ell}
+\max_{\nu\in\mathcal B_{\ell,b}}\tau(\nu),
+\label{eq:rearrangement-metrics}
 \end{equation}
-其中$C_{\rm feas}$和$C_{\rm pred}$分别表示物理可行性评价与单层未来状态估计的代价；宽层和长深度实例对$E_{\rm guard}$采用有界门位邻域。生成的ZAIR指令序列需满足占位、AOD和非目标交点约束。
+其中$B_\ell$为批次数，$\mathcal B_{\ell,b}$为第$b$批轨迹，$\tau(\nu)$为轨迹持续时间。该时延计入候选的相干损失，使门位选择同时考虑距离和并行输运能力。
+
+\subsection{指令生成与输出}
+
+所选方案最终输出为ZAIR指令序列\cite{lin2025zac}。四类高层指令分别记录初始映射、单比特门、纠缠区双比特门和原子输运，对应\texttt{init}、\texttt{1qGate}、\texttt{rydberg}和\texttt{rearrangeJob}，字段见图~\ref{fig:zair-output}。其中，重排任务记录原子标号、起止阱位和AOD编号，并展开为捕获、移动、释放三类底层操作。
+
+\begin{figure}[!htb]
+  \centering
+  \input{figures/zair_output}
+  \caption{ZAIR输出的主要字段。(a) 四类高层指令；(b) 重排任务中的底层指令。位置项保留原子标号与SLM阱位，行列项指定AOD光束编号和坐标。为突出结构，图中省略通用编号、时间与依赖字段；完整输出均包含这些信息。}
+  \label{fig:zair-output}
+\end{figure}
+
+% Wide results are declared here to appear beside their discussion on the next page.
+\input{sections/05_overview_floats}
+
+指令中的位置随原子移动更新，单比特门使用执行时的映射；操作顺序、起止时间和资源依赖随路由结果写入。所有门层完成后处理末端回迁，得到完整指令序列。独立验证器检查其门操作、占位和AOD约束，保真度与重排指标也从这一最终序列统计。
