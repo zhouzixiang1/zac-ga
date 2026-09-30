@@ -18,6 +18,7 @@
 | 逐电路人工审计 | 当前 GA 主实验 [`analysis_units.csv`](../ZAC_zzx/results/physical_ga_main_v1/paper_exports/analysis_units.csv)；历史已验收稿 [`analysis_units.csv`](../ZAC_zzx/results/default_initial_v1/paper_exports/analysis_units.csv)；原接受包 [`four_methods_results.xlsx`](../ZAC_zzx/results/paper_zh_v2/four_methods_results.xlsx) |
 | 理解 Python 编译集成 | [`../ZAC_zzx/zzx/`](../ZAC_zzx/zzx/) |
 | 理解联合搜索和物理评价 | [`../ZAC_zzx/native/`](../ZAC_zzx/native/) |
+| 了解已走过的路线、效果及下一步 | [实验演进与后续开发起点](EXPERIMENT_HISTORY.md)；[2026-10-01 清理验收](repository-maintenance-20261001.md) |
 | 查看正式论文实验入口 | [`../ZAC_zzx/experiments_v2/paper_cli.py`](../ZAC_zzx/experiments_v2/paper_cli.py) |
 | 查看初始化前瞻 | [`../ZAC_zzx/zzx/initial_lookahead.py`](../ZAC_zzx/zzx/initial_lookahead.py)；标准 ABI9 GA-LK 编译路径的一部分 |
 | 查看初始化独立补实验 | [`../ZAC_zzx/results/initial_lookahead_v1/`](../ZAC_zzx/results/initial_lookahead_v1/)；与已接受主结果分开 |
@@ -137,7 +138,8 @@ wheel 目标使用系统 Make，不自动安装依赖。本机上述目标已用
 - `ZAC_zzx/third_party/qmap32_streaming/` 中的冻结补丁与清单。
 
 新编译统一放到 `IEEE_conference_template/build/`。本次原根构建目录的内容已保全迁移，
-旧冻结声明不改写；其他历史证据与运行环境保持原位。实验数据不按普通缓存清理。
+旧冻结声明不改写。2026-10-01 已另按授权清单删除部分旧实验产物；当前所需
+证据与运行环境保持原位，实验数据仍不按普通缓存清理。
 
 ## 证据与 Git 边界
 
@@ -161,7 +163,9 @@ wheel 目标使用系统 Make，不自动安装依赖。本机上述目标已用
 
 主仓库跟踪当前代码、论文源文件、结果包、补实验轻量协议/评分和维护说明；
 `IEEE_conference_template/build/`、虚拟环境、原始大轨迹与整个 `archive/` 不进入新提交。
-归档只改变历史材料的位置与 Git 展示范围，不删除文件或重写旧提交。
+2026-09-07 归档只改变历史材料的位置与 Git 展示范围；2026-10-01 的另行授权
+清理才删除清单内旧产物，两次操作均未重写旧提交。旧全量封存记录不再代表
+所有历史 raw 均在，删除范围见[清理记录](repository-maintenance-20261001.md)。
 根 `zac/` 是唯一维护中的总项目。归档分类、恢复方式及内容核验索引见
 [归档约定](ARCHIVE_POLICY.md)和[迁移索引](archive_relocation_index.json)。
 

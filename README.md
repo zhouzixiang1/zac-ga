@@ -25,7 +25,7 @@ research evidence. **Running the current source is not the same as reproducing
 historical paper runs**, whose native binaries and protocols are separately
 identified in the evidence manifests.
 
-### Project snapshot · September 2026
+### Project snapshot · October 2026
 
 | Component | Status |
 |---|---|
@@ -37,6 +37,10 @@ identified in the evidence manifests.
 
 This `main` branch is the only maintained project. Generated output and local
 history stay outside Git; see the [repository map](docs/REPOSITORY_MAP.md).
+The [development history](docs/EXPERIMENT_HISTORY.md) records earlier designs,
+measured outcomes and the starting point for further work. The
+[2026-10-01 cleanup](docs/repository-maintenance-20261001.md) removed obsolete
+experimental payloads while retaining current inputs, runtimes and evidence.
 
 ## Quick start
 

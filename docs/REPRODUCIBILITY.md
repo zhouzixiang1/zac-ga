@@ -237,4 +237,11 @@ multi-method statistical pipeline remain separate release work. See the
 | Strict paper check lacks evidence | Obtain the declared closure or explicitly use source-only rendering |
 
 Only newly generated material inside named build directories belongs to this
-workflow. Historical environments and archived evidence are not cleanup targets.
+workflow. Current experiment inputs, frozen environments and evidence are not
+ordinary cleanup targets. The separately authorized
+[2026-10-01 cleanup](repository-maintenance-20261001.md) removed a fixed list of
+obsolete payloads; it does not authorize further deletion. The current strict
+paper checks and one frozen GA-initialization/H8 circuit replay passed after
+deletion. This is not a full-matrix rerun, and old runs whose traces were removed
+can no longer be physically revalidated from their saved scores alone. See the
+[development history](EXPERIMENT_HISTORY.md) for retained outcomes and next steps.
