@@ -1,0 +1,29 @@
+\begin{algorithm}[!t]
+\caption{Genetic Search with Multi-Layer Look-Ahead}
+\label{alg:solver}
+\PaperAlgorithmSetup
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
+\begin{algorithmic}[1]
+\Require State $\mathbf{s}_\ell$; current and subsequent gates
+\Ensure Selected plan, current batches, and $\mathbf{s}_{\ell+1}$
+\PaperAlgorithmPhase{I}{Joint search and cross-layer evaluation}
+\State Seed encodings; use enumeration or GA by space size
+\While{unevaluated encodings and budget remain}
+  \State Match encoding $\mathbf x_\ell$ to at most $K$ assignments
+  \For{each complete candidate $(\mathbf x_\ell,a_\ell)$}
+    \State \textbf{Current execution:} route; skip if infeasible \label{alg:route}
+    \State Compute $C_\ell^{\rm cur}$ and $\mathbf{s}_{\ell+1}$ from batches and gates
+    \State \textbf{Look-ahead:} predict losses from $\mathbf{s}_{\ell+1}$ layer by layer
+    \State Combine $J_\ell$ using~\eqref{eq:lookahead-cost}; record prediction feasibility \label{alg:predict}
+  \EndFor
+  \State Set fitness from candidate scores; cache results
+  \State Cross over, mutate, retain elites; or enumerate
+\EndWhile
+\State Refine locally; reevaluate as in lines~\ref{alg:route}--\ref{alg:predict}
+\PaperAlgorithmPhase{II}{Select and advance the current layer}
+\State Select by the reference, admission, and ranking rules
+\State Commit current batches and gates; update actual state
+\State \Return plan, batches, and actual state $\mathbf{s}_{\ell+1}$
+\end{algorithmic}
+\end{algorithm}

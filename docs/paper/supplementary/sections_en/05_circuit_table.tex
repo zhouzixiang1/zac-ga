@@ -1,0 +1,39 @@
+% Display aliases accept both raw and escaped underscores from generated rows.
+\ExplSyntaxOn
+\NewDocumentCommand{\PaperCircuitLabel}{m}{
+  \tl_set:Nn \l_tmpa_tl {#1}
+  \tl_replace_all:Nnn \l_tmpa_tl {\_} {_}
+  \str_case_e:nnF {\tl_to_str:V \l_tmpa_tl} {
+    {qft_n18}{QFT-18}
+    {ising_n42}{Ising-42}
+    {wstate_n27}{Wstate-27}
+    {ising_model_16}{Ising-16}
+    {ising_model_13}{Ising-13}
+    {ising_model_10}{Ising-10}
+  } {#1}
+}
+\NewDocumentCommand{\PaperDisplayRepresentativeRows}{}{
+  \tl_set:No \l_tmpb_tl {\GAMainRepresentativeCircuitRows}
+  \tl_replace_all:Nnn \l_tmpb_tl {QMAP154} {QMAP}
+  \tl_use:N \l_tmpb_tl
+}
+\ExplSyntaxOff
+\begin{table}[H]
+\caption{\PaperRevision{Model-estimated fidelity for selected circuits}}
+\label{tab:representative-circuits}
+\centering
+\PaperTableSetup
+\fontsize{8.5pt}{9.7pt}\selectfont
+\let\PaperRawTexttt\texttt
+\renewcommand{\texttt}[1]{\PaperRawTexttt{\PaperCircuitLabel{#1}}}
+\begin{PaperRevisionBlock}
+\begin{tabularx}{\columnwidth}{@{}lLcrrr@{}}
+\toprule
+Set & Circuit & $n/N_2$ & ZAC & ICCAD & GA-LK\\
+\midrule
+\PaperDisplayRepresentativeRows
+\bottomrule
+\end{tabularx}
+\end{PaperRevisionBlock}
+\PaperTableNote{\fontsize{8pt}{9.1pt}\selectfont\PaperRevision{$n/N_2$ gives the qubit count and two-qubit gate count. ICCAD denotes ICCAD/QMAP; bold marks the best value in each row. Eligible circuits have a maximum fidelity across the two baselines of at least 0.05. Within each set, we select the two circuits with the largest log fidelity gains of GA-LK over that maximum.}}
+\end{table}

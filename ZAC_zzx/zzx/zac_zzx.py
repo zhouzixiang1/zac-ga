@@ -157,7 +157,7 @@ class ZAC_zzx(ZAC):
                     "forecast_gate_candidate_budget",
                     # ---- 初始布局引擎（"ga" = GAInitialPlacer 换掉 ZAC 的 SA）----
                     "init_engine", "init_pop", "init_gens",
-                    "init_strategy", "initial_lookahead")
+                    "init_strategy", "initial_lookahead", "initial_ga")
     # ZAC 原版认识的键（消费断言用； Zac.parse_setting 同步维护）
     ZAC_KEYS = ("dependency", "routing_strategy", "scheduling", "trivial_placement",
                 "dynamic_placement", "use_window", "window_size", "reuse",
@@ -338,7 +338,8 @@ class ZAC_zzx(ZAC):
         if schema == 2:
             if (paper_contract is None and type(setting.get("native_abi_version")) is int
                     and setting["native_abi_version"] == 9
-                    and is_standard_ga_lk(setting)):
+                    and (is_standard_ga_lk(setting)
+                         or setting.get("init_strategy") == "physical_prefix_ga")):
                 # ABI9 is the public runtime for the current GA-LK initializer.
                 # Reuse every strict Schema-2 check without altering its frozen
                 # ABI8 contract, the actual ABI, or registered-wheel provenance.
@@ -382,6 +383,24 @@ class ZAC_zzx(ZAC):
         Explicit legacy uses the original SA initializer. The separate
         init_engine="ga" option and given/trivial mappings retain their paths.
         """
+        if (self.zzx_params.get("init_strategy") == "physical_prefix_ga"
+                and self.given_initial_mapping is None and not self.trivial_placement):
+            from zzx.physical_initial_ga import PhysicalInitialGAConfig, select_initial_mapping
+            started_ns = time.perf_counter_ns()
+            config = PhysicalInitialGAConfig.from_mapping(
+                self.zzx_params.get("initial_ga"), seed=self.zzx_params.get("seed", 0))
+            mapping, report = select_initial_mapping(
+                self.architecture, self.gate_scheduling, n_qubits=self.n_q,
+                leading_one_qubit=tuple(getattr(self, "dict_g_1q_parent", {}).get(-1, ())),
+                one_qubit=tuple(tuple(gates) for gates in getattr(self, "gate_1q_scheduling", ())),
+                params=self.zzx_params, config=config)
+            self.qubit_mapping.append(mapping)
+            self.zzx_initial_ga_report = report
+            self.zzx_initial_lookahead_report = report
+            elapsed_ns = time.perf_counter_ns() - started_ns
+            self.zzx_stage_timing_ns["initial_placement_ns"] = elapsed_ns
+            self.runtime_analysis["initial placement"] = elapsed_ns / 1e9
+            return
         if (self.zzx_params.get("init_strategy", "legacy") == "physical_prefix"
                 and self.given_initial_mapping is None and not self.trivial_placement):
             from zzx.initial_lookahead import InitialLookaheadConfig, select_initial_mapping

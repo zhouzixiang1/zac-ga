@@ -11,7 +11,8 @@ import re
 import shutil
 import subprocess
 
-from portable_reproduce import (ROOT, PUBLICATION_INPUTS, local_file,
+from portable_reproduce import (ROOT, REGISTERED_PUBLICATION_INPUTS,
+                                PUBLICATION_DESTINATIONS, local_file,
                                 publication_files, sha, write)
 
 
@@ -42,6 +43,10 @@ def render(root, name):
     source_hashes = {name: sha(paper / name) for name in sorted(files)}
     companion_files = publication_files(root)
     companion_hashes = {name: sha(local_file(root, name)) for name in companion_files}
+    companion_destinations = {name: PUBLICATION_DESTINATIONS[name] for name in companion_files}
+    publication_inputs = {original: destination
+                          for original, destination in REGISTERED_PUBLICATION_INPUTS.items()
+                          if original.removeprefix("../") in companion_hashes}
     if "paper_zh.tex" not in files or "figures/overall_framework_standalone.tex" not in files:
         raise ValueError("main paper or standalone figure source is missing")
     # The source export's manifest is an additional content-binding check. It
@@ -69,7 +74,7 @@ def render(root, name):
             data = data.replace(FIGURE_LOCAL.encode(), FIGURE_RENDER.encode())
             adapted.append(name)
         if name == "paper_zh.tex" and companion_files:
-            for original, replacement in PUBLICATION_INPUTS.items():
+            for original, replacement in publication_inputs.items():
                 pattern = rb"(\\input\s*\{)" + re.escape(original.encode()) + rb"(\})"
                 data, count = re.subn(pattern, lambda match: match[1] + replacement.encode() + match[2], data)
                 if count != 1:
@@ -78,7 +83,7 @@ def render(root, name):
         with target.open("xb") as stream:
             stream.write(data)
     for name in companion_files:
-        target = tex / "publication/default_initial_v1" / Path(name).name
+        target = tex / companion_destinations[name]
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("xb") as stream:
             stream.write(local_file(root, name).read_bytes())
@@ -113,7 +118,7 @@ def render(root, name):
         raise ValueError("source changed during rendering")
     if {name: sha(local_file(root, name)) for name in companion_files} != companion_hashes:
         raise ValueError("publication bundle changed during rendering")
-    if {name: sha(tex / "publication/default_initial_v1" / Path(name).name)
+    if {name: sha(tex / companion_destinations[name])
             for name in companion_files} != companion_hashes:
         raise ValueError("copied publication bundle changed during rendering")
     if (sha(export_manifest) if export_manifest.exists() else None) != export_manifest_hash:

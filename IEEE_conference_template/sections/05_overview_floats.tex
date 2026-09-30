@@ -1,9 +1,6 @@
-% Declare wide result floats on the preceding page so IEEE two-column
-% placement keeps them next to the opening experimental discussion.
-\input{sections/05_main_table}
-\begin{figure*}[!t]
+\begin{figure}[!htb]
   \centering
-  \resizebox{\textwidth}{!}{\input{figures/experimental_summary}}
-  \caption{GA-LK的编译质量与受控比较。(a) 相对两种基线的保真度几何均值增幅，ZAC18和QMAP154分别含\PaperRevision{\DefaultZACStrictN}和\PaperRevision{\DefaultQMAPStrictN}个共同有效电路。(b) 固定目标的遗传搜索与贪心比较，以及$H=8$与$H=0$的前瞻配置比较，分别含\AblationGAN 和\AblationHN 个有效电路。(c) \texttt{QFT-18}相对ZAC的对数保真度分量变化，正值表示对应损失减少。}
+  \resizebox{\columnwidth}{!}{\input{figures/experimental_summary}}
+  \caption{前瞻上限对编译结果的影响。各电路先取\HorizonExtSeedN 个种子的中位数，再以各自$H=8$的结果归一化。左右绘图区分别为保真度比和批次比；细线保留全部电路，粗线为\HorizonExtCompleteN 个电路的几何均值。$H$为上限，实际深度还受剩余层数与规模预算约束。}
   \label{fig:experimental-summary}
-\end{figure*}
+\end{figure}

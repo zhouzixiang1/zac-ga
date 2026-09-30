@@ -1,5 +1,7 @@
 \documentclass[a4paper,conference]{IEEEtran}
 \IEEEoverridecommandlockouts
+% Match the official DATE LaTeX template text area.
+\usepackage[a4paper,total={184mm,239mm}]{geometry}
 
 \usepackage{fontspec}
 \usepackage{xeCJK}
@@ -30,7 +32,8 @@
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{algorithm}
-\usepackage{algpseudocode}
+\usepackage[noEnd=true,indLines=true,spaceRequire=false]{algpseudocodex}
+\floatname{algorithm}{算法}
 \usepackage{graphicx}
 \usepackage{textcomp}
 \usepackage{xcolor}
@@ -39,6 +42,7 @@
 \usepackage{array}
 \usepackage{tabularx}
 \usepackage{placeins}
+\usepackage{flafter}
 % The final body/reference pages have no footnotes; avoid mistaking table rules for them.
 \usepackage[nospread,noshrink,nocheckfootnote]{flushend}
 \usepackage{tikz}
@@ -47,6 +51,7 @@
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.18}
 \usepackage[hidelinks]{hyperref}
+\hypersetup{pdfauthor={}}
 \input{revision_marks}
 
 \newcommand{\method}{\textsc{GA-LK}}
@@ -63,19 +68,20 @@
   \par\vspace{3pt}\noindent
   \parbox{#1}{\fontsize{7.3pt}{8.4pt}\selectfont #2}%
 }
-\setcounter{dbltopnumber}{2}
+\setcounter{dbltopnumber}{1}
 \setlength{\textfloatsep}{12pt plus 2pt minus 2pt}
 \setlength{\dbltextfloatsep}{12pt plus 2pt minus 2pt}
 \setlength{\floatsep}{10pt plus 2pt minus 2pt}
 \setlength{\dblfloatsep}{10pt plus 2pt minus 2pt}
 
 \input{figures/tikz_style}
+\input{algorithm_style}
 \input{results_values_zh}
-\input{initial_lookahead_extension_values}
 \input{method_argument_values}
 \input{horizon_extension_values}
-\input{../ZAC_zzx/results/default_initial_v1/paper_exports/default_initial_values.tex}
-\input{../ZAC_zzx/results/default_initial_v1/paper_exports/representative_cases.tex}
+\input{physical_ga_initial_values}
+\input{../ZAC_zzx/results/physical_ga_main_v1/paper_exports/ga_main_values.tex}
+\input{../ZAC_zzx/results/physical_ga_main_v1/paper_exports/representative_cases.tex}
 \newcommand{\PaperPercentGain}[2]{%
   \edef\pgfmathresult{\fpeval{100*((#1)/(#2)-1)}}%
   \pgfmathprintnumber[fixed,precision=2,zerofill]{\pgfmathresult}\%%
@@ -86,20 +92,16 @@
 }
 
 \begin{document}
+\bstctlcite{galk_bibliography_control}
 
 \title{GA-LK：面向分区中性原子架构的\\多层前瞻联合放置}
 
-\author{
-\IEEEauthorblockN{周子翔}
-\IEEEauthorblockA{杭州电子科技大学\\
-浙江省杭州市钱塘区白杨街道2号大街1158号，中国\\
-zhouzixiang@hdu.edu.cn}
-}
+\author{}
 
 \maketitle
 
 \begin{abstract}
-分区中性原子量子处理器通过存储隔离降低空闲原子的受激误差，层间原子放置与重排则影响阱转移损耗和执行时延。现有复用感知方法侧重相邻门层的原子复用，路由感知方法则依据输运并行性选择位置，两者均利用后续双比特门的配对关系辅助放置。这些方法尚未将非相邻门层之间的驻留、双比特门位和回迁存储位纳入统一搜索，也未逐层评价不同放置方案引起的后续执行损失。本文提出结合遗传算法与多层前瞻的联合放置方法GA-LK。该方法通过遗传搜索联合确定双比特门在纠缠区的执行位置及原子的驻留或回迁选择，再通过匹配为回迁原子分配互不重复的存储阱位。候选评价先检验占位与声光偏转器约束，再根据完成当前层后的原子位置、阱位占用与执行时间，逐层估计后续输运、空闲受激和相干损失，并按层距衰减其权重，使当前放置兼顾后续多个门层的执行代价。\PaperRevision{相较现有编译方法，基准集的模型保真度几何均值最高提高\PaperPercentGain{\DefaultQMAPMFourF}{\DefaultQMAPMOneF}，平均重排批次最多减少\PaperPercentReduction{\DefaultQMAPMFourB}{\DefaultQMAPMOneB}。}
+\PaperRevision{中性原子体系兼具量子比特规模可扩展、相干时间长和量子门保真度高等优势，是实现容错量子计算的重要路线之一，而高效编译是发挥这些硬件优势的关键环节。其中，分区架构兼顾空闲原子保护与并行门操作，已在逻辑量子处理器中得到实验验证。然而，在AOD的输运冲突约束下，原子放置与跨区输运相互制约，现有方法对联合放置与多层执行代价的协同优化仍不充分。为此，本文提出结合遗传搜索与多层前瞻的联合放置编译器 GA-LK，以物理执行损失为统一评价依据，选择初始布局并联合优化门位、驻留与回迁位置，兼顾当前输运和后续交互。在两个公开基准集的共同有效电路上，相较 ZAC 等先进编译方法，GA-LK 的模型保真度几何均值最高提高 \GAMainMaxDatasetFidelityGain\%，平均重排批次最多减少 \GAMainMaxDatasetBatchReduction\%。}
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -107,14 +109,13 @@ zhouzixiang@hdu.edu.cn}
 \end{IEEEkeywords}
 
 \input{sections/01_introduction}
-\input{sections/02_background}
 \input{sections/03_method}
 \input{sections/05_evaluation}
 \input{sections/06_related_work}
 \input{sections/07_conclusion}
 
-% Balance the last body page and the bibliography without changing text size.
-\flushcolsend
+% Preserve top-float placement on the body page; balance the bibliography.
+\raggedcolsend
 \clearpage
 \flushcolsend\flushend
 \bibliographystyle{IEEEtran}

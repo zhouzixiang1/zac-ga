@@ -1,59 +1,45 @@
-\section{Evaluation}
+\section{Experimental Evaluation}
 \label{sec:evaluation}
 
-We compare GA-LK with two baselines in model fidelity and atom-rearrangement overhead, then examine multilayer look-ahead, search strategies, and parameter choices.
+\subsection{Comparison Setup}
+\label{sec:experimental-setup}
+
+We compare GA-LK with ZAC\cite{lin2025zac} and Stade et al.'s routing-aware placement\cite{stade2025routingaware}, using their published implementations.\footnote{ZAC uses ASAP scheduling with dynamic placement and reuse. Routing-aware placement uses MQT QMAP 3.2.0/Core 3.1.0, with look-ahead factor 0.2, deepening value 0.2, reuse level 5, and deepening factor 0.6.} Inputs comprise 18 ZAC benchmarks (ZAC18)\cite{lin2025zac} and 154 files from the MQT QMAP example set\cite{wille2023qmap}, representing 151 distinct canonicalized circuits. Equivalent inputs are merged for aggregation. All compilers receive the same gate sequences. We evaluate the baselines' original schedules under their recorded acceptance criteria, without additional repair or diagnostic filtering. GA-LK checks non-target intersections for conflicts with stationary atoms during candidate evaluation.
+
+The shared architecture has one AOD, $100\times100$ storage traps, and two paired $7\times20$ entangling arrays providing 140 gate sites. In~\eqref{eq:fidelity}, $(f_1,\allowbreak f_2,\allowbreak f_{\rm tran},\allowbreak f_{\rm exc})=(0.9997,\allowbreak 0.995,\allowbreak 0.999,\allowbreak 0.9975)$ and $T_2=1.5$\,s. Single-qubit gates, CZ gates, and trap transfers take 52, 0.36, and 15\,$\mu$s, respectively. Quality comparisons include circuits compiled by every participating configuration with each atom's idle time below $T_2$. The main experiment requires three valid GA-LK seeds and takes their per-circuit median. Across circuits, fidelity uses geometric means; batches and rearrangement latency use arithmetic means.
+
+The main comparison uses each compiler's initialization. GA-LK evaluates at most 32 mappings with population 8 over the first layer and the next two. Subsequent layers within this prefix permit 32 encoding evaluations with inner look-ahead disabled. Dynamic optimization uses $H=8$, $\alpha=0.5$, $\rho=0.7$, $\epsilon=0.05$, and at most 576 encoding evaluations, reduced with circuit size. Look-ahead, search, and budget comparisons fix initial mappings; initialization comparisons fix subsequent dynamic optimization. Each study uses the sample defined by its compared configurations.
+
+\subsection{Overall Gains and Physical Sources}
+
+GA-LK improves geometric-mean fidelity and reduces mean rearrangement batches on both circuit sets against both baselines, as shown in Table~\ref{tab:main-results}. Relative to ZAC, fidelity increases by \GAMainZACVsZACFidelityGain\% on ZAC18 and \GAMainQMAPVsZACFidelityGain\% on QMAP; QMAP batches decrease by \GAMainQMAPVsZACBatchReduction\%.
 
 \input{sections_en/05_main_table}
-\input{figures/data/fig6_selected_cases.tex}
-\begin{figure*}[!t]
-  \centering
-  \resizebox{\textwidth}{!}{\input{figures/experimental_summary}}
-  \caption{Model fidelity improvements of GA-LK over ZAC and ICCAD/QMAP. (a) Geometric-mean gains on the two benchmark sets, using 18 and 120 distinct circuits valid for all three methods. (b) Per-circuit gains for the four high-gain examples in Table~\ref{tab:representative-circuits}. Both vertical axes start at zero and show $100(F_{\rm GA\text{-}LK}/F_{\rm baseline}-1)$; larger values indicate greater improvement.}
-  \label{fig:experimental-summary}
-\end{figure*}
 
-\subsection{Experimental Setup}
+The gains reflect different circuit-level patterns. Against ZAC, GA-LK improves \GAMainZACVsZACWins{} ZAC18 circuits and lowers fidelity on \GAMainZACVsZACLosses{}; the QMAP counts are \GAMainQMAPVsZACWins{} and \GAMainQMAPVsZACLosses{}, respectively. Against the routing-aware baseline, QMAP yields \GAMainQMAPVsICCADWins{} wins and \GAMainQMAPVsICCADLosses{} losses. Thus, the QMAP aggregate reflects larger gains on a subset of circuits, rather than more frequent wins. The geometric mean captures this balance through the average log fidelity ratio.
 
-The evaluation uses 18 ZAC benchmarks, denoted ZAC18~\cite{lin2025zac}, and 154 MQT QMAP example files, denoted QMAP154~\cite{wille2023qmap}. QMAP154 contains 151 distinct circuits after normalization; equivalent inputs are combined, with fidelity averaged in the logarithmic domain. The baselines are ZAC by Lin \etal~\cite{lin2025zac} and routing-aware placement by Stade \etal~\cite{stade2025routingaware}. The latter is denoted ICCAD/QMAP and uses the MQT QMAP v3.2.0 implementation. All three compilers receive the same normalized inputs and gate sequences.
+Across both circuit sets and baselines, transfer and decoherence savings outweigh added idle-excitation losses. For QFT-18, transfers fall from \GAMainMechanismQFTBaseTransfers{} with ZAC to \GAMainMechanismQFTGATransfers{}; seed-median contributions to $\Delta\ln F$ from transfer, excitation, and decoherence are \mbox{$(+\GAMainMechanismQFTTransferGainRounded,\,\GAMainMechanismQFTExcitationGainRounded,\,+\GAMainMechanismQFTCoherenceGainRounded)$}. Transfer savings dominate this case.
 
-The hardware comprises $100\times100$ storage-zone SLM traps, $7\times20$ entanglement-zone gate-site pairs, and a $100\times100$ AOD array. Equation~\eqref{eq:fidelity} uses $f_1=0.9997$, $f_2=0.995$, $f_{\rm exc}=0.9975$, $f_{\rm tran}=0.999$, and $T_2=1.5\times10^6\,\mu$s~\cite{lin2025zac}. Trap transfers are counted per atom, and transport time contributes to coherence loss. Baselines are scored from their native outputs; GA-LK applies the candidate feasibility checks in Section~\ref{sec:method}. Each compilation has a 600~s limit. Aggregate quality comparisons include distinct circuits for which all three methods complete compilation and satisfy $t_q<T_2$; complete-result counts cover all input files.
-
-GA-LK uses the solver budgets in Table~\ref{tab:solver-bounds}, an eight-layer maximum horizon, and look-ahead parameters $(\alpha,\rho,\epsilon)=(0.5,0.7,0.05)$. Each circuit is run with random seeds 0, 1, and 2, and the median result is reported. The native kernel is compiled in C++17 Release mode with OpenMP and fast-math disabled. The platform comprises a 14-core Apple M4 Pro, 24~GB memory, and macOS~26.6.2, using Python~3.10.19 and AppleClang~21.0.0. All compilers run in a single thread throughout the evaluation.
-
-\subsection{Overall Compilation Quality}
-
-GA-LK achieved higher geometric-mean fidelity, fewer mean rearrangement batches, and shorter mean rearrangement times on both benchmark sets, as summarized in Table~\ref{tab:main-results}. Fidelity improved over ZAC and ICCAD/QMAP by \PaperPercentGain{\ZACMFourF}{\ZACMOneF} and \PaperPercentGain{\ZACMFourF}{\ZACMTwoF}, respectively, on ZAC18. The corresponding gains on QMAP154 were \PaperPercentGain{\QMAPMFourF}{\QMAPMOneF} and \PaperPercentGain{\QMAPMFourF}{\QMAPMTwoF}. The gains on both benchmark sets are plotted in Fig.~\ref{fig:experimental-summary}(a).
-
-
-On ZAC18, the mean rearrangement batch count decreased from \ZACMOneB{} for ZAC and \ZACMTwoB{} for ICCAD/QMAP to \ZACMFourB. On QMAP154, it decreased from \QMAPMOneB{} and \QMAPMTwoB{} to \QMAPMFourB, respectively. Mean rearrangement times fell to \ZACMFourT\,ms and \QMAPMFourT\,ms, respectively, below both baselines. These reductions indicate fewer sequential transport stages and less total time required to complete them.
-
-\subsection{Representative Circuit Comparisons}
-
-Quantum Fourier transform and Ising circuits illustrate GA-LK's fidelity advantage on individual workloads. Table~\ref{tab:representative-circuits} reports the sizes and absolute fidelities of four high-gain examples; Fig.~\ref{fig:experimental-summary}(b) shows improvements over both baselines. Among these examples, \texttt{QFT-18} had the largest relative gain, and all three Ising instances also exceeded both baselines. Two examples are selected from each benchmark set, requiring the higher baseline fidelity to be at least 0.05. Eligible circuits are then ranked by GA-LK's log-fidelity improvement over that value.
-
-\input{sections_en/05_circuit_table}
-
-\subsection{Multilayer Evaluation and Genetic Search}
+\subsection{Effects of Look-Ahead and Search}
 \label{sec:ablation}
 
-Multilayer look-ahead accounts for how current placement affects subsequent gate layers. In a controlled comparison of \AblationHN{} circuits, an eight-layer maximum horizon improved geometric-mean fidelity over a zero horizon by \PaperPercentGain{\AblationHRatio}{1}. A separate comparison fixed the objective and evaluation budget across search strategies. Genetic search improved fidelity by \PaperPercentGain{\AblationGARatio}{1} over deterministic coordinate-wise greedy search with local refinement on \AblationGAN{} circuits.
+Within the same joint decision space, looking beyond the current layer improves plan selection. With initial mappings, joint variables, search budgets, and candidate storage domains fixed, changing $H=0$ to $H=8$ raises geometric-mean fidelity by \PaperPercentGain{\AblationHRatio}{1} across \AblationHN{} circuits. The $H=8$ configuration accounts for subsequent gates, terminal returns, and residency informed by near-term reuse; $H=0$ selects by current-layer loss alone.
 
-The horizon comparison changes only $H_{\max}$, keeping all other parameters, search budgets, and storage-site candidate domains fixed. The eight-layer configuration includes future-layer costs, return costs at the window's end, and residency protection determined by future reuse. The zero-horizon configuration instead uses the current-layer cost as its objective. The search comparison fixes the eight-layer horizon and all physical constraints, replacing only the search strategy for large boundaries.
+A separate comparison fixes the cross-layer objective to assess how genetic search selects among joint candidates. Above the enumeration threshold, genetic and coordinate-wise greedy search use the same $H=8$, constraints, objective, evaluation budget, and local-refinement rules. Genetic search improves geometric-mean fidelity by \PaperPercentGain{\AblationGARatio}{1} across \AblationGAN{} circuits. These comparisons separately assess look-ahead configuration and search within the same joint space. They use different samples, so their increments cannot be added.
 
-Both comparisons use circuits with complete three-seed results from all ZAC18 circuits and a 30-circuit QMAP154 subset. The QMAP154 subset contains ten circuits from each two-qubit-gate-count stratum: at most 300, 301--1500, and above 1500. The stratified selection rule and complete circuit lists are available in the code repository.
+\label{sec:horizon-evaluation}
+The value of look-ahead also depends on its range. In a separate horizon study, most of the observed average improvement is already obtained with one-layer look-ahead. Fig.~\ref{fig:experimental-summary} shows the complete trajectories of \HorizonExtCompleteN{} circuits: moving from $H=0$ to 1 raises geometric-mean fidelity ratios and lowers geometric-mean batch ratios. Larger bounds produce smaller average changes. Four circuits have identical actual windows at $H=4$ and 8, reflecting the remaining-layer and size limits on prediction.
 
-\subsection{Look-Ahead for Initial Placement}
+\input{sections_en/05_overview_floats}
 
-The preceding GA-LK main experiments and ablations retain layer-weighted simulated-annealing initialization. We separately evaluate the extension in Section~\ref{sec:initial-placement} on \InitStudyN{} circuits covering different algorithm families and sizes. The comparison uses $H_{\rm init}=0$ and $H_{\rm init}=2$ on the same candidate pool, with an eight-layer horizon for subsequent dynamic placement in both cases. The original simulated-annealing mapping provides an additional reference.
+\label{sec:init-evaluation}
+The same principle applies before execution begins, when the initial layout sets the transport origins for early gates. Across \PhysicalInitSearchCompleteN{} circuits, evaluating the first layer and the next two improves full-circuit geometric-mean fidelity by \PhysicalInitGaVsHZeroGainPercent\% over first-layer-only evaluation. The comparison yields \PhysicalInitGaVsHZeroWins{} wins and \PhysicalInitGaVsHZeroLosses{} losses, using per-circuit medians over three seeds. With site domains, initial populations, prefix ranges, and 32-mapping budgets fixed, GA improves fidelity by \PhysicalInitGaVsRandomGainPercent\% over random search (\PhysicalInitGaVsRandomWins{} wins, \PhysicalInitGaVsRandomTies{} tie, \PhysicalInitGaVsRandomLosses{} losses). Both use dynamic optimization at $H=8$. Early-layer physical evaluation therefore informs initialization as well as dynamic placement, while genetic search improves the mapping choice under a matched budget.
 
-Log fidelity and batch counts are first averaged over three seeds within each circuit, then aggregated over complete circuits. With \InitTimeouts{} Ising paired run exceeding 600~s, \InitCompleteN{} complete circuits enter the paired comparison. Two-layer initial look-ahead increases geometric-mean fidelity by \InitFidelityGainRounded{} and reduces mean batches by \InitBatchReductionRounded{} relative to first-layer evaluation; its fidelity increase over the original simulated-annealing initialization is \InitVsSAGainRounded. Initialization gains are small on this sample. The main comparison continues to evaluate dynamic joint optimization under the original initializer. Complete per-circuit results and the timeout record are available in the code repository.
+\subsection{Computational Budget}
+\label{sec:runtime-evaluation}
 
-\subsection{Parameter Selection and Compilation Cost}
+These quality gains require additional candidate evaluation, whose budget provides a direct way to control compilation cost. On an arm64 macOS host with 14 logical processors and 24\,GiB RAM, 127 circuits in the main quality study were compiled with up to 14 concurrent workers. Taking three-seed medians per circuit and then the median across circuits gives 19.12\,s for complete compilation, including GA initialization; initialization alone takes a median of 4.92\,s.
 
-Smaller evaluation budgets or storage-site candidate domains can reduce compilation time. In Table~\ref{tab:sensitivity}, both adjustments retained near-default fidelity, with compilation-time ratios of \SensitivityBudgetLowTimeRatio{} and \SensitivityReturnSmallTimeRatio, respectively. A maximum horizon of four layers also retained near-default fidelity. The table additionally compares larger search budgets, larger storage-site domains, and different decay weights.
+A separate serial study measures the cost after fixing initial layouts. Across \GAMainFixedLayoutCircuitN{} circuits, non-initialization compilation takes a median of \GAMainPostInitialMedianSeconds\,s on the same host. It uses identical initial mappings and seed 0, with three repetitions after \mbox{warm-up}. The statistic subtracts the entire initialization stage from each run, then takes medians within and across circuits.
 
-\input{sections_en/05_sensitivity_table}
-
-Parameter comparisons use a fixed subset of 12 circuits, with two circuits selected per stratum from a prespecified list. ZAC18 uses qubit-count strata of at most 32, 33--64, and above 64; QMAP154 retains the two-qubit-gate strata. Fidelity and compilation time are both reported relative to the default configuration.
-
-GA-LK required more compilation time than the baselines in this comparison. On the 12-circuit subset, its median end-to-end compilation time was \StrictMFourTime\,s, with a geometric-mean per-circuit time ratio of \StrictMFourVsMTwo{} to ICCAD/QMAP. Timing used each compiler's native single-threaded implementation and the median of three post-warm-up runs. Candidate budgets and horizon limits provide controls for balancing compilation quality against computational cost.
+With initial layouts fixed, smaller candidate sets lower compilation cost while retaining similar execution quality. Reducing encoding evaluations from 576 to 192, or candidate sites and assignments from $(6,4)$ to $(4,2)$, gives fidelity ratios close to 1 across \SensitivityFidelityN{} circuits. Across \GAMainBudgetTimingN{} timed circuits, compilation time excluding initialization falls by \PaperPercentReduction{\GAMainBudgetPostInitialTimeRatio}{1} and \PaperPercentReduction{\GAMainReturnPostInitialTimeRatio}{1}, respectively, based on geometric means of paired time ratios. Each configuration runs once with seed 0 and up to four concurrent runs; these reductions describe that schedule.

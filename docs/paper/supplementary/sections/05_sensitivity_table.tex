@@ -1,0 +1,21 @@
+% Keep the horizon evidence immediately beside its discussion.
+\begingroup
+\setlength{\intextsep}{8pt}
+\begin{table}[H]
+\caption{\PaperRevision{前瞻范围对编译结果的影响}}
+\label{tab:sensitivity}
+\centering
+\PaperTableSetup
+\fontsize{8.5pt}{9.7pt}\selectfont
+\setlength{\tabcolsep}{2pt}
+\begin{tabular*}{\columnwidth}{@{}l@{\extracolsep{\fill}}rrrrr@{}}
+\toprule
+前瞻层数上限 $H$ & 0 & 1 & 2 & 4 & 8\\
+\midrule
+\PaperRevision{保真度比} & \HorizonExtZeroFidelityRatio & \HorizonExtOneFidelityRatio & \HorizonExtTwoFidelityRatio & \HorizonExtFourFidelityRatio & \HorizonExtEightFidelityRatio\\
+\PaperRevision{重排批次比} & \HorizonExtZeroBatchRatio & \HorizonExtOneBatchRatio & \HorizonExtTwoBatchRatio & \HorizonExtFourBatchRatio & \HorizonExtEightBatchRatio\\
+\bottomrule
+\end{tabular*}
+\PaperTableNote{\fontsize{8pt}{9.1pt}\selectfont\PaperRevision{注：各项相对同一电路的$H=8$结果，参照为1；$H=0$仅评价当前层。\HorizonExtTargetN{}个电路中，\HorizonExtCompleteN{}个在五档配置下均满足比较条件。逐电路、逐档取\HorizonExtSeedN{}次结果的中位数，与该电路$H=8$的中位数作比，再取几何均值。结果保留四位小数。}}
+\end{table}
+\endgroup

@@ -6,13 +6,14 @@
   fixed/.style={circle,draw=galkInk!65,line width=.35pt,fill=galkInk!25,
     minimum size=1.55mm,inner sep=0pt},
   motion/.style={galk/accepted path},
-  guide/.style={draw=galkStorage!45,densely dashed,line width=.40pt},
+  guide/.style={draw=galkStorage!75,densely dashed,line width=.50pt},
   inactive guide/.style={draw=galkGrid,densely dashed,line width=.35pt},
   panel title/.style={galk/panel title},
-  relation/.style={font=\rmfamily\fontsize{9.3pt}{10.3pt}\selectfont},
-  case label/.style={font=\rmfamily\bfseries\fontsize{9.2pt}{10.2pt}\selectfont},
-  explanatory note/.style={font=\rmfamily\fontsize{9.2pt}{10.2pt}\selectfont},
-  legend label/.style={font=\rmfamily\fontsize{9.2pt}{10.2pt}\selectfont},
+  relation/.style={font=\rmfamily\fontsize{9.0pt}{10.0pt}\selectfont},
+  case label/.style={font=\rmfamily\bfseries\fontsize{9.0pt}{10.0pt}\selectfont,
+    text width=2.85cm,align=center,inner sep=1pt},
+  explanatory note/.style={font=\rmfamily\fontsize{9.0pt}{10.0pt}\selectfont},
+  legend label/.style={font=\rmfamily\fontsize{9.0pt}{10.0pt}\selectfont},
   galk/q label/.append style={font=\rmfamily\itshape\fontsize{9.0pt}{10.0pt}\selectfont},
   constraint divider/.style={draw=galkInk!45,dash pattern=on 2pt off 2pt,line width=.45pt}
 ]
@@ -21,8 +22,8 @@
   % Device abstraction: rectangular zones and regular trap arrays.
   \node[panel title] at (.08,6.97) {(a) Zoned neutral-atom array};
   \draw[galk/entanglement zone] (.48,4.48) rectangle (7.40,6.55);
-  \draw[galk/storage zone] (.48,1.02) rectangle (7.40,4.10);
-  \node[galk/zone label] at (.66,6.39) {entanglement zone};
+  \draw[galk/storage zone] (.48,1.16) rectangle (7.40,4.10);
+  \node[galk/zone label] at (.66,6.39) {entangling zone};
   \node[galk/zone label] at (.66,3.94) {storage zone};
 
   % Five equally spaced Rydberg sites, with two traps per site.
@@ -39,9 +40,9 @@
   \node[anchor=south] (rydberg) at (3.91,5.66) {Rydberg pulse (2Q)};
   \draw[motion] (rydberg.south)--(qone.north);
 
-  % Eleven columns and five rows in the storage zone.
+  % Three regular rows show the same occupied traps with fewer empty sites.
   \foreach \x in {.92,1.51,2.10,2.69,3.28,3.87,4.46,5.05,5.64,6.23,6.82} {
-    \foreach \y in {1.42,1.85,2.28,2.71,3.14} {
+    \foreach \y in {1.42,2.28,3.14} {
       \node[trap] at (\x,\y) {};
     }
   }
@@ -109,9 +110,8 @@
   \node[galk/q label,anchor=north] at (13.54,4.60) {$q_1$};
   \node[galk/q label,anchor=south] at (13.54,5.83) {$q_0$};
   \node[galk/q label,anchor=south] at (11.69,5.83) {$q_1$};
-  \node[relation,text=galkBad] at (12.65,4.14)
+  \node[relation,text=galkBad] at (12.65,3.95)
     {$x_0<x_1\;\to\;x'_0>x'_1$};
-  \node[relation] at (12.65,3.68) {$y_0=y_1\;\to\;y'_0=y'_1$};
 
   % Invalid without a geometric crossing: distinct source rows merge.
   \draw[guide] (14.51,4.72)--(17.40,4.72);
@@ -127,8 +127,7 @@
   \node[galk/q label,anchor=north west] at (16.18,5.05) {$q_1$};
   \node[galk/q label,anchor=south] at (15.51,5.83) {$q_0$};
   \node[galk/q label,anchor=south] at (16.70,5.83) {$q_1$};
-  \node[relation] at (15.91,4.14) {$x_0<x_1\;\to\;x'_0<x'_1$};
-  \node[relation,text=galkBad] at (15.91,3.68)
+  \node[relation,text=galkBad] at (15.91,3.95)
     {$y_0<y_1\;\to\;y'_0=y'_1$};
 
   % Separate the two constraint classes without reducing the diagrams or text.
@@ -137,9 +136,9 @@
   % The second constraint is the Cartesian product of activated beams.
   \begin{scope}[yshift=-.45cm]
   \node[panel title] at (8.02,3.33) {(c) Unintended-intersection constraint};
-  \node[case label] at (9.48,2.93) {Simultaneous pickup};
-  \node[case label] at (12.65,2.93) {Batch $B_1$: pick up $q_0$};
-  \node[case label] at (15.91,2.93) {Batch $B_2$: pick up $q_1$};
+  \node[case label] at (9.48,2.93) {Joint pickup};
+  \node[case label] at (12.65,2.93) {$B_1$: move $q_0$};
+  \node[case label] at (15.91,2.93) {$B_2$: pick up $q_1$};
   \draw[galkGrid,line width=.38pt] (11.01,1.04)--(11.01,3.02);
 
   % Identical coordinates; the same stationary atom q2 is shown each time.
@@ -154,6 +153,7 @@
       \node[trap] at (10.00,1.36) {};
       \node[fixed] at (8.65,2.36) {};
       \node[galk/q label,anchor=east] at (8.49,2.36) {$q_2$};
+      \node[galk/q label,anchor=north west] at (8.78,2.20) {$s$};
       \node[galk/q label,anchor=west] at (10.16,2.36) {$q_1$};
     \end{scope}
   }
@@ -174,7 +174,8 @@
   \node[explanatory note,text=galkBad,anchor=center]
     at (9.48,.67) {Unintended pickup of $q_2$};
 
-  % One row--column pair is active in each of the two serialized pickups.
+  % Each snapshot shows only the pickup end of a complete serialized batch.
+  % B1 transports and unloads q0 outside this view, then switches its beams off.
   \draw[guide] (11.91,1.12)--(11.91,2.61);
   \draw[guide] (11.58,1.36)--(13.59,1.36);
   \node[atom] at (11.91,1.36) {};
@@ -187,7 +188,7 @@
   \node[atom] at (16.52,2.36) {};
   \node[galk/q label,anchor=north] at (15.17,1.24) {vacated};
   \node[explanatory note,anchor=center] at (14.26,.67)
-    {Sequential pickup leaves $q_2$ in the SLM};
+    {Complete $B_1$ before $B_2$; $q_2$ stays at $s$};
   \end{scope}
 
   % A dedicated legend row does not obscure any physical component.

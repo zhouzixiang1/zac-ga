@@ -31,6 +31,10 @@ from zzx.zplacer import ResidentPlacer
 POLICY_ID = "physical-prefix-initial-v1"
 
 
+class InfeasibleInitialMapping(ValueError):
+    """A physically replayed mapping is outside the supported scoring domain."""
+
+
 def stable_hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                                      allow_nan=False).encode()).hexdigest()
@@ -93,8 +97,8 @@ def resolve_initial_setting(setting: Mapping[str, Any], *, historical_contract: 
             and result.get("native_abi_version") != 8 and is_standard_ga_lk(result)):
         result["init_strategy"] = "physical_prefix"
     strategy = result.get("init_strategy", "legacy")
-    if not isinstance(strategy, str) or strategy not in {"legacy", "physical_prefix"}:
-        raise ValueError("init_strategy must be legacy or physical_prefix")
+    if not isinstance(strategy, str) or strategy not in {"legacy", "physical_prefix", "physical_prefix_ga"}:
+        raise ValueError("init_strategy must be legacy, physical_prefix or physical_prefix_ga")
     if strategy == "physical_prefix":
         if (result.get("placer") != "resident" or result.get("engine") != "ga"
                 or result.get("experiment_schema") != 2
@@ -105,6 +109,19 @@ def resolve_initial_setting(setting: Mapping[str, Any], *, historical_contract: 
         result["initial_lookahead"] = asdict(config)
     elif "initial_lookahead" in result:
         raise ValueError("initial_lookahead requires init_strategy=physical_prefix")
+    if strategy == "physical_prefix_ga":
+        from zzx.physical_initial_ga import PhysicalInitialGAConfig
+        if (result.get("placer") != "resident" or result.get("engine") != "ga"
+                or result.get("experiment_schema") != 2
+                or result.get("init_engine") != "ga"):
+            raise ValueError("physical_prefix_ga requires Schema-2 resident GA and init_engine=ga")
+        if "init_pop" in result or "init_gens" in result:
+            raise ValueError("physical_prefix_ga uses initial_ga controls, not legacy init_pop/init_gens")
+        config = PhysicalInitialGAConfig.from_mapping(
+            result.get("initial_ga"), seed=result.get("seed", 0))
+        result["initial_ga"] = asdict(config)
+    elif "initial_ga" in result:
+        raise ValueError("initial_ga requires init_strategy=physical_prefix_ga")
     return result
 
 
@@ -184,7 +201,7 @@ class PrefixLayerProvider(ForecastLayerProvider):
 def rollout_params(params: Mapping[str, Any], config: InitialLookaheadConfig) -> dict:
     """Fixed current-only bounded policy; never mutate the final GA-LK config."""
     result = deepcopy(dict(params))
-    for key in ("init_strategy", "initial_lookahead", "init_engine", "init_pop", "init_gens"):
+    for key in ("init_strategy", "initial_lookahead", "initial_ga", "init_engine", "init_pop", "init_gens"):
         result.pop(key, None)
     result.update(experiment_schema=2, method_id="ours_nl", engine="ga",
                   objective="physical_log_fidelity", seed=config.seed,
@@ -235,7 +252,7 @@ def evaluate_mapping(architecture, mapping, schedule, *, one_qubit=(), leading_o
         validation = validate_trace_physics(events, n_qubits=len(mapping))
         score = score_trace(events, n_qubits=len(mapping))
         if score.ood or score.log_fidelity is None:
-            raise ValueError("initial candidate prefix is outside the linear fidelity domain")
+            raise InfeasibleInitialMapping("initial candidate prefix is outside the linear fidelity domain")
         nll = -score.log_fidelity
         increment = nll - previous_nll
         weight = config.rho ** layer
@@ -260,7 +277,7 @@ def evaluate_mapping(architecture, mapping, schedule, *, one_qubit=(), leading_o
         validate_trace_physics(events, n_qubits=len(mapping))
         score = score_trace(events, n_qubits=len(mapping))
         if score.log_fidelity is None:
-            raise ValueError("initial candidate has invalid fidelity")
+            raise InfeasibleInitialMapping("initial candidate has invalid fidelity")
         weighted_nll = -score.log_fidelity
     if placer.forecast.horizon != 0:
         raise AssertionError("initializer rollout enabled internal lookahead")

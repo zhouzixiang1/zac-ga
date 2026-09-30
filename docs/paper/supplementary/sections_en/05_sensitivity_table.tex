@@ -1,0 +1,21 @@
+% Keep the horizon evidence immediately beside its discussion.
+\begingroup
+\setlength{\intextsep}{8pt}
+\begin{table}[H]
+\caption{\PaperRevision{Effect of the look-ahead range on compilation results}}
+\label{tab:sensitivity}
+\centering
+\PaperTableSetup
+\fontsize{8.5pt}{9.7pt}\selectfont
+\setlength{\tabcolsep}{2pt}
+\begin{tabular*}{\columnwidth}{@{}l@{\extracolsep{\fill}}rrrrr@{}}
+\toprule
+Look-ahead upper bound $H$ & 0 & 1 & 2 & 4 & 8\\
+\midrule
+\PaperRevision{Fidelity ratio} & \HorizonExtZeroFidelityRatio & \HorizonExtOneFidelityRatio & \HorizonExtTwoFidelityRatio & \HorizonExtFourFidelityRatio & \HorizonExtEightFidelityRatio\\
+\PaperRevision{Batch ratio} & \HorizonExtZeroBatchRatio & \HorizonExtOneBatchRatio & \HorizonExtTwoBatchRatio & \HorizonExtFourBatchRatio & \HorizonExtEightBatchRatio\\
+\bottomrule
+\end{tabular*}
+\PaperTableNote{\fontsize{8pt}{9.1pt}\selectfont\PaperRevision{All ratios use the same circuit's $H=8$ result as a reference of 1; $H=0$ evaluates only the current layer. Of \HorizonExtTargetN{} circuits, \HorizonExtCompleteN{} meet the comparison criteria under all five configurations. For each circuit and configuration, we take the median of \HorizonExtSeedN{} runs, divide by the circuit's $H=8$ median, and then take the geometric mean. Values are rounded to four decimal places.}}
+\end{table}
+\endgroup

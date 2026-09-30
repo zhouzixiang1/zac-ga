@@ -1,0 +1,2410 @@
+{
+  "aggregation": "Median of each field across all three seeds within a canonical circuit. Primary comparisons use the same all-four-arm complete in-domain circuit cohort. Fidelity ratios use log differences; other ratios are paired by circuit before geometric averaging.",
+  "architecture": {
+    "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/hardware_spec/full_architecture.json",
+    "sha256": "db8b96fa2641bfc338957232e3f43b38f1ca86e7bc6108417dee1675a16efc8a"
+  },
+  "arm_settings": {
+    "ga_h0": {
+      "algorithm_revision": "native-ga-v1",
+      "alpha_lookahead": 0.5,
+      "arch_spec": "hardware_spec/full_architecture.json",
+      "backend": "native",
+      "box_ratio": 3,
+      "crossover_rate": 0.25,
+      "dependency": true,
+      "dir": "results/paper_zh_v1/ablation/h8/",
+      "direct_enumeration_limit": 512,
+      "dynamic_placement": true,
+      "early_stop_patience": 3,
+      "elite_count": 2,
+      "engine": "ga",
+      "experiment_schema": 2,
+      "final_return_home": false,
+      "fitness_cache": true,
+      "fitness_mode": "phase",
+      "forecast_gate_candidate_budget": 4,
+      "formal_native": true,
+      "init_engine": "ga",
+      "init_strategy": "physical_prefix_ga",
+      "initial_ga": {
+        "crossover_probability": 0.25,
+        "early_stop_patience": 3,
+        "elite_count": 2,
+        "horizon": 0,
+        "insert_probability": 0.4,
+        "max_generations": 6,
+        "max_proposals": 320,
+        "max_unique_evaluations": 32,
+        "population_size": 8,
+        "reverse_probability": 0.2,
+        "rho": 0.7,
+        "rollout_evaluations": 32,
+        "search_policy": "ga",
+        "seed": 0,
+        "swap_probability": 0.4
+      },
+      "iterations": 6,
+      "local_polish_sweeps": 1,
+      "lookahead_horizon": {
+        "decay": "geometric",
+        "epsilon": 0.05,
+        "max_horizon": 8,
+        "mode": "decay",
+        "policy": "physical_terminal_decay_v1",
+        "rho": 0.7
+      },
+      "max_unique_evaluations": 576,
+      "method_id": "ours_lk",
+      "native_abi_version": 9,
+      "native_fail_closed": true,
+      "native_wheel_sha256": "1d6c66cc852ec6b1136bbe50d2b0977c144730dbf93a1e6f233fac3602d12b04",
+      "neighbor_sample_size": 12,
+      "neighbors_per_solution": 2,
+      "objective": "physical_log_fidelity",
+      "operator_profile": "tuned",
+      "pin_radius": 2,
+      "placer": "resident",
+      "population_size": 8,
+      "resyn": false,
+      "return_assignment_k": 4,
+      "return_candidate_limit": 6,
+      "reuse": true,
+      "rng_version": "python-random-mt19937-v1",
+      "routing_strategy": "coloring",
+      "scheduling": "asap",
+      "seed": 0,
+      "theta_capacity": 0.9,
+      "trivial_placement": false,
+      "tuning_protocol_id": "resident-ga-quality-racing-v3",
+      "use_verifier": false,
+      "use_window": true,
+      "w_pin": 0.0,
+      "w_resident": 0.3,
+      "window_size": 1000
+    },
+    "ga_h2": {
+      "algorithm_revision": "native-ga-v1",
+      "alpha_lookahead": 0.5,
+      "arch_spec": "hardware_spec/full_architecture.json",
+      "backend": "native",
+      "box_ratio": 3,
+      "crossover_rate": 0.25,
+      "dependency": true,
+      "dir": "results/paper_zh_v1/ablation/h8/",
+      "direct_enumeration_limit": 512,
+      "dynamic_placement": true,
+      "early_stop_patience": 3,
+      "elite_count": 2,
+      "engine": "ga",
+      "experiment_schema": 2,
+      "final_return_home": false,
+      "fitness_cache": true,
+      "fitness_mode": "phase",
+      "forecast_gate_candidate_budget": 4,
+      "formal_native": true,
+      "init_engine": "ga",
+      "init_strategy": "physical_prefix_ga",
+      "initial_ga": {
+        "crossover_probability": 0.25,
+        "early_stop_patience": 3,
+        "elite_count": 2,
+        "horizon": 2,
+        "insert_probability": 0.4,
+        "max_generations": 6,
+        "max_proposals": 320,
+        "max_unique_evaluations": 32,
+        "population_size": 8,
+        "reverse_probability": 0.2,
+        "rho": 0.7,
+        "rollout_evaluations": 32,
+        "search_policy": "ga",
+        "seed": 0,
+        "swap_probability": 0.4
+      },
+      "iterations": 6,
+      "local_polish_sweeps": 1,
+      "lookahead_horizon": {
+        "decay": "geometric",
+        "epsilon": 0.05,
+        "max_horizon": 8,
+        "mode": "decay",
+        "policy": "physical_terminal_decay_v1",
+        "rho": 0.7
+      },
+      "max_unique_evaluations": 576,
+      "method_id": "ours_lk",
+      "native_abi_version": 9,
+      "native_fail_closed": true,
+      "native_wheel_sha256": "1d6c66cc852ec6b1136bbe50d2b0977c144730dbf93a1e6f233fac3602d12b04",
+      "neighbor_sample_size": 12,
+      "neighbors_per_solution": 2,
+      "objective": "physical_log_fidelity",
+      "operator_profile": "tuned",
+      "pin_radius": 2,
+      "placer": "resident",
+      "population_size": 8,
+      "resyn": false,
+      "return_assignment_k": 4,
+      "return_candidate_limit": 6,
+      "reuse": true,
+      "rng_version": "python-random-mt19937-v1",
+      "routing_strategy": "coloring",
+      "scheduling": "asap",
+      "seed": 0,
+      "theta_capacity": 0.9,
+      "trivial_placement": false,
+      "tuning_protocol_id": "resident-ga-quality-racing-v3",
+      "use_verifier": false,
+      "use_window": true,
+      "w_pin": 0.0,
+      "w_resident": 0.3,
+      "window_size": 1000
+    },
+    "old_sa4_h2": {
+      "algorithm_revision": "native-ga-v1",
+      "alpha_lookahead": 0.5,
+      "arch_spec": "hardware_spec/full_architecture.json",
+      "backend": "native",
+      "box_ratio": 3,
+      "crossover_rate": 0.25,
+      "dependency": true,
+      "dir": "results/paper_zh_v1/ablation/h8/",
+      "direct_enumeration_limit": 512,
+      "dynamic_placement": true,
+      "early_stop_patience": 3,
+      "elite_count": 2,
+      "engine": "ga",
+      "experiment_schema": 2,
+      "final_return_home": false,
+      "fitness_cache": true,
+      "fitness_mode": "phase",
+      "forecast_gate_candidate_budget": 4,
+      "formal_native": true,
+      "init_engine": "sa",
+      "init_gens": 150,
+      "init_pop": 40,
+      "init_strategy": "physical_prefix",
+      "initial_lookahead": {
+        "candidates": 4,
+        "horizon": 2,
+        "rho": 0.7,
+        "rollout_evaluations": 32
+      },
+      "iterations": 6,
+      "local_polish_sweeps": 1,
+      "lookahead_horizon": {
+        "decay": "geometric",
+        "epsilon": 0.05,
+        "max_horizon": 8,
+        "mode": "decay",
+        "policy": "physical_terminal_decay_v1",
+        "rho": 0.7
+      },
+      "max_unique_evaluations": 576,
+      "method_id": "ours_lk",
+      "native_abi_version": 9,
+      "native_fail_closed": true,
+      "native_wheel_sha256": "1d6c66cc852ec6b1136bbe50d2b0977c144730dbf93a1e6f233fac3602d12b04",
+      "neighbor_sample_size": 12,
+      "neighbors_per_solution": 2,
+      "objective": "physical_log_fidelity",
+      "operator_profile": "tuned",
+      "pin_radius": 2,
+      "placer": "resident",
+      "population_size": 8,
+      "resyn": false,
+      "return_assignment_k": 4,
+      "return_candidate_limit": 6,
+      "reuse": true,
+      "rng_version": "python-random-mt19937-v1",
+      "routing_strategy": "coloring",
+      "scheduling": "asap",
+      "seed": 0,
+      "theta_capacity": 0.9,
+      "trivial_placement": false,
+      "tuning_protocol_id": "resident-ga-quality-racing-v3",
+      "use_verifier": false,
+      "use_window": true,
+      "w_pin": 0.0,
+      "w_resident": 0.3,
+      "window_size": 1000
+    },
+    "random_h2": {
+      "algorithm_revision": "native-ga-v1",
+      "alpha_lookahead": 0.5,
+      "arch_spec": "hardware_spec/full_architecture.json",
+      "backend": "native",
+      "box_ratio": 3,
+      "crossover_rate": 0.25,
+      "dependency": true,
+      "dir": "results/paper_zh_v1/ablation/h8/",
+      "direct_enumeration_limit": 512,
+      "dynamic_placement": true,
+      "early_stop_patience": 3,
+      "elite_count": 2,
+      "engine": "ga",
+      "experiment_schema": 2,
+      "final_return_home": false,
+      "fitness_cache": true,
+      "fitness_mode": "phase",
+      "forecast_gate_candidate_budget": 4,
+      "formal_native": true,
+      "init_engine": "ga",
+      "init_strategy": "physical_prefix_ga",
+      "initial_ga": {
+        "crossover_probability": 0.25,
+        "early_stop_patience": 3,
+        "elite_count": 2,
+        "horizon": 2,
+        "insert_probability": 0.4,
+        "max_generations": 6,
+        "max_proposals": 320,
+        "max_unique_evaluations": 32,
+        "population_size": 8,
+        "reverse_probability": 0.2,
+        "rho": 0.7,
+        "rollout_evaluations": 32,
+        "search_policy": "random",
+        "seed": 0,
+        "swap_probability": 0.4
+      },
+      "iterations": 6,
+      "local_polish_sweeps": 1,
+      "lookahead_horizon": {
+        "decay": "geometric",
+        "epsilon": 0.05,
+        "max_horizon": 8,
+        "mode": "decay",
+        "policy": "physical_terminal_decay_v1",
+        "rho": 0.7
+      },
+      "max_unique_evaluations": 576,
+      "method_id": "ours_lk",
+      "native_abi_version": 9,
+      "native_fail_closed": true,
+      "native_wheel_sha256": "1d6c66cc852ec6b1136bbe50d2b0977c144730dbf93a1e6f233fac3602d12b04",
+      "neighbor_sample_size": 12,
+      "neighbors_per_solution": 2,
+      "objective": "physical_log_fidelity",
+      "operator_profile": "tuned",
+      "pin_radius": 2,
+      "placer": "resident",
+      "population_size": 8,
+      "resyn": false,
+      "return_assignment_k": 4,
+      "return_candidate_limit": 6,
+      "reuse": true,
+      "rng_version": "python-random-mt19937-v1",
+      "routing_strategy": "coloring",
+      "scheduling": "asap",
+      "seed": 0,
+      "theta_capacity": 0.9,
+      "trivial_placement": false,
+      "tuning_protocol_id": "resident-ga-quality-racing-v3",
+      "use_verifier": false,
+      "use_window": true,
+      "w_pin": 0.0,
+      "w_resident": 0.3,
+      "window_size": 1000
+    }
+  },
+  "arms": [
+    "old_sa4_h2",
+    "ga_h2",
+    "ga_h0",
+    "random_h2"
+  ],
+  "budget_semantics": "B32 is at most 32 distinct outer mapping evaluation attempts; inner rollout has its own 32-encoding-per-layer cap. Infeasible attempts count; cached duplicates do not count again.",
+  "circuits": [
+    {
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "family": "Bernstein-Vazirani",
+      "gates_1q": 29,
+      "gates_2q": 13,
+      "input": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/corrected_driver_v1/freeze/inputs/a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752.qasm",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "original_input": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/canonical/zac18/bv_n14_transpiled.qasm",
+      "qubits": 14
+    },
+    {
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "family": "GHZ state preparation",
+      "gates_1q": 45,
+      "gates_2q": 22,
+      "input": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/corrected_driver_v1/freeze/inputs/0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd.qasm",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "original_input": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/canonical/zac18/ghz_n23.qasm",
+      "qubits": 23
+    },
+    {
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "family": "W-state preparation",
+      "gates_1q": 105,
+      "gates_2q": 52,
+      "input": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/corrected_driver_v1/freeze/inputs/d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d.qasm",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "original_input": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/canonical/zac18/wstate_n27_transpiled.qasm",
+      "qubits": 27
+    },
+    {
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "family": "Ising simulation",
+      "gates_1q": 144,
+      "gates_2q": 82,
+      "input": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/corrected_driver_v1/freeze/inputs/24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65.qasm",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "original_input": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/canonical/zac18/ising_n42.qasm",
+      "qubits": 42
+    },
+    {
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "family": "quantum Fourier transform",
+      "gates_1q": 324,
+      "gates_2q": 306,
+      "input": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/corrected_driver_v1/freeze/inputs/2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d.qasm",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "original_input": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/canonical/zac18/qft_n18_transpiled.qasm",
+      "qubits": 18
+    },
+    {
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "family": "small reversible benchmark",
+      "gates_1q": 4,
+      "gates_2q": 5,
+      "input": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/corrected_driver_v1/freeze/inputs/4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a.qasm",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "original_input": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/canonical/qmap154/ex1_226.qasm",
+      "qubits": 6
+    },
+    {
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "family": "medium reversible benchmark",
+      "gates_1q": 528,
+      "gates_2q": 283,
+      "input": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/corrected_driver_v1/freeze/inputs/8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd.qasm",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "original_input": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/canonical/qmap154/cm82a_208.qasm",
+      "qubits": 8
+    },
+    {
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "family": "hidden weighted bit",
+      "gates_1q": 1087,
+      "gates_2q": 598,
+      "input": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/corrected_driver_v1/freeze/inputs/9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88.qasm",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "original_input": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/canonical/qmap154/hwb5_53.qasm",
+      "qubits": 6
+    },
+    {
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "family": "adder benchmark",
+      "gates_1q": 2786,
+      "gates_2q": 1498,
+      "input": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/corrected_driver_v1/freeze/inputs/3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8.qasm",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "original_input": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/canonical/qmap154/adr4_197.qasm",
+      "qubits": 13
+    }
+  ],
+  "cohort_source": {
+    "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/initial_lookahead_v1/nine-family-h0-h2-sa-k4-rho07-b32-seed012-v1/protocol.json",
+    "sha256": "3f99d0207dcbf87ea44b12810bfeac0f5272f544013d72dffa9802a7342f8f69"
+  },
+  "config": {
+    "path": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/native-ga-v1/paper-zh-v1/configs/ablation/h8-seed0.json",
+    "sha256": "bdd4644f339e5d1ca0a423fb8ef7b97c9e66102726a2580547a3f32b3f3e9ca2"
+  },
+  "created_at_utc": "2026-09-12T13:08:56.773039+00:00",
+  "deadline_semantics": "Each arm has 600 seconds from subprocess start, including its own initialization, complete compile and validation; queue time excluded.",
+  "driver": {
+    "path": "/Users/zhouzixiang/Desktop/zac/IEEE_conference_template/build/physical_ga_initial_v1/corrected_driver_v1/frozen_source/ZAC_zzx/experiments_v2/physical_ga_initial_study.py",
+    "sha256": "30a8c51d927069f1688423e2a0cf35fcb66d3544f295278e1ad5d74f623369b6"
+  },
+  "driver_correction": {
+    "behavioral_fix": "Compare stable JSON hashes on both sides of the existing unchanged-selection guard; no selector, dynamic solver, parameter, cohort, seed, order or budget change.",
+    "preserved_records": [
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/0c57c9a79d2a187a-s0-ga_h0.started.json",
+        "sha256": "ab4c3eaa59aa7f03061129f4d441deb5613ee62cee367cb9060b484989fc49ab"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/0c57c9a79d2a187a-s0-ga_h2.json",
+        "sha256": "fbc448d6e2613f77c4917ce8542e4cc1faa9b53dcd97e870bfa1efd19d8cd444"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/0c57c9a79d2a187a-s0-ga_h2.started.json",
+        "sha256": "43a8c89fcd022ccb8ab0cc4200f7641810a69471fbd80feef9a6f5f7a6735eb4"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-ga_h0.json",
+        "sha256": "9505e4d7e7572d85e72dc1022ebff9ce99a1bca8012d19a3fb6ee45988f01c43"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-ga_h0.started.json",
+        "sha256": "d541b26c1d8d1bf89d53586d4343fa3b1eedd4a80068d7202b69ad7e9c643ddc"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-ga_h2.json",
+        "sha256": "0641991d7d58d5dc2693089e45b7ecd8bfee807c3d0e2f17a529b91cf30c28a6"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-ga_h2.started.json",
+        "sha256": "64c3b7a1c1db2b3b639b602c72fbf873622ce043bdb09baaf1ca8f87797d82e3"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-old_sa4_h2.json",
+        "sha256": "5dbdd729493558dea0ec4f01500222454c0bf4fa37250f07b0a48adb3eb80b6c"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-old_sa4_h2.started.json",
+        "sha256": "f4f6450da818795f8eaf04e66837661a6eb24c180ee0312a9f80ce1bb3f0379c"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-random_h2.json",
+        "sha256": "0a3dc5f30d997a77dd6b25f021a9f477baafab88cb97981610660500a3758fbc"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-random_h2.started.json",
+        "sha256": "3521fdc0a9c9bc0f14fe759f0fe0c1d9eca23497eef4ef5077e5ec4b9d85cbeb"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-ga_h0.json",
+        "sha256": "137ba9b3da5f5621c3577ff4d02afefdf4ee0a64c3191fd05931ac352698e6af"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-ga_h0.started.json",
+        "sha256": "84bc817360d8de3beaf4ffa447d877ec48679a136fe93fac054b28ad7ec82a1b"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-ga_h2.json",
+        "sha256": "937967be0ad2a299dc1964b779352247b8889e9cf9db25f1f04868e5bdd573ec"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-ga_h2.started.json",
+        "sha256": "d9686b1619065048631bdabe2d26fa2e6a3ea3c61ba69dc268c94325388da450"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-old_sa4_h2.json",
+        "sha256": "423a8e2e919dbd3da2eecf3ea434c4aef143fa4da95aeabacfe7316382785d54"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-old_sa4_h2.started.json",
+        "sha256": "a6f3ce89b849474cb7ae238912b2075eafc60000ae0ad1132d64bd112ef9b02f"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-random_h2.json",
+        "sha256": "ad9608ac4a60ae8d083ab412fe1992d9ae598cfdb12bdf7ed8804f3dbee581ab"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-random_h2.started.json",
+        "sha256": "e96c3d10ae26c1e91279408a4e580e143cba136016a1a64711d46db3d2956ed2"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-ga_h0.json",
+        "sha256": "82d21d411e0f2ad42aa8db527f38c9ea2473435dc76d4f9ea41770118eef4df5"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-ga_h0.started.json",
+        "sha256": "afa1060fa87d5d2d9591ed24cefdc5200c0c3a2bc379db82083c96e5b847c713"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-ga_h2.json",
+        "sha256": "888c38ca3bb2bdfec78f4759922d63d05dacc5fa05d0b94488919c775974e67d"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-ga_h2.started.json",
+        "sha256": "12b060e286347245271da23f00c32eb2422fc2c7ae8e3b5dbde94534b2b27751"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-old_sa4_h2.json",
+        "sha256": "9cd119a82d8c7729e5f55845ec741b4a9d9ee49fa95f3333aa9d518bc2ffc674"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-old_sa4_h2.started.json",
+        "sha256": "c6840332521c1529b3b02cb2d503857d1e668b97e134a51d9702d90f11cfb876"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-random_h2.json",
+        "sha256": "b19a97aa5b65cf98faaedcebab99488aa94938df0f26808ae6dc38785cb46f8a"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-random_h2.started.json",
+        "sha256": "d550e8843aa5b951f69b14508ee3ca27292ce18777654fa7f508251853999725"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/0c57c9a79d2a187a-s0-ga_h2/failure.json",
+        "sha256": "f83ff79314a1dcd3c0d648a3a299154f0965f317a82e8a84acd34cfba680c141"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-ga_h0/failure.json",
+        "sha256": "4a90dcde63620bac28e16587073d73720a6fabd9abde28884bab777340ab1418"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-ga_h2/failure.json",
+        "sha256": "a4495f9a4b2ca596bebd0fc9291b02a70f5fee3f9108f588748ff3d8044907ab"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-old_sa4_h2/failure.json",
+        "sha256": "cd6141d1ec5d9d3a549e813644f1ec5acd3252722808233ceabbdf39c323477e"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-random_h2/failure.json",
+        "sha256": "ab3bdc775b10ace55c57b42d1adb3973df13e24c2ef9644f46088a1f551c02a8"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-ga_h0/failure.json",
+        "sha256": "043daaceb92cacd4d51b22460705ab234bc37cf6c5545d86f588ba7f962f3c57"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-ga_h2/failure.json",
+        "sha256": "0d68562fa10e4864f85aace40db867f9b1f841848b1ece34e63dde62afec8673"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-old_sa4_h2/failure.json",
+        "sha256": "e190e010db0560d92663bbf86ede3f0b21fdceb0f62323258fdf59fd876ade4a"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-random_h2/failure.json",
+        "sha256": "ccba57dcec9a9843d8dd4e66c85a3351e862528367cd1bafecb031574af3ee22"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-ga_h0/failure.json",
+        "sha256": "06a0d2ef4da7e44914b83ab9656b2c76f95dd99658116c0a3f517972d942b76a"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-ga_h2/failure.json",
+        "sha256": "2d3cf663328b754174496c6a6ae1bbd3cfba7336bc29284860dc5fae0c8b053a"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-old_sa4_h2/failure.json",
+        "sha256": "da402c62d8f7c80f6dac98196655770778bb9ef27b31e2a9a4e091b85dd65755"
+      },
+      {
+        "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-random_h2/failure.json",
+        "sha256": "ba4f8f934ad0dd1db862c235b0863ee2125e16e078bb4b4e5e6e74cd66aaf7c5"
+      }
+    ],
+    "reason": "The original driver compared an in-memory tuple-containing selection report directly with its JSON list representation, misclassifying completed compilations as program_error.",
+    "restart_policy": "Restart the entire prespecified 108-job matrix under a distinct corrected driver protocol, not a selective outcome retry. Preserve every original receipt, failure and interrupted claim; no original outcome enters corrected statistics.",
+    "superseded_protocol": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/results/physical_ga_initial_v1/protocol.json",
+      "sha256": "275658ecabf3441fabf788d16702b84d49e25122723877baf8ef30fe27c73415"
+    },
+    "superseded_protocol_id": "physical-ga-initial-nine-family-four-arm-seed012-v1"
+  },
+  "dynamic_contract_sha256": "d14b3d2581e37cac8b8f444ed2109a96336e6bfe9cd7376da2ffe9e714cb1b01",
+  "dynamic_setting": {
+    "algorithm_revision": "native-ga-v1",
+    "alpha_lookahead": 0.5,
+    "arch_spec": "hardware_spec/full_architecture.json",
+    "backend": "native",
+    "box_ratio": 3,
+    "crossover_rate": 0.25,
+    "dependency": true,
+    "dir": "results/paper_zh_v1/ablation/h8/",
+    "direct_enumeration_limit": 512,
+    "dynamic_placement": true,
+    "early_stop_patience": 3,
+    "elite_count": 2,
+    "engine": "ga",
+    "experiment_schema": 2,
+    "final_return_home": false,
+    "fitness_cache": true,
+    "fitness_mode": "phase",
+    "forecast_gate_candidate_budget": 4,
+    "formal_native": true,
+    "init_engine": "sa",
+    "init_gens": 150,
+    "init_pop": 40,
+    "iterations": 6,
+    "local_polish_sweeps": 1,
+    "lookahead_horizon": {
+      "decay": "geometric",
+      "epsilon": 0.05,
+      "max_horizon": 8,
+      "mode": "decay",
+      "policy": "physical_terminal_decay_v1",
+      "rho": 0.7
+    },
+    "max_unique_evaluations": 576,
+    "method_id": "ours_lk",
+    "native_abi_version": 9,
+    "native_fail_closed": true,
+    "native_wheel_sha256": "1d6c66cc852ec6b1136bbe50d2b0977c144730dbf93a1e6f233fac3602d12b04",
+    "neighbor_sample_size": 12,
+    "neighbors_per_solution": 2,
+    "objective": "physical_log_fidelity",
+    "operator_profile": "tuned",
+    "pin_radius": 2,
+    "placer": "resident",
+    "population_size": 8,
+    "resyn": false,
+    "return_assignment_k": 4,
+    "return_candidate_limit": 6,
+    "reuse": true,
+    "rng_version": "python-random-mt19937-v1",
+    "routing_strategy": "coloring",
+    "scheduling": "asap",
+    "seed": 0,
+    "theta_capacity": 0.9,
+    "trivial_placement": false,
+    "tuning_protocol_id": "resident-ga-quality-racing-v3",
+    "use_verifier": false,
+    "use_window": true,
+    "w_pin": 0.0,
+    "w_resident": 0.3,
+    "window_size": 1000
+  },
+  "environment": {
+    "MKL_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONHASHSEED": "0",
+    "VECLIB_MAXIMUM_THREADS": "1"
+  },
+  "failure_policy": "No retries, substitutions or overwrites; OOD is a completed physical run with unavailable fidelity, not a program error.",
+  "formal_paper_result": false,
+  "frozen_source": "/Users/zhouzixiang/Desktop/zac/IEEE_conference_template/build/physical_ga_initial_v1/corrected_driver_v1/frozen_source/ZAC_zzx",
+  "jobs": [
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s0-old_sa4_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s0-ga_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s0-ga_h0",
+      "seed": 0
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s0-random_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s1-ga_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s1-ga_h0",
+      "seed": 1
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s1-random_h2",
+      "seed": 1
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s1-old_sa4_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s2-ga_h0",
+      "seed": 2
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s2-random_h2",
+      "seed": 2
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s2-old_sa4_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "bv_n14_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752",
+      "job_id": "a9f1ef0f566a3cc1-s2-ga_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s0-ga_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s0-ga_h0",
+      "seed": 0
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s0-random_h2",
+      "seed": 0
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s0-old_sa4_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s1-ga_h0",
+      "seed": 1
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s1-random_h2",
+      "seed": 1
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s1-old_sa4_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s1-ga_h2",
+      "seed": 1
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s2-random_h2",
+      "seed": 2
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s2-old_sa4_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s2-ga_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "ghz_n23",
+      "dataset": "zac18",
+      "input_sha256": "0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd",
+      "job_id": "0c57c9a79d2a187a-s2-ga_h0",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s0-ga_h0",
+      "seed": 0
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s0-random_h2",
+      "seed": 0
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s0-old_sa4_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s0-ga_h2",
+      "seed": 0
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s1-random_h2",
+      "seed": 1
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s1-old_sa4_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s1-ga_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s1-ga_h0",
+      "seed": 1
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s2-old_sa4_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s2-ga_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s2-ga_h0",
+      "seed": 2
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "wstate_n27_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d",
+      "job_id": "d2cb39ae9b321e8f-s2-random_h2",
+      "seed": 2
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s0-random_h2",
+      "seed": 0
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s0-old_sa4_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s0-ga_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s0-ga_h0",
+      "seed": 0
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s1-old_sa4_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s1-ga_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s1-ga_h0",
+      "seed": 1
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s1-random_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s2-ga_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s2-ga_h0",
+      "seed": 2
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s2-random_h2",
+      "seed": 2
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "ising_n42",
+      "dataset": "zac18",
+      "input_sha256": "24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65",
+      "job_id": "24ea0070b6bfe3a3-s2-old_sa4_h2",
+      "seed": 2
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s0-old_sa4_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s0-ga_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s0-ga_h0",
+      "seed": 0
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s0-random_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s1-ga_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s1-ga_h0",
+      "seed": 1
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s1-random_h2",
+      "seed": 1
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s1-old_sa4_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s2-ga_h0",
+      "seed": 2
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s2-random_h2",
+      "seed": 2
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s2-old_sa4_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "qft_n18_transpiled",
+      "dataset": "zac18",
+      "input_sha256": "2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d",
+      "job_id": "2e218cbc6320c2d4-s2-ga_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s0-ga_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s0-ga_h0",
+      "seed": 0
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s0-random_h2",
+      "seed": 0
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s0-old_sa4_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s1-ga_h0",
+      "seed": 1
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s1-random_h2",
+      "seed": 1
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s1-old_sa4_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s1-ga_h2",
+      "seed": 1
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s2-random_h2",
+      "seed": 2
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s2-old_sa4_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s2-ga_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "ex1_226",
+      "dataset": "qmap154",
+      "input_sha256": "4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a",
+      "job_id": "4a6d53e313003be3-s2-ga_h0",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s0-ga_h0",
+      "seed": 0
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s0-random_h2",
+      "seed": 0
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s0-old_sa4_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s0-ga_h2",
+      "seed": 0
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s1-random_h2",
+      "seed": 1
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s1-old_sa4_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s1-ga_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s1-ga_h0",
+      "seed": 1
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s2-old_sa4_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s2-ga_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s2-ga_h0",
+      "seed": 2
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "cm82a_208",
+      "dataset": "qmap154",
+      "input_sha256": "8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd",
+      "job_id": "8314441e90c48c83-s2-random_h2",
+      "seed": 2
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s0-random_h2",
+      "seed": 0
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s0-old_sa4_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s0-ga_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s0-ga_h0",
+      "seed": 0
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s1-old_sa4_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s1-ga_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s1-ga_h0",
+      "seed": 1
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s1-random_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s2-ga_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s2-ga_h0",
+      "seed": 2
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s2-random_h2",
+      "seed": 2
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "hwb5_53",
+      "dataset": "qmap154",
+      "input_sha256": "9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88",
+      "job_id": "9e3f053dbede7457-s2-old_sa4_h2",
+      "seed": 2
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s0-old_sa4_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s0-ga_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s0-ga_h0",
+      "seed": 0
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s0-random_h2",
+      "seed": 0
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s1-ga_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s1-ga_h0",
+      "seed": 1
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s1-random_h2",
+      "seed": 1
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s1-old_sa4_h2",
+      "seed": 1
+    },
+    {
+      "arm": "ga_h0",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s2-ga_h0",
+      "seed": 2
+    },
+    {
+      "arm": "random_h2",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s2-random_h2",
+      "seed": 2
+    },
+    {
+      "arm": "old_sa4_h2",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s2-old_sa4_h2",
+      "seed": 2
+    },
+    {
+      "arm": "ga_h2",
+      "circuit": "adr4_197",
+      "dataset": "qmap154",
+      "input_sha256": "3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8",
+      "job_id": "3a59691f2cef4658-s2-ga_h2",
+      "seed": 2
+    }
+  ],
+  "max_workers": 1,
+  "model": {
+    "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/evaluation/fidelity_model_zac.json",
+    "sha256": "f9e2c97681ce885ca530ab0f2a57a008148426a3fc7998a7e715b8ba1b71fbd4"
+  },
+  "native": {
+    "backend": "cpp-native-v9",
+    "build_type": "Release",
+    "compiler_id": "AppleClang",
+    "compiler_version": "21.0.0.21000101",
+    "cxx_standard": 17,
+    "extension_path": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/native-ga-v1/paper-zh-v1/build/abi9-h0fix-venv/lib/python3.10/site-packages/zac_native_core.cpython-310-darwin.so",
+    "extension_sha256": "f99d9f8d720d975483cd89a617b5428a73782893d2b4a4fb2602bb85175ead89",
+    "fast_math": false,
+    "flat_wire_version": 1,
+    "native_abi_version": 9,
+    "native_wheel_sha256": "1d6c66cc852ec6b1136bbe50d2b0977c144730dbf93a1e6f233fac3602d12b04",
+    "openmp": false,
+    "rich_boundary_wire_version": 7,
+    "rich_h0_wire_version": 1,
+    "rng_version": "python-random-mt19937-v1",
+    "version": "0.5.34",
+    "wheel_registered": true,
+    "wheel_registration_path": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/native-ga-v1/paper-zh-v1/build/abi9-h0fix-venv/lib/python3.10/site-packages/zac_native_core.cpython-310-darwin.so.wheel-registration.json"
+  },
+  "pairing_contract": "New three arms share seat-domain and initial-population hashes for a circuit/seed. Their later populations may differ with objective/policy.",
+  "protocol_id": "physical-ga-initial-nine-family-four-arm-seed012-v1-driverfix1",
+  "python": {
+    "path": "/Users/zhouzixiang/Desktop/zac/fidelity-lookahead-v2/artifacts/native-ga-v1/paper-zh-v1/build/abi9-h0fix-venv/bin/python",
+    "realpath": "/opt/anaconda3/envs/kaiwu/bin/python3.10",
+    "sha256": "1b2ef59a75784cb9a491915c733a4a1f2f78168ae857daac911da12cf45988ba"
+  },
+  "python_version": "3.10.19 (main, Oct 21 2025, 16:37:10) [Clang 20.1.8 ]",
+  "repository": {
+    "commit": "94d9232a6887c105e95bf3cd2523d8354529d1ae",
+    "status": " M ZAC_zzx/zzx/initial_lookahead.py\n M ZAC_zzx/zzx/zac_zzx.py\n?? ZAC_zzx/experiments_v2/physical_ga_initial_study.py\n?? ZAC_zzx/results/physical_ga_initial_v1/freeze/inputs/0c57c9a79d2a187a90c2266ec22ad092f7f0ef573557f51b42f136c4db7f5afd.qasm\n?? ZAC_zzx/results/physical_ga_initial_v1/freeze/inputs/24ea0070b6bfe3a37d44ff0cff0d0f5527dd49518a58af57b394bd775bcaab65.qasm\n?? ZAC_zzx/results/physical_ga_initial_v1/freeze/inputs/2e218cbc6320c2d4600d37ddf2c65f8befcb1d6f62550cd0367b82b62e99979d.qasm\n?? ZAC_zzx/results/physical_ga_initial_v1/freeze/inputs/3a59691f2cef465889098b3e1fe8dfc1073bdb63f046979516e9ca7612614be8.qasm\n?? ZAC_zzx/results/physical_ga_initial_v1/freeze/inputs/4a6d53e313003be35a7d3c56a5702b8a2f0ce138861f1ff1de53929c6660d26a.qasm\n?? ZAC_zzx/results/physical_ga_initial_v1/freeze/inputs/8314441e90c48c8308a3339a2101e26dc418327808ac370bf91fb6603ef666dd.qasm\n?? ZAC_zzx/results/physical_ga_initial_v1/freeze/inputs/9e3f053dbede7457444bf109616af357b3ab6d81a6a1537fd8fe7bc8559feb88.qasm\n?? ZAC_zzx/results/physical_ga_initial_v1/freeze/inputs/a9f1ef0f566a3cc1a347e8cb7bf74983b239326618f114a908e46c6e37c67752.qasm\n?? ZAC_zzx/results/physical_ga_initial_v1/freeze/inputs/d2cb39ae9b321e8f9cffdc461f673280c0304eb8cfe4803fa00b765f7c2e324d.qasm\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/0c57c9a79d2a187a-s0-ga_h0/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/0c57c9a79d2a187a-s0-ga_h0/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/0c57c9a79d2a187a-s0-ga_h0/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/0c57c9a79d2a187a-s0-ga_h2/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/0c57c9a79d2a187a-s0-ga_h2/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/0c57c9a79d2a187a-s0-ga_h2/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/0c57c9a79d2a187a-s0-ga_h2/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-ga_h0/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-ga_h0/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-ga_h0/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-ga_h0/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-ga_h2/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-ga_h2/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-ga_h2/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-ga_h2/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-old_sa4_h2/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-old_sa4_h2/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-old_sa4_h2/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-old_sa4_h2/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-random_h2/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-random_h2/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-random_h2/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s0-random_h2/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-ga_h0/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-ga_h0/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-ga_h0/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-ga_h0/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-ga_h2/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-ga_h2/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-ga_h2/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-ga_h2/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-old_sa4_h2/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-old_sa4_h2/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-old_sa4_h2/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-old_sa4_h2/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-random_h2/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-random_h2/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-random_h2/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s1-random_h2/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-ga_h0/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-ga_h0/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-ga_h0/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-ga_h0/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-ga_h2/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-ga_h2/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-ga_h2/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-ga_h2/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-old_sa4_h2/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-old_sa4_h2/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-old_sa4_h2/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-old_sa4_h2/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-random_h2/dynamic_rng.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-random_h2/failure.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-random_h2/selection.json\n?? ZAC_zzx/results/physical_ga_initial_v1/jobs/a9f1ef0f566a3cc1-s2-random_h2/setting.json\n?? ZAC_zzx/results/physical_ga_initial_v1/protocol.json\n?? ZAC_zzx/results/physical_ga_initial_v1/protocol.sha256.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/0c57c9a79d2a187a-s0-ga_h0.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/0c57c9a79d2a187a-s0-ga_h2.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/0c57c9a79d2a187a-s0-ga_h2.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-ga_h0.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-ga_h0.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-ga_h2.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-ga_h2.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-old_sa4_h2.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-old_sa4_h2.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-random_h2.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s0-random_h2.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-ga_h0.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-ga_h0.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-ga_h2.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-ga_h2.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-old_sa4_h2.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-old_sa4_h2.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-random_h2.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s1-random_h2.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-ga_h0.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-ga_h0.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-ga_h2.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-ga_h2.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-old_sa4_h2.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-old_sa4_h2.started.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-random_h2.json\n?? ZAC_zzx/results/physical_ga_initial_v1/receipts/a9f1ef0f566a3cc1-s2-random_h2.started.json\n?? ZAC_zzx/tests/test_physical_initial_ga.py\n?? ZAC_zzx/zzx/physical_initial_ga.py\n",
+    "tracked_diff": "diff --git a/ZAC_zzx/zzx/initial_lookahead.py b/ZAC_zzx/zzx/initial_lookahead.py\nindex 5b59b84..e81c9e2 100644\n--- a/ZAC_zzx/zzx/initial_lookahead.py\n+++ b/ZAC_zzx/zzx/initial_lookahead.py\n@@ -31,6 +31,10 @@ from zzx.zplacer import ResidentPlacer\n POLICY_ID = \"physical-prefix-initial-v1\"\n \n \n+class InfeasibleInitialMapping(ValueError):\n+    \"\"\"A physically replayed mapping is outside the supported scoring domain.\"\"\"\n+\n+\n def stable_hash(value: Any) -> str:\n     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(\",\", \":\"),\n                                      allow_nan=False).encode()).hexdigest()\n@@ -93,8 +97,8 @@ def resolve_initial_setting(setting: Mapping[str, Any], *, historical_contract:\n             and result.get(\"native_abi_version\") != 8 and is_standard_ga_lk(result)):\n         result[\"init_strategy\"] = \"physical_prefix\"\n     strategy = result.get(\"init_strategy\", \"legacy\")\n-    if not isinstance(strategy, str) or strategy not in {\"legacy\", \"physical_prefix\"}:\n-        raise ValueError(\"init_strategy must be legacy or physical_prefix\")\n+    if not isinstance(strategy, str) or strategy not in {\"legacy\", \"physical_prefix\", \"physical_prefix_ga\"}:\n+        raise ValueError(\"init_strategy must be legacy, physical_prefix or physical_prefix_ga\")\n     if strategy == \"physical_prefix\":\n         if (result.get(\"placer\") != \"resident\" or result.get(\"engine\") != \"ga\"\n                 or result.get(\"experiment_schema\") != 2\n@@ -105,6 +109,19 @@ def resolve_initial_setting(setting: Mapping[str, Any], *, historical_contract:\n         result[\"initial_lookahead\"] = asdict(config)\n     elif \"initial_lookahead\" in result:\n         raise ValueError(\"initial_lookahead requires init_strategy=physical_prefix\")\n+    if strategy == \"physical_prefix_ga\":\n+        from zzx.physical_initial_ga import PhysicalInitialGAConfig\n+        if (result.get(\"placer\") != \"resident\" or result.get(\"engine\") != \"ga\"\n+                or result.get(\"experiment_schema\") != 2\n+                or result.get(\"init_engine\") != \"ga\"):\n+            raise ValueError(\"physical_prefix_ga requires Schema-2 resident GA and init_engine=ga\")\n+        if \"init_pop\" in result or \"init_gens\" in result:\n+            raise ValueError(\"physical_prefix_ga uses initial_ga controls, not legacy init_pop/init_gens\")\n+        config = PhysicalInitialGAConfig.from_mapping(\n+            result.get(\"initial_ga\"), seed=result.get(\"seed\", 0))\n+        result[\"initial_ga\"] = asdict(config)\n+    elif \"initial_ga\" in result:\n+        raise ValueError(\"initial_ga requires init_strategy=physical_prefix_ga\")\n     return result\n \n \n@@ -184,7 +201,7 @@ class PrefixLayerProvider(ForecastLayerProvider):\n def rollout_params(params: Mapping[str, Any], config: InitialLookaheadConfig) -> dict:\n     \"\"\"Fixed current-only bounded policy; never mutate the final GA-LK config.\"\"\"\n     result = deepcopy(dict(params))\n-    for key in (\"init_strategy\", \"initial_lookahead\", \"init_engine\", \"init_pop\", \"init_gens\"):\n+    for key in (\"init_strategy\", \"initial_lookahead\", \"initial_ga\", \"init_engine\", \"init_pop\", \"init_gens\"):\n         result.pop(key, None)\n     result.update(experiment_schema=2, method_id=\"ours_nl\", engine=\"ga\",\n                   objective=\"physical_log_fidelity\", seed=config.seed,\n@@ -235,7 +252,7 @@ def evaluate_mapping(architecture, mapping, schedule, *, one_qubit=(), leading_o\n         validation = validate_trace_physics(events, n_qubits=len(mapping))\n         score = score_trace(events, n_qubits=len(mapping))\n         if score.ood or score.log_fidelity is None:\n-            raise ValueError(\"initial candidate prefix is outside the linear fidelity domain\")\n+            raise InfeasibleInitialMapping(\"initial candidate prefix is outside the linear fidelity domain\")\n         nll = -score.log_fidelity\n         increment = nll - previous_nll\n         weight = config.rho ** layer\n@@ -260,7 +277,7 @@ def evaluate_mapping(architecture, mapping, schedule, *, one_qubit=(), leading_o\n         validate_trace_physics(events, n_qubits=len(mapping))\n         score = score_trace(events, n_qubits=len(mapping))\n         if score.log_fidelity is None:\n-            raise ValueError(\"initial candidate has invalid fidelity\")\n+            raise InfeasibleInitialMapping(\"initial candidate has invalid fidelity\")\n         weighted_nll = -score.log_fidelity\n     if placer.forecast.horizon != 0:\n         raise AssertionError(\"initializer rollout enabled internal lookahead\")\ndiff --git a/ZAC_zzx/zzx/zac_zzx.py b/ZAC_zzx/zzx/zac_zzx.py\nindex af370a5..1a915f0 100644\n--- a/ZAC_zzx/zzx/zac_zzx.py\n+++ b/ZAC_zzx/zzx/zac_zzx.py\n@@ -157,7 +157,7 @@ class ZAC_zzx(ZAC):\n                     \"forecast_gate_candidate_budget\",\n                     # ---- \u521d\u59cb\u5e03\u5c40\u5f15\u64ce\uff08\"ga\" = GAInitialPlacer \u6362\u6389 ZAC \u7684 SA\uff09----\n                     \"init_engine\", \"init_pop\", \"init_gens\",\n-                    \"init_strategy\", \"initial_lookahead\")\n+                    \"init_strategy\", \"initial_lookahead\", \"initial_ga\")\n     # ZAC \u539f\u7248\u8ba4\u8bc6\u7684\u952e\uff08\u6d88\u8d39\u65ad\u8a00\u7528\uff1b Zac.parse_setting \u540c\u6b65\u7ef4\u62a4\uff09\n     ZAC_KEYS = (\"dependency\", \"routing_strategy\", \"scheduling\", \"trivial_placement\",\n                 \"dynamic_placement\", \"use_window\", \"window_size\", \"reuse\",\n@@ -338,7 +338,8 @@ class ZAC_zzx(ZAC):\n         if schema == 2:\n             if (paper_contract is None and type(setting.get(\"native_abi_version\")) is int\n                     and setting[\"native_abi_version\"] == 9\n-                    and is_standard_ga_lk(setting)):\n+                    and (is_standard_ga_lk(setting)\n+                         or setting.get(\"init_strategy\") == \"physical_prefix_ga\")):\n                 # ABI9 is the public runtime for the current GA-LK initializer.\n                 # Reuse every strict Schema-2 check without altering its frozen\n                 # ABI8 contract, the actual ABI, or registered-wheel provenance.\n@@ -382,6 +383,24 @@ class ZAC_zzx(ZAC):\n         Explicit legacy uses the original SA initializer. The separate\n         init_engine=\"ga\" option and given/trivial mappings retain their paths.\n         \"\"\"\n+        if (self.zzx_params.get(\"init_strategy\") == \"physical_prefix_ga\"\n+                and self.given_initial_mapping is None and not self.trivial_placement):\n+            from zzx.physical_initial_ga import PhysicalInitialGAConfig, select_initial_mapping\n+            started_ns = time.perf_counter_ns()\n+            config = PhysicalInitialGAConfig.from_mapping(\n+                self.zzx_params.get(\"initial_ga\"), seed=self.zzx_params.get(\"seed\", 0))\n+            mapping, report = select_initial_mapping(\n+                self.architecture, self.gate_scheduling, n_qubits=self.n_q,\n+                leading_one_qubit=tuple(getattr(self, \"dict_g_1q_parent\", {}).get(-1, ())),\n+                one_qubit=tuple(tuple(gates) for gates in getattr(self, \"gate_1q_scheduling\", ())),\n+                params=self.zzx_params, config=config)\n+            self.qubit_mapping.append(mapping)\n+            self.zzx_initial_ga_report = report\n+            self.zzx_initial_lookahead_report = report\n+            elapsed_ns = time.perf_counter_ns() - started_ns\n+            self.zzx_stage_timing_ns[\"initial_placement_ns\"] = elapsed_ns\n+            self.runtime_analysis[\"initial placement\"] = elapsed_ns / 1e9\n+            return\n         if (self.zzx_params.get(\"init_strategy\", \"legacy\") == \"physical_prefix\"\n                 and self.given_initial_mapping is None and not self.trivial_placement):\n             from zzx.initial_lookahead import InitialLookaheadConfig, select_initial_mapping\n"
+  },
+  "rng_semantics": "Trial seed controls local initialization and dynamic streams. Before the dynamic placement entry, Python and NumPy global RNGs are explicitly reset to the trial seed in all four arms and their state hashes are recorded. Historical SA internally fixes its own seed to zero.",
+  "rss_limit_bytes": 3221225472,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "source_files": {
+    "evaluation/__init__.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/evaluation/__init__.py",
+      "sha256": "b21168553c397a028cd4f6296ce2822fd0fc7a61018bda5551627bb6501d3171"
+    },
+    "evaluation/__main__.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/evaluation/__main__.py",
+      "sha256": "0f7d54f3fbb1f79a85eb8110f11793db99da6f3c61ee979de5abe9a1b5f3fdb3"
+    },
+    "evaluation/adapters.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/evaluation/adapters.py",
+      "sha256": "dd88a20bbe6583cbb7eece427ed724fa4c8a119d432674393351d6435c05de12"
+    },
+    "evaluation/cli.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/evaluation/cli.py",
+      "sha256": "702f34bbc805164503f6396aaf7b54e0ffb528576872565e99d7cf15262ea8ec"
+    },
+    "evaluation/fidelity_model_zac.json": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/evaluation/fidelity_model_zac.json",
+      "sha256": "f9e2c97681ce885ca530ab0f2a57a008148426a3fc7998a7e715b8ba1b71fbd4"
+    },
+    "evaluation/model.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/evaluation/model.py",
+      "sha256": "5e5acb116d5db1c537edb095448a5975fb7938d800d2a30a0db4462c09380739"
+    },
+    "evaluation/scorer.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/evaluation/scorer.py",
+      "sha256": "6b4016466dce1343c56f5b5c06bc9b0ab18aaac9e8ecc31bf3451757b8e762f3"
+    },
+    "evaluation/validator.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/evaluation/validator.py",
+      "sha256": "56b0393b0bcf95b9e777e8c39e7997ffbf72475e8882686d292b18a75eccc637"
+    },
+    "experiments_v2/__init__.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/__init__.py",
+      "sha256": "afe68c677b2c576cd422f07e76dcae02f0d0d440b85b66fe535e44e978802677"
+    },
+    "experiments_v2/__main__.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/__main__.py",
+      "sha256": "e710c8ce85ba8e01d29710ed924109f9160f176ed826886576dac80391beef8c"
+    },
+    "experiments_v2/ablation.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/ablation.py",
+      "sha256": "ded06fea0f2410705152f7e79dfc68de13c31caa985be7de357ad7e7ea32196e"
+    },
+    "experiments_v2/ablation_export.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/ablation_export.py",
+      "sha256": "8861ca1bed170479126f0ee5afa3caa596fd0f39b628e6c7071e507af5dc1fa5"
+    },
+    "experiments_v2/ablation_statistics.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/ablation_statistics.py",
+      "sha256": "efb05e8fd713e3b8d7607758ec63fc6b79e041327a868a5391d812ba2dd6e3dc"
+    },
+    "experiments_v2/baseline_raw_replay.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/baseline_raw_replay.py",
+      "sha256": "8a8438d6cfc0919323957fc0ad8a5c067a85c44df6fcb9df8d669ce68b988dde"
+    },
+    "experiments_v2/canonicalize.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/canonicalize.py",
+      "sha256": "057c3247f8fe90ae8e81c3023e2648bb473f02be337a7c087c620a2a4a4f8b5a"
+    },
+    "experiments_v2/cli.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/cli.py",
+      "sha256": "e4e595d862e2321d657119e84ba840484d93c7cd2a85329f1f98d32f190516e1"
+    },
+    "experiments_v2/contracts.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/contracts.py",
+      "sha256": "3b024fa914db1a0528bbbe43bd82b99c6841fc4633a26f71791f6bdaceeb14aa"
+    },
+    "experiments_v2/default_initial_study.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/default_initial_study.py",
+      "sha256": "5db4cbc1ca14dbd7d314f4fa203de921568c2dacaafd38daf389708db5258e12"
+    },
+    "experiments_v2/expand_default_initial_study.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/expand_default_initial_study.py",
+      "sha256": "78d90db69b389f8ea8968330c9ed8f36ba85ec9b1530909770087723f4ac25e0"
+    },
+    "experiments_v2/experiment_plan_v2.json": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/experiment_plan_v2.json",
+      "sha256": "2e7448796d2531e47803c446d954b4ab6cc3b188aa658ed0cf962d9d487f42df"
+    },
+    "experiments_v2/export.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/export.py",
+      "sha256": "bbd85d16f70d560f04e574eb9dbd7360da995a0af0bd68b70eb35351f5f4f11a"
+    },
+    "experiments_v2/figures.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/figures.py",
+      "sha256": "b0bc0696dfa6307a3e222149fa2af9759db22ca99e0e41ac9d8f41a50882d593"
+    },
+    "experiments_v2/final_results.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/final_results.py",
+      "sha256": "3c90c817ebbe6f2080b742d572dec740ef778c6c04eec1369fa68a72f7659944"
+    },
+    "experiments_v2/final_results_cli.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/final_results_cli.py",
+      "sha256": "8facd4f087dac71676a42403ee55c5e9072a6a405aecabe92cd88fbb7b7dd428"
+    },
+    "experiments_v2/horizon_extension.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/horizon_extension.py",
+      "sha256": "633f1641900f11dc825c1e4a551eb2f3a2bf7fd4bd042a0b76cc51e032bc75e2"
+    },
+    "experiments_v2/horizon_extension_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/horizon_extension_v2.py",
+      "sha256": "f4304e0d021723585008f9a94ac754e1777416ad30b19bca8e5b15770831bf6a"
+    },
+    "experiments_v2/horizon_extension_v2_continuation.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/horizon_extension_v2_continuation.py",
+      "sha256": "0aeb3b06027f52cdba6c81814404377927b595478fa7c8fac4fc4996ce8aca16"
+    },
+    "experiments_v2/iccad_reproduction.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/iccad_reproduction.py",
+      "sha256": "708f3c420c4f2dc4d4d1b23256a5234f07a8aca5532be165a07373c660cd6bad"
+    },
+    "experiments_v2/initial_lookahead_batch.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/initial_lookahead_batch.py",
+      "sha256": "24ae1cc16f75e1756d00ffaa39cc5d8ec4b76b2edb16aedd15c4e0ffad4866d7"
+    },
+    "experiments_v2/initial_lookahead_extension.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/initial_lookahead_extension.py",
+      "sha256": "f6c3820e4a7d11dc67402cc551d2fa18862f49e179d7b0d8f7d022cf0a8a0c95"
+    },
+    "experiments_v2/initial_lookahead_runner.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/initial_lookahead_runner.py",
+      "sha256": "4a77dc78e1082862379b7ca29603706f5559126c4768a485db5e0ac255fa879b"
+    },
+    "experiments_v2/initial_placement_benchmark.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/initial_placement_benchmark.py",
+      "sha256": "af5c57ee5a58340ff4a1e75e87cd8ceff24650f0b0d8a4275bc1897f79112322"
+    },
+    "experiments_v2/initial_placement_cli.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/initial_placement_cli.py",
+      "sha256": "4dde051b71ae777601958897ba29886f6033902feafcd5267ac7d39bc8ba3bf8"
+    },
+    "experiments_v2/initial_placement_runner.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/initial_placement_runner.py",
+      "sha256": "b31e1c3625ab58590a729f352663cec246a7bb9b1a2b4289f855acb5d39d874b"
+    },
+    "experiments_v2/legacy_pilot_inventory.json": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/legacy_pilot_inventory.json",
+      "sha256": "cb67b7eec838e83f55960dd52a75601ca6fd8bd352782c90566bfd7a565be81d"
+    },
+    "experiments_v2/m1_missing_runner.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/m1_missing_runner.py",
+      "sha256": "9be4d3f0da0e907208bfb00aefc9905aaef7c141b5164d5f7bdc7b9aab14d116"
+    },
+    "experiments_v2/method_driver.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/method_driver.py",
+      "sha256": "07566af8b79f947c3abad5ee57a0cc637993884d01845c37a9a321590c2f7c96"
+    },
+    "experiments_v2/na_physicalizer.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/na_physicalizer.py",
+      "sha256": "7909b9cc0a07ccd33062c690b6d807ad3928ca3685991f34665868fd1ab2b397"
+    },
+    "experiments_v2/native_benchmark.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/native_benchmark.py",
+      "sha256": "87ae984393a6286f09143afa3e30d5df3ccffb834a970263e2e6591fb81fd171"
+    },
+    "experiments_v2/native_build_freeze.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/native_build_freeze.py",
+      "sha256": "0effa5a02f09342df0bd47cf4f5bb272b63f76f951b0a17ce129bbffda39cf61"
+    },
+    "experiments_v2/paper_aggregate.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/paper_aggregate.py",
+      "sha256": "da61774721eb0f86ce2f8e1f5bd6372738ffc5a8fa8f80b01ecd4e88b2a0f2cc"
+    },
+    "experiments_v2/paper_cli.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/paper_cli.py",
+      "sha256": "0076b72b3dd693bef1feafdbbf0a78881808db432726aa9e2d5c0ecb5ef97936"
+    },
+    "experiments_v2/paper_protocol.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/paper_protocol.py",
+      "sha256": "027b8d167aa789fd649fe4d4c887d52df70cb6791d0b33c07cc2a91f492c8569"
+    },
+    "experiments_v2/paper_workbook.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/paper_workbook.py",
+      "sha256": "0098ee82d1c68e69d8dad148e5d917882d51fc19f10313421b4d4c8662231e06"
+    },
+    "experiments_v2/physical_ga_initial_study.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/physical_ga_initial_study.py",
+      "sha256": "30a8c51d927069f1688423e2a0cf35fcb66d3544f295278e1ad5d74f623369b6"
+    },
+    "experiments_v2/plan.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/plan.py",
+      "sha256": "b38d4eac052089cd4e60a5782ad8927bcbef4b0a6d58f4eccc1a7f962abb9ba9"
+    },
+    "experiments_v2/protocol.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/protocol.py",
+      "sha256": "caa1cf7e8342fd4d8a31258591c8e8d8b5ff50a999663c3e7a3654a4780bae87"
+    },
+    "experiments_v2/provenance.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/provenance.py",
+      "sha256": "006309044b9a14e044f983af5ff7fa4c9ae68df3f2e43f5a094c2e3035138dd8"
+    },
+    "experiments_v2/qasmbench_aggregate.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/qasmbench_aggregate.py",
+      "sha256": "19c834cea978759ba6a948a5b1306bf20757ae4047746b6b694274793aea6ed5"
+    },
+    "experiments_v2/qasmbench_inputs.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/qasmbench_inputs.py",
+      "sha256": "6349d897d38dfdffa63df3835c33f19f43d48d48226b8dd4990be63a273a63c0"
+    },
+    "experiments_v2/qasmbench_large_driver.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/qasmbench_large_driver.py",
+      "sha256": "08cd6daea9882f9eae90bf5dbd616f346db12c7d5aaf222eff0f20db77b80db2"
+    },
+    "experiments_v2/qasmbench_runner.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/qasmbench_runner.py",
+      "sha256": "2805d3e06cd5864e44cc4ad18b0180afff20daaed591bf40de3b81bb39f9b803"
+    },
+    "experiments_v2/qmap_legacy_regression.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/qmap_legacy_regression.py",
+      "sha256": "6a8edab926d8c3987cf06d14baca80e7a464b8f13846ff2a64f1088ed941bafe"
+    },
+    "experiments_v2/qmap_timing_probe.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/qmap_timing_probe.py",
+      "sha256": "dfecaffa83ef096f0e09260c1866695006e349394ce21431158b1ff54b94e376"
+    },
+    "experiments_v2/qmap_timing_provenance.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/qmap_timing_provenance.py",
+      "sha256": "f421212ba40c8085c86054f33c859639f35dd1cd3a4d3b53cf3cce42f321a508"
+    },
+    "experiments_v2/quality_racing.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/quality_racing.py",
+      "sha256": "8cb8969d78b102de7cbcf59e49d65b0f68bfde82a7ea4a83b4012e75c26cb8b9"
+    },
+    "experiments_v2/quality_racing_cli.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/quality_racing_cli.py",
+      "sha256": "cb7bc58c8073f7ab79b73d4f08e14e600228cd2476131696e995630645a8a78b"
+    },
+    "experiments_v2/quality_racing_runner.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/quality_racing_runner.py",
+      "sha256": "4d8f8b048a5e20403a0043d8e10951d0ab18cf593813adefdfe2d32d9e255a7c"
+    },
+    "experiments_v2/recover_default_initial_receipts.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/recover_default_initial_receipts.py",
+      "sha256": "166859ca407846212c0638133adc25772b3d0ab0be6808d417645ca5964f6cda"
+    },
+    "experiments_v2/refinement_study.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/refinement_study.py",
+      "sha256": "0ca832476a9cb35e90a17590fc09405c9e073acd0c96fc2995e3f2b882eab923"
+    },
+    "experiments_v2/reproduction.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/reproduction.py",
+      "sha256": "6afe849cfcc7660404643e5abb8a29b1ac5efd9ebe3cfb5d79d8ae2b3c51726d"
+    },
+    "experiments_v2/resume_default_initial_study.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/resume_default_initial_study.py",
+      "sha256": "0450b2d1933d388313f9c3ace1cde436fe9ecf5b65f32e994306cae9a24f1188"
+    },
+    "experiments_v2/runner.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/runner.py",
+      "sha256": "c9dc997307b80a477e137c63a771f82c4c07f21f4b5bbd6e7e76fc50dab6dee5"
+    },
+    "experiments_v2/runtime_benchmark.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/runtime_benchmark.py",
+      "sha256": "6252a8ee48b9b6c771107dfe63faf28c07b93a2d306d04673f3d9a04853eceaf"
+    },
+    "experiments_v2/seed0_delivery.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/seed0_delivery.py",
+      "sha256": "a0590af9200ccabf8a902cbf58da2a28e3b600b5cae391464f8636dc1e5efc64"
+    },
+    "experiments_v2/statistics.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/statistics.py",
+      "sha256": "a6ef847189b054ff934594b023e38447ba582a63cc066e6827a2f8f3cc7f074a"
+    },
+    "experiments_v2/supplement_safety.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/supplement_safety.py",
+      "sha256": "044c2a80566931f768707d69156ff1244649b62d84c4a7d91d99fc0e0916010a"
+    },
+    "experiments_v2/tuning.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/tuning.py",
+      "sha256": "df8ac1bae6df95716f00ca38138470cf06111927a93aacec5717dcb194c21696"
+    },
+    "experiments_v2/tuning_cli.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/tuning_cli.py",
+      "sha256": "393f0d9cc65a6203850669edcb6f2236f90c68780e9b5b846ecf5b459971303c"
+    },
+    "experiments_v2/tuning_runner.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/tuning_runner.py",
+      "sha256": "26be81a7e7c17e917befc314645b44f3d2d015302e9c87d336d096bf0159b08a"
+    },
+    "experiments_v2/workbook_renderer.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/workbook_renderer.py",
+      "sha256": "7e0ae9a41b05fbf424a90f9831de5bdfdf074e8b11c13844d376836fa117ade5"
+    },
+    "experiments_v2/zac_reproduction.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/experiments_v2/zac_reproduction.py",
+      "sha256": "c3a1c9a79d3642e9222b49d2323163a2bd838f6a9ce54ad858ba8b90d7beb45a"
+    },
+    "native/include/zac_native/core.hpp": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/native/include/zac_native/core.hpp",
+      "sha256": "a77cea86e6234b7cbceeffe9a4ed0dbafaccdab227cbc6983f4c5302a64189c6"
+    },
+    "native/include/zac_native/python_random.hpp": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/native/include/zac_native/python_random.hpp",
+      "sha256": "9e7052b8e8fa385a6d968c857aca2d42e62a286f549704821b3a9c66d8dc0600"
+    },
+    "native/include/zac_native/rich_bindings.hpp": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/native/include/zac_native/rich_bindings.hpp",
+      "sha256": "e1cc7917038ca9aa076ed76726b6ac1072acc4f6d741c7e15b09e0ff8a286fea"
+    },
+    "native/include/zac_native/rich_solver.hpp": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/native/include/zac_native/rich_solver.hpp",
+      "sha256": "859fff9aa9cd2c723265c6709fff4f3f94e1497634123d3a1bb3d3f8951ff98b"
+    },
+    "native/include/zac_native/types.hpp": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/native/include/zac_native/types.hpp",
+      "sha256": "02db6f90278235b6f11699bb196df3a5cffb18249fade1d3ab5ef62e03012111"
+    },
+    "native/src/core.cpp": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/native/src/core.cpp",
+      "sha256": "a50b6ed782a5d97055dbc649e9f3a0d86404f9c343db48d0fb59dcbabe861ba9"
+    },
+    "native/src/python_random.cpp": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/native/src/python_random.cpp",
+      "sha256": "483acfd779ad740ce67cf3f5e9dca5cc5a0ed16bbd004990dfa33582e0bad29e"
+    },
+    "native/src/rich_solver.cpp": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/native/src/rich_solver.cpp",
+      "sha256": "9851d578c812ea12af698b9e5d98c5b26978cebb3002c50d12b2dac9ec0407cc"
+    },
+    "streaming/__init__.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/__init__.py",
+      "sha256": "8c4dee83fb2a693db6825877d6d97b3c160b7fcbacd090d1d1a5ec8e57fe943b"
+    },
+    "streaming/checkpoint.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/checkpoint.py",
+      "sha256": "8733013b330ffdeb18801bf1e4fa05a66d398bb973874a93adb5df6def84d636"
+    },
+    "streaming/controller.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/controller.py",
+      "sha256": "4f95d12543ec49291220429873d8a60d8edb99ca27cb730eeaaa388f3fb8f8df"
+    },
+    "streaming/forecast.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/forecast.py",
+      "sha256": "082a4fc0bebb1ed56eb964cd182ec34f321652b740c07d4c6f0ce5776ba3bf9d"
+    },
+    "streaming/formal_large_qmap_compiler.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/formal_large_qmap_compiler.py",
+      "sha256": "9767afacebbcb108a928d6561655e572f1abf2798f808df8e425967f4c2a6814"
+    },
+    "streaming/formal_large_zac_compiler.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/formal_large_zac_compiler.py",
+      "sha256": "fb2a38b02b53d8d5227fd738c482a0ca96c033d0fdd13070f44efaff838d864e"
+    },
+    "streaming/formal_zac_checkpoint.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/formal_zac_checkpoint.py",
+      "sha256": "85c2c234c2c11bd2c131004cd7b05ca915b6a0380dffa77c09d5815e51d27373"
+    },
+    "streaming/formal_zac_placement.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/formal_zac_placement.py",
+      "sha256": "95e5788d62e0437fb83eccb21c1c14a785c257a0ac1c1efd186e1d42b28d0c1c"
+    },
+    "streaming/large_compiler.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/large_compiler.py",
+      "sha256": "badaac9d7414926c6a70c1bd4e12d7fa56896df5315373e2952dcf6a3a7dfd8f"
+    },
+    "streaming/large_contract.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/large_contract.py",
+      "sha256": "a9bdbdf13d722cacfd5547c68898a6069b55ff1163fe430669fdfebd9e02ec85"
+    },
+    "streaming/na_instruction_stream.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/na_instruction_stream.py",
+      "sha256": "98bc73186282c6d3433ff7539cf7d512bde8c9020058960363c45ac85a00b3fa"
+    },
+    "streaming/qasm_sqlite.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/qasm_sqlite.py",
+      "sha256": "5371fda1dce48b5be7c0b3a0382c33aa3416d9d27a9667f5647732457b59345d"
+    },
+    "streaming/qmap_schedule_sqlite.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/qmap_schedule_sqlite.py",
+      "sha256": "0123f6869b8e9c4c6cb17cac0e4d9d20d82f5234957fdac019b4df82fb909384"
+    },
+    "streaming/resident_transition.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/resident_transition.py",
+      "sha256": "1e0eb1a62607db80556cc08fefb4874bf98eed305bc5345f1f2eadf8e865b0bd"
+    },
+    "streaming/rss_probe.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/rss_probe.py",
+      "sha256": "00a4def74eb48d67b91a3bcb2613b32eb504c9678b0ebdf0288c4ab02bb078fb"
+    },
+    "streaming/trace_pipeline.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/trace_pipeline.py",
+      "sha256": "a03fe279a012eb9bdef5b7ee36e23e664a236a4ff2f5485d8421a92bd07a1a31"
+    },
+    "streaming/zac_initial_placement.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/zac_initial_placement.py",
+      "sha256": "479ab77867bc6da52666d9ae8a342d29a23014900f5b81cc21fdab847fc1a149"
+    },
+    "streaming/zac_m1_transition.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/zac_m1_transition.py",
+      "sha256": "7b85632abe3c5ca67f8dde00f3449bcef85b8dea639300c76b4843b6a9875ddb"
+    },
+    "streaming/zac_route_transition.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/zac_route_transition.py",
+      "sha256": "75a7c88d7dfe825c10a1136f74958ddc69457e4b37b80be261ea20b815a7f3af"
+    },
+    "streaming/zac_stage_provider.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/zac_stage_provider.py",
+      "sha256": "faaec868ca48fdbfc880c1e6e7f9e9d18fc45c4857664d8f565ee9b37c4217dd"
+    },
+    "streaming/zair_instruction_stream.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/streaming/zair_instruction_stream.py",
+      "sha256": "ee0d543b180f740fade4ceac2b0d1c86aa3aea3605608fe5605fc00b4f1eb998"
+    },
+    "tests/__init__.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/__init__.py",
+      "sha256": "5e3a06526fef02545d1e643144ee720a71240e02c72de21c317bcce1e124ff82"
+    },
+    "tests/test_abi9_greedy_protocol.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_abi9_greedy_protocol.py",
+      "sha256": "bdd17dc4c79af5bb04390fa93b588a3142039c5174bf734ae9054ce67c13f828"
+    },
+    "tests/test_ablation_export_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_ablation_export_v2.py",
+      "sha256": "6d8d3f9985db642088e7159a6d1eaffea42405e36b483164f61a474ca98b581e"
+    },
+    "tests/test_ablation_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_ablation_v2.py",
+      "sha256": "8db56e2e3fd277a7d875e2cc99bb9b44a2284ca1c4e5d9510bd1b056b5a448bc"
+    },
+    "tests/test_algorithm_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_algorithm_v2.py",
+      "sha256": "31c1b10dd4869180d6a21367e39b65d52bf8fba947c8063d6d7dc350e41cf3e1"
+    },
+    "tests/test_baseline_raw_replay.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_baseline_raw_replay.py",
+      "sha256": "fc939f925b65c4f5888c2b0f4607a955e8087a1cd85b7587958ca3c5b11795d3"
+    },
+    "tests/test_cli_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_cli_v2.py",
+      "sha256": "c9cfa2c0b4ea06ee362794480090b350a22afd4fa57da41e8ed41eb1c72353ca"
+    },
+    "tests/test_default_initial_study.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_default_initial_study.py",
+      "sha256": "617e3105f39c5e4a4149c27d7fc7139a36fa81f304d86f04138c0433c1f51046"
+    },
+    "tests/test_evaluation_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_evaluation_v2.py",
+      "sha256": "3cf755e06e8f99fc00d37bfb6ad3becece47ec987433e43ad9ad21e58601d9ff"
+    },
+    "tests/test_exact_current_reference.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_exact_current_reference.py",
+      "sha256": "9cdf0b1052f379d0a3375cc6525558bf93cb0305c24fb7204aa18cb3fadffd94"
+    },
+    "tests/test_expand_default_initial_study.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_expand_default_initial_study.py",
+      "sha256": "8024f1b0b23893bffc4e2cb5ac8bf08e86e75cfe35fc438bed0e021e1e02a28f"
+    },
+    "tests/test_experiment_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_experiment_v2.py",
+      "sha256": "79292d1650dd77d3063587db3f48f87228f5476b76b1e6abbb375bac5d384a5d"
+    },
+    "tests/test_export_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_export_v2.py",
+      "sha256": "76e63c3eb58d9b34e9f455ea1adc6c9e24754d391fe1ec22aecf4907b7b01a9b"
+    },
+    "tests/test_final_results.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_final_results.py",
+      "sha256": "246c985eaf074b98ee4e7a98cff1850ef72961aeb8b39f1887b07a313154c32c"
+    },
+    "tests/test_formal_large_qmap_compiler.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_formal_large_qmap_compiler.py",
+      "sha256": "9ea50dccefa09e2b3b61796b758106b9b36bc796a6df9be65fadcae7cac1bc97"
+    },
+    "tests/test_formal_large_zac_compiler.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_formal_large_zac_compiler.py",
+      "sha256": "09a7a5d576890825675b2a6be475edf8c6b703954c11cbdbd4b0afe1353be491"
+    },
+    "tests/test_formal_zac_checkpoint.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_formal_zac_checkpoint.py",
+      "sha256": "c733cdc37e0ea8ff6db8bfff2a82eafd08c88f8b1e7e557c98cadbec228f40f3"
+    },
+    "tests/test_formal_zac_placement.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_formal_zac_placement.py",
+      "sha256": "113b158a7dc7ae3563f0d4761bbb3651dfc1f48484a45b204ac7247c9f4a0212"
+    },
+    "tests/test_ga_initial_placer.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_ga_initial_placer.py",
+      "sha256": "3d9652bebbe7755f58d04784c04ae2708886ce8c5f726a63bc3d60e59a454468"
+    },
+    "tests/test_ghost.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_ghost.py",
+      "sha256": "06e112f990a4607797e46c41624fc00805da32f0a36b642ce2b3c21fd33ebd8d"
+    },
+    "tests/test_horizon_extension.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_horizon_extension.py",
+      "sha256": "1cadc328ec8db5c354475fef28fa2f2847c5ca0a3f71dafd9359df2de0360817"
+    },
+    "tests/test_horizon_extension_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_horizon_extension_v2.py",
+      "sha256": "bf614a6d03998d8aea43fe1a04c37055e7beafc13b36b38cfdedfd67bd228110"
+    },
+    "tests/test_horizon_extension_v2_continuation.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_horizon_extension_v2_continuation.py",
+      "sha256": "6ba060aba5ea0798053360eb05e293e4dae8450ee02587009b656260e5017635"
+    },
+    "tests/test_initial_lookahead.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_initial_lookahead.py",
+      "sha256": "b1c1d9040163589575be8c684d9d081964dc11b84bbbb8d7ceb2e6b3496e59b7"
+    },
+    "tests/test_initial_lookahead_batch.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_initial_lookahead_batch.py",
+      "sha256": "3a69af051b7bc88aa71bf7b6eb65c5e7d53f3ea88b1e5bc45d9b9520fc179769"
+    },
+    "tests/test_initial_lookahead_extension.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_initial_lookahead_extension.py",
+      "sha256": "4c422d5cd9aeb861ba3cc44c7ad9d3d5feef63ef71d4ecfa3bb10830e26044ce"
+    },
+    "tests/test_initial_lookahead_paths.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_initial_lookahead_paths.py",
+      "sha256": "810cd47dbef7ba008b3cf014d3c383d852921fe95bb42602316ce8e213044a75"
+    },
+    "tests/test_initial_placement_protocol.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_initial_placement_protocol.py",
+      "sha256": "202da030227a5402808ef4a717e5ea9704300beca7bafb4fc4a62ace82349f68"
+    },
+    "tests/test_large_compiler_core.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_large_compiler_core.py",
+      "sha256": "7b25140edd789ddb3daf903fec527741420a6d59c093c93ec3b15afdcdb7facd"
+    },
+    "tests/test_large_ledger.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_large_ledger.py",
+      "sha256": "d886fadc49511a85abff76fb91f8c2de8d93249e292a6b3ecba7478b7fc62c78"
+    },
+    "tests/test_m1_missing_runner.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_m1_missing_runner.py",
+      "sha256": "eabea0485e53558613a75694a53c7b02e350661f2ee249ea0887cf9d5286e04c"
+    },
+    "tests/test_na_instruction_stream.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_na_instruction_stream.py",
+      "sha256": "96dcebf28d9d48b644c23107b77dfc61ed61c4138e8d24cc15868862e824e217"
+    },
+    "tests/test_na_physicalizer_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_na_physicalizer_v2.py",
+      "sha256": "94f453ac5847ef13c6750896ddd87f1479bc2ebedafb41d263911b1357437842"
+    },
+    "tests/test_native_build_freeze.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_native_build_freeze.py",
+      "sha256": "9018cf6143a96fbccf077903815d50b47141c6e91f043b3988dd1e057267ee5f"
+    },
+    "tests/test_native_compiled_backend.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_native_compiled_backend.py",
+      "sha256": "9beece91154b9814f31fdc936e9405646fdc6f049ed7221162098975be1a678b"
+    },
+    "tests/test_native_config_contract.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_native_config_contract.py",
+      "sha256": "ff398ed24e890ad13feeaaf244e048bc5c07f41a1d80ab6a1470ef09ea0c2040"
+    },
+    "tests/test_native_manifest_contract.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_native_manifest_contract.py",
+      "sha256": "c469970836a8f94b228d48fb2232ef9a74e0319f7748b17000f9ec2952c0e8ca"
+    },
+    "tests/test_native_real_boundary_benchmark.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_native_real_boundary_benchmark.py",
+      "sha256": "959665d548a7116ffb09ca19f0dfde3b07dd6ce4ff01dff4d340e1d11748a45a"
+    },
+    "tests/test_native_reference_backend.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_native_reference_backend.py",
+      "sha256": "c359fa3c866e47dfd7c393f8cf3968c045d0be03bb1de4fb3f865d5e0c36f249"
+    },
+    "tests/test_native_resident_integration.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_native_resident_integration.py",
+      "sha256": "430aceb5a5259dfee5cc4ff31cfa4bdff0f9c8d5a279e05e0e22c5843471e4b6"
+    },
+    "tests/test_native_rich_solver.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_native_rich_solver.py",
+      "sha256": "0df113f8e787344c7e11b539a0bb0d9f5fb5b68b82ce81da8d595d8d5daf523f"
+    },
+    "tests/test_paper_aggregate.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_paper_aggregate.py",
+      "sha256": "96069ec5cb841dcf5c688060a4fe027c0ec217b787d32bca5b0ceb5e1c208590"
+    },
+    "tests/test_paper_protocol.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_paper_protocol.py",
+      "sha256": "3fef00c1207931004899bc0c2bef738483bc34b7c83781bc218cb30fb0a8af0a"
+    },
+    "tests/test_paper_workbook.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_paper_workbook.py",
+      "sha256": "4101d4c71cf3179898607e526920f0ef103b12cf19e294f77817b52c675f8893"
+    },
+    "tests/test_physical_initial_ga.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_physical_initial_ga.py",
+      "sha256": "5ad14ad0490e6bc31de4186cc41fad59803a977e6231d15b55ee9ff727ee2cd4"
+    },
+    "tests/test_provenance_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_provenance_v2.py",
+      "sha256": "d12c211fc45cebf3670591724dd68e0bc982e55a605c50ec821982d89388d5fa"
+    },
+    "tests/test_qasmbench_aggregate.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_qasmbench_aggregate.py",
+      "sha256": "6009c7b2f50c1fc75b8ef037b62ed415cbf7bc8f05fc37683da44f1316224320"
+    },
+    "tests/test_qasmbench_inputs.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_qasmbench_inputs.py",
+      "sha256": "f13a662102ff03c27f55c228bf4bb26514461411c9f95e54dbd06a1ff1cdc469"
+    },
+    "tests/test_qasmbench_runner.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_qasmbench_runner.py",
+      "sha256": "a764a9df180be787f72c389142f96121eb7cd527df28316b68a14d74d18e1f98"
+    },
+    "tests/test_qasmbench_workbook.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_qasmbench_workbook.py",
+      "sha256": "05018e9f14979551803718dd7b69500112bdb0ed628789f6b29acc0d2d8ca6ff"
+    },
+    "tests/test_qmap_legacy_regression.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_qmap_legacy_regression.py",
+      "sha256": "3c5d6c8e395015bffc0bd1ef25519ea3bd0d8a14c7d830e5c9dc6c2a23071158"
+    },
+    "tests/test_qmap_schedule_sqlite.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_qmap_schedule_sqlite.py",
+      "sha256": "d0ded83ee4054dc03ff60758652ee06be86795c8e2d8b9aa78d64d66ea2451e4"
+    },
+    "tests/test_qmap_timing_probe.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_qmap_timing_probe.py",
+      "sha256": "3cd7b1aa1ce314865b1892ab1efa1260d51f465d1ea1c962b3d5d72a9e462f27"
+    },
+    "tests/test_quality_racing.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_quality_racing.py",
+      "sha256": "6582333e5a5ac0cfe4a0529bac11088b8217b695b22d1ef564a616c95fc6a490"
+    },
+    "tests/test_recover_default_initial_receipts.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_recover_default_initial_receipts.py",
+      "sha256": "c51132cd740929d9338ea8ebe837324afc0d276a204b87a313ee780897886b55"
+    },
+    "tests/test_refinement_study.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_refinement_study.py",
+      "sha256": "529fdc38c1ad90c41f01a852e0e463a818b2a5a69bd7b7feadff83f9d3a1675f"
+    },
+    "tests/test_repeated_1q_routing.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_repeated_1q_routing.py",
+      "sha256": "4b5284b1cd8284810e749423c7db8f02eb87a8de6ea50cff4bc9d1e481474e8d"
+    },
+    "tests/test_reproduction_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_reproduction_v2.py",
+      "sha256": "000df7e70f7ce222fc1c6b3471392afe6f973ae633353388f52e520c8a56f15f"
+    },
+    "tests/test_resident.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_resident.py",
+      "sha256": "d6c047ee7ca85f1c3819865507fa0854bbeb26b28c5334ee97b756624de95830"
+    },
+    "tests/test_resident_rent_guard.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_resident_rent_guard.py",
+      "sha256": "c3282ffeed09145552e51b75899ee56deb5ffeb4378acda738cc1b41d3336487"
+    },
+    "tests/test_resident_transition.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_resident_transition.py",
+      "sha256": "3251d8901abec2d41ec9ddaecb79ce31c29540334f78f158c22976a7d2ec159f"
+    },
+    "tests/test_resume_default_initial_study.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_resume_default_initial_study.py",
+      "sha256": "79e459a2ec1484e6e6c6e72d59d814a451fdfd3a3d5d9956848ba2dfc739a5a6"
+    },
+    "tests/test_runtime_protocol.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_runtime_protocol.py",
+      "sha256": "fcae1a5b8bb77e5cacd84fa8130cc7c77ea9fdf54335d1c3feb85a618e9735fb"
+    },
+    "tests/test_scheduler_ledger.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_scheduler_ledger.py",
+      "sha256": "d6f36204b863b76baebd169710c817016d40d5fbaba5a64cf100ed24ea5d3f25"
+    },
+    "tests/test_search_coherence_continuation.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_search_coherence_continuation.py",
+      "sha256": "a64c130dda200709b5c5b9783d52842a8b3f19c82a41ed7ec6ec223ceb078e8e"
+    },
+    "tests/test_statistics_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_statistics_v2.py",
+      "sha256": "5598c3b6e7501b7cfa6680d95e340f48435c7ca2ec103a14eb6fbb52e39acb39"
+    },
+    "tests/test_streaming_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_streaming_v2.py",
+      "sha256": "5545400b5a3913787fe955a302a3806833bc8c7fa8cf15448d0d9295701910f2"
+    },
+    "tests/test_tuning_execution.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_tuning_execution.py",
+      "sha256": "9cbd7d441b834f062f117f3e0c492a379227c01d93d7d2b9e76e58642e6af747"
+    },
+    "tests/test_tuning_protocol.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_tuning_protocol.py",
+      "sha256": "304ee8f104887971363e831edb925642d16393f4a92827dab57f7cdc818b1ae4"
+    },
+    "tests/test_zac_initial_placement.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_zac_initial_placement.py",
+      "sha256": "b2737d2089b6ab7b327dd8cfce7e0448ef639654078cbc0f5005734e0b14f359"
+    },
+    "tests/test_zac_m1_transition.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_zac_m1_transition.py",
+      "sha256": "418e01a7f41b30d33f1256b1b987a8e68c0eab3ed313ff3d9d6f32f59d948dbe"
+    },
+    "tests/test_zac_route_transition.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_zac_route_transition.py",
+      "sha256": "6227b6507a510ade58852b4948e54dabe4c91e17781abe78ea887fb2a2ad22f1"
+    },
+    "tests/test_zac_stage_provider.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_zac_stage_provider.py",
+      "sha256": "21c283456ab5986667f22fec14c838035cd673dd6aca85d1528bd06149fedd76"
+    },
+    "tests/test_zair_instruction_stream.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/tests/test_zair_instruction_stream.py",
+      "sha256": "cc6484cbbba96f3bc3f733fd06908721c8f51386d126c58d9eb83c45c31c65e3"
+    },
+    "verify_batches.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/verify_batches.py",
+      "sha256": "a33133ef4910aa4a12f2d708e224e88ca4a5d15fbfa3ba0c0bb5cda15dfa4622"
+    },
+    "zac/__init__.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "zac/animator/animator.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/animator/animator.py",
+      "sha256": "52a82bbf33c28454379ef11b3030b9660e48a56bbd49a7d5e761758ed190b201"
+    },
+    "zac/ds/architecture.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/ds/architecture.py",
+      "sha256": "5ad7543d13b33cf777c7ba10515a82b44e4c832e94810840ce67964134b13a4d"
+    },
+    "zac/placer/placer.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/placer/placer.py",
+      "sha256": "bf5c3a4162f36312648aded6cc6869aae91528f136b0f64df5c9183a53e50cc1"
+    },
+    "zac/placer/saplacer.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/placer/saplacer.py",
+      "sha256": "7a9eaa6a043d7ecc88e0142eeddd72649434a98821fe29810374280ee837bdcc"
+    },
+    "zac/placer/vmplacer.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/placer/vmplacer.py",
+      "sha256": "c9dfec92d4165726eb404fa2b3d8d1fb71964056284ae9f48a2a96429e09292d"
+    },
+    "zac/router/router.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/router/router.py",
+      "sha256": "1045fff093d3a262df882ad118be55cae4ee04dc639e0c76f1fb4bef490c982d"
+    },
+    "zac/scheduler/__init__.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/scheduler/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "zac/scheduler/scheduler.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/scheduler/scheduler.py",
+      "sha256": "05b043b14db4109d35d297ef9243169c9e0172674381dd219c33997625c1e43a"
+    },
+    "zac/simulator/simulator.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/simulator/simulator.py",
+      "sha256": "81dced7f3b1fa9488423bd02da7ac00440ea05ad0cbd4f0881a3b3d00f8120cf"
+    },
+    "zac/verifier/verifier.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/verifier/verifier.py",
+      "sha256": "73421611335ad702b7406c6019a66b1976ba5ca236f0c24bbe6b9c992f87d470"
+    },
+    "zac/zac.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zac/zac.py",
+      "sha256": "04fb2c4ddebac726221e14fd561c4d16a06411d54fc64a77e78c708a8f67e4b4"
+    },
+    "zzx/__init__.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/__init__.py",
+      "sha256": "8f2420b28220caf97e4725c3b4a3eda0e8d20f700de138bffe4201def64f0560"
+    },
+    "zzx/algorithm_v2.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/algorithm_v2.py",
+      "sha256": "419852ef484848b547e3936f2a95fb3a5a2deda3f9ec5b173d78400c10867c0c"
+    },
+    "zzx/boundary_problem.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/boundary_problem.py",
+      "sha256": "0d76952a951d2ee3b857728aa982f03090e03b3bc395f73440efcc1f27283268"
+    },
+    "zzx/exact_current_reference.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/exact_current_reference.py",
+      "sha256": "9e7c142c916f9b40a514a013ef2646a225ab1f57323edccff67b68863db2c450"
+    },
+    "zzx/gainit.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/gainit.py",
+      "sha256": "71b470996bd15f1f111a335741c168a402237bffd07730124020e6d70773a22b"
+    },
+    "zzx/ghost.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/ghost.py",
+      "sha256": "c0c2fca315ad86824dc7f39a236b4f1909367261b7d0a346b78deb35d25e56ec"
+    },
+    "zzx/initial_lookahead.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/initial_lookahead.py",
+      "sha256": "d245c723d32618a42a226d2271987bc02e8507e27b5eaeebedd27df98ae31ff4"
+    },
+    "zzx/native_backend.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/native_backend.py",
+      "sha256": "5a24dcbff41f87b5c730a98af4d74d844ea11f8178655062b30b3040212cd6c9"
+    },
+    "zzx/physical_initial_ga.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/physical_initial_ga.py",
+      "sha256": "a045ed361f4c56418f82152969baf69842a0ce372462bed4f76cf446c04e25c4"
+    },
+    "zzx/reference_backend.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/reference_backend.py",
+      "sha256": "d3cbb9db7616caf448301565ea0efd7b5c8df640c9241c838bd448e47d994bda"
+    },
+    "zzx/resident.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/resident.py",
+      "sha256": "40d10204ce1bc1df38fa3bedc849e7f0b46c032f0574f841e50fe8b3e28e909d"
+    },
+    "zzx/scheduler_ledger.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/scheduler_ledger.py",
+      "sha256": "fee1b7a74999595be66e48de7099c5fed13a0fe1f9b56d3ac735460a86e0460b"
+    },
+    "zzx/zac_zzx.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/zac_zzx.py",
+      "sha256": "ee17dc2bc5d3b5e18e1e3f8e68dde2635a5f161ba0b5c7b2b2b4529622e9f371"
+    },
+    "zzx/zcost.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/zcost.py",
+      "sha256": "215d949a1a7fb5066f60d241daa2aadd4c338c0fd3fa49a35729ac5e502c7ddc"
+    },
+    "zzx/zplacer.py": {
+      "path": "/Users/zhouzixiang/Desktop/zac/ZAC_zzx/zzx/zplacer.py",
+      "sha256": "1afde6701eaa3645f7983c4661115b444f31543b09072e7b8a36d09b114d3291"
+    }
+  },
+  "source_snapshot_sha256": "715e166529a9198763afc2134df560a1133fc23906da0285528991c343baaa46",
+  "study_role": "independent initialization pilot; not a replacement for accepted main results",
+  "timeout_s": 600,
+  "timing_policy": "Descriptive serial times across three stochastic configurations, not fixed-seed timing repetitions or a claim of runtime speedup.",
+  "workspace": "/Users/zhouzixiang/Desktop/zac"
+}

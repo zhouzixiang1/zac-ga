@@ -1,5 +1,7 @@
 \documentclass[a4paper,conference]{IEEEtran}
 \IEEEoverridecommandlockouts
+% Match the official DATE LaTeX template text area.
+\usepackage[a4paper,total={184mm,239mm}]{geometry}
 
 \usepackage{fontspec}
 \setmainfont{texgyretermes-regular.otf}[
@@ -21,7 +23,7 @@
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{algorithm}
-\usepackage{algpseudocode}
+\usepackage[noEnd=true,indLines=true,spaceRequire=false]{algpseudocodex}
 \usepackage{graphicx}
 \usepackage{textcomp}
 \usepackage{xcolor}
@@ -30,13 +32,18 @@
 \usepackage{array}
 \usepackage{tabularx}
 \usepackage{placeins}
-\usepackage[nospread,noshrink]{flushend}
+\usepackage{flafter}
+% Preserve the right-column top figure while balancing the final body page.
+% Neither final page has footnotes; do not mistake table rules for them.
+\usepackage[nospread,noshrink,checkfloat,nocheckfootnote]{flushend}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,fit,calc,shapes.geometric,shapes.misc,
   backgrounds,decorations.pathreplacing,matrix,patterns.meta}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.18}
 \usepackage[hidelinks]{hyperref}
+\hypersetup{pdfauthor={}}
+\input{revision_marks}
 
 \newcommand{\method}{\textsc{GA-LK}}
 \newcommand{\etal}{\textit{et al.}}
@@ -51,15 +58,21 @@
   \par\vspace{3pt}\noindent
   \parbox{#1}{\fontsize{7.3pt}{8.4pt}\selectfont #2}%
 }
-\setcounter{dbltopnumber}{2}
+% Place wide diagrams near their explanatory sections.
+\setcounter{dbltopnumber}{1}
 \setlength{\textfloatsep}{12pt plus 2pt minus 2pt}
 \setlength{\dbltextfloatsep}{12pt plus 2pt minus 2pt}
 \setlength{\floatsep}{10pt plus 2pt minus 2pt}
 \setlength{\dblfloatsep}{10pt plus 2pt minus 2pt}
 
 \input{figures/tikz_style}
+\input{algorithm_style}
 \input{results_values_zh}
-\input{initial_lookahead_values}
+\input{method_argument_values}
+\input{horizon_extension_values}
+\input{physical_ga_initial_values}
+\input{../ZAC_zzx/results/physical_ga_main_v1/paper_exports/ga_main_values.tex}
+\input{../ZAC_zzx/results/physical_ga_main_v1/paper_exports/representative_cases.tex}
 \newcommand{\PaperPercentGain}[2]{%
   \edef\pgfmathresult{\fpeval{100*((#1)/(#2)-1)}}%
   \pgfmathprintnumber[fixed,precision=2,zerofill]{\pgfmathresult}\%%
@@ -70,36 +83,31 @@
 }
 
 \begin{document}
+\bstctlcite{galk_bibliography_control}
 
-\title{GA-LK: Joint Placement with Multilayer Look-Ahead\\
-for Zoned Neutral-Atom Architectures}
+\title{GA-LK: A Multi-Layer Look-Ahead\\
+Compiler for Joint Placement on\\
+Zoned Neutral-Atom Architectures}
 
-\author{
-\IEEEauthorblockN{Zixiang Zhou}
-\IEEEauthorblockA{Hangzhou Dianzi University\\
-1158 No. 2 Street, Baiyang Subdistrict, Qiantang District\\
-Hangzhou, Zhejiang, China\\
-zhouzixiang@hdu.edu.cn}
-}
+\author{}
 
 \maketitle
 
 \begin{abstract}
-Zoned neutral-atom quantum processors isolate stored atoms to reduce idle-atom excitation, while inter-layer placement and rearrangement affect trap-transfer losses and execution time. Two representative reuse-aware and routing-aware placement methods use adjacent layers and the next interaction partner to guide placement. These methods do not jointly search over residency between nonadjacent layers, two-qubit gate sites, and return storage sites. Neither estimates the ensuing rearrangement and idle-excitation losses from each candidate across multiple future gate layers. We present GA-LK, a joint placement method with multilayer look-ahead. Genetic search coordinates gate-site and residency choices, while matching assigns return storage sites, jointly optimizing the three decisions. Each candidate is first checked against occupancy and acousto-optic deflector constraints. Evaluation then uses atom positions, trap occupancy, and clocks after current-layer execution to estimate transport, idle-excitation, and coherence losses over subsequent layers. Weights decay with layer distance, allowing current placement to account for execution costs across multiple future layers. Evaluation uses two benchmark sets containing 18 circuits with 11--98 qubits and 154 input circuits with 3--16 qubits, respectively. Among circuits with valid results from all methods, benchmark-level comparisons show up to \PaperPercentGain{\QMAPMFourF}{\QMAPMOneF} higher geometric-mean model fidelity than existing compilers. The mean rearrangement batch count decreases by up to \PaperPercentReduction{\QMAPMFourB}{\QMAPMOneB}.
+Neutral-atom systems combine scalable qubit arrays, long coherence times, and high-fidelity quantum gates, making them a promising platform for fault-tolerant quantum computing. Efficient compilation is essential to realizing these hardware advantages. Zoned architectures protect idle atoms while supporting parallel gate operations and have been experimentally demonstrated in logical quantum processors. However, transport conflicts imposed by AODs couple atom placement with inter-zone transport. Existing approaches provide limited joint optimization of placement and execution costs across multiple layers. We present GA-LK, a compiler that combines genetic search with multi-layer look-ahead for joint placement. Using physical execution loss as a common objective, GA-LK selects an initial layout and jointly optimizes gate sites, residency, and return storage sites. This evaluation accounts for both current transport and subsequent interactions. Across two public benchmark sets, we compare GA-LK with leading compilers, including ZAC, on circuits valid for all compared methods. GA-LK improves the geometric mean of model-estimated fidelity by up to \GAMainMaxDatasetFidelityGain\%. It also reduces the mean number of rearrangement batches by up to \GAMainMaxDatasetBatchReduction\%.
 \end{abstract}
 
 \begin{IEEEkeywords}
-neutral-atom quantum computing, zoned architectures, quantum compilation, atom rearrangement, multilayer look-ahead
+neutral-atom quantum computing, zoned architectures, quantum compiler, atom rearrangement
 \end{IEEEkeywords}
 
 \input{sections_en/01_introduction}
-\input{sections_en/02_background}
 \input{sections_en/03_method}
 \input{sections_en/05_evaluation}
 \input{sections_en/06_related_work}
 \input{sections_en/07_conclusion}
 
-% Balance the final body output without stretching or shrinking its text.
+% Preserve top floats while balancing the final body and bibliography pages.
 \flushcolsend
 \clearpage
 \flushcolsend\flushend

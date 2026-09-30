@@ -6,34 +6,38 @@
 \ifdefined\GALKFigureStyleLoaded\else
 \def\GALKFigureStyleLoaded{1}
 
-% Baseline-derived visual tokens: ICCAD uses a restrained blue/orange device
-% palette, while ZAC uses conventional black axes and a small fixed plot set.
-\definecolor{galkInk}{HTML}{231F20}
-\definecolor{galkMuted}{HTML}{666666}
-\definecolor{galkGrid}{HTML}{D6D6D6}
+% Indigo / blue / ochre palette adapted from Paul Tol qualitative schemes.
+% Source: https://sronpersonalpages.nl/~pault/ (accessed 2026-09-14).
+% Dark strokes identify roles; pale fills preserve text contrast.
+% Atoms are filled, traps hollow, predictions dashed, invalid paths crossed.
+\definecolor{galkInk}{HTML}{263238}
+\definecolor{galkMuted}{HTML}{727C86}
+\definecolor{galkGrid}{HTML}{E0E5EA}
+\definecolor{galkFrame}{HTML}{A4AFBA}
 \definecolor{galkPaper}{HTML}{FFFFFF}
-% Semantic colors are fixed across every figure: orange=entanglement zone,
-% blue=storage zone, black=atom identity, red=invalidity, and blue dashes=future
-% prediction.  Plot and search-group colours are deliberately independent of
-% the two physical-zone colours.
-\definecolor{galkStorage}{HTML}{0064BC}
-\definecolor{galkStorageFill}{HTML}{E8F1F7}
-\definecolor{galkEntangle}{HTML}{E37323}
-\definecolor{galkEntangleFill}{HTML}{F9ECE3}
-\definecolor{galkResident}{HTML}{485CB3}
-\definecolor{galkResidentFill}{HTML}{EEF0F8}
-\definecolor{galkGood}{HTML}{A4AF07}
-\definecolor{galkBad}{HTML}{C84E45}
-\definecolor{galkLook}{HTML}{0064BC}
-\definecolor{galkData}{HTML}{315E8A}
-\definecolor{galkTail}{HTML}{B44B27}
-\definecolor{galkGroupOne}{HTML}{4C78A8}
-\definecolor{galkGroupTwo}{HTML}{7A7A7A}
-\definecolor{galkGroupThree}{HTML}{9C755F}
+% Blue and ochre identify storage and entangling zones; indigo highlights GA-LK.
+% Forecasts use magenta dashes; comparison series retain grey open markers.
+\definecolor{galkStorage}{HTML}{4477AA}
+\definecolor{galkStorageFill}{HTML}{EDF4FB}
+\definecolor{galkEntangle}{HTML}{997700}
+\definecolor{galkEntangleFill}{HTML}{FFF6D9}
+\definecolor{galkResident}{HTML}{332288}
+\definecolor{galkResidentFill}{HTML}{F0EFF8}
+\definecolor{galkGood}{HTML}{263238}
+\definecolor{galkBad}{HTML}{CC3311}
+\definecolor{galkLook}{HTML}{AA3377}
+\definecolor{galkLookFill}{HTML}{F7EDF3}
+\definecolor{galkData}{HTML}{332288}
+\definecolor{galkTail}{HTML}{929AA3}
+\definecolor{galkZAC}{HTML}{727C86}
+\definecolor{galkICCAD}{HTML}{929AA3}
+\definecolor{galkGroupOne}{HTML}{332288}
+\definecolor{galkGroupTwo}{HTML}{727C86}
+\definecolor{galkGroupThree}{HTML}{929AA3}
 
 \tikzset{
   % Shared engineering-figure contract.  Physical snapshots must place an
-  % orange entanglement band above a blue storage field; only their scale may
+  % paired-trap entanglement band above a dense storage field; only their scale may
   % change.  Labels are aligned at the upper-left of both regions.
   galk/base/.style={
     font=\rmfamily\fontsize{9.0pt}{10.0pt}\selectfont,
@@ -43,7 +47,7 @@
     >=Stealth
   },
   galk/panel title/.style={
-    font=\rmfamily\bfseries\fontsize{9.2pt}{10.2pt}\selectfont,
+    font=\rmfamily\bfseries\fontsize{9.0pt}{10.0pt}\selectfont,
     text=galkInk,
     anchor=west
   },
@@ -64,16 +68,16 @@
   galk/entanglement zone/.style={
     draw=galkEntangle,
     fill=galkEntangleFill,
-    line width=.40pt
+    line width=.65pt
   },
   galk/storage zone/.style={
     draw=galkStorage,
     fill=galkStorageFill,
-    line width=.40pt
+    line width=.65pt
   },
   galk/site/.style={
     circle,
-    draw=galkInk!68,
+    draw=galkInk!82,
     fill=white,
     line width=.36pt,
     minimum size=1.35mm,
@@ -101,32 +105,32 @@
     inner sep=.25pt
   },
   galk/rydberg pair/.style={
-    draw=galkInk!62,
+    draw=galkInk!72,
     densely dashed,
     line width=.36pt
   },
   galk/accepted path/.style={
     -{Stealth[length=.95mm,width=.62mm]},
     draw=galkInk,
-    line width=.48pt
+    line width=.70pt
   },
   galk/alternative path/.style={
     -{Stealth[length=.95mm,width=.62mm]},
     draw=galkMuted,
     densely dashed,
-    line width=.48pt
+    line width=.65pt
   },
   galk/future path/.style={
     -{Stealth[length=.95mm,width=.62mm]},
     draw=galkLook,
     densely dashed,
-    line width=.48pt
+    line width=.70pt
   },
   galk/invalid path/.style={
     -{Stealth[length=.95mm,width=.62mm]},
     draw=galkBad,
     densely dashed,
-    line width=.50pt
+    line width=.70pt
   }
 }
 \fi

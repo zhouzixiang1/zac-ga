@@ -1,0 +1,30 @@
+\documentclass[tikz,border=0pt]{standalone}
+
+\usepackage{fontspec}
+\setmainfont{texgyretermes-regular.otf}[
+  BoldFont=texgyretermes-bold.otf,
+  ItalicFont=texgyretermes-italic.otf,
+  BoldItalicFont=texgyretermes-bolditalic.otf
+]
+\setsansfont{texgyreheros-regular.otf}[
+  BoldFont=texgyreheros-bold.otf,
+  ItalicFont=texgyreheros-italic.otf,
+  BoldItalicFont=texgyreheros-bolditalic.otf
+]
+\setmonofont{texgyrecursor-regular.otf}[
+  BoldFont=texgyrecursor-bold.otf,
+  ItalicFont=texgyrecursor-italic.otf,
+  BoldItalicFont=texgyrecursor-bolditalic.otf
+]
+
+\usetikzlibrary{arrows.meta,positioning,fit,calc,shapes.geometric,shapes.misc,
+  backgrounds,decorations.pathreplacing,matrix,patterns.meta}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\input{revision_marks}
+\input{../ZAC_zzx/results/physical_ga_main_v1/paper_exports/ga_main_values}
+
+\begin{document}
+\special{pdf:minorversion 5}
+\input{figures/fidelity_distribution_supplement}
+\end{document}

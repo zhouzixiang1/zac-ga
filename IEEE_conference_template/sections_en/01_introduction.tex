@@ -1,14 +1,53 @@
 \section{Introduction}
 \label{sec:introduction}
 
-Quantum computing processes information through superposition, interference, and entanglement, offering alternatives to classical computation for quantum simulation and selected computationally intensive problems~\cite{preskill2018quantum}. Executing larger circuits requires more qubits, more precise operations, and hardware control and compilation that limit accumulated execution errors. Neutral-atom processors confine atoms in optical-tweezer arrays, implement entangling gates through Rydberg interactions, and reconfigure connectivity through coherent transport. Experimental advances in arrays with hundreds of qubits, high-fidelity entangling gates, and coherent atom transport~\cite{bluvstein2024logicalprocessor,evered2023highfidelity,bluvstein2022coherenttransport} make neutral atoms an important platform for large-scale quantum computing.
+Scalable atom arrays, high-fidelity entangling gates, and coherent transport have enabled advances in neutral-atom logical quantum processors\cite{bluvstein2024logicalprocessor,evered2023highfidelity,bluvstein2022coherenttransport}. Finite coherence and operation errors still limit circuit depth\cite{preskill2018quantum}. Zoned architectures separate storage from entangling operations to protect idle atoms while supporting parallel gates\cite{stade2024abstractmodel,lin2025zac}. Compilers must map circuits to placements and movements satisfying occupancy and transport constraints. Saving movement now may increase later excitation or transport, so placement evaluation must account for the configuration it leaves for subsequent layers.
 
-Neutral-atom compilers translate logical circuits into physical operations by arranging atom positions, trajectories, and laser pulses. Zoned neutral-atom architectures separate atom storage from entangling-gate execution, using storage isolation to suppress Rydberg excitation of idle atoms. Inter-zone transport incurs trap-transfer losses and consumes coherence time, making inter-layer placement and transport scheduling important to circuit fidelity and execution time~\cite{stade2024abstractmodel,lin2025zac}.
+\begin{figure*}[!t]
+  \centering
+  \resizebox{\textwidth}{!}{\input{figures/architecture_preliminaries}}
+  \caption{Zoned architecture and AOD constraints. (a) $q_0$ and $q_1$ execute a CZ gate, $q_2$ receives a single-qubit rotation, and $q_3$ moves between zones; $d_{\rm site}$ is the center spacing of adjacent gate-site pairs. (b) Row/column order and merging constraints. (c) Joint pickup would disturb $q_2$, stationary at $s$. Batch $B_1$ transports and unloads $q_0$, then deactivates its rows/columns before $B_2$ picks up $q_1$. Only pickup endpoints are shown; zone sizes and trap counts are schematic.}
+  \label{fig:architecture-preliminaries}
+\end{figure*}
 
-Layer-boundary atom positions affect the execution of subsequent gate layers. Retaining a temporarily idle atom in the entanglement zone avoids round-trip trap transfers through storage. The atom also encounters Rydberg pulses in intermediate layers and incurs additional excitation. Returning an atom to storage sets its later re-entry origin and may obstruct other atoms' transport paths. Structural constraints on mobile traps determine trajectory compatibility, and the longest trajectory determines each rearrangement batch's duration~\cite{lin2025zac,stade2025routingaware}. Gate sites, residency, and storage sites jointly affect physical costs in the current and subsequent layers.
+\subsection{Zoned Architecture and Physical Costs}
+\label{sec:background}
 
-ZAC, proposed by Lin et al., uses circuit-wide interactions for initial placement~\cite{lin2025zac}. Its dynamic gate-site and storage-site selection uses adjacent-layer reuse matching and next-partner distances. Stade et al. incorporate trajectory compatibility and batch duration into the A* cost for routing-aware placement~\cite{stade2025routingaware}. Evaluating residency between nonadjacent gate layers requires tracking atom positions and pulse exposure throughout the intermediate layers. These states determine how current residency and return decisions affect subsequent excitation losses, trap transfers, and feasible trajectories.
+Spatial light modulators (SLMs) form static traps in storage and entangling zones. Acousto-optic deflectors (AODs) form movable traps with adjustable rows and columns. As illustrated in Fig.~\ref{fig:architecture-preliminaries}(a), an atom reaches its destination through an SLM-to-AOD transfer, transport, and an AOD-to-SLM transfer. Storage is isolated from Rydberg illumination; paired traps in the entangling zone support CZ gates under global Rydberg pulses. Addressable Raman beams implement single-qubit rotations\cite{evered2023highfidelity,lin2025zac}. Nonparticipating atoms in the entangling zone are also excited, creating a tradeoff between transfer and excitation losses.
 
-We propose GA-LK for joint layer-boundary optimization\footnote{The implementation and experimental configurations are available in the project repository at \url{https://github.com/zhouzixiang1/zac-ga}.}. Genetic search jointly selects gate sites and residency states, while injective matching assigns storage sites to returning atoms. Trajectory conflict graphs define rearrangement batches, whose execution order is checked. Decayed multilayer physical look-ahead evaluates subsequent transport, idle-atom excitation, and coherence losses from each candidate's resulting state. The search coordinates current placement and nonadjacent interaction requirements under a shared physical objective.
+Parallel AOD transport obeys two constraints\cite{stade2024abstractmodel,stade2025routingaware}. First, active rows and columns preserve their order and shared-row/column relations. For source coordinates $(x_i,y_i)$ and $(x_j,y_j)$ and destinations $(x'_i,y'_i)$ and $(x'_j,y'_j)$, every \mbox{$\star\in\{<,=,>\}$} must satisfy
+\begin{equation}
+\begin{aligned}
+x_i\star x_j&\ \Longleftrightarrow\ x'_i\star x'_j,\\
+y_i\star y_j&\ \Longleftrightarrow\ y'_i\star y'_j.
+\end{aligned}
+\label{eq:aod-relations}
+\end{equation}
+As illustrated in Fig.~\ref{fig:architecture-preliminaries}(b), even nonintersecting paths may therefore be incompatible. Second, activated rows and columns form traps at every intersection; intersections without target atoms are called ghost spots. Our execution model requires that neither movable traps nor ghost spots sweep over stationary atoms during pickup, movement, or release. This check also applies to single trajectories. Batching avoids unintended pickup in Fig.~\ref{fig:architecture-preliminaries}(c). Destination traps must also satisfy occupancy dependencies: transferring an atom into an AOD frees its source SLM trap\cite{lin2025zac}, whereas reordering batches cannot free a stationary atom's trap.
 
-We evaluate GA-LK on the 18 circuits used in the ZAC paper and 154 input circuits from the MQT QMAP examples. GA-LK achieves higher geometric-mean model fidelity on both benchmark sets than Lin et al.'s ZAC compiler~\cite{lin2025zac} and Stade et al.'s routing-aware placement~\cite{stade2025routingaware}.
+Placement thus affects trap transfers, idle excitation, and coherence time consumed by batched transport. To compare these costs on one scale, we evaluate execution quality using the zoned-architecture fidelity model\cite{lin2025zac}:
+\begin{equation}
+\begin{aligned}
+\log F={}&N_1\log f_1+N_2\log f_2
++N_{\mathrm{exc}}\log f_{\mathrm{exc}}\\
+&+N_{\mathrm{tran}}\log f_{\mathrm{tran}}
++\sum_{q\in\mathcal Q}\log\left(1-\frac{t_q}{T_2}\right).
+\end{aligned}
+\label{eq:fidelity}
+\end{equation}
+Here, $N_1$ and $N_2$ count single- and two-qubit gates, $N_{\mathrm{exc}}$ counts idle excitations, and $N_{\mathrm{tran}}$ counts per-atom SLM/AOD transfers. Their respective fidelity factors are $f_1$, $f_2$, $f_{\mathrm{exc}}$, and $f_{\mathrm{tran}}$. Atom $q\in\mathcal Q$ accumulates idle time $t_q$, with coherence time $T_2$. For a fixed gate sequence, placement affects fidelity through the last three terms. Compatible trajectories form rearrangement batches that execute sequentially. The longest trajectory determines the duration of a parallel movement phase\cite{stade2025routingaware}; a complete batch also includes trap transfers\cite{lin2025zac}.
+
+\begin{samepage}
+Considering only transfer and excitation, staying through $r$ idle gate layers costs $-r\log f_{\rm exc}$, versus $-4\log f_{\rm tran}$ for a round trip. With $f_{\rm exc}=\ArgumentExcitationFidelity$ and $f_{\rm tran}=\ArgumentTransferFidelity$, staying costs less for $r=1$, but returning costs less for $r=2$. Even here, the number of layers before the next interaction changes the preferred decision. Actual placement also depends on occupancy, routing, and decoherence.\par
+\end{samepage}
+
+\subsection{Placement Challenges and Related Compilers}
+
+To reduce movement costs imposed by interactions, neutral-atom compilers optimize native-gate decomposition, interaction-aware layouts, and atom-movement routing\cite{patel2022geyser,patel2023graphine,tan2022mapping,schmid2024hybrid}, and coordinate gate scheduling with atom movement\cite{tan2024olsqdpqa,tan2025enola}. Parallel transport across multiple arrays\cite{wang2024atomique}, SWAP-free movement\cite{ludmir2024parallax}, movable ancillas\cite{wang2024qpilot}, and retargetable compilation\cite{kirmemis2025weaver} further expand how movement and interactions are implemented. For zoned execution, PowerMove coordinates layer scheduling and layout transitions\cite{ruan2025powermove}, while Mantra rewrites programs to reduce transport\cite{jang2025mantra}.
+
+For placement decisions, ZAC matches adjacent layers for reuse and incorporates future-partner distances into gate- and storage-site matching\cite{lin2025zac}. Routing-aware placement uses A* to select gate and intermediate positions, evaluating movement compatibility, batch latency, future-partner distances, and reuse savings\cite{stade2025routingaware}. ZAP weighs excitation before reuse against transfer and decoherence losses from returning, then selects sites sequentially by distance and conflict counts\cite{huang2026zap}.
+
+These methods consider reuse, future interactions, or physical costs. These factors interact: retained atoms restrict available gate sites, while returns change subsequent transport origins\cite{lin2025zac}. Comparing complete joint plans requires tracing how each resulting configuration affects physical losses across subsequent layers.
+
+\label{sec:contributions}
+We present GA-LK, which combines genetic search and multi-layer look-ahead for joint placement. GA-LK jointly optimizes gate sites, atom residency, and return storage sites as complete plans under shared occupancy and transport constraints, allowing residency across idle layers. It predicts physical losses across subsequent layers from each candidate's post-execution configuration. Genetic search selects the current plan by comparing current and future losses on a common scale.

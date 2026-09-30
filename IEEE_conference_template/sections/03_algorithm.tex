@@ -1,0 +1,36 @@
+\begin{algorithm}[!t]
+\caption{联合放置的遗传搜索与多层前瞻}
+\label{alg:solver}
+\PaperAlgorithmSetup
+\algrenewcommand\algorithmicrequire{\textbf{输入：}}
+\algrenewcommand\algorithmicensure{\textbf{输出：}}
+\algrenewcommand\algorithmicwhile{\textbf{当}}
+\algrenewcommand\algorithmicdo{\textbf{时}}
+\algrenewcommand\algorithmicfor{\textbf{对}}
+\algrenewcommand\algorithmicif{\textbf{若}}
+\algrenewcommand\algorithmicthen{\textbf{则}}
+\algrenewcommand\algorithmicelse{\textbf{否则}}
+\algrenewcommand\algorithmicreturn{\textbf{返回}}
+\begin{algorithmic}[1]
+\Require 配置$\mathbf{s}_\ell$；本层及后续门序列
+\Ensure 所选方案、当前层批次及$\mathbf{s}_{\ell+1}$
+\PaperAlgorithmPhase{I}{联合搜索与跨层评价}
+\State 构造种子编码；按空间大小选择枚举或GA
+\While{仍有未评价编码且预算未耗尽}
+  \State 为编码$\mathbf x_\ell$匹配至多$K$个存储位分配
+  \For{每个完整候选$(\mathbf x_\ell,a_\ell)$}
+    \State \textbf{当前执行：}生成批次，不可行则跳过 \label{alg:route}
+    \State 由批次及门操作计算$C_\ell^{\rm cur}$与$\mathbf{s}_{\ell+1}$
+    \State \textbf{多层前瞻：}从$\mathbf{s}_{\ell+1}$逐层预测损失
+    \State 按式~\eqref{eq:lookahead-cost}合成$J_\ell$，记录预测可行性 \label{alg:predict}
+  \EndFor
+  \State 由完整候选评分确定适应度，缓存结果
+  \State 交叉、变异并保留精英，或继续枚举
+\EndWhile
+\State 有限局部调整后，按第~\ref{alg:route}--\ref{alg:predict}行重新评价
+\PaperAlgorithmPhase{II}{选择并推进当前层}
+\State 按参照、准入及排序规则选择方案
+\State 提交当前层批次与门操作，更新实际配置
+\State \Return 方案、批次及实际配置$\mathbf{s}_{\ell+1}$
+\end{algorithmic}
+\end{algorithm}

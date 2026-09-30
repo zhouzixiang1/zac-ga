@@ -1,0 +1,131 @@
+% Figure colours remain semantic in both review and clean manuscripts.
+\begingroup
+\PaperShowRevisionsfalse
+\input{figures/tikz_style}
+\providecommand{\PaperRevision}[1]{#1}
+\begin{tikzpicture}[galk/base,x=1cm,y=1cm,
+  panel title/.style={galk/panel title,font=\rmfamily\bfseries\fontsize{9pt}{10pt}\selectfont},
+  label/.style={font=\rmfamily\fontsize{8.7pt}{9.7pt}\selectfont},
+  note/.style={font=\rmfamily\fontsize{8pt}{9pt}\selectfont},
+  q label/.style={galk/q label},
+  site/.style={galk/site},
+  occupied/.style={galk/occupied atom},
+  route/.style={galk/accepted path},
+  rule/.style={draw=galkInk!25,line width=.35pt},
+  forecast/.style={draw=galkLook!65,fill=white,line width=.40pt,
+    text width=1.83cm,minimum height=1.00cm,align=center,inner sep=2pt,
+    font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont}
+]
+  \path[use as bounding box] (0,0) rectangle (8.55,8.55);
+  \node[panel title] at (.08,8.30)
+    {\PaperRevision{(a) Residency and reuse distance}};
+  \foreach \xx/\txt in {2.45/{$L_\ell$},4.80/{$r$ inactive layers},7.15/{$L_{\ell+r+1}$}}
+    \node[label] at (\xx,7.92) {\PaperRevision{\txt}};
+  % Only one atom is tracked; the other atoms and gate partners are omitted.
+  % Arrows between snapshots denote time, not a spatial AOD trajectory.
+  \def\device#1#2#3{%
+    \begin{scope}[shift={(#1,#2)}]
+      \path[galk/entanglement zone] (0,.36) rectangle (1.36,.71);
+      \path[galk/storage zone] (0,0) rectangle (1.36,.30);
+      \node[site] at (.79,.535) {};
+      \node[site] at (.79,.15) {};
+      \node[occupied] at (.79,#3) {};
+      \node[q label,anchor=east] at (.61,#3) {\PaperRevision{$q$}};
+    \end{scope}%
+  }
+  \node[label,text width=1.48cm,align=center] at (.79,7.36) {\PaperRevision{Resident\\$r$ exposures}};
+  \foreach \xx in {1.77,4.12,6.47}
+    \device{\xx}{7.02}{.535}
+  \draw[route] (3.22,7.36)--(4.02,7.36);
+  \draw[route] (5.57,7.36)--(6.37,7.36);
+  \draw[galkEntangle,densely dashed,line width=.65pt]
+    (4.91,7.44)--(4.91,7.67);
+  \node[label] at (.79,6.43) {\PaperRevision{Via storage}};
+  \device{1.77}{6.09}{.535}
+  \device{4.12}{6.09}{.15}
+  \device{6.47}{6.09}{.535}
+  \draw[route] (3.22,6.43)--(4.02,6.43);
+  \draw[route] (5.57,6.43)--(6.37,6.43);
+  \node[note] at (3.62,6.67) {\PaperRevision{2}};
+  \node[note] at (3.62,6.20) {\PaperRevision{transfers}};
+  \node[note] at (5.97,6.67) {\PaperRevision{2}};
+  \node[note] at (5.97,6.20) {\PaperRevision{transfers}};
+
+
+  \node[panel title] at (.08,5.67)
+    {\PaperRevision{Transfer and excitation loss}};
+  \path[draw=galkEntangle,fill=galkEntangle!65]
+    (1.36,5.23) rectangle (1.61,5.40);
+  \node[note,anchor=west] at (1.73,5.315)
+    {\PaperRevision{Resident: $f_{\rm exc}^{\,r}$}};
+  \path[draw=galkStorage,fill=galkStorage!65,
+    pattern={Lines[angle=45,distance=2.5pt,line width=.25pt]},pattern color=galkStorage]
+    (4.49,5.23) rectangle (4.74,5.40);
+  \node[note,anchor=west] at (4.86,5.315)
+    {\PaperRevision{Round trip: $f_{\rm tran}^{\,4}$}};
+  % Frozen generated macros supply the same three losses as the prior figure.
+  % Plot values equal -1000 ln(F) for the indicated two-factor products.
+  \begin{scope}[yshift=3.98cm]
+    \draw[route] (1.28,0)--(8.16,0);
+    \draw[route] (1.28,0)--(1.28,1.14);
+    \node[note,rotate=90] at (.38,.55) {\PaperRevision{Loss ($10^{-3}$)}};
+    \foreach \value in {0,2,4,6} {
+      \draw[galkInk!13,line width=.30pt]
+        (1.28,.174*\value)--(8.00,.174*\value);
+      \draw[galkInk,line width=.35pt]
+        (1.23,.174*\value)--(1.28,.174*\value);
+      \node[note,anchor=east] at (1.15,.174*\value) {\PaperRevision{\value}};
+    }
+    \foreach \xx/\loss/\style in {
+      2.36/\ArgumentStayOneLoss/galkEntangle,
+      3.10/\ArgumentRoundtripLoss/galkStorage,
+      5.64/\ArgumentStayTwoLoss/galkEntangle,
+      6.38/\ArgumentRoundtripLoss/galkStorage} {
+      \path[draw=\style,fill=\style!65,line width=.40pt]
+        (\xx-.245,0) rectangle (\xx+.245,.174*\loss);
+      \node[note,anchor=south] at (\xx,.174*\loss+.012)
+        {\PaperRevision{\pgfmathprintnumber[fixed,fixed zerofill,precision=2]{\loss}}};
+    }
+    \foreach \xx in {3.10,6.38}
+      \path[pattern={Lines[angle=45,distance=2.5pt,line width=.25pt]},pattern color=galkStorage]
+        (\xx-.245,0) rectangle (\xx+.245,.174*\ArgumentRoundtripLoss);
+    \node[label,anchor=north] at (2.73,-.09) {\PaperRevision{$r=1$}};
+    \node[label,anchor=north] at (6.01,-.09) {\PaperRevision{$r=2$}};
+  \end{scope}
+  \draw[rule] (.08,3.46)--(8.47,3.46);
+
+  \node[panel title] at (.08,3.22)
+    {\PaperRevision{(b) Prediction from each candidate}};
+  % The state includes positions, occupancy and clock; it is updated after
+  % every predicted 2Q layer and its associated 1Q layer.
+  \node[forecast,draw=galkInk!60,text width=1.43cm] (postCandidate)
+    at (.91,2.41) {\PaperRevision{After $L_\ell$\\$\mathbf{s}_{\ell+1}$}};
+  \node[forecast] (firstFuture) at (3.07,2.41)
+    {\PaperRevision{Predict $L_{\ell+1}$\\update state\\and clock}};
+  \node[forecast] (secondFuture) at (5.55,2.41)
+    {\PaperRevision{Predict $L_{\ell+2}$\\update state\\and clock}};
+  \node[label] (laterFuture) at (7.59,2.41) {\PaperRevision{$\cdots$}};
+  \draw[galk/future path] (postCandidate.east)--(firstFuture.west);
+  \draw[galk/future path] (firstFuture.east)--(secondFuture.west);
+  \draw[galk/future path] (secondFuture.east)--(laterFuture.west);
+  \node[forecast,text width=1.38cm,minimum height=.65cm] (endpoint)
+    at (7.59,1.55) {\PaperRevision{Endpoint\\$\Phi_\ell$}};
+  \draw[galk/future path] (laterFuture.south)--(endpoint.north);
+  \node[label,draw=galkInk!60,fill=white,line width=.45pt,
+    minimum width=8.09cm,minimum height=.52cm,inner sep=2pt]
+    (candidateScore) at (4.27,.37)
+    {\PaperRevision{Candidate score $J_\ell$: current + weighted future + endpoint}};
+  \draw[route] (postCandidate.south)--(postCandidate.south |- candidateScore.north);
+  \draw[galk/future path] (firstFuture.south)--(firstFuture.south |- candidateScore.north);
+  \draw[galk/future path] (secondFuture.south)--(secondFuture.south |- candidateScore.north);
+  \draw[galk/future path] (endpoint.south)--(endpoint.south |- candidateScore.north);
+  \node[label,fill=white,inner sep=2pt] at (.91,1.36)
+    {\PaperRevision{$C_\ell^{\rm cur}$}};
+  \node[label,fill=white,inner sep=2pt] at (3.07,1.36)
+    {\PaperRevision{$\alpha\widehat C_{\ell,1}$}};
+  \node[label,fill=white,inner sep=2pt] at (5.55,1.36)
+    {\PaperRevision{$\alpha\rho\widehat C_{\ell,2}$}};
+  \node[note,fill=white,inner sep=1.5pt] at (7.59,.94)
+    {\PaperRevision{$\alpha\rho^{h_\ell-1}$}};
+\end{tikzpicture}
+\endgroup

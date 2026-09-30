@@ -1,0 +1,13 @@
+% Shared, restrained hierarchy for the bilingual guide algorithm.
+\newcommand{\PaperAlgorithmSetup}{%
+  \fontsize{10pt}{12pt}\selectfont
+  \algrenewcommand\algorithmicindent{1.05em}%
+  \algrenewcommand\alglinenumber[1]{\color{galkMuted}\fontsize{7.2pt}{8pt}\selectfont ##1}%
+  \tikzset{algpxIndentLine/.style={draw=galkFrame,line width=.32pt}}%
+}
+\makeatletter
+\newcommand{\PaperAlgorithmPhase}[2]{%
+  \algpx@endCodeCommand% close the preceding wrapped input or statement
+  \Statex\vspace{2pt}{\color{galkData}\bfseries #1\quad #2}\vspace{1pt}%
+}
+\makeatother

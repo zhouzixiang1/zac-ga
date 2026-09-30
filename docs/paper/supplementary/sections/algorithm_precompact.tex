@@ -1,0 +1,32 @@
+\begin{algorithm}[!htb]
+\caption{\PaperRevision{单层联合优化的求解顺序}}
+\label{alg:solver}
+\small
+\begin{PaperRevisionBlock}
+\algrenewcommand\algorithmicrequire{\textbf{输入：}}
+\algrenewcommand\algorithmicensure{\textbf{输出：}}
+\algrenewcommand\algorithmicwhile{\textbf{循环条件：}}
+\algrenewcommand\algorithmicdo{}
+\algrenewcommand\algorithmicreturn{\textbf{返回}}
+\algtext*{EndWhile}
+\begin{algorithmic}[1]
+\Require 当前配置$\mathbf{s}_\ell$、本层门及后续门序列
+\Ensure 本层的门位、驻留与回迁方案，执行批次及层后配置
+\Statex \textbf{候选准备}
+\State 构造编码域与初始候选，选择枚举或遗传搜索
+\Statex \textbf{循环搜索}
+\While{仍有未评价编码，且搜索预算未耗尽}
+  \State 取一个编码，匹配至多$K$个存储位分配，形成完整候选
+  \State 为各候选生成执行批次，丢弃当前层不可行者
+  \State 计算可行候选的当前损失$C_\ell^{\rm cur}$与层后配置
+  \State 从各自层后配置预测未来，记录$J_\ell$及预测可行性
+  \State 枚举下一编码，或经选择、交叉和变异生成子代
+\EndWhile
+\Statex \textbf{最终选择}
+\State 有限局部调整后重新评价，确定参照方案
+\State 按准入规则与$J_\ell$选择候选；无更优者保留参照
+\State 若所有未来预测均不可行，按当前层可执行代价选择
+\State \Return 所选方案、当前层执行批次及$\mathbf{s}_{\ell+1}$
+\end{algorithmic}
+\end{PaperRevisionBlock}
+\end{algorithm}

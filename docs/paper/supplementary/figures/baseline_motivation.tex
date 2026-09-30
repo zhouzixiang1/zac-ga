@@ -1,0 +1,189 @@
+\input{figures/tikz_style}
+\begin{tikzpicture}[
+  galk/base,x=1cm,y=1cm,
+  trap/.style={galk/site},
+  atom/.style={galk/occupied atom},
+  transition/.style={galk/accepted path},
+  panel title/.style={galk/panel title},
+  state note/.style={font=\rmfamily\fontsize{8.7pt}{9.7pt}\selectfont},
+  atom label/.style={galk/q label,font=\rmfamily\itshape\fontsize{8.8pt}{9.8pt}\selectfont},
+  pulse/.style={draw=galkEntangle,densely dashed,line width=.42pt}
+]
+  \path[use as bounding box] (0,0) rectangle (17.80,5.85);
+
+  % One regular optical-trap geometry is reused without deformation.
+  \def\miniDevice#1#2{%
+    \begin{scope}[shift={(#1,#2)}]
+      \path[galk/entanglement zone] (0,.80) rectangle (1.12,1.30);
+      \path[galk/storage zone] (0,0) rectangle (1.12,.70);
+      \draw[galk/rydberg pair] (.27,1.05) ellipse (.15 and .13);
+      \draw[galk/rydberg pair] (.85,1.05) ellipse (.15 and .13);
+      \foreach \xx in {.18,.36,.76,.94}
+        \node[trap] at (\xx,1.05) {};
+      \foreach \xx in {.18,.56,.94} {
+        \node[trap] at (\xx,.20) {};
+        \node[trap] at (\xx,.50) {};
+      }
+    \end{scope}%
+  }
+  \def\gatePair#1#2#3#4{%
+    \node[atom] at (#1,#2) {};
+    \node[atom] at (#1+.18,#2) {};
+    \draw[galkInk,line width=.42pt] (#1,#2)--(#1+.18,#2);
+    \node[atom label,anchor=south] at (#1+.09,#2+.30) {$#3,#4$};
+  }
+
+  \draw[galkInk!24,line width=.38pt] (5.48,.35)--(5.48,5.58);
+  \draw[galkInk!24,line width=.38pt] (11.15,.35)--(11.15,5.58);
+
+  % (a) The interaction order determines when q is needed again.
+  \node[panel title] at (.15,5.57) {(a) Non-adjacent interaction};
+  \foreach \xx/\lab in {.20/$L_{\ell}$,1.49/$L_{\ell+1}$,
+                       2.78/$L_{\ell+2}$,4.07/$L_{\ell+3}$} {
+    \miniDevice{\xx}{3.08}
+    \node[anchor=south] at (\xx+.56,4.92) {\lab};
+  }
+  \gatePair{.38}{4.13}{q}{p}
+  \gatePair{2.25}{4.13}{u}{v}
+  \gatePair{3.54}{4.13}{w}{x}
+  \gatePair{4.25}{4.13}{q}{r}
+  \foreach \xx in {1.67,2.96} {
+    \node[atom] at (\xx,3.58) {};
+    \node[atom label,anchor=center] at (\xx+.17,3.40) {$q$};
+  }
+  \node[state note,anchor=north] at (.76,2.88) {$\mathrm{CZ}(q,p)$};
+  \node[state note,anchor=north] at (2.05,2.88) {$\mathrm{CZ}(u,v)$};
+  \node[state note,anchor=north] at (3.34,2.88) {$\mathrm{CZ}(w,x)$};
+  \node[state note,anchor=north] at (4.63,2.88) {$\mathrm{CZ}(q,r)$};
+  \draw[galkInk!60,{Stealth[length=.75mm]}-{Stealth[length=.75mm]},line width=.40pt]
+    (1.72,2.18)--(4.09,2.18);
+  \node[fill=white,inner sep=1pt,state note] at (2.91,2.18) {two intervening layers};
+
+  % The two-line zone key uses the same rectangular bands as the snapshots.
+  \path[galk/entanglement zone] (.45,1.13) rectangle (.73,1.34);
+  \node[anchor=west,state note] at (.88,1.235) {entanglement zone};
+  \path[galk/storage zone] (.45,.60) rectangle (.73,.81);
+  \node[anchor=west,state note] at (.88,.705) {storage zone};
+
+  % (b) The gate sequence is identical; only q's inter-layer location differs.
+  \node[panel title] at (5.68,5.57) {(b) Inter-layer residency};
+  % Layer headers share the same top band as panels (a) and (c).
+  % Place each residency description below its own row of snapshots.
+  \node[anchor=west] at (5.73,2.80) {Entanglement-resident};
+  \node[anchor=west] at (5.73,.53) {Storage-mediated};
+  \foreach \xx/\lab in {5.73/$L_{\ell}$,7.04/$L_{\ell+1}$,
+                       8.35/$L_{\ell+2}$,9.66/$L_{\ell+3}$} {
+    \miniDevice{\xx}{3.08}
+    \miniDevice{\xx}{.87}
+    \node[anchor=south] at (\xx+.56,4.92) {\lab};
+  }
+  \gatePair{5.91}{4.13}{q}{p}
+  \gatePair{7.80}{4.13}{u}{v}
+  \gatePair{9.11}{4.13}{w}{x}
+  \gatePair{9.84}{4.13}{q}{r}
+  \foreach \xx in {7.22,8.53} {
+    \node[atom] at (\xx,4.13) {};
+    \node[atom label,anchor=south] at (\xx,4.43) {$q$};
+    \draw[pulse] (\xx-.13,3.94)--(\xx-.13,4.32);
+    \draw[pulse] (\xx+.13,3.94)--(\xx+.13,4.32);
+  }
+  \gatePair{5.91}{1.92}{q}{p}
+  \gatePair{7.80}{1.92}{u}{v}
+  \gatePair{9.11}{1.92}{w}{x}
+  \gatePair{9.84}{1.92}{q}{r}
+  \foreach \xx in {7.22,8.53} {
+    \node[atom] at (\xx,1.37) {};
+    \node[atom label,anchor=center] at (\xx+.17,1.19) {$q$};
+  }
+
+  % (c) These are transport stages, not three additional gate layers.
+  % The same source and target are used in both choices. The upper route
+  % first vacates s1; only then may u pass through the released trap.
+  \node[panel title] at (11.35,5.57) {(c) Storage-site dependence};
+  \foreach \xx/\lab in {11.48/Before return,13.84/After return,16.20/After transfer} {
+    \miniDevice{\xx}{3.08}
+    \miniDevice{\xx}{.94}
+    \node[anchor=south,state note] at (\xx+.56,4.92) {\lab};
+  }
+
+  % Local coordinates drive every displayed atom and the ordered move checks.
+  \def\storageInitial{q/.18/1.05,u/.18/.50}
+  \def\storageBlocked{q/.56/.50,u/.18/.50}
+  \def\storageClear{q/.56/.20,u/.18/.50}
+  \def\storageFinal{q/.56/.20,u/.94/.50}
+  \def\storageDetourMoves{1/q/.56/.50/.56/.20,2/u/.18/.50/.94/.50}
+  \def\storageDirectMoves{1/u/.18/.50/.94/.50}
+  \def\storageAtoms#1#2#3{%
+    \foreach \atomID/\atomX/\atomY in #3 {
+      \node[atom] at (#1+\atomX,#2+\atomY) {};
+    }
+  }
+  \def\storageMoves#1#2#3{%
+    \foreach \order/\qq/\sx/\sy/\tx/\ty in #3 {
+      \draw[transition,shorten <=.8mm,shorten >=.8mm]
+        (#1+\sx,#2+\sy)--(#1+\tx,#2+\ty);
+      \ifnum\order=2
+        \node[state note,font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont]
+          at (#1+.78,#2+.67) {\order};
+      \else
+        \ifdim\sy pt=\ty pt
+          \node[state note,font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont]
+            at (#1+.78,#2+.67) {\order};
+        \else
+          \node[state note,font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont]
+            at (#1+.40,#2+.30) {\order};
+        \fi
+      \fi
+    }
+  }
+  \foreach \yy/\target in {3.08/.50,.94/.20} {
+    \draw[transition,shorten <=.8mm,shorten >=.8mm]
+      (11.66,\yy+1.05)--(12.04,\yy+\target);
+    \storageAtoms{11.48}{\yy}{\storageInitial}
+    \node[atom label,anchor=south] at (11.66,\yy+1.35) {$q$};
+    \node[atom label] at (11.30,\yy+.50) {$u$};
+  }
+  \draw[transition] (12.78,3.66)--(13.66,3.66);
+  \node[state note,anchor=south] at (13.22,3.80) {$q\to s_1$};
+  \draw[transition] (12.78,1.52)--(13.66,1.52);
+  \node[state note,anchor=south] at (13.22,1.66) {$q\to s_2$};
+
+  % The blocked stage is drawn once. Its successor actually vacates s1.
+  \draw[galk/invalid path,shorten <=.8mm,shorten >=.8mm] (14.02,3.58)--(14.78,3.58);
+  \storageAtoms{13.84}{3.08}{\storageBlocked}
+  \draw[galkBad,line width=.60pt] (14.32,3.50)--(14.48,3.66);
+  \draw[galkBad,line width=.60pt] (14.32,3.66)--(14.48,3.50);
+  \node[state note] at (14.40,2.81) {$q@s_1,\ u\to t$};
+  \draw[transition] (15.14,3.66)--(16.02,3.66);
+  \node[state note,align=center,anchor=south] at (15.58,3.80)
+    {Move $q$\\then $u$};
+  \storageMoves{16.20}{3.08}{\storageDetourMoves}
+  \storageAtoms{16.20}{3.08}{\storageFinal}
+
+  % The alternative uses the same target, without moving q a second time.
+  \draw[transition,shorten <=.8mm,shorten >=.8mm] (14.02,1.44)--(14.78,1.44);
+  \storageAtoms{13.84}{.94}{\storageClear}
+  \node[state note] at (14.40,.67) {$q@s_2,\ u\to t$};
+  \draw[transition] (15.14,1.52)--(16.02,1.52);
+  \node[state note,anchor=south] at (15.58,1.66) {Move $u$};
+  \storageMoves{16.20}{.94}{\storageDirectMoves}
+  \storageAtoms{16.20}{.94}{\storageFinal}
+  \foreach \yy in {3.08,.94} {
+    \node[state note] at (16.76,\yy-.27) {$q@s_2,\ u@t$};
+  }
+
+  % Label the shared storage geometry beside its traps in the middle column.
+  \foreach \yy in {3.08,.94} {
+    \node[state note,anchor=west,inner sep=0pt,
+      font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont]
+      at (14.51,\yy+.37) {$s_1$};
+    \node[state note,anchor=west,inner sep=0pt,
+      font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont]
+      at (14.51,\yy+.10) {$s_2$};
+    \node[state note,anchor=west,inner sep=0pt,
+      font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont]
+      at (15.02,\yy+.38) {$t$};
+    \draw[galkInk!65,line width=.25pt]
+      (14.87,\yy+.49)--(14.99,\yy+.40);
+  }
+\end{tikzpicture}

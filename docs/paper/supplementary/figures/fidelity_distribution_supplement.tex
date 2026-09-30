@@ -1,0 +1,55 @@
+% Figure colours remain semantic in both review and clean manuscripts.
+\begingroup
+\PaperShowRevisionsfalse
+% One task: the per-circuit fidelity distribution on the current QMAP cohort.
+% Data: writing/generate_fidelity_distribution.py --check verifies every point
+% and the source hashes in physical_ga_main_qmap_distribution.provenance.json.
+\input{figures/tikz_style}
+\begin{tikzpicture}[galk/base,
+  distribution label/.style={font=\rmfamily\fontsize{9pt}{10pt}\selectfont}]
+  \path[use as bounding box] (0,0) rectangle (18.20,6.74);
+  \node[distribution label,anchor=west] at (1.95,6.54)
+    {\PaperRevision{MQT QMAP examples: $N=\GAMainQMAPStrictN$ circuits}};
+  \node[circle,draw=galkData,fill=galkData,inner sep=1.2pt] at (11.55,6.54) {};
+  \node[distribution label,anchor=west] at (11.72,6.54) {\PaperRevision{vs. ZAC}};
+  \node[regular polygon,regular polygon sides=3,draw=galkTail,fill=white,
+    line width=.65pt,inner sep=1.15pt] at (14.38,6.54) {};
+  \node[distribution label,anchor=west] at (14.58,6.54) {\PaperRevision{vs. ICCAD/QMAP}};
+  \begin{axis}[
+    name=fidelityDistributionAxis,
+    at={(1.95cm,1.50cm)},anchor=south west,
+    width=15.80cm,height=4.72cm,scale only axis,
+    axis lines=left,axis line style={draw=galkInk,line width=.7pt},
+    tick style={draw=galkInk,line width=.55pt},tick align=outside,
+    tick label style={font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont},
+    label style={font=\rmfamily\fontsize{9pt}{10pt}\selectfont},
+    xmin=.5,xmax=119.5,xtick={1,20,40,60,80,100,119},
+    xlabel={\PaperRevision{Circuit rank (ascending $\Delta\ln F$ vs. ZAC)}},
+    ymin=-.22,ymax=13,ytick={-.1,-.01,0,.01,.1,1,10},
+    yticklabels={$-0.1$,$-0.01$,$0$,$0.01$,$0.1$,$1$,$10$},
+    ylabel={\PaperRevision{$\Delta\ln F$ (symmetric log scale)}},
+    % Standard symmetric-log coordinates: linear for |dlogF| <= 0.01,
+    % logarithmic outside that interval. Tick labels retain untransformed values.
+    y coord trafo/.code={\pgfmathparse{sign(#1)*(abs(#1)<=0.01
+      ? abs(#1)/0.01 : 1+ln(max(abs(#1),0.01)/0.01)/ln(10))}},
+    y coord inv trafo/.code={\pgfmathparse{sign(#1)*(abs(#1)<=1
+      ? abs(#1)*0.01 : 0.01*10^(abs(#1)-1))}},
+    scaled ticks=false,grid=none,clip=false
+  ]
+    \draw[draw=galkInk!65,line width=.7pt] (axis cs:.5,0)--(axis cs:119.5,0);
+    \addplot[only marks,mark=*,mark size=1.2pt,draw=galkData,fill=galkData]
+      table[x=rank,y=dlog_vs_zac,col sep=space]
+      {figures/data/physical_ga_main_qmap_distribution.dat};
+    \addplot[only marks,mark=triangle,mark size=1.8pt,draw=galkTail,
+      fill=none,line width=.6pt]
+      table[x=rank,y=dlog_vs_iccad,col sep=space]
+      {figures/data/physical_ga_main_qmap_distribution.dat};
+    \node[distribution label,anchor=west] at (axis cs:4,.06)
+      {\PaperRevision{Higher fidelity}};
+    \node[distribution label,anchor=east] at (axis cs:118,-.022)
+      {\PaperRevision{Lower fidelity}};
+  \end{axis}
+  \node[font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont,anchor=west] at (1.95,.11)
+    {\PaperRevision{Linear scale within $|\Delta\ln F|\le0.01$; logarithmic outside.}};
+\end{tikzpicture}
+\endgroup

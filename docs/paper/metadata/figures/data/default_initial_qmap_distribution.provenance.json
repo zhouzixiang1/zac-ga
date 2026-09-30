@@ -1,0 +1,55 @@
+{
+  "comparisons": {
+    "dlog_vs_iccad": {
+      "losses": 72,
+      "maximum": 9.897544308621818,
+      "minimum": -0.17370401375563915,
+      "ties": 0,
+      "wins": 48
+    },
+    "dlog_vs_zac": {
+      "losses": 71,
+      "maximum": 10.773306112237478,
+      "minimum": -0.18732767095789882,
+      "ties": 0,
+      "wins": 49
+    }
+  },
+  "data_sha256": "30756e8e392227781e60e8645cd9d625fb04fb6d0e42e63b56e714b77e68602f",
+  "dataset": "qmap154",
+  "eligible_input_file_count": 122,
+  "equality_tolerance": 1e-12,
+  "formulas": {
+    "dlog_vs_iccad": "Default.log_fidelity - M2.log_fidelity",
+    "dlog_vs_zac": "Default.log_fidelity - M1.log_fidelity"
+  },
+  "generator": "scripts/paper/generate_fidelity_distribution.py",
+  "methods": {
+    "Default": "GA-LK with lookahead initialization",
+    "M1": "ZAC",
+    "M2": "ICCAD/QMAP"
+  },
+  "order": [
+    "dlog_vs_zac ascending",
+    "canonical_sha256 ascending for exact ties"
+  ],
+  "pairing": "both methods use the same circuit rank; no independent re-sorting",
+  "range_policy": "all finite signed values retained; no clipping, tail removal, or fidelity division",
+  "schema_version": 1,
+  "sources": {
+    "accepted_values": {
+      "path": "ZAC_zzx/results/default_initial_v1/paper_exports/default_initial_values.json",
+      "sha256": "8134a8565426425383a7f84bc42a4132abc047714f02485656b9e9b2ef8022df"
+    },
+    "analysis_units": {
+      "path": "ZAC_zzx/results/default_initial_v1/paper_exports/analysis_units.csv",
+      "sha256": "32f37cb931220440a121fb1a95406a1515e86f6e9277c1b62e6f7dba673b4e06"
+    },
+    "main_rows": {
+      "path": "ZAC_zzx/results/default_initial_v1/paper_exports/main_rows.csv",
+      "sha256": "d50af7f9138abfcb00b15b2ca85c5c3e393277062d7eaa0c8b7f752b325f5e3d"
+    }
+  },
+  "unit": "one already-aggregated canonical circuit from analysis_units.csv",
+  "unit_count": 120
+}

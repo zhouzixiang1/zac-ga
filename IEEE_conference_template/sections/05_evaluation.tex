@@ -1,49 +1,45 @@
 \section{实验评估}
 \label{sec:evaluation}
 
-实验从总体编译质量、联合优化中的遗传搜索和多层前瞻三个方面评价GA-LK，并分析参数配置与编译开销。
+\subsection{比较设置}
+\label{sec:experimental-setup}
 
-\input{figures/data/fig6_selected_cases.tex}
+实验将GA-LK与ZAC\cite{lin2025zac}及Stade等的路由感知放置\cite{stade2025routingaware}进行比较，基线采用其公开实现。\footnote{ZAC采用ASAP调度、动态放置与原子复用。路由感知基线采用MQT QMAP 3.2.0/Core 3.1.0，前瞻因子为0.2，深化值为0.2，复用级别为5，深化因子为0.6。}输入包括ZAC的18个基准电路（ZAC18）\cite{lin2025zac}与MQT QMAP示例集的154个输入文件\cite{wille2023qmap}，后者包含151个规范化后的不同电路，等价输入在聚合时合并。三种编译器接收相同门序列。基线沿用原始输出及既定验收口径，不追加修复或诊断筛选；GA-LK在候选评价中检查非目标交点与静止原子的冲突。
 
-\subsection{实验设置}
+统一架构包含一个AOD、$100\times100$个存储阱和两块配对的$7\times20$纠缠阵列，共提供140个门位。式~\eqref{eq:fidelity}取$(f_1,f_2,f_{\rm tran},f_{\rm exc})=(0.9997,0.995,0.999,0.9975)$及$T_2=1.5$\,s，单比特门、CZ门和阱转移分别耗时52、0.36和15\,$\mu$s。质量比较纳入各参与配置均完成编译、且各原子空闲时间低于$T_2$的电路；主实验要求GA-LK三个种子均有效，逐电路取中位数。电路间保真度采用几何均值，批次和重排时延采用算术均值。
 
-实验使用ZAC的18个基准电路（ZAC18）\cite{lin2025zac}和MQT QMAP的154个示例输入（QMAP154）\cite{wille2023qmap}，后者规范化后包含151个不同电路。比较方法为Lin等人的ZAC\cite{lin2025zac}和Stade等人的路由感知放置ICCAD/QMAP\cite{stade2025routingaware}。三种编译器使用相同的规范化输入、门序列和式~\eqref{eq:fidelity}的保真度模型。
+主比较采用各编译器自身的初始化。GA-LK初始化使用种群8、映射评价上限32，评价首层及后两层；初始化前缀内的后续层编码评价上限为32、内层前瞻关闭。动态优化取$H=8$、$\alpha=0.5$、$\rho=0.7$和$\epsilon=0.05$，编码评价上限576并按规模收缩。前瞻、搜索及预算对照固定起始映射，初始化对照则固定后续动态配置；各项研究按其参与配置分别确定样本。
 
-总体质量使用三种方法均完成编译且满足$t_q<T_2$的不同电路，等价输入合并；保真度取几何均值，重排批次和时延取算术均值。完整结果数按全部输入文件统计。基线按原生输出评分，GA-LK执行第~\ref{sec:method}节的候选可行性检查。单次编译限时600~s。
+\subsection{总体收益与物理来源}
 
-\PaperRevision{GA-LK取$H=8$、$\alpha=0.5$、$\rho=0.7$和$\epsilon=0.05$，求解预算见表~\ref{tab:solver-bounds}。初始化布局取$H_{\rm init}=2$，在包括模拟退火布局的至多四个候选中评价首层及后续两层，每层的编码评价预算为32。总体质量比较采用这一前瞻初始化布局；遗传搜索、多层前瞻与串行计时的受控比较固定采用模拟退火初始化。GA-LK的质量评估最多并行六个独立编译进程，单任务资源上限固定；编译开销采用串行测量。}架构与误差参数、完整电路清单和重复运行设置集中列于代码仓库的实验协议。
+GA-LK在两个电路集上相对两种基线均提高了保真度几何均值，并减少平均重排批次，如表~\ref{tab:main-results}所示。相对ZAC，ZAC18与QMAP的保真度分别提高\GAMainZACVsZACFidelityGain\%和\GAMainQMAPVsZACFidelityGain\%，QMAP的批次减少\GAMainQMAPVsZACBatchReduction\%。
 
-\subsection{总体编译质量}
+\input{sections/05_main_table}
 
-\PaperRevision{GA-LK在两个基准集上均取得更高的保真度几何均值和更低的平均重排开销，结果见表~\ref{tab:main-results}与图~\ref{fig:experimental-summary}(a)。在ZAC18上，保真度相对ZAC和ICCAD/QMAP分别提高\PaperPercentGain{\DefaultZACMFourF}{\DefaultZACMOneF}和\PaperPercentGain{\DefaultZACMFourF}{\DefaultZACMTwoF}；在QMAP154上，分别提高\PaperPercentGain{\DefaultQMAPMFourF}{\DefaultQMAPMOneF}和\PaperPercentGain{\DefaultQMAPMFourF}{\DefaultQMAPMTwoF}。}
+不同电路集呈现出不同的收益分布。相对ZAC，ZAC18有\GAMainZACVsZACWins 个电路改善、\GAMainZACVsZACLosses 个下降，QMAP则为\GAMainQMAPVsZACWins 胜、\GAMainQMAPVsZACLosses 负；相对路由感知基线，QMAP为\GAMainQMAPVsICCADWins 胜、\GAMainQMAPVsICCADLosses 负。因此，QMAP的总体提升主要体现为部分电路上幅度较大的改善，而非更多电路获胜。几何均值通过对数保真度比的平均反映这一关系。
 
-\PaperRevision{ZAC18与QMAP154的平均重排批次分别降至\DefaultZACMFourB 和\DefaultQMAPMFourB，平均重排时延分别为\DefaultZACMFourT\,ms和\DefaultQMAPMFourT\,ms。}批次减少压缩了串行输运阶段，时延降低则减少了完成重排所需的物理时间。
+在两个电路集相对两种基线的比较中，阱转移与退相干损失的降低均超过新增空闲受激损失。QFT-18中，相对ZAC的阱转移由\GAMainMechanismQFTBaseTransfers 次降至\GAMainMechanismQFTGATransfers 次；转移、受激、相干分量对$\Delta\ln F$贡献的种子中位数依次为\mbox{$(+\GAMainMechanismQFTTransferGainRounded,\,\GAMainMechanismQFTExcitationGainRounded,\,+\GAMainMechanismQFTCoherenceGainRounded)$}。该例的主要收益来自阱转移减少。
 
-\PaperRevision{量子傅里叶变换、W态和Ising电路取得了较大的逐电路收益，表~\ref{tab:representative-circuits}列出其规模和绝对保真度。}每个基准集选取两项：要求两种基线中较高的保真度不低于0.05，再按GA-LK相对该值的对数保真度增幅排序。
-
-\input{sections/05_circuit_table}
-
-\PaperRevision{\texttt{QFT-18}的阱转移由ZAC的\DefaultMechanismQFTBaseTransfers 次降至\DefaultMechanismQFTGATransfers 次，使对应的对数保真度提高\DefaultMechanismQFTTransferGainRounded，是该电路收益的主要来源。}图~\ref{fig:experimental-summary}(c)给出阱转移、空闲受激与相干项的分解。
-
-\subsection{联合优化中的遗传搜索}
+\subsection{前瞻与搜索的作用}
 \label{sec:ablation}
 
-遗传搜索在\AblationGAN 个有效电路上较逐坐标确定性贪心及局部精修提高保真度几何均值\PaperPercentGain{\AblationGARatio}{1}，结果见图~\ref{fig:experimental-summary}(b)。两者使用相同的联合决策变量、物理约束、目标函数和评价预算，仅替换大规模边界的搜索方式。
+在相同联合决策空间中，考虑后续门层有助于改善方案选择。在固定初始映射、联合变量、搜索预算和存储位候选域的对照中，将$H=0$改为$H=8$，\AblationHN 个电路的保真度几何均值提高\PaperPercentGain{\AblationHRatio}{1}。$H=8$配置考虑后续门层、末端回迁及近期复用的驻留安排，$H=0$仅按当前层损失选择。
 
-\subsection{多层前瞻}
+另一项对照固定跨层目标，考察遗传搜索如何从联合候选中作出选择。对于超出枚举阈值的空间，遗传搜索与逐坐标贪心使用相同的$H=8$、物理约束、目标函数、评价预算和局部精修规则；遗传搜索使\AblationGAN 个电路的保真度几何均值提高\PaperPercentGain{\AblationGARatio}{1}。两项对照分别考察前瞻配置与同一联合空间内的搜索差异，来自不同样本，其增量不能相加。
 
-多层前瞻在\AblationHN 个有效电路上提高保真度几何均值\PaperPercentGain{\AblationHRatio}{1}，结果见图~\ref{fig:experimental-summary}(b)。两组配置分别取$H=8$和$H=0$，其余参数、搜索预算和存储位候选域相同。前者在当前损失之外计入后续门层和末端回迁代价，并依据近期复用安排驻留；后者仅按当前层损失选择。
+\label{sec:horizon-evaluation}
+前瞻的收益还取决于预测范围。在独立的范围研究中，所测电路的大部分平均改善在一层前瞻时已经获得。图~\ref{fig:experimental-summary}展示\HorizonExtCompleteN 个电路的完整轨迹：从$H=0$增至1时，保真度比的几何均值提高、批次比的几何均值降低，继续扩大上限的平均变化较小。$H=4$与8有4个电路的实际窗口相同，体现了剩余层数和规模预算对预测展开的限制。
+
+\input{sections/05_overview_floats}
 
 \label{sec:init-evaluation}
-\PaperRevision{初始化阶段的前瞻评价在固定四个初始候选和后续动态配置$H=8$下比较。$H_{\rm init}=2$在\InitExtCompleteN 个完整电路上较$H_{\rm init}=0$提高保真度几何均值\InitExtFidelityGainRounded、减少平均批次\InitExtBatchReductionRounded；相对原始模拟退火布局，保真度提高\InitExtVsSAGainRounded。两组评价在多数配对中选中相同映射，部分候选则因后续门层的输运与受激损失而改变排序。完整电路清单与运行结果见代码仓库的实验协议。}
+这一评价思路也适用于执行开始之前，因为起始布局决定早期门层的输运起点。在\PhysicalInitSearchCompleteN 个电路上，评价首层及后两层，相比仅评价首层提高完整电路保真度几何均值\PhysicalInitGaVsHZeroGainPercent\%，为\PhysicalInitGaVsHZeroWins 胜、\PhysicalInitGaVsHZeroLosses 负；各配置逐电路取三个种子的中位数。固定位置域、初始种群、前缀范围及32次映射评价上限后，GA相对随机搜索提高\PhysicalInitGaVsRandomGainPercent\%（\PhysicalInitGaVsRandomWins 胜、\PhysicalInitGaVsRandomTies 平、\PhysicalInitGaVsRandomLosses 负），两者后续均采用动态$H=8$。早期门层的物理评价由此同时用于初始化与动态放置，而遗传搜索在相同预算下改善了映射选择。
 
-\subsection{参数选择与编译开销}
-\label{sec:horizon-evaluation}
+\subsection{计算预算}
+\label{sec:runtime-evaluation}
 
-前瞻层数上限从0增加至1时，相对默认八层配置的保真度比由\HorizonExtZeroFidelityRatio 提高至\HorizonExtOneFidelityRatio；上限增加至4时，保真度和重排批次均接近八层配置，结果见表~\ref{tab:sensitivity}。五档配置使用相同的初始化、搜索预算、候选存储位域和衰减权重。在这一子集中，较近门层的执行信息已提供了主要收益。$H$规定预测长度的上限，实际层数仍遵循表~\ref{tab:solver-bounds}的规模限制。
+上述质量收益需要额外的候选评价，其预算也为控制编译开销提供了直接手段。在配备14个逻辑处理器和24\,GiB内存的arm64 macOS主机上，主质量研究的127个电路采用最多14进程并行编译。逐电路取三个种子的中位数，再跨电路取中位数，包含GA初始化的完整编译耗时为19.12\,s，其中初始化阶段的耗时中位数为4.92\,s。
 
-搜索预算和存储位候选域也影响编译开销。在12电路参数比较中，减小两者后的保真度比均接近1，编译时间比分别为\SensitivityBudgetLowTimeRatio 和\SensitivityReturnSmallTimeRatio。完整参数配置与结果见代码仓库的实验协议。
+独立串行计时进一步考察固定起始布局后的开销。同一主机上，\GAMainFixedLayoutCircuitN 个电路的非初始化编译耗时中位数为\GAMainPostInitialMedianSeconds\,s。各次运行使用相同起始映射和种子0，预热后重复三次；逐次扣除完整初始化阶段，再取电路内及电路间中位数。
 
-\input{sections/05_sensitivity_table}
-
-GA-LK的编译时间高于基线。在该12电路子集上，其端到端编译时间中位数为\StrictMFourTime\,s，相对ICCAD/QMAP的逐电路时间比几何均值为\StrictMFourVsMTwo。所有方法均以原生单线程实现计时；评价预算和前瞻上限用于调节质量与计算开销。
+固定起始布局后，缩小候选集合能够以更低的编译开销保持相近执行质量。将编码评价上限从576减至192，或将每原子候选阱数与每编码分配数从$(6,4)$减至$(4,2)$，在\SensitivityFidelityN 个电路上的保真度比均接近1。在\GAMainBudgetTimingN 个完成计时的电路上，扣除初始化后的编译耗时分别降低\PaperPercentReduction{\GAMainBudgetPostInitialTimeRatio}{1}和\PaperPercentReduction{\GAMainReturnPostInitialTimeRatio}{1}，降幅由配对耗时比的几何均值计算。每配置使用种子0、运行一次，最多允许四路并行，所报降幅对应这一运行安排。

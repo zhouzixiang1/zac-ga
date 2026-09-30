@@ -1,0 +1,38 @@
+% Figure colours remain semantic in both review and clean manuscripts.
+\begingroup
+\PaperShowRevisionsfalse
+\input{figures/tikz_style}
+% ZAIR format notation follows ZAC, Fig. 17 (HPCA 2025, printed p. 138).
+% Keep the current emitter's gates and aod_qubits fields. The caption defines
+% qloc/gate and states which common or auxiliary fields are omitted.
+\begin{tikzpicture}[x=1cm,y=1cm,galk/base,
+  code/.style={font=\ttfamily\fontsize{8.6pt}{9.6pt}\selectfont,
+    anchor=north west,inner sep=0pt,text=galkInk}]
+  \path[use as bounding box] (0,0) rectangle (8.80,7.60);
+  \path[fill=galkInk!5] (0,0) rectangle (8.80,7.60);
+  % Productions define record formats, not an execution sequence. The second
+  % group expands the operation alternatives named in rearrangeJob.insts.
+  \node[code] at (.17,7.40) {\PaperRevision{\begin{tabular}{@{}l@{}}
+    \textcolor{galkData}{<init>} ::= \{'init\_locs': \textcolor{galkData}{list[qloc]}\}\\[2pt]
+    \textcolor{galkData}{<1qGate>} ::= \{'unitary': \textcolor{galkData}{'u3'},\\
+    \quad 'locs': \textcolor{galkData}{list[qloc]}, 'gates': \textcolor{galkData}{list[gate]}\}\\[2pt]
+    \textcolor{galkData}{<rydberg>} ::= \{'zone\_id': \textcolor{galkData}{int},\\
+    \quad 'gates': \textcolor{galkData}{list[gate]}\}\\[2pt]
+    \textcolor{galkData}{<rearrangeJob>} ::= \{'aod\_id': \textcolor{galkData}{int},\\
+    \quad 'aod\_qubits': \textcolor{galkData}{list[int]},\\
+    \quad 'begin\_locs': \textcolor{galkData}{list[qloc]},\\
+    \quad 'end\_locs': \textcolor{galkData}{list[qloc]},\\
+    \quad 'insts': \textcolor{galkData}{list[activate | move | deactivate]}\}\\[6pt]
+    \textcolor{galkData}{<activate>} ::= \{'row\_id': \textcolor{galkData}{list[int]},\\
+    \quad 'row\_y': \textcolor{galkData}{list[float]}, 'col\_id': \textcolor{galkData}{list[int]},\\
+    \quad 'col\_x': \textcolor{galkData}{list[float]}\}\\[2pt]
+    \textcolor{galkData}{<deactivate>} ::= \{'row\_id': \textcolor{galkData}{list[int]},\\
+    \quad 'col\_id': \textcolor{galkData}{list[int]}\}\\[2pt]
+    \textcolor{galkData}{<move>} ::= \{'row\_id': \textcolor{galkData}{list[int]},\\
+    \quad 'row\_y\_begin': \textcolor{galkData}{list[float]},\\
+    \quad 'row\_y\_end': \textcolor{galkData}{list[float]}, 'col\_id': \textcolor{galkData}{list[int]},\\
+    \quad 'col\_x\_begin': \textcolor{galkData}{list[float]},\\
+    \quad 'col\_x\_end': \textcolor{galkData}{list[float]}\}
+  \end{tabular}}};
+\end{tikzpicture}
+\endgroup

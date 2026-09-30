@@ -1,87 +1,60 @@
-% Three questions: overall quality, controlled comparisons, loss components.
-\begingroup\endlinechar=-1\relax%
+% Two side-by-side plots at final single-column width, following the supplied template.
+% All ten circuit medians and both geometric means retain the frozen H8 normalization.
+\begingroup
+\PaperShowRevisionsfalse
 \input{figures/tikz_style}
-\providecommand{\FigSixDataRoot}{figures/data}
-\input{\FigSixDataRoot/fig6_meta.tex}
-\edef\FigSixZACvsZAC{\fpeval{100*(\DefaultZACMFourF/\DefaultZACMOneF-1)}}
-\edef\FigSixZACvsICCAD{\fpeval{100*(\DefaultZACMFourF/\DefaultZACMTwoF-1)}}
-\edef\FigSixQMAPvsZAC{\fpeval{100*(\DefaultQMAPMFourF/\DefaultQMAPMOneF-1)}}
-\edef\FigSixQMAPvsICCAD{\fpeval{100*(\DefaultQMAPMFourF/\DefaultQMAPMTwoF-1)}}
-\edef\ArgumentGAGain{\fpeval{100*(\AblationGARatio-1)}}
-\edef\ArgumentLookaheadGain{\fpeval{100*(\AblationHRatio-1)}}
-\pgfplotsset{
-  argument axis/.style={
-    axis lines=left,axis line style={draw=galkInk,line width=.45pt},
-    tick style={draw=galkInk,line width=.4pt},tick align=outside,
-    tick label style={font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont},
-    label style={font=\rmfamily\fontsize{8pt}{9pt}\selectfont},
-    grid=none,clip=false,scaled ticks=false,
-    nodes near coords,point meta=y,
-    every node near coord/.style={
-      font=\rmfamily\fontsize{7.2pt}{8pt}\selectfont,text=galkInk,
-      /pgf/number format/fixed,/pgf/number format/precision=2,
-      /pgf/number format/zerofill,anchor=south,yshift=1pt}
-  },
-  argument blue/.style={draw=galkData,fill=galkData!85,line width=.45pt},
-  argument orange/.style={draw=galkTail,fill=galkTail!65,line width=.45pt}
-}
-\endlinechar=13\relax%
-\begin{tikzpicture}[galk/base]
-  \path[use as bounding box] (-.02,-.15) rectangle (17.82,5.55);
-  \begin{pgfinterruptboundingbox}
-  \node[galk/panel title,font=\rmfamily\bfseries\fontsize{8.5pt}{9.5pt}\selectfont]
-    at (.65,5.27) {(a) Overall fidelity improvement};
-  \node[galk/panel title,font=\rmfamily\bfseries\fontsize{8.5pt}{9.5pt}\selectfont]
-    at (6.83,5.27) {(b) Controlled comparisons};
-  \node[galk/panel title,font=\rmfamily\bfseries\fontsize{8.5pt}{9.5pt}\selectfont]
-    at (12.69,5.27) {(c) QFT-18 vs. ZAC};
-  \filldraw[draw=galkData,fill=galkData!85,line width=.45pt] (1.04,4.87) rectangle +(.22,.12);
-  \node[anchor=west,font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont]
-    at (1.35,4.93) {vs. ZAC};
-  \filldraw[draw=galkTail,fill=galkTail!65,line width=.45pt] (2.81,4.87) rectangle +(.22,.12);
-  \node[anchor=west,font=\rmfamily\fontsize{7.5pt}{8.5pt}\selectfont]
-    at (3.12,4.93) {vs. ICCAD/QMAP};
-  \begin{axis}[
-    argument axis,at={(.92cm,.78cm)},anchor=south west,
-    width=4.56cm,height=3.63cm,scale only axis,
-    ybar,bar width=8pt,ymin=0,ymax=30,ytick={0,10,20,30},
-    ylabel={Fidelity improvement (\%)},xmin=.5,xmax=2.5,xtick={1,2},
-    nodes near coords={\PaperRevision{\pgfmathprintnumber{\pgfplotspointmeta}}},
-    xticklabels={\shortstack{ZAC18\\\PaperRevision{$N=\DefaultZACStrictN$}},
-                 \shortstack{QMAP154\\\PaperRevision{$N=\DefaultQMAPStrictN$}}}
-  ]
-    \addplot[argument blue,bar shift=-6.3pt,
-      every node near coord/.append style={anchor=south east}]
-      coordinates {(1,\FigSixZACvsZAC) (2,\FigSixQMAPvsZAC)};
-    \addplot[argument orange,bar shift=6.3pt,
-      every node near coord/.append style={anchor=south west}]
-      coordinates {(1,\FigSixZACvsICCAD) (2,\FigSixQMAPvsICCAD)};
+\pgfplotstableread[col sep=space]{figures/data/horizon_trends.dat}\HorizonTrendData
+\begin{tikzpicture}[galk/base,
+  horizon label/.style={font=\rmfamily\fontsize{10pt}{11pt}\selectfont}]
+  \path[use as bounding box] (0,0) rectangle (8.80,4.49);
+  \node[horizon label,font=\rmfamily\bfseries\fontsize{10pt}{11pt}\selectfont]
+    at (2.70,4.24) {Fidelity};
+  \node[horizon label,font=\rmfamily\bfseries\fontsize{10pt}{11pt}\selectfont]
+    at (6.73,4.24) {Batches};
+  \pgfplotsset{horizon trend axis/.style={
+    width=3.16cm,height=2.45cm,scale only axis,
+    axis lines*=left,axis line style={draw=galkInk,line width=.65pt},
+    tick style={draw=galkInk,line width=.45pt},tick align=outside,
+    tick label style={font=\rmfamily\fontsize{10pt}{11pt}\selectfont},
+    label style={font=\rmfamily\fontsize{10pt}{11pt}\selectfont},
+    xmin=-.15,xmax=8.2,xtick={0,1,2,4,8},
+    ymajorgrids=true,grid style={draw=galkMuted!28,line width=.35pt},
+    scaled ticks=false,clip=true,
+  }}
+  \begin{axis}[horizon trend axis,
+    at={(1.12cm,1.43cm)},anchor=south west,
+    ylabel={Ratio to $H=8$},
+    ylabel style={at={(axis description cs:-.27,.5)},anchor=south,inner sep=0pt},
+    ymin=.18,ymax=1.055,ytick={.2,.4,.6,.8,1.0}]
+    \addplot[draw=galkMuted!85,densely dashed,line width=.55pt,forget plot] coordinates {(0,1) (8,1)};
+    \pgfplotsinvokeforeach{0,...,9}{
+      \addplot[draw=galkMuted!70,line width=.65pt,mark=*,mark size=.95pt,
+        mark options={draw=galkMuted!85,fill=white},forget plot]
+        table[x=horizon,y=f#1]{\HorizonTrendData};
+    }
+    \addplot[draw=galkData,line width=1.3pt,mark=diamond*,mark size=2pt,
+      mark options={draw=white,line width=.4pt,fill=galkData}]
+      table[x=horizon,y=f_mean]{\HorizonTrendData};
   \end{axis}
-  \begin{axis}[
-    argument axis,at={(7.02cm,.78cm)},anchor=south west,
-    width=4.10cm,height=3.63cm,scale only axis,
-    ybar,bar width=16pt,ymin=0,ymax=30,ytick={0,10,20,30},
-    ylabel={Fidelity improvement (\%)},xmin=.45,xmax=2.55,xtick={1,2},
-    xticklabels={\shortstack{GA vs. greedy\\$N=\AblationGAN$},
-                 \shortstack{$H=8$ vs. $H=0$\\$N=\AblationHN$}}
-  ]
-    \addplot[argument blue] coordinates {(1,\ArgumentGAGain) (2,\ArgumentLookaheadGain)};
+  \begin{axis}[horizon trend axis,
+    at={(5.15cm,1.43cm)},anchor=south west,
+    ymin=.95,ymax=1.73,ytick={1.0,1.2,1.4,1.6}]
+    \addplot[draw=galkMuted!85,densely dashed,line width=.55pt,forget plot] coordinates {(0,1) (8,1)};
+    \pgfplotsinvokeforeach{0,...,9}{
+      \addplot[draw=galkMuted!70,line width=.65pt,mark=*,mark size=.95pt,
+        mark options={draw=galkMuted!85,fill=white},forget plot]
+        table[x=horizon,y=b#1]{\HorizonTrendData};
+    }
+    \addplot[draw=galkData,line width=1.3pt,mark=diamond*,mark size=2pt,
+      mark options={draw=white,line width=.4pt,fill=galkData}]
+      table[x=horizon,y=b_mean]{\HorizonTrendData};
   \end{axis}
-  \begin{axis}[
-    argument axis,at={(13.04cm,.78cm)},anchor=south west,
-    width=4.25cm,height=3.63cm,scale only axis,
-    ybar,bar width=15pt,ymin=-.055,ymax=.30,ytick={0,.1,.2,.3},
-    ylabel={Change in log fidelity},xmin=.45,xmax=3.55,xtick={1,2,3},
-    xticklabels={Transfer,Excitation,Coherence},
-    every node near coord/.append style={/pgf/number format/precision=3}
-  ]
-    \draw[draw=galkGrid,line width=.45pt] (axis cs:.5,0)--(axis cs:3.5,0);
-    \addplot[argument blue,bar shift=0pt]
-      coordinates {(1,\MechanismQFTTransferGain) (3,\MechanismQFTCoherenceGain)};
-    \addplot[argument orange,bar shift=0pt,
-      every node near coord/.append style={anchor=north,yshift=-1pt}]
-      coordinates {(2,\MechanismQFTExcitationGain)};
-  \end{axis}
-  \end{pgfinterruptboundingbox}
-\end{tikzpicture}%
+  \node[horizon label] at (4.65,.64) {Look-ahead upper bound $H$};
+  \draw[draw=galkMuted!70,line width=.65pt] (.32,.20)--(.86,.20);
+  \node[circle,draw=galkMuted!85,fill=white,inner sep=1pt] at (.59,.20) {};
+  \node[horizon label,anchor=west] at (.96,.20) {Circuits ($N=10$)};
+  \draw[draw=galkData,line width=1.3pt] (4.70,.20)--(5.24,.20);
+  \node[diamond,draw=white,fill=galkData,inner sep=1.3pt] at (4.97,.20) {};
+  \node[horizon label,anchor=west] at (5.34,.20) {Geometric mean};
+\end{tikzpicture}
 \endgroup

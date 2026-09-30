@@ -1,0 +1,32 @@
+\begin{algorithm}[!htb]
+\caption{\PaperRevision{Solver Order for Joint Optimization of One Layer}}
+\label{alg:solver}
+\small
+\begin{PaperRevisionBlock}
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
+\algrenewcommand\algorithmicwhile{\textbf{while}}
+\algrenewcommand\algorithmicdo{\textbf{do}}
+\algrenewcommand\algorithmicreturn{\textbf{return}}
+\algtext*{EndWhile}
+\begin{algorithmic}[1]
+\Require Current configuration $\mathbf{s}_\ell$, current-layer gates, and subsequent gate sequence
+\Ensure Current-layer gate sites, residency and return plan, execution batches, and post-layer configuration
+\Statex \textbf{Candidate preparation}
+\State Construct the encoding domain and initial candidates; select enumeration or genetic search
+\Statex \textbf{Search}
+\While{unevaluated encodings remain and the search budget is not exhausted}
+  \State Take an encoding and match at most $K$ storage-site assignments to form complete candidates
+  \State Generate execution batches; discard candidates infeasible for the current layer
+  \State Compute feasible candidates' current loss $C_\ell^{\rm cur}$ and post-layer configurations
+  \State Predict from each post-layer configuration; record $J_\ell$ and prediction feasibility
+  \State Enumerate the next encoding, or generate offspring by selection, crossover, and mutation
+\EndWhile
+\Statex \textbf{Final selection}
+\State Reevaluate after bounded local adjustments and establish the reference plan
+\State Select by the admission rule and $J_\ell$; retain the reference if no better candidate exists
+\State If all future predictions are infeasible, select by executable current-layer cost
+\State \Return Selected plan, current-layer execution batches, and $\mathbf{s}_{\ell+1}$
+\end{algorithmic}
+\end{PaperRevisionBlock}
+\end{algorithm}

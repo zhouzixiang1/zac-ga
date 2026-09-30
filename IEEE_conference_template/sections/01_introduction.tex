@@ -1,14 +1,53 @@
 \section{引言}
 \label{sec:introduction}
 
-量子计算利用量子态的叠加、干涉与纠缠处理信息，为量子系统模拟及若干计算密集型问题提供了不同于经典计算的求解途径\cite{preskill2018quantum}。扩大可执行电路规模，需要增加量子比特数量、提高操作精度，并通过硬件控制与编译优化减少执行中的误差累积。中性原子处理器利用光镊阵列约束原子，以Rydberg相互作用实现纠缠门，并通过相干输运重构原子间的连接。数百量子比特阵列、高保真纠缠门和相干原子输运的实验进展\cite{bluvstein2024logicalprocessor,evered2023highfidelity,bluvstein2022coherenttransport}，使中性原子成为研究大规模量子计算的重要平台。
+可扩展原子阵列、高保真纠缠门与相干输运推动了中性原子逻辑量子处理器的发展\cite{bluvstein2024logicalprocessor,evered2023highfidelity,bluvstein2022coherenttransport}。有限相干时间和操作误差仍限制着可执行电路的深度\cite{preskill2018quantum}。分区架构通过分离存储与纠缠操作，在支持并行门的同时保护空闲原子\cite{stade2024abstractmodel,lin2025zac}；编译器须将电路映射为满足占位与输运约束的放置和移动序列。节省当前移动可能增加后续受激或输运，因此评价放置时须考虑它留给后续门层的起始配置。
 
-中性原子编译器通过安排原子位置、移动轨迹和激光脉冲，将逻辑电路转化为物理操作序列。分区中性原子架构将原子存储与纠缠门执行分配到不同区域，以存储隔离抑制空闲原子的Rydberg受激。跨区输运引入阱转移损耗并消耗相干时间，层间放置与输运安排直接影响电路保真度和执行时延\cite{stade2024abstractmodel,lin2025zac}。
+\begin{figure*}[!t]
+  \centering
+  \resizebox{\textwidth}{!}{\input{figures/architecture_preliminaries}}
+  \caption{分区架构与AOD约束。(a) $q_0$、$q_1$执行CZ门，$q_2$接受单比特旋转，$q_3$跨区输运；$d_{\rm site}$为相邻门位对的中心间距。(b) 行列次序与合并约束。(c) 联合拾取会误触静止于$s$的$q_2$；$B_1$先运走并卸载$q_0$，关闭该批行列后，$B_2$再拾取$q_1$。仅画拾取端，区域与阱数为示意。}
+  \label{fig:architecture-preliminaries}
+\end{figure*}
 
-层边界处的原子位置会改变后续门层的执行条件。暂时空闲的原子若保留在纠缠区，可省去往返存储区的阱转移，但也会经历中间层的Rydberg脉冲并产生额外受激。若将原子送回存储区，所选阱位成为后续重入的起点，并可能占用其他原子的输运通道。移动光阱的结构约束决定哪些轨迹可以并行，一个重排批次的时延由其中最长轨迹决定\cite{lin2025zac,stade2025routingaware}。门位、驻留和存储位共同影响当前层及后续层的物理代价。
+\subsection{分区架构与物理代价}
+\label{sec:background}
 
-Lin等人提出的ZAC在初始布局中利用全电路交互，在动态放置中通过相邻门层匹配复用纠缠区原子，并将后续双比特门的配对关系及其距离代价用于门位和存储位选择\cite{lin2025zac}。Stade等人的路由感知放置把轨迹兼容性与批次时延纳入A*代价\cite{stade2025routingaware}。评价非相邻门层之间的驻留选择，需要跟踪原子在中间层的位置及其受到的脉冲，确定当前驻留与回迁对后续受激损耗、阱转移和可行轨迹的影响。
+空间光调制器（SLM）在存储区和纠缠区形成静态阱，声光偏转器（AOD）形成行列可调的移动阱。原子经SLM到AOD的转移、输运和AOD到SLM的转移到达目标位置，见图~\ref{fig:architecture-preliminaries}(a)。存储区与Rydberg照射区域隔离，纠缠区则采用成对阱位，使目标原子在全局Rydberg脉冲下执行CZ门；单比特旋转由可寻址Raman光束执行\cite{evered2023highfidelity,lin2025zac}。纠缠区非参与原子也会受激，因此驻留需要权衡转移与受激损失。
 
-本文提出层边界联合优化方法GA-LK\footnote{工程代码及实验配置见\url{https://github.com/zhouzixiang1/zac-ga}。}。该方法采用遗传搜索联合选择门位与驻留状态，并通过单射匹配为回迁原子分配存储位。各候选以可执行输运计算当前损失，再从执行后的位置、占位和时钟出发，预测后续多个门层的输运、空闲受激与相干损失。联合搜索处理当前选择之间的约束，多层前瞻则使这些选择兼顾非相邻门层的交互需求。
+同批AOD输运须满足两类约束\cite{stade2024abstractmodel,stade2025routingaware}。首先，活动行列保持次序及同行同列关系。对源坐标$(x_i,y_i)$、$(x_j,y_j)$与目标坐标$(x'_i,y'_i)$、$(x'_j,y'_j)$，任意\mbox{$\star\in\{<,=,>\}$}均须满足
+\begin{equation}
+\begin{aligned}
+x_i\star x_j&\ \Longleftrightarrow\ x'_i\star x'_j,\\
+y_i\star y_j&\ \Longleftrightarrow\ y'_i\star y'_j.
+\end{aligned}
+\label{eq:aod-relations}
+\end{equation}
+因此，不相交的路径也可能无法并行，见图~\ref{fig:architecture-preliminaries}(b)。其次，活动行列在所有交点形成光阱，未承载目标原子的交点称为非目标交点（ghost spot）。在本文的执行模型中，拾取、输运和放下过程中，移动阱及非目标交点均不得扫过静止原子；这一检查也适用于单条轨迹。图~\ref{fig:architecture-preliminaries}(c)通过分批避免误拾取。目标阱还须满足占位依赖：原子转入AOD时即释放源SLM阱\cite{lin2025zac}，静止原子的阱位则不能通过交换批次次序释放。
 
-本文在ZAC论文采用的18个电路以及MQT QMAP示例集的154个输入电路上进行评估。相较于Lin等人的ZAC编译器\cite{lin2025zac}和Stade等人的路由感知放置方法\cite{stade2025routingaware}，GA-LK在两个基准集上均获得更高的模型保真度几何均值。
+放置由此影响阱转移、空闲受激以及分批输运中的相干时间消耗。为在同一尺度上比较这些代价，执行质量采用分区架构的保真度模型\cite{lin2025zac}：
+\begin{equation}
+\begin{aligned}
+\log F={}&N_1\log f_1+N_2\log f_2
++N_{\mathrm{exc}}\log f_{\mathrm{exc}}\\
+&+N_{\mathrm{tran}}\log f_{\mathrm{tran}}
++\sum_{q\in\mathcal Q}\log\left(1-\frac{t_q}{T_2}\right).
+\end{aligned}
+\label{eq:fidelity}
+\end{equation}
+其中，$N_1$、$N_2$为单、双比特门数，$N_{\mathrm{exc}}$为空闲受激次数，$N_{\mathrm{tran}}$为逐原子SLM/AOD阱转移次数，$f_1$、$f_2$、$f_{\mathrm{exc}}$、$f_{\mathrm{tran}}$为对应的单次保真度因子；$t_q$为原子$q\in\mathcal Q$的累计空闲时间，$T_2$为相干时间。门序列固定后，放置通过后三项影响保真度。相容轨迹构成重排批次，各批顺序执行。单个并行移动阶段的时长由最长轨迹决定\cite{stade2025routingaware}，完整批次还包含阱转移\cite{lin2025zac}。
+
+\begin{samepage}
+仅计转移与受激时，跨过$r$个空闲门层的驻留损失为$-r\log f_{\rm exc}$，往返为$-4\log f_{\rm tran}$。在$f_{\rm exc}=\ArgumentExcitationFidelity$、$f_{\rm tran}=\ArgumentTransferFidelity$时，$r=1$时驻留损失较低，$r=2$时往返损失较低。即使在这一双因子算例中，下次交互相隔的门层数也会改变当前选择；实际放置还须考虑占位、路由与相干影响。\par
+\end{samepage}
+
+\subsection{放置挑战与相关编译方法}
+
+为降低交互带来的移动代价，已有中性原子编译方法优化原生门分解、交互感知布局和原子移动路由\cite{patel2022geyser,patel2023graphine,tan2022mapping,schmid2024hybrid}，并协调门调度与原子移动\cite{tan2024olsqdpqa,tan2025enola}。多阵列并行输运\cite{wang2024atomique}、免SWAP移动\cite{ludmir2024parallax}、移动辅助原子\cite{wang2024qpilot}及可重定向编译\cite{kirmemis2025weaver}进一步拓展了移动与交互的实现方式。面向分区执行，PowerMove协调门层调度与布局转换\cite{ruan2025powermove}，Mantra则通过程序改写减少输运\cite{jang2025mantra}。
+
+在具体的放置决策中，ZAC通过相邻层匹配复用原子，并将后续伙伴距离计入门位和存储位匹配\cite{lin2025zac}。路由感知放置用A*选择门位和中间位置，评价移动相容性、批次时延、后续伙伴距离及复用节省的转移\cite{stade2025routingaware}。ZAP比较下次使用前的受激损失与回迁的转移、退相干损失，再按距离和冲突数逐门选择位置\cite{huang2026zap}。
+
+这些方法已考虑复用、未来交互或物理代价。这些因素相互关联：保留原子会限制可用门位，回迁则改变后续输运的起点\cite{lin2025zac}。比较完整联合方案，需要追踪各方案执行后的配置如何影响后续门层的物理损失。
+
+\label{sec:contributions}
+为此，本文提出结合遗传搜索与多层前瞻的联合放置编译器GA-LK。该编译器联合优化门位、原子驻留和回迁存储位，在共同的占位与输运约束下比较完整方案，允许原子跨过其不参与的门层继续驻留；并从各候选的执行后配置出发，预测后续多层物理损失。遗传搜索在统一尺度上比较当前与后续损失，据此选择当前层的方案。

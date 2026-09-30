@@ -1,0 +1,132 @@
+% Shared vector-figure vocabulary for the Chinese IEEE manuscript.
+% Every figure in this directory inputs this file, so the manuscript only
+% needs the standard TikZ package and the libraries already loaded by
+% paper_zh.tex.  Keep the guard: figures may be input more than once while
+% editing or when a stand-alone smoke-test document is built.
+\ifdefined\GALKFigureStyleLoaded\else
+\def\GALKFigureStyleLoaded{1}
+
+% Baseline-derived visual tokens: ICCAD uses a restrained blue/orange device
+% palette, while ZAC uses conventional black axes and a small fixed plot set.
+\definecolor{galkInk}{HTML}{231F20}
+\definecolor{galkMuted}{HTML}{666666}
+\definecolor{galkGrid}{HTML}{D6D6D6}
+\definecolor{galkPaper}{HTML}{FFFFFF}
+% Semantic colors are fixed across every figure: orange=entanglement zone,
+% blue=storage zone, black=atom identity, red=invalidity, and blue dashes=future
+% prediction.  Plot and search-group colours are deliberately independent of
+% the two physical-zone colours.
+\definecolor{galkStorage}{HTML}{0064BC}
+\definecolor{galkStorageFill}{HTML}{E8F1F7}
+\definecolor{galkEntangle}{HTML}{E37323}
+\definecolor{galkEntangleFill}{HTML}{F9ECE3}
+\definecolor{galkResident}{HTML}{485CB3}
+\definecolor{galkResidentFill}{HTML}{EEF0F8}
+\definecolor{galkGood}{HTML}{A4AF07}
+\definecolor{galkBad}{HTML}{C84E45}
+\definecolor{galkLook}{HTML}{0064BC}
+\definecolor{galkData}{HTML}{315E8A}
+\definecolor{galkTail}{HTML}{B44B27}
+\definecolor{galkGroupOne}{HTML}{4C78A8}
+\definecolor{galkGroupTwo}{HTML}{7A7A7A}
+\definecolor{galkGroupThree}{HTML}{9C755F}
+
+\tikzset{
+  % Shared engineering-figure contract.  Physical snapshots must place an
+  % orange entanglement band above a blue storage field; only their scale may
+  % change.  Labels are aligned at the upper-left of both regions.
+  galk/base/.style={
+    font=\rmfamily\fontsize{9.0pt}{10.0pt}\selectfont,
+    text=galkInk,
+    line cap=butt,
+    line join=miter,
+    >=Stealth
+  },
+  galk/panel title/.style={
+    font=\rmfamily\bfseries\fontsize{9.2pt}{10.2pt}\selectfont,
+    text=galkInk,
+    anchor=west
+  },
+  galk/label/.style={
+    font=\rmfamily\fontsize{9.0pt}{10.0pt}\selectfont,
+    text=galkInk
+  },
+  galk/small label/.style={
+    font=\rmfamily\fontsize{8.7pt}{9.7pt}\selectfont,
+    text=galkInk
+  },
+  galk/zone label/.style={
+    font=\rmfamily\bfseries\fontsize{8.7pt}{9.7pt}\selectfont,
+    text=galkInk,
+    anchor=north west,
+    inner sep=.5pt
+  },
+  galk/entanglement zone/.style={
+    draw=galkEntangle,
+    fill=galkEntangleFill,
+    line width=.40pt
+  },
+  galk/storage zone/.style={
+    draw=galkStorage,
+    fill=galkStorageFill,
+    line width=.40pt
+  },
+  galk/site/.style={
+    circle,
+    draw=galkInk!68,
+    fill=white,
+    line width=.36pt,
+    minimum size=1.35mm,
+    inner sep=0pt
+  },
+  galk/occupied atom/.style={
+    circle,
+    draw=galkInk,
+    fill=galkInk,
+    line width=.36pt,
+    minimum size=1.55mm,
+    inner sep=0pt
+  },
+  galk/target site/.style={
+    circle,
+    draw=galkInk!60,
+    fill=galkInk!10,
+    line width=.34pt,
+    minimum size=1.55mm,
+    inner sep=0pt
+  },
+  galk/q label/.style={
+    font=\rmfamily\itshape\fontsize{8.5pt}{9.5pt}\selectfont,
+    text=galkInk,
+    inner sep=.25pt
+  },
+  galk/rydberg pair/.style={
+    draw=galkInk!62,
+    densely dashed,
+    line width=.36pt
+  },
+  galk/accepted path/.style={
+    -{Stealth[length=.95mm,width=.62mm]},
+    draw=galkInk,
+    line width=.48pt
+  },
+  galk/alternative path/.style={
+    -{Stealth[length=.95mm,width=.62mm]},
+    draw=galkMuted,
+    densely dashed,
+    line width=.48pt
+  },
+  galk/future path/.style={
+    -{Stealth[length=.95mm,width=.62mm]},
+    draw=galkLook,
+    densely dashed,
+    line width=.48pt
+  },
+  galk/invalid path/.style={
+    -{Stealth[length=.95mm,width=.62mm]},
+    draw=galkBad,
+    densely dashed,
+    line width=.50pt
+  }
+}
+\fi

@@ -1,24 +1,24 @@
-\begin{table*}[!t]
-\caption{ZAC18与QMAP154上三种编译方法的总体结果}
+\begin{table}[!tb]
+\caption{\PaperRevision{两个电路集上三种编译方法的总体结果}}
 \label{tab:main-results}
 \centering
 \PaperTableSetup
-\begin{PaperRevisionBlock}
-\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}llrrrr@{}}
+\fontsize{8.5pt}{9.7pt}\selectfont
+\setlength{\tabcolsep}{1.2pt}
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}llrrrr@{}}
 \toprule
-数据集 & 方法 & 模型保真度 & 重排批次 & \shortstack{重排时延\\(ms)} & \shortstack{完整结果\\/$N$}\\
+数据集 & 方法 & \PaperRevision{保真度} & \PaperRevision{批次} & \shortstack{\PaperRevision{重排时延}\\\PaperRevision{(ms)}} & \shortstack{\PaperRevision{完成编译}\\\PaperRevision{/输入}}\\
 \midrule
-\multirow{3}{*}{\shortstack{ZAC18\\($N_{\rm ind}=\DefaultZACStrictN$)}}
-& ZAC & \pgfmathprintnumber[fixed,precision=4,zerofill]{\DefaultZACMOneF} & \DefaultZACMOneB & \DefaultZACMOneT & \DefaultZACMOneV\\
-& ICCAD/QMAP & \pgfmathprintnumber[fixed,precision=4,zerofill]{\DefaultZACMTwoF} & \DefaultZACMTwoB & \DefaultZACMTwoT & \DefaultZACMTwoV\\
-& GA-LK & \textbf{\boldmath\pgfmathprintnumber[fixed,precision=4,zerofill]{\DefaultZACMFourF}} & \textbf{\DefaultZACMFourB} & \textbf{\DefaultZACMFourT} & \DefaultZACMFourV\\
+\multirow{3}{*}{\shortstack{ZAC18\\\PaperRevision{$N=\GAMainZACStrictN$}}}
+& ZAC & \PaperRevision{\pgfmathprintnumber[fixed,precision=4,zerofill]{\GAMainZACMOneF}} & \PaperRevision{\GAMainZACMOneB} & \PaperRevision{\GAMainZACMOneT} & \PaperRevision{\GAMainZACMOneV}\\
+& Stade等 & \PaperRevision{\pgfmathprintnumber[fixed,precision=4,zerofill]{\GAMainZACMTwoF}} & \PaperRevision{\GAMainZACMTwoB} & \PaperRevision{\textbf{\GAMainZACMTwoT}} & \PaperRevision{\GAMainZACMTwoV}\\
+& GA-LK & \PaperRevision{\textbf{\boldmath\pgfmathprintnumber[fixed,precision=4,zerofill]{\GAMainZACMFourF}}} & \PaperRevision{\textbf{\GAMainZACMFourB}} & \PaperRevision{\GAMainZACMFourT} & \PaperRevision{\GAMainZACMFourV}\\
 \midrule
-\multirow{3}{*}{\shortstack{QMAP154\\($N_{\rm ind}=\DefaultQMAPStrictN$)}}
-& ZAC & \pgfmathprintnumber[fixed,precision=6,zerofill]{\DefaultQMAPMOneF} & \DefaultQMAPMOneB & \DefaultQMAPMOneT & \DefaultQMAPMOneV\\
-& ICCAD/QMAP & \pgfmathprintnumber[fixed,precision=6,zerofill]{\DefaultQMAPMTwoF} & \DefaultQMAPMTwoB & \DefaultQMAPMTwoT & \DefaultQMAPMTwoV\\
-& GA-LK & \textbf{\boldmath\pgfmathprintnumber[fixed,precision=6,zerofill]{\DefaultQMAPMFourF}} & \textbf{\DefaultQMAPMFourB} & \textbf{\DefaultQMAPMFourT} & \DefaultQMAPMFourV\\
+\multirow{3}{*}{\shortstack{\PaperRevision{QMAP}\\\PaperRevision{$N=\GAMainQMAPStrictN$}}}
+& ZAC & \PaperRevision{\pgfmathprintnumber[fixed,precision=6,zerofill]{\GAMainQMAPMOneF}} & \PaperRevision{\GAMainQMAPMOneB} & \PaperRevision{\GAMainQMAPMOneT} & \PaperRevision{\GAMainQMAPMOneV}\\
+& Stade等 & \PaperRevision{\pgfmathprintnumber[fixed,precision=6,zerofill]{\GAMainQMAPMTwoF}} & \PaperRevision{\GAMainQMAPMTwoB} & \PaperRevision{\GAMainQMAPMTwoT} & \PaperRevision{\GAMainQMAPMTwoV}\\
+& GA-LK & \PaperRevision{\textbf{\boldmath\pgfmathprintnumber[fixed,precision=6,zerofill]{\GAMainQMAPMFourF}}} & \PaperRevision{\textbf{\GAMainQMAPMFourB}} & \PaperRevision{\textbf{\GAMainQMAPMFourT}} & \PaperRevision{\GAMainQMAPMFourV}\\
 \bottomrule
 \end{tabular*}
-\end{PaperRevisionBlock}
-\PaperTableNote[\textwidth]{注：保真度取几何均值，重排批次和时延取算术均值；粗体标示同一数据集内的最优值。$N_{\rm ind}$为三种方法共同有效的不同电路数，QMAP154的\PaperRevision{\DefaultQMAPStrictFileN} 个共同有效文件去重后对应\PaperRevision{\DefaultQMAPStrictN} 个电路。完整结果数按全部输入文件统计。}
-\end{table*}
+\PaperTableNote[\columnwidth]{\fontsize{8pt}{9.1pt}\selectfont\PaperRevision{注：$N$为纳入质量比较的不同电路数；保真度取几何均值，重排批次和时延取算术均值。QMAP电路集的\GAMainQMAPStrictFileN{}个文件合并为\GAMainQMAPStrictN{}个不同电路。最后一列统计全部输入文件的编译完成数，包含超出保真度模型适用域的结果。粗体为同一电路集内的最优值。}}
+\end{table}

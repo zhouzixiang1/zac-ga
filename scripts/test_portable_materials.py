@@ -10,21 +10,25 @@ from unittest.mock import patch
 import acquire_benchmarks as acquire
 import render_bundled_paper as paper
 import prepare_current_suite as suite
-from portable_reproduce import PUBLICATION_BUNDLE, PUBLICATION_FILES, PUBLICATION_INPUTS, sha, write
+from portable_reproduce import (PUBLICATION_BUNDLE, PUBLICATION_FILES, PUBLICATION_INPUTS,
+                                GA_PUBLICATION_BUNDLE, GA_PUBLICATION_FILES,
+                                GA_PUBLICATION_INPUTS, sha, write)
 
 
 class MaterialTests(unittest.TestCase):
-    def publication_fixture(self, root):
+    def publication_fixture(self, root, *, ga=False):
+        inputs = GA_PUBLICATION_INPUTS if ga else PUBLICATION_INPUTS
+        names = GA_PUBLICATION_FILES if ga else PUBLICATION_FILES
         directory = root / "IEEE_conference_template"
         (directory / "figures").mkdir(parents=True)
         (directory / "sections").mkdir()
         (directory / "paper_zh.tex").write_text("\n".join(
-            "\\input{" + name + "}" for name in PUBLICATION_INPUTS))
+            "\\input{" + name + "}" for name in inputs))
         (directory / "figures/overall_framework_standalone.tex").write_text("figure")
         (directory / "sections/03_method.tex").write_text(paper.FIGURE_LOCAL)
-        bundle = root / PUBLICATION_BUNDLE
+        bundle = root / (GA_PUBLICATION_BUNDLE if ga else PUBLICATION_BUNDLE)
         bundle.mkdir(parents=True)
-        for name in PUBLICATION_FILES:
+        for name in names:
             (bundle / name).write_text(name)
         hashes = {path.relative_to(root).as_posix(): sha(path)
                   for path in root.rglob("*") if path.is_file()}
@@ -61,6 +65,42 @@ class MaterialTests(unittest.TestCase):
                 self.assertIn("\\input{" + name + "}", main)
             self.assertEqual({name: sha(root / name) for name in before}, before)
             self.assertFalse(result["historical_evidence_validated"])
+
+    def test_render_current_ga_bundle_preserves_separate_destination_and_hashes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            before = self.publication_fixture(root, ga=True)
+            result = self.render_stub(root)
+            output = Path(result["output"])
+            receipt = json.loads((output / "render_input.json").read_text())
+            expected = {str(GA_PUBLICATION_BUNDLE / name): before[str(GA_PUBLICATION_BUNDLE / name)]
+                        for name in GA_PUBLICATION_FILES}
+            self.assertEqual(receipt["publication_source_hashes"], expected)
+            self.assertEqual(len(receipt["adapted_publication_inputs"]), 2)
+            main = (output / "source/paper_zh.tex").read_text()
+            for destination in GA_PUBLICATION_INPUTS.values():
+                self.assertIn("\\input{" + destination + "}", main)
+            for name, digest in expected.items():
+                self.assertEqual(sha(output / "source/publication/physical_ga_main_v1" / Path(name).name), digest)
+            self.assertFalse((output / "source/publication/default_initial_v1").exists())
+            self.assertEqual({name: sha(root / name) for name in before}, before)
+            self.assertFalse(result["historical_evidence_validated"])
+
+    def test_render_ga_bundle_rejects_unbound_or_modified_companions(self):
+        for variant in ("before", "copy"):
+            with self.subTest(variant=variant), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self.publication_fixture(root, ga=True)
+                if variant == "before":
+                    (root / GA_PUBLICATION_BUNDLE / "ga_main_values.tex").write_text("changed")
+                    with self.assertRaisesRegex(ValueError, "publication bundle differs"):
+                        self.render_stub(root)
+                    self.assertFalse((root / "IEEE_conference_template/build").exists())
+                else:
+                    def mutate(cwd):
+                        (cwd / "publication/physical_ga_main_v1/ga_main_values.tex").write_text("changed")
+                    with self.assertRaisesRegex(ValueError, "publication bundle changed during rendering"):
+                        self.render_stub(root, mutation=mutate)
 
     def test_render_rejects_any_unbound_publication_file_before_writes(self):
         for name in PUBLICATION_FILES:

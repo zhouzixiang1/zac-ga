@@ -1,0 +1,196 @@
+% Figure colours remain semantic in both review and clean manuscripts.
+\begingroup
+\PaperShowRevisionsfalse
+\input{../docs/paper/supplementary/figures/tikz_style_precompact}
+\providecommand{\PaperRevision}[1]{#1}
+\begin{tikzpicture}[
+  galk/base,x=1cm,y=1cm,
+  title/.style={font=\rmfamily\bfseries\fontsize{9pt}{10pt}\selectfont,align=center},
+  label/.style={font=\rmfamily\fontsize{8.7pt}{9.7pt}\selectfont},
+  auxiliary/.style={font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont},
+  qlabel/.style={galk/q label,font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont},
+  wire/.style={draw=galkInk!75,line width=.42pt},
+  divider/.style={draw=galkInk!25,line width=.38pt},
+  flow/.style={galk/accepted path,line width=.55pt},
+  gate/.style={draw=galkInk!75,fill=white,line width=.42pt,
+    minimum width=3.7mm,minimum height=2.8mm,inner sep=.3pt,
+    font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont},
+  stage/.style={draw=galkInk!45,fill=white,line width=.45pt,
+    minimum height=5.84cm,inner sep=0pt},
+  module/.style={draw=galkInk!65,fill=white,line width=.45pt,
+    align=center,inner sep=2pt,font=\rmfamily\fontsize{8.5pt}{9.5pt}\selectfont},
+  trap/.style={galk/site},
+  atom/.style={galk/occupied atom},
+  feedback/.style={galk/future path}
+]
+  \path[use as bounding box] (0,0) rectangle (17.80,7.10);
+
+  % One connected framework: each stage owns its visible inputs and outputs.
+  % The complete current-layer decision/evaluation detail is inside joint.
+  \node[stage,minimum width=2.89cm] (input) at (1.485,3.94) {};
+  \node[stage,minimum width=3.02cm] (schedule) at (4.72,3.94) {};
+  \node[stage,minimum width=2.02cm] (initial) at (7.52,3.94) {};
+  \node[stage,minimum width=4.46cm,draw=galkInk,line width=.70pt] (joint) at (11.04,3.94) {};
+  \node[stage,minimum width=2.06cm] (routing) at (14.58,3.94) {};
+  \node[stage,minimum width=1.86cm] (output) at (16.82,3.94) {};
+  \coordinate (flowRow) at (0,6.58);
+  \foreach \from/\to in {input/schedule,schedule/initial,initial/joint,joint/routing,routing/output}
+    \draw[flow] (\from.east |- flowRow)--(\to.west |- flowRow);
+  \foreach \xx/\txt in {1.485/Input,4.72/Gate scheduling,11.04/Joint optimization,14.58/Routing,16.82/ZAIR}
+    \node[title] at (\xx,6.58) {\PaperRevision{\txt}};
+  \node[title] at (7.52,6.51)
+    {\PaperRevision{Initial}\\\PaperRevision{placement}};
+
+  % Input and scheduled circuits preserve four CZ gates and six 1Q gates.
+  \def\czGate#1#2#3{%
+    \draw[wire] (#1,#2)--(#1,#3);
+    \fill[galkInk] (#1,#2) circle (.8pt);
+    \node[gate] at (#1,#3) {\PaperRevision{Z}};
+  }
+  \foreach \qq/\yy in {0/5.84,1/5.34,2/4.84,3/4.34,4/3.84} {
+    \node[qlabel,anchor=east] at (.31,\yy) {\PaperRevision{$q_{\qq}$}};
+    \draw[wire] (.38,\yy)--(2.83,\yy);
+    \node[qlabel,anchor=east] at (3.47,\yy) {\PaperRevision{$q_{\qq}$}};
+    \draw[wire] (3.54,\yy)--(6.14,\yy);
+  }
+  \node[gate] at (.57,5.84) {\PaperRevision{RY}};
+  \node[gate] at (.57,4.34) {\PaperRevision{RZ}};
+  \czGate{.88}{5.84}{5.34}
+  \czGate{1.23}{4.84}{4.34}
+  \node[gate] at (1.59,5.34) {\PaperRevision{U}};
+  \node[gate] at (1.59,3.84) {\PaperRevision{RY}};
+  \czGate{1.91}{5.84}{4.84}
+  \czGate{2.25}{5.34}{3.84}
+  \node[gate] at (2.68,4.84) {\PaperRevision{RZ}};
+  \node[gate] at (2.68,4.34) {\PaperRevision{U}};
+
+  % q4 has no preceding 2Q gate; q3's U follows the first 2Q layer.
+  \foreach \xx in {3.95,4.47,4.94,5.75}
+    \draw[divider,densely dashed] (\xx,3.62)--(\xx,6.05);
+  \node[gate] at (3.73,5.84) {\PaperRevision{RY}};
+  \node[gate] at (3.73,4.34) {\PaperRevision{RZ}};
+  \node[gate] at (3.73,3.84) {\PaperRevision{RY}};
+  \czGate{4.22}{5.84}{5.34}
+  \czGate{4.22}{4.84}{4.34}
+  \node[gate] at (4.71,5.34) {\PaperRevision{U}};
+  \node[gate] at (4.71,4.34) {\PaperRevision{U}};
+  \czGate{5.20}{5.84}{4.84}
+  \czGate{5.53}{5.34}{3.84}
+  \node[gate] at (5.98,4.84) {\PaperRevision{RZ}};
+  \foreach \xx/\lab in {3.73/{$1Q_0$},4.71/{$1Q_1$},5.98/{$1Q_2$}}
+    \node[auxiliary] at (\xx,3.44) {\PaperRevision{\lab}};
+  \foreach \xx/\lab in {4.22/{$2Q_0$},5.365/{$2Q_1$}}
+    \node[auxiliary] at (\xx,3.12) {\PaperRevision{\lab}};
+  \node[module,text width=2.44cm,minimum height=.78cm] (layerSequence)
+    at (4.72,2.21)
+    {\PaperRevision{Ordered 2Q layers\\+ associated 1Q gates}};
+  \draw[flow] (4.72,2.92)--(layerSequence.north);
+
+  % Architecture is an input, not an extra atom-placement example.
+  \node[label] at (1.485,3.30) {\PaperRevision{Architecture}};
+  \path[galk/entanglement zone] (.39,2.55) rectangle (2.62,3.02);
+  \path[galk/storage zone] (.39,1.42) rectangle (2.62,2.40);
+  \foreach \xx in {.64,.96,2.04,2.36}
+    \node[trap] at (\xx,2.78) {};
+  \foreach \xx in {.64,1.50,2.36}
+    \foreach \yy in {1.61,1.89,2.17}
+      \node[trap] at (\xx,\yy) {};
+  \draw[galk/rydberg pair] (.80,2.78) ellipse (.25 and .15);
+  \draw[galk/rydberg pair] (2.20,2.78) ellipse (.25 and .15);
+  \node[auxiliary] at (.20,2.78) {\PaperRevision{$\mathcal E$}};
+  \node[auxiliary] at (.20,1.91) {\PaperRevision{$\mathcal S$}};
+
+  % Initialization is evaluated once, before the repeated layer loop.
+  \node[module,text width=1.52cm,minimum height=.64cm] (initialCandidates)
+    at (7.52,5.60) {\PaperRevision{Candidate\\layouts $\pi$}};
+  \node[module,text width=1.52cm,minimum height=.82cm] (initialEval)
+    at (7.52,4.40) {\PaperRevision{Evaluate\\early layers}};
+  \node[module,text width=1.52cm,minimum height=.62cm] (initialMap)
+    at (7.52,3.18) {\PaperRevision{Select layout}};
+  \node[label,align=center] (initialState) at (7.52,1.98)
+    {\PaperRevision{Starting state}\\\PaperRevision{$\mathbf{s}_0$}};
+  \draw[flow] (initialCandidates.south)--(initialEval.north);
+  \draw[flow] (initialEval.south)--(initialMap.north);
+  \draw[flow] (initialMap.south)--(initialState.north);
+
+  % Candidate evaluation belongs to the joint stage. The physical snapshot
+  % is the fixed 2Q1 example, whereas the surrounding loop is generic.
+  \node[module,text width=3.92cm,minimum height=.61cm] (jointSearch)
+    at (11.04,5.94)
+    {\PaperRevision{Joint search + matching\\Gate sites / residence / storage}};
+  \node[draw=galkInk!40,line width=.38pt,minimum width=4.10cm,
+    minimum height=2.47cm,inner sep=0pt] (currentEval) at (11.04,4.175) {};
+  \node[auxiliary] at (11.04,5.18)
+    {\PaperRevision{Example: evaluate $2Q_1+1Q_2$}};
+  \draw[flow] (jointSearch.south)--(currentEval.north);
+
+  \def\device#1#2{%
+    \begin{scope}[shift={(#1,#2)},x=.80cm,y=.80cm]
+      \path[galk/entanglement zone] (0,.98) rectangle (2.00,2.10);
+      \path[galk/storage zone] (0,0) rectangle (2.00,.88);
+      \foreach \xx in {.24,.56,1.44,1.76}
+        \node[trap] at (\xx,1.55) {};
+      \foreach \xx in {.24,1.00,1.76}
+        \foreach \yy in {.20,.48,.76}
+          \node[trap] at (\xx,\yy) {};
+      \draw[galk/rydberg pair] (.40,1.55) ellipse (.26 and .17);
+      \draw[galk/rydberg pair] (1.60,1.55) ellipse (.26 and .17);
+      \node[auxiliary] at (.40,1.88) {\PaperRevision{$T_1$}};
+      \node[auxiliary] at (1.60,1.88) {\PaperRevision{$T_2$}};
+    \end{scope}%
+  }
+  \def\routeInitial{0/.24/1.55,1/.56/1.55,2/1.44/1.55,3/1.76/1.55,4/1.00/.20}
+  \def\routeFinal{0/.24/1.55,1/1.44/1.55,2/.56/1.55,3/1.76/.48,4/1.76/1.55}
+  \device{9.08}{3.04}
+  \device{11.42}{3.04}
+  \foreach \qq/\xx/\yy in \routeInitial
+    \node[atom] at (9.08+.80*\xx,3.04+.80*\yy) {};
+  \foreach \qq/\xx/\yy in \routeFinal
+    \node[atom] at (11.42+.80*\xx,3.04+.80*\yy) {};
+  \foreach \xx/\lab in {9.40/{$q_0,q_1$},10.36/{$q_2,q_3$},11.74/{$q_0,q_2$},12.70/{$q_1,q_4$}}
+    \node[qlabel] at (\xx,4.01) {\PaperRevision{\lab}};
+  \node[qlabel,anchor=west] at (10.02,3.20) {\PaperRevision{$q_4$}};
+  \node[qlabel] at (12.55,3.20) {\PaperRevision{$q_3$}};
+  \node[label] (stateBefore) at (9.88,4.87) {\PaperRevision{$\mathbf{s}_\ell$}};
+  \node[label] at (12.22,4.87) {\PaperRevision{$\mathbf{s}_{\ell+1}$}};
+  \coordinate (stateAfter) at (12.22,3.04);
+  \draw[flow] (10.76,3.91)--(11.34,3.91);
+
+  \node[module,draw=galkLook!60,text width=3.92cm,minimum height=1.40cm]
+    (future) at (11.04,1.82) {};
+  \node[auxiliary] at (11.04,2.34) {\PaperRevision{Multi-layer look-ahead}};
+  \node[auxiliary] at (11.04,1.99) {\PaperRevision{If layers remain}};
+  \node[auxiliary] (futureOne) at (9.66,1.66) {\PaperRevision{$L_{\ell+1}$}};
+  \node[auxiliary] (futureTwo) at (10.99,1.66) {\PaperRevision{$L_{\ell+2}$}};
+  \node[auxiliary] (futureMore) at (12.35,1.66) {\PaperRevision{$\cdots$}};
+  \draw[feedback] (stateAfter)--(12.22,2.53);
+  \draw[feedback] (futureOne.east)--(futureTwo.west);
+  \draw[feedback] (futureTwo.east)--(futureMore.west);
+  \node[auxiliary] at (11.04,1.31) {\PaperRevision{$J_\ell$: current + future loss}};
+  \draw[feedback] (future.west)--(8.90,1.82)--(8.90,5.94)--(jointSearch.west);
+
+  % Routing applies only the selected current-layer plan. Its resulting
+  % positions, occupancy and clock drive the next actual optimization.
+  \node[module,text width=1.60cm,minimum height=.69cm] (selectedPlan)
+    at (14.58,5.71) {\PaperRevision{Selected plan}};
+  \node[module,text width=1.60cm,minimum height=.72cm] (routeBatches)
+    at (14.58,4.63) {\PaperRevision{AOD-safe\\batches}};
+  \node[module,text width=1.60cm,minimum height=.83cm] (executeCurrent)
+    at (14.58,3.44) {\PaperRevision{Execute current\\2Q + 1Q}};
+  \node[module,text width=1.60cm,minimum height=.98cm] (stateUpdate)
+    at (14.58,2.02) {\PaperRevision{Update positions,\\occupancy\\and clock}};
+  \draw[flow] (selectedPlan.south)--(routeBatches.north);
+  \draw[flow] (routeBatches.south)--(executeCurrent.north);
+  \draw[flow] (executeCurrent.south)--(stateUpdate.north);
+  \draw[flow] (stateUpdate.south)--(14.58,.52)--(8.67,.52)--(8.67,6.58)--(joint.west |- flowRow);
+  \node[label,fill=white,inner sep=2pt] at (11.72,.52)
+    {\PaperRevision{Next layer: updated state}};
+
+  % Full ZAIR order for the shown two-2Q-layer circuit, including final 1Q2.
+  \foreach \yy/\txt in {5.88/init,5.39/1qGate,4.90/rearrangeJob,
+    4.41/rydberg,3.92/1qGate,3.43/rearrangeJob,2.94/rydberg,2.45/1qGate}
+    \node[auxiliary] at (16.82,\yy) {\PaperRevision{\txt}};
+  \node[label,align=center] at (16.82,1.56)
+    {\PaperRevision{Executable}\\\PaperRevision{instructions}};
+\end{tikzpicture}
+\endgroup

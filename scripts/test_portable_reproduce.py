@@ -92,12 +92,62 @@ class PortableTests(unittest.TestCase):
             p.export_source(self.root, "export")
         self.assertFalse((self.root / p.BUILD).exists())
 
-    def publication_fixture(self):
+    def publication_fixture(self, *, ga=False):
         self.fixture()
+        directory = p.GA_PUBLICATION_BUNDLE if ga else p.PUBLICATION_BUNDLE
+        names = p.GA_PUBLICATION_FILES if ga else p.PUBLICATION_FILES
+        inputs = p.GA_PUBLICATION_INPUTS if ga else p.PUBLICATION_INPUTS
         self.put("IEEE_conference_template/paper_zh.tex", "\n".join(
-            "\\input{" + value + "}" for value in p.PUBLICATION_INPUTS).encode())
-        for name in p.PUBLICATION_FILES:
-            self.put(str(p.PUBLICATION_BUNDLE / name), name.encode())
+            "\\input{" + value + "}" for value in inputs).encode())
+        for name in names:
+            self.put(str(directory / name), name.encode())
+
+    def test_export_ga_bundle_and_relocated_paper_support(self):
+        self.publication_fixture(ga=True)
+        support = (
+            "scripts/paper/paper_paths.py", "scripts/paper/verify_paper_zh.py",
+            "scripts/paper/verify_paper_en.py", "docs/paper/metadata/current.json",
+            "docs/paper/supplementary/figures/physical_lookahead.tex",
+            "IEEE_conference_template/figures/overall_framework_standalone.tex",
+        )
+        for name in support:
+            self.put(name)
+        self.put(str(p.GA_PUBLICATION_BUNDLE / "unrelated.csv"))
+        self.put("ZAC_zzx/results/physical_ga_main_v1/runs/raw.json")
+        self.put(str(p.PUBLICATION_BUNDLE / "default_initial_values.tex"))
+        result = p.export_source(self.root, "ga-publication")
+        dest = Path(result["source"])
+        files = p.load(dest / "portable_source_manifest.json")["files"]
+        expected = {str(p.GA_PUBLICATION_BUNDLE / name) for name in p.GA_PUBLICATION_FILES}
+        self.assertEqual({name for name in files if "physical_ga_main_v1" in name}, expected)
+        self.assertFalse(any("default_initial_v1" in name for name in files))
+        for name in expected | set(support):
+            self.assertEqual(files[name], p.sha(dest / name))
+        self.assertFalse((dest / "IEEE_conference_template/writing").exists())
+
+    def test_current_manuscript_external_inputs_have_registered_closure(self):
+        root = Path(__file__).resolve().parents[1]
+        files = p.publication_files(root)
+        self.assertEqual(len(files), 6)
+        self.assertTrue(all(name in p.PUBLICATION_DESTINATIONS for name in files))
+
+    def test_ga_bundle_rejects_missing_partial_mixed_and_duplicated_inputs(self):
+        self.publication_fixture(ga=True)
+        valid = tuple(p.GA_PUBLICATION_INPUTS)
+        for inputs in (valid[:1], (*valid, valid[0]),
+                       (valid[0], next(iter(p.PUBLICATION_INPUTS))),
+                       (*valid, *p.PUBLICATION_INPUTS)):
+            with self.subTest(inputs=inputs):
+                self.put("IEEE_conference_template/paper_zh.tex", "\n".join(
+                    "\\input{" + value + "}" for value in inputs).encode())
+                with self.assertRaisesRegex(ValueError, "both exact TeX inputs once"):
+                    p.publication_files(self.root)
+        self.put("IEEE_conference_template/paper_zh.tex", "\n".join(
+            "\\input{" + value + "}" for value in valid).encode())
+        (self.root / p.GA_PUBLICATION_BUNDLE / "analysis_units.csv").unlink()
+        with self.assertRaisesRegex(ValueError, "required publication source"):
+            p.export_source(self.root, "missing-ga-companion")
+        self.assertFalse((self.root / p.BUILD).exists())
 
     def test_export_includes_only_six_publication_companions(self):
         self.publication_fixture()

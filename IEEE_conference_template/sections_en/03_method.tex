@@ -1,101 +1,55 @@
+% Queue the full framework before the method begins.
+\begin{figure*}[t]
+  \centering
+  \providecommand{\PaperOverallFigurePath}{build/paper_en/figures/overall_framework.pdf}
+  \includegraphics[width=\textwidth]{\PaperOverallFigurePath}
+  \caption{GA-LK compilation framework. The first two columns show dependency-preserving scheduling of the same rebased circuit; paired dots denote CZ and $U_3$ denotes single-qubit gates. The center expands joint optimization for a general layer $\ell$: current execution produces a candidate's post-state, which subsequent layers inherit for prediction. Dashed lines denote prediction and score feedback; the bottom solid loop carries actual inter-layer configurations.}
+  \label{fig:overall-framework}
+\end{figure*}
+
+\begin{samepage}
 \section{Method}
 \label{sec:method}
 \label{sec:formulation}
 
-\subsection{Overall Framework}
+GA-LK considers each layer's placement together with the starting point it leaves for subsequent execution. As shown in Fig.~\ref{fig:overall-framework}, gate sites, residency, and return storage sites form a complete candidate. Physical evaluation converts it into execution batches, yielding current loss and a post-execution configuration. Multi-layer look-ahead continues from this configuration, allowing genetic search to compare joint plans by their current and future losses. Only the selected current layer is executed; its actual configuration feeds the next optimization, keeping prediction tied to executed decisions.
+\par\end{samepage}
 
-GA-LK compiles quantum circuits into atom-transport and gate-execution instructions that satisfy zoned-architecture constraints. Compilation proceeds through gate scheduling, initial placement, layer-wise joint placement, routing and scheduling, and code generation, as shown in Fig.~\ref{fig:overall-framework}. Gate scheduling determines which interactions can share a two-qubit layer. Initial placement assigns storage traps to atoms. Layer-wise placement selects entanglement sites for gate participants and decides whether other atoms return to storage and where they go. Routing and scheduling convert position changes into executable batches; code generation records instruction dependencies and execution times.
+\input{sections_en/03_algorithm}
 
-Look-ahead guides two stages. Initial placement compares the effects of storage layouts on the first few gate layers. Dynamic placement estimates subsequent execution losses from the positions, occupancy, and clocks produced by each candidate after the current layer. During search, candidates undergo the same constraint checks used in routing. Gate-site and residency choices can therefore be optimized jointly using executable transport costs.
+\subsection{Joint Placement Formulation}
 
-\begin{figure*}[t]
-  \centering
-  \includegraphics[width=\textwidth]{build/paper_zh/figures/overall_framework.pdf}
-  \caption{End-to-end compilation flow of GA-LK. (a) Input gates and their execution zones. (b) Dependency-preserving single- and two-qubit layers. (c) Initial placement selected through look-ahead evaluation. (d) Genetic search jointly determines gate sites, residency, and return locations, evaluating subsequent layers from each candidate's resulting state. (e) Atom $q_3$ returns first; incompatible entry trajectories are then assigned to $B_1$--$B_3$, while $q_0$ remains in place. (f) ZAIR generation and validation of the complete instruction sequence. All device snapshots use the same regular trap arrays and atom labels.}
-  \label{fig:overall-framework}
-\end{figure*}
+A joint plan specifies where gates execute, which atoms stay, and where the others return. Inputs comprise the logical circuit, trap arrays, native gates, and transport constraints; outputs are executable ZAIR instructions.
 
-\subsection{Gate Scheduling}
+Candidates are compared on fixed gate layers. ZAC-like as-soon-as-possible scheduling~\cite{lin2025zac} alternates single- and two-qubit layers. Two-qubit gates enter the earliest layer after their predecessors complete. Disjoint CZ gates share one global Rydberg pulse; layers exceeding gate-site capacity are split, and reorderable gates are grouped by interaction-graph edge coloring. Single-qubit gates follow their two-qubit predecessors or precede the first layer when none exist. Let $L_\ell$ and $\mathcal G_\ell$ denote two-qubit layer $\ell$ and its gates. Configuration $\mathbf{s}_\ell$ contains positions, trap occupancy, and execution timing, including each atom's accumulated idle time and resource-dependency timestamps. Executing the layer and associated single-qubit gates produces $\mathbf{s}_{\ell+1}$.
 
-The compiler preserves same-qubit dependencies in the input circuit and assigns two-qubit gates to their earliest executable layers. Gates within a layer share no atoms; layers exceeding the entanglement-zone capacity are split. For two-qubit gate sets that permit reordering, interaction-graph edge coloring follows the baseline scheduler: gates on edges of the same color share a layer~\cite{lin2025zac}. This stage determines logical parallelism. Transport and resource dependencies determine the actual execution times later.
-
-Single-qubit gates are grouped into execution blocks according to their preceding two-qubit gates. Gates without a two-qubit predecessor appear before the first layer. Fig.~\ref{fig:overall-framework}(a) and (b) use RY, RZ, and U gates for single-qubit operations and CZ gates with control dots for two-qubit interactions. Scheduled single-qubit gates still act on the atoms specified by the input circuit, at locations given by the mapping at execution time. Let $L_\ell$ denote the $\ell$th two-qubit layer and $\mathcal G_\ell$ its gate set. Subsequent placement follows this fixed layer order.
-
-\subsection{Look-Ahead-Aware Initial Placement}
-\label{sec:initial-placement}
-
-The initial layout determines the storage traps from which atoms depart, affecting their first entry and early inter-layer transport. We start from the layer-weighted simulated-annealing layout~\cite{lin2025zac}, retain it, and generate alternatives by swapping the storage positions of a few atoms. These swaps preserve the occupied trap set, with at most one atom per trap. The candidate pool is fixed before evaluation and does not change with the look-ahead horizon.
-
-For each candidate, the compiler constructs placement and routing for the first few two-qubit layers, accumulating trap-transfer, idle-excitation, and coherence losses. This rollout uses the same current-layer optimization policy without recursively invoking multilayer look-ahead. Let $H_{\rm init}$ count the layers considered after the first layer, and let $h_{\rm init}$ be the actual count limited by the remaining circuit. An initial mapping $\pi$ is evaluated as
-\begin{equation}
-J_{\rm init}(\pi)=
-\sum_{d=0}^{h_{\rm init}}\rho^d\,\Delta C_d(\pi),
-\qquad h_{\rm init}\le H_{\rm init}.
-\label{eq:initial-lookahead}
-\end{equation}
-Here, $\Delta C_d$ is the incremental negative log fidelity loss incurred through layer $d$, and $\rho$ is the layer-distance decay factor. Each increment is the difference between successive cumulative losses for the same candidate. Single-qubit gates and their timing are included according to dependencies. Evaluation stops after the last gate layer in the window; no additional return is scheduled if the circuit is unfinished.
-
-Initialization selects the feasible layout with the smallest $J_{\rm init}$, resolving ties by fixed candidate order. With $H_{\rm init}=0$, only the first two-qubit layer is evaluated; a positive horizon includes the execution costs of subsequent layers. The additional initialization experiment uses four shared candidates, $\rho=0.7$, and a 32-evaluation main-search budget per layer. After selecting the initial mapping, atom positions and execution times are reset to the circuit's starting point for full compilation.
-
-\subsection{Joint Optimization Within Each Layer}
-
-Optimization for each two-qubit layer jointly handles entry placement and inter-layer residency. Let $s_\ell$ contain the atom positions, trap occupancy, and execution clocks at the start of the current optimization step. Executing the target layer and its associated single-qubit gates produces $s_{\ell+1}$. Let $\mathcal Q$ be the atom set, and let $\mathcal S$ and $\mathcal E$ be the storage- and entanglement-zone trap sets, respectively. Mapping $\pi$ assigns each atom a trap and satisfies $\pi(q)\ne\pi(q')$ for distinct atoms, preventing shared occupancy.
-
-\subsubsection{Joint Encoding and Genetic Search}
-
-Target gate sites and resident atoms compete for entanglement-zone space. Separate decisions can leave residents blocking better gate sites or select sites that require unnecessary returns. GA-LK encodes both choices in one chromosome:
+\begin{samepage}
+An atom blocking another gate must move, or that gate must use another site. Gate sites and residency are therefore jointly encoded as
 \begin{equation}
 \mathbf x_\ell=
 (z_{\ell,1},\ldots,z_{\ell,m},
  b_{\ell,1},\ldots,b_{\ell,k}).
 \label{eq:chromosome}
 \end{equation}
-Here, $m$ is the number of gates in the current layer. Gene $z_{\ell,j}$ selects the gate-site pair and the orientation of the two participants for gate $j$. The $k$ atoms requiring residency decisions use $b_{\ell,i}=0$ to remain in the entanglement zone and $b_{\ell,i}=1$ to return. Decision set $\mathcal D_\ell$ usually contains entanglement-zone atoms absent from the current layer. For a single-gate layer, participating atoms may also be considered for in-zone adjustment or temporary relocation through storage. Fig.~\ref{fig:joint-ga}(a) relates the gate-site encoding to the return decision and storage assignment for $q_3$.
+\end{samepage}
+The first $m$ genes select gate-site pairs and orientations; the remaining $k$ set residency, with 0 retaining an atom and 1 returning it. Residency decisions normally concern entangling-zone atoms not participating in the current layer. A layer with one two-qubit gate may also include participants already in this zone, comparing in-zone relocation with return and reentry.
 
-Search starts from diverse seeds, including all-resident, all-return, and physical-greedy solutions. Crossover acts separately on the gate-site and residency segments. Mutation reselects gate sites, flips residency bits, or jointly changes conflicting variables from both segments. Offspring pass occupancy and capacity checks before evaluation; better individuals form the next generation~\cite{holland1975adaptation}. Duplicate encodings reuse cached evaluations. When budget permits, bounded local refinement improves the best candidate. Small encoding spaces use enumeration with the same candidate decoder and objective as genetic search. Fig.~\ref{fig:joint-ga}(b) shows these two solver paths.
+Gate sites obey entangling-zone geometry and capacity. If one participant is already placed, only the other may need moving; otherwise, the pair and orientation are selected jointly. Sparse layers in long circuits first search sites near both participants, expanding to all sites if transport is infeasible.
 
-Search stops when the evaluation budget is exhausted, the generation limit is reached, or several consecutive generations yield no improvement. Table~\ref{tab:solver-bounds} lists the default budgets and reductions for deep circuits. Complete enumeration covers the specified bounded encoding space. Genetic search seeks better solutions within its budget without enumerating every position combination.
+Return sites influence both the current departure and the next entry. Candidate return sites lie near the atom's current entangling site and initial storage site. If its next two-qubit interaction falls within the prediction window, sites near the partner's current position are added, centered on the nearest storage trap for an entangling-zone partner. At most six sites are retained per returning atom to compute the first $K$ minimum-weight assignments $a_\ell$ by distance~\cite{murty1968assignment}. Each assignment maps returning atoms to distinct storage sites; paired with $\mathbf x_\ell$, it forms a complete candidate $(\mathbf x_\ell,a_\ell)$. Distance narrows the return-site options; physical execution losses determine comparisons between complete plans.
+
+Encoding $(T_1^+,T_2^+,1)$ selects pairs $(q_0,q_2)$ and $(q_1,q_4)$, while matching assigns $q_3$ to $s_1$, as shown in Fig.~\ref{fig:joint-ga}. The targets cannot be reached directly: $q_1$ and $q_2$ occupy each other's destinations. Simultaneous exchange violates row--column order, while sequential exchange is blocked by occupancy. Batch $B_0$ therefore stages $q_1$ while returning $q_3$; $B_1$--$B_3$ then place $q_2,q_1,q_4$, with $q_0$ unchanged. Staging adds no residency gene, but its cost must enter the candidate's physical evaluation; the resulting configuration becomes the starting point for subsequent layers.
 
 \begin{figure}[!t]
   \centering
   \resizebox{\columnwidth}{!}{\input{figures/joint_ga}}
-  \caption{Joint encoding and candidate execution. (a) Two gate-site genes and the return bit for $q_3$ form a chromosome; storage assignment $a_\ell(q_3)=s_1$ completes the candidate. (b) Small encoding spaces use enumeration, and larger spaces use genetic search. (c) Occupied target gate sites are released before target-layer participants enter the selected sites. Each phase checks feasibility against updated occupancy. $\mathcal E$ and $\mathcal S$ denote the entanglement and storage zones, respectively.}
+  \caption{Realizing a complete candidate under transport constraints. Encoding and return assignment appear above; the same array and five atoms below show blocked targets, staging, and the post-execution configuration that starts the next layer. Signs specify gate-site orientation, positive from left to right; red dashed arrows indicate an infeasible intended swap. $s_1$ is the right-hand storage trap, and $B_0$--$B_3$ are actual rearrangement batches.}
   \label{fig:joint-ga}
 \end{figure}
 
-\begin{table}[!t]
-\caption{Default and Size-Adaptive Solver Limits for GA-LK}
-\label{tab:solver-bounds}
-\centering
-\PaperTableSetup
-\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lccc@{}}
-\toprule
-Configuration & Enum. limit & $(E,P,I,K)$ & $H_{\rm cap}$\\
-\midrule
-Default & 512 & $(576,8,6,4)$ & 8\\
-$N_{\rm bnd}>512$ & 64 & $(192,\le6,\le4,\le2)$ & $\le4$\\
-\shortstack[l]{$N_{\rm bnd}\ge5000$\\$n\le16$} & 16 & $(32,\le4,\le1,1)$ & --\\
-$N_{\rm bnd}\ge5000$ & -- & -- & $\le2$\\
-\bottomrule
-\end{tabular*}
-\PaperTableNote{$N_{\rm bnd}$ is the number of two-qubit layer boundaries, and $n$ is the qubit count. $E$, $P$, $I$, and $K$ denote the encoding evaluation budget, population size, generation count, and number of storage-site assignments, respectively; $H_{\rm cap}$ limits the look-ahead horizon. A dash imposes no additional limit. Overlapping conditions apply the tighter limit.}
-\end{table}
+\subsection{Cross-Layer Physical Loss}
 
-\subsubsection{Routing-Aware Gate-Site Selection}
-
-A gate-site gene selects both endpoints and the transport needed to reach them. If one participant already occupies a suitable gate site, a candidate can leave it in place and move only its partner. When both must move, the candidate jointly selects a gate-site pair and orientation. Available sites must satisfy entanglement-zone geometry, capacity, and single-atom occupancy constraints. Narrow layers in deep circuits first consider a bounded, distance-ordered gate-site domain. The full domain is restored if no feasible solution is found.
-
-Candidates are decoded in execution order. Returning atoms and gate-site blockers first receive storage locations to release the target sites. Target-layer participants then enter the zone or move within it, as shown in Fig.~\ref{fig:joint-ga}(c). Necessary temporary relocations also incur trap-transfer and time costs, which are included in the candidate loss. Each phase forms trajectories from current occupancy, checks AOD row--column relationships and unintended intersections, and constructs executable parallel batches. A geometrically closer gate site can therefore be rejected if it requires more sequential transport.
-
-\subsubsection{Residency and Return Storage Sites}
-
-Residency saves round-trip trap transfers but exposes atoms to Rydberg excitation in intervening layers where they do not participate. Returning to storage avoids this loss, with benefits that depend on the return distance and the next entry path. Residency genes let the search compare these choices under the same gate-site assignment, rather than making irreversible decisions atom by atom.
-
-For a given chromosome, returning atoms still need specific storage traps. Each atom receives at most six candidate sites near its current entanglement site, initial storage site, and future partners. Linear assignment and Murty branching~\cite{murty1968assignment} generate the first $K$ distinct storage-site assignments, denoted by $a_\ell$. Injective matching prevents multiple returning atoms from selecting the same storage trap. Each assignment and chromosome form a complete candidate. A location-based proxy cost generates this bounded candidate set, but final selection uses the candidate's execution loss.
-
-\subsubsection{Current Loss and Multilayer Look-Ahead}
-
-For a fixed circuit, gate counts are unchanged, and placement primarily affects trap-transfer, idle-excitation, and coherence losses. Following~\eqref{eq:fidelity}, the incremental cost of completing the current layer is
+A complete candidate is evaluated through its current-layer batches: returns and gate blockers move to storage before participants enter or relocate within the entangling zone. Occupancy updates after each batch. Applying~\eqref{eq:fidelity} to these batches and gate operations, omitting fixed gate-fidelity terms, gives the incremental negative log fidelity loss
 \begin{equation}
 \begin{aligned}
 C_\ell^{\rm cur}={}&-\Delta N_{\rm tran}\log f_{\rm tran}
@@ -105,83 +59,53 @@ C_\ell^{\rm cur}={}&-\Delta N_{\rm tran}\log f_{\rm tran}
 \end{aligned}
 \label{eq:current-cost}
 \end{equation}
-where $t_q^{-}$ and $t_q^{+}$ are the accumulated idle times before and after the transition, respectively. Transport duration follows the executable batches, and single-qubit gates update timing according to dependencies. Candidates returning the same number of atoms can thus incur different costs because their storage sites and routing groups differ.
+where $\Delta N_{\rm tran}$ and $\Delta N_{\rm exc}$ are added counts, $t_q^{-}$ and $t_q^{+}$ are accumulated idle times before and after execution, determined by batches and dependencies, and $\mathcal Q$ is the atom set. This variable-loss increment is the difference between cumulative values before and after execution; the same calculation evaluates each predicted layer.
 
-Multilayer look-ahead starts independently from each candidate's $s_{\ell+1}$. The predictor processes future gate layers in order and selects unassigned legal gate sites. When nonparticipating atoms block sites or paths, they move to available storage sites before gate participants enter. Each predicted layer updates positions, occupancy, and clocks, so the next layer uses positions produced by the preceding predicted layer. Gate-site selection considers both participants' transport distances and the return distances of blocking atoms, with fixed-order tie-breaking. If joint entry is infeasible, bounded temporary relocation and then atom-by-atom entry are tested.
 
-Suppose $h_\ell$ future layers are predicted, with incremental loss $\widehat C_{\ell,d}$ at layer distance $d$. Each increment includes excitation of nonparticipants, entry and temporary relocation of participants, and movement of blockers. The finite-horizon objective is
+Look-ahead compares the starting points left by candidates, updating positions, occupancy, and time from each $\mathbf{s}_{\ell+1}$. Greedy site selection considers participants' transport and blockers' return distances, assigns legal sites unused by other gates, and breaks ties deterministically. Blockers move first; if joint entry fails, prediction tries bounded temporary relocation, then atom-by-atom entry. Predicted batches determine incremental loss $\widehat C_{\ell,d}$; subsequent layers inherit the resulting configuration.
+
+Actual depth $h_\ell$ satisfies $0\le h_\ell\le H$, where $H$ bounds subsequent two-qubit layers and $d=1$ denotes the first future layer. Current and discounted future losses form
 \begin{equation}
 J_\ell=C_\ell^{\rm cur}
 +\sum_{d=1}^{h_\ell}\alpha\rho^{d-1}\widehat C_{\ell,d}
 +\alpha\rho^{h_\ell-1}\Phi_\ell .
 \label{eq:lookahead-cost}
 \end{equation}
-The parameter $\alpha$ scales future costs, while $\rho$ discounts them with layer distance. Terminal term $\Phi_\ell$ estimates feasible return losses for residents absent from the window's final layer, avoiding a simple deferral of costs beyond the horizon. This estimate is not executed as a current instruction. At zero horizon, both the sum and terminal term are zero.
+Here, $\alpha$ weights future loss and $\rho$ discounts distant layers. Terminal term $\Phi_\ell$ estimates feasible returns for atoms remaining in the entangling zone but not participating in the final predicted layer. Prediction stops when layers are exhausted, the size-dependent layer budget is reached, or $\rho^{d-1}<\epsilon$. With $H=0$ or no subsequent layers, $h_\ell=0$ and both future and terminal terms vanish.
 
-Prediction depth is limited by the remaining layers, maximum horizon $H_{\max}$, resource caps in Table~\ref{tab:solver-bounds}, and a decay threshold. The main configuration is $(H_{\max},\alpha,\rho,\epsilon)=(8,0.5,0.7,0.05)$; layers with weight $\rho^{d-1}<\epsilon$ are not expanded. The two candidates in Fig.~\ref{fig:physical-lookahead}(b) leave different starting positions for the next interaction. Atom $p$ has a shorter entry path under candidate $B$, but the benefit also depends on routing groups and critical batch durations, which the layer-wise evaluation accounts for together. Fig.~\ref{fig:physical-lookahead}(c) gives the layer-distance weights.
+\subsection{Genetic Search and Initial Placement}
+\label{sec:initial-placement}
 
-\begin{figure}[!t]
-  \centering
-  \resizebox{\columnwidth}{!}{\input{figures/physical_lookahead}}
-  \caption{Routing groups and subsequent-layer costs. (a) Among four trajectories, two pairs violate row--column relationships and form conflict edges; coloring assigns two compatible batches. Stationary atom $q_0$ has no movement vertex. (b) Two candidates leave different starting positions for the next interaction. Atom $p$ has a shorter transport path under candidate $B$; the loss depends on the layer's batches and their durations. (c) Future-layer weights decay as $w_d=\alpha\rho^{d-1}$. $\mathcal E$ and $\mathcal S$ denote the entanglement and storage zones, respectively. Filled and open circles denote atoms and target traps.}
-  \label{fig:physical-lookahead}
-\end{figure}
+Small joint spaces are enumerated; larger spaces use genetic search\cite{holland1975adaptation} with all-resident, all-return, and physical-greedy seeds. Crossover combines parental gate-site and residency segments; mutation changes sites, residency bits, or conflicting variables. Decoding replaces duplicate sites with free ones before storage matching and evaluation.
 
-\subsubsection{Candidate Selection}
+Encoding fitness is the minimum $J_\ell$ over execution- and prediction-feasible assignments; fitness and tie rules select survivors. Cached encodings avoid reevaluation; evaluation or generation limits stop search. After search, bounded local refinement and reevaluation precede reference selection, admission, and ranking, as shown in Algorithm~\ref{alg:solver}. Per-layer budgets, $K$, and look-ahead shrink with circuit size.
 
-Prediction error can prevent a larger current loss from being recovered in later layers. Candidate selection uses a feasible low-current-loss solution as a reference. An alternative is admitted only when predicted future savings sufficiently compensate for its current-cost increase. Specifically, the increase must be at most $\eta=0.25$ of the predicted future savings, and total objective $J_\ell$ must not exceed the reference value.
+Because future gate sites are predicted approximately, admission limits the extra current loss accepted in exchange for predicted savings. Subject to capacity and mandatory returns, comparing residency until the next reuse within the window with a storage round trip yields stay recommendations. Execution- and prediction-feasible candidates are grouped by the number of violated recommendations. Only the group with the fewest violations enters admission and ranking, using its minimum-current-loss candidate as the reference. Residency priority is disabled at $H=0$.
 
-The reference also accounts for beneficial residency. For atoms reused within the visible window, the solver compares the loss of remaining until the next use against a round trip through storage. Atoms with cheaper residency receive priority when capacity and mandatory-return constraints permit. This residency priority is disabled at zero horizon. The solver first considers candidate groups that return fewer such atoms, makes bounded local adjustments to their gate sites, and selects a low-current-loss reference. Admitted candidates are ranked by $J_\ell$, breaking ties by batch count, rearrangement time, transport distance, and finally fixed encoding order. If every future rollout is infeasible, selection falls back to executable current-layer cost. Algorithm~\ref{alg:solver} summarizes the procedure.
+Relative to this reference, any current-loss increase must not exceed one quarter of weighted future savings, and $J_\ell$ must not increase. Savings include future and terminal terms in~\eqref{eq:lookahead-cost}. Admitted candidates rank by $J_\ell$, then batch count, rearrangement latency, distance, and fixed encoding order. Without improvement, the reference remains. Current-infeasible candidates are excluded; prediction infeasibility only means that look-ahead found no subsequent path. If all predictions are infeasible, selection uses executable current cost; absence of any current-executable candidate reports failure.
 
-\begin{algorithm}[t]
-\caption{Joint Optimization of One Two-Qubit Layer}
-\label{alg:solver}
-\small
-\begin{algorithmic}[1]
-\Require Current mapping and clocks $s_\ell$, target layer $\mathcal G_\ell$, future gate layers
-\Ensure Selected gate sites, residency decisions, and executable rearrangement batches
-\State Build gate-site and residency domains; generate initial candidates
-\While{unevaluated encodings remain and the search budget is not exhausted}
-  \State Take encoding $\mathbf x_\ell$; generate the first $K$ injective storage-site assignments
-  \For{each storage-site assignment $a_\ell$}
-    \State Form return, temporary-relocation, and entry paths; update occupancy in sequence
-    \If{executable batches satisfy AOD and occupancy constraints}
-      \State Compute current loss $C_\ell^{\rm cur}$ and resulting state $s_{\ell+1}$
-      \State Predict future layers from $s_{\ell+1}$; compute $J_\ell$
-      \State Store the candidate, current batches, and prediction feasibility
-    \EndIf
-  \EndFor
-  \State Enumerate the next encoding or generate offspring by selection, crossover, and mutation, according to the search-space size
-\EndWhile
-\State Refine evaluated candidates locally within bounds; determine the reference
-\State Select a candidate using the current-cost bound and finite-horizon objective
-\State \Return Selected current execution batches and $s_{\ell+1}$
-\end{algorithmic}
-\end{algorithm}
 
-\subsection{Routing and Scheduling}
+Before execution begins, the initial layout already determines transport origins for early gate layers. GA-LK therefore uses the same physical evaluation to select mappings by early-layer loss. Storage traps are selected in array order, column by column from the row nearest the entangling zone, until their count equals the atom count. Chromosomes list trap indices in atom order, forming permutations over this fixed set.
 
-Routing and scheduling convert candidate position changes into executable batches satisfying AOD constraints. Each atom trajectory is a conflict-graph vertex. An edge joins two trajectories if they violate the row--column relationships in~\eqref{eq:aod-relations} or their joint activation creates an unintended intersection over a stationary atom. DSATUR coloring~\cite{brelaz1979coloring} supplies initial groups: same-color trajectories share a batch, and different colors execute separately, as in Fig.~\ref{fig:physical-lookahead}(a). Candidate evaluation invokes this routing process; conflict checking does not begin only after placement is selected.
-
-Each same-color group is also checked for source-trap release, destination occupancy, and AOD capacity. Groups failing these collective constraints are split further. If an individual trajectory violates static occupancy or unintended-intersection constraints, its path is changed or the candidate is rejected. The scheduler sets start times from dependencies on atoms, SLM traps, AODs, and Rydberg operations, ensuring a source trap is released before another atom uses it. Rearrangement time at a layer boundary is
+Given mapping $\pi$, site matching and feasibility repair construct the first-layer plan. Subsequent layers invoke joint optimization with internal look-ahead disabled to bound each mapping's evaluation cost. Evaluation updates routes, gate execution, positions, and time only in temporary configurations. With $d=0$ denoting the first two-qubit layer and $h_{\rm init}$ subsequent layers actually evaluated,
 \begin{equation}
-T_\ell^{\rm rr}=\sum_{b=1}^{B_\ell}
-\max_{\nu\in\mathcal B_{\ell,b}}\tau(\nu),
+J_{\rm init}(\pi)=
+\sum_{d=0}^{h_{\rm init}}\rho^d\,\Delta C_d(\pi),
+\qquad 0\le h_{\rm init}\le H_{\rm init}.
+\label{eq:initial-lookahead}
+\end{equation}
+Here, $\Delta C_d$ is incremental negative log fidelity loss, including dependency-required single-qubit gates and timing. $H_{\rm init}$ bounds subsequent layers. Evaluation stops after a complete layer; terminal returns occur only at the actual circuit end. With $H_{\rm init}=0$, search still evaluates first-layer loss.
+
+Initialization seeds comprise sequential layouts, orderings by first two-qubit interaction, and orderings by weighted interaction strength, plus perturbations. Seeds may inspect all circuit interactions; fitness evaluates only the early prefix. Tournament selection, order crossover (OX), and swap, insertion, and inversion mutations generate offspring while retaining elites. Duplicate mappings are cached. Limits on unique evaluations, generated candidates, generations, or stagnation stop search. Only the feasible mapping minimizing $J_{\rm init}$ enters dynamic compilation; absence of one reports failure. Outer mappings and inner encodings have separate budgets; Section~\ref{sec:experimental-setup} gives settings.
+
+\subsection{Executable Output under Physical Constraints}
+\label{sec:routing}
+
+For scored losses to correspond to executable operations, evaluation and output share routing and timing rules. Compatible-movement grouping and trap dependencies follow routing-aware placement and ZAC~\cite{stade2025routingaware,lin2025zac}. Trajectories are conflict-graph vertices, joined for row--column violations or jointly activated traps covering stationary atoms during pickup, transport, or release. DSATUR coloring~\cite{brelaz1979coloring} groups trajectories; source release, destination occupancy, and AOD capacity checks split batches violating collective constraints. A trajectory crossing a stationary atom requires blocker relocation, rerouting, or candidate rejection. Scheduling respects atom, SLM, AOD, and Rydberg dependencies; traps are reusable only after release. Batches execute sequentially, giving the complete rearrangement latency
+\begin{equation}
+T_\ell^{\rm rr}=\sum_{b=1}^{B_\ell}T_{\ell,b}^{\rm batch},
 \label{eq:rearrangement-metrics}
 \end{equation}
-where $B_\ell$ is the batch count, $\mathcal B_{\ell,b}$ contains the trajectories in batch $b$, and $\tau(\nu)$ is a trajectory's duration. The longest trajectory determines batch duration, which is why gate-site optimization must account for parallel grouping.
+Here, $B_\ell$ counts batches and $T_{\ell,b}^{\rm batch}$ is the total duration of batch $b$, including pickup, transport, release, and any required internal movements. These execution times enter the decoherence calculation.
 
-A C++17 kernel implements candidate decoding, storage-site matching, conflict grouping, and future-layer prediction, caching repeated position relationships and candidate evaluations. Pairwise trajectory-compatibility checks scale quadratically with the number of trajectories. The budgets in Table~\ref{tab:solver-bounds} control per-layer cost by bounding candidates, assignments, and predicted layers. The public code repository provides the complete implementation and parameter settings.
-
-\subsection{Instruction Generation and Output}
-
-Compilation results use ZAIR~\cite{lin2025zac}. The initial mapping is recorded in \texttt{init}, single-qubit gates in \texttt{1qGate}, and two-qubit gates in the same entanglement zone in \texttt{rydberg}. Atom transport is encapsulated in \texttt{rearrangeJob}. Each rearrangement job specifies atom labels, source and destination traps, and an AOD identifier. It expands into three lower-level operations: \texttt{activate}, \texttt{move}, and \texttt{deactivate}, which transfer atoms into mobile optical traps, transport them, and release them, respectively. Fig.~\ref{fig:zair-output} lists the principal output fields.
-
-\begin{figure}[!t]
-  \centering
-  \input{figures/zair_output}
-  \caption{Principal fields in ZAIR output. (a) Four high-level instruction types. (b) Lower-level instructions within a rearrangement job. Location fields retain atom labels and SLM trap sites; row and column fields specify AOD beam identifiers and coordinates. Common identifier, timing, and dependency fields are omitted to emphasize the structure; the complete output includes them.}
-  \label{fig:zair-output}
-\end{figure}
-
-Code generation preserves the correspondence between gate dependencies and position changes. Single-qubit \texttt{locs} use atom positions at execution time, not their initial locations. The \texttt{rydberg} instruction records target gates and the entanglement-zone identifier. Rearrangement jobs record their internal operation order and start and end times. After all gate layers, terminal returns follow the compilation flow, and the complete sequence is emitted. An independent verifier checks gates, occupancy, and AOD constraints and computes fidelity and rearrangement metrics from that sequence. Evaluation thus uses the same executable instructions delivered by the compiler.
+Selected batches and gate dependencies form an executable ZAIR sequence~\cite{lin2025zac}. Rearrangement instructions specify atom start and end positions and AOD operations; gate instructions use execution-time mappings addressing either zone, with dependencies and start times determining order. After terminal returns, the compiler verifies gates, occupancy, and AOD constraints throughout the sequence and computes model-estimated fidelity, batches, and latency from it.

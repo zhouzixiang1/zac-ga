@@ -1,22 +1,24 @@
-\begin{table*}[!t]
-\caption{Overall Results of Three Compilation Methods on ZAC18 and QMAP154}
+\begin{table}[!tb]
+\caption{\PaperRevision{Overall results for three compilers on two circuit sets}}
 \label{tab:main-results}
 \centering
 \PaperTableSetup
-\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}llrrrr@{}}
+\fontsize{8.5pt}{9.7pt}\selectfont
+\setlength{\tabcolsep}{1.2pt}
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}llrrrr@{}}
 \toprule
-Dataset & Method & Model fidelity & Rearrangement batches & \shortstack{Rearrangement time\\(ms)} & \shortstack{Complete results\\/$N$}\\
+Set & Method & \PaperRevision{Fidelity} & \PaperRevision{Batches} & \shortstack{\PaperRevision{Rearr. time}\\\PaperRevision{(ms)}} & \shortstack{\PaperRevision{Compiled}\\\PaperRevision{/inputs}}\\
 \midrule
-\multirow{3}{*}{\shortstack{ZAC18\\($N_{\rm ind}=\ZACStrictN$)}}
-& ZAC & \pgfmathprintnumber[fixed,precision=4,zerofill]{\ZACMOneF} & \ZACMOneB & \ZACMOneT & \ZACMOneV\\
-& ICCAD/QMAP & \pgfmathprintnumber[fixed,precision=4,zerofill]{\ZACMTwoF} & \ZACMTwoB & \ZACMTwoT & \ZACMTwoV\\
-& GA-LK & \textbf{\boldmath\pgfmathprintnumber[fixed,precision=4,zerofill]{\ZACMFourF}} & \textbf{\ZACMFourB} & \textbf{\ZACMFourT} & \ZACMFourV\\
+\multirow{3}{*}{\shortstack{ZAC18\\\PaperRevision{$N=\GAMainZACStrictN$}}}
+& ZAC & \PaperRevision{\pgfmathprintnumber[fixed,precision=4,zerofill]{\GAMainZACMOneF}} & \PaperRevision{\GAMainZACMOneB} & \PaperRevision{\GAMainZACMOneT} & \PaperRevision{\GAMainZACMOneV}\\
+& Stade et al. & \PaperRevision{\pgfmathprintnumber[fixed,precision=4,zerofill]{\GAMainZACMTwoF}} & \PaperRevision{\GAMainZACMTwoB} & \PaperRevision{\textbf{\GAMainZACMTwoT}} & \PaperRevision{\GAMainZACMTwoV}\\
+& GA-LK & \PaperRevision{\textbf{\boldmath\pgfmathprintnumber[fixed,precision=4,zerofill]{\GAMainZACMFourF}}} & \PaperRevision{\textbf{\GAMainZACMFourB}} & \PaperRevision{\GAMainZACMFourT} & \PaperRevision{\GAMainZACMFourV}\\
 \midrule
-\multirow{3}{*}{\shortstack{QMAP154\\($N_{\rm ind}=\QMAPStrictN$)}}
-& ZAC & \pgfmathprintnumber[fixed,precision=6,zerofill]{\QMAPMOneF} & \QMAPMOneB & \QMAPMOneT & \QMAPMOneV\\
-& ICCAD/QMAP & \pgfmathprintnumber[fixed,precision=6,zerofill]{\QMAPMTwoF} & \QMAPMTwoB & \QMAPMTwoT & \QMAPMTwoV\\
-& GA-LK & \textbf{\boldmath\pgfmathprintnumber[fixed,precision=6,zerofill]{\QMAPMFourF}} & \textbf{\QMAPMFourB} & \textbf{\QMAPMFourT} & \QMAPMFourV\\
+\multirow{3}{*}{\shortstack{\PaperRevision{QMAP}\\\PaperRevision{$N=\GAMainQMAPStrictN$}}}
+& ZAC & \PaperRevision{\pgfmathprintnumber[fixed,precision=6,zerofill]{\GAMainQMAPMOneF}} & \PaperRevision{\GAMainQMAPMOneB} & \PaperRevision{\GAMainQMAPMOneT} & \PaperRevision{\GAMainQMAPMOneV}\\
+& Stade et al. & \PaperRevision{\pgfmathprintnumber[fixed,precision=6,zerofill]{\GAMainQMAPMTwoF}} & \PaperRevision{\GAMainQMAPMTwoB} & \PaperRevision{\GAMainQMAPMTwoT} & \PaperRevision{\GAMainQMAPMTwoV}\\
+& GA-LK & \PaperRevision{\textbf{\boldmath\pgfmathprintnumber[fixed,precision=6,zerofill]{\GAMainQMAPMFourF}}} & \PaperRevision{\textbf{\GAMainQMAPMFourB}} & \PaperRevision{\textbf{\GAMainQMAPMFourT}} & \PaperRevision{\GAMainQMAPMFourV}\\
 \bottomrule
 \end{tabular*}
-\PaperTableNote[\textwidth]{Fidelity is the geometric mean; batch counts and rearrangement times are arithmetic means. Bold values denote the best result within each dataset. $N_{\rm ind}$ counts distinct circuits valid for all three methods. The \QMAPStrictFileN{} common valid QMAP154 files correspond to \QMAPStrictN{} distinct circuits after deduplication. Complete-result counts cover all input files.}
-\end{table*}
+\PaperTableNote[\columnwidth]{\fontsize{8pt}{9.1pt}\selectfont\PaperRevision{$N$ counts distinct circuits included in the quality comparison. Fidelity uses the geometric mean; rearrangement batches and time use arithmetic means. The \GAMainQMAPStrictFileN{} QMAP files represent \GAMainQMAPStrictN{} distinct circuits. The last column counts completed compilations over all input files, including results outside the fidelity model's domain. Bold indicates the best value within each circuit set.}}
+\end{table}

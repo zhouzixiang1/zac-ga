@@ -60,6 +60,20 @@ H 补实验的旧 `horizon_extension_v1/` 协议绑定迁移前的冻结路径�
 `paper_zh/final_paper_qa.json` 和 `paper_zh/source_build_manifest.json` 为准，
 不以历史验收代替当前源码检查。这些文件位于本页约定的构建根目录内。
 
-英文路径接入已更新，但现有英文稿未同步中文的章节输入及部分公式、引用和
-结果宏，严格双语校验未通过；本轮未扩展为翻译修订。旧英文 PDF 已保存在
-上述迁移前 PDF 归档，不能将其作为当前中文稿的最新对应版本。
+上述2026-09-07迁移当时尚未完成英文同步。2026-09-13已按清洁中文稿完成英文全文翻译；当前英文采用独立分页，输出仍在 `build/paper_en/`。旧迁移前 PDF 保留历史身份。
+
+## 论文源目录精简（2026-09-13）
+
+`IEEE_conference_template/` 仅保留论文和编译依赖。生成器、校验器和测试统一在
+[`scripts/paper/`](../scripts/paper/)，由根 Makefile 调用；写作记录和来源 JSON 位于
+[`docs/paper/`](paper/README_zh.md)。退役图表与模板同样移出源目录，
+[迁移清单](paper/relocation-20260913.json)保存原路径、新路径及移动前SHA-256。
+JSON中的生成器路径及哈希随现行工具更新；实验结果、协议和冻结环境不改写。
+
+`build/` 的既有实验缓存、环境、Overleaf checkout和交付快照均保持原位。
+新增编译PDF与QA继续使用本页约定路径，不在源文件旁生成Python或JSON。
+
+主结果协议曾把一个基线读取脚本固定到旧论文目录。其原始字节保存为
+`scripts/paper/frozen/generate_default_initial_values.py`；现行只读入口
+`scripts/paper/verify_ga_publication.py` 在校验原哈希后定位该副本。
+冻结协议、原导出器、既有结果及其逻辑来源记录保持不变，迁移路径另行报告。

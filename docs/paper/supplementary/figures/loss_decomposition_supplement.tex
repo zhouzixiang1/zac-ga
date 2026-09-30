@@ -1,0 +1,65 @@
+% Additive loss decomposition: all components use the same median-fidelity run.
+% No new experiment: see writing/generate_loss_decomposition.py --check.
+\begingroup
+\PaperShowRevisionsfalse
+\input{figures/tikz_style}
+\pgfplotstableread[col sep=space]{figures/data/physical_ga_loss_decomposition.dat}\LossData
+\begin{tikzpicture}[galk/base,
+  result label/.style={font=\rmfamily\fontsize{9pt}{10pt}\selectfont}]
+  \path[use as bounding box] (0,0) rectangle (18.20,6.74);
+  \node[result label,anchor=west] at (.10,6.36) {Circuit set / baseline};
+  \node[rectangle,draw=galkData,fill=galkData,inner sep=2pt] at (5.82,6.36) {};
+  \node[result label,anchor=west] at (6.04,6.36) {Trap transfer};
+  \node[rectangle,draw=galkTail,fill=galkTail,inner sep=2pt] at (8.82,6.36) {};
+  \node[result label,anchor=west] at (9.04,6.36) {Idle excitation};
+  \node[rectangle,draw=galkGood,fill=galkGood,inner sep=2pt] at (12.10,6.36) {};
+  \node[result label,anchor=west] at (12.32,6.36) {Coherence};
+  \node[diamond,draw=white,fill=galkInk,inner sep=1.7pt] at (14.94,6.36) {};
+  \node[result label,anchor=west] at (15.16,6.36) {Net change};
+  \draw[draw=galkGrid,line width=.5pt] (.10,3.48)--(17.85,3.48);
+  \node[result label,anchor=west,align=left] at (.10,4.59)
+    {ZAC benchmarks\\$N=\GAMainZACStrictN$};
+  \node[result label,anchor=west,align=left] at (.10,2.36)
+    {MQT QMAP examples\\$N=\GAMainQMAPStrictN$};
+  \node[result label,anchor=east] at (17.84,5.92) {Net $\Delta\ln F$};
+  \begin{axis}[
+    name=lossDecompositionAxis,
+    at={(5.70cm,1.25cm)},anchor=south west,
+    width=10.70cm,height=4.45cm,scale only axis,
+    axis lines*=left,axis line style={draw=galkInk,line width=.65pt},
+    tick style={draw=galkInk,line width=.5pt},tick align=outside,
+    tick label style={font=\rmfamily\fontsize{9pt}{10pt}\selectfont},
+    label style={font=\rmfamily\fontsize{9pt}{10pt}\selectfont},
+    xmin=-.8,xmax=1.0,xtick={-.8,-.6,-.4,-.2,0,.2,.4,.6,.8,1.0},
+    xlabel={Mean contribution to $\Delta\ln F$},
+    ymin=.5,ymax=4.5,ytick={1,2,3,4},
+    yticklabels={ICCAD/QMAP,ZAC,ICCAD/QMAP,ZAC},
+    ytick style={draw=none},
+    xmajorgrids=true,grid style={draw=galkGrid!70,line width=.35pt},
+    scaled ticks=false,clip=false
+  ]
+    \draw[draw=galkInk!70,line width=.7pt] (axis cs:0,.5)--(axis cs:0,4.5);
+    \pgfplotsinvokeforeach{0,...,3}{
+      \pgfplotstablegetelem{#1}{transfer}\of\LossData\let\LossTransfer\pgfplotsretval
+      \pgfplotstablegetelem{#1}{excitation}\of\LossData\let\LossExcitation\pgfplotsretval
+      \pgfplotstablegetelem{#1}{coherence}\of\LossData\let\LossCoherence\pgfplotsretval
+      \pgfplotstablegetelem{#1}{net}\of\LossData\let\LossNet\pgfplotsretval
+      \pgfmathsetmacro{\LossRow}{4-#1}
+      \pgfmathsetmacro{\LossLow}{\LossRow-.18}
+      \pgfmathsetmacro{\LossHigh}{\LossRow+.18}
+      \pgfmathsetmacro{\LossPositive}{\LossTransfer+\LossCoherence}
+      \edef\LossDraw{
+      \noexpand\draw[draw=none,fill=galkTail] (axis cs:\LossExcitation,\LossLow) rectangle (axis cs:0,\LossHigh);
+      \noexpand\draw[draw=none,fill=galkData] (axis cs:0,\LossLow) rectangle (axis cs:\LossTransfer,\LossHigh);
+      \noexpand\draw[draw=none,fill=galkGood] (axis cs:\LossTransfer,\LossLow) rectangle (axis cs:\LossPositive,\LossHigh);
+      \noexpand\node[result label,anchor=east] at (axis cs:1.24,\LossRow)
+        {$+\noexpand\pgfmathprintnumber[fixed,precision=3,zerofill]{\LossNet}$};}
+      \LossDraw
+    }
+    % A real data series keeps the net marks directly bound to the four rows.
+    \addplot[only marks,mark=diamond*,mark size=2.5pt,draw=white,fill=galkInk]
+      table[x=net,y expr=4-\coordindex,col sep=space]
+      {figures/data/physical_ga_loss_decomposition.dat};
+  \end{axis}
+\end{tikzpicture}
+\endgroup

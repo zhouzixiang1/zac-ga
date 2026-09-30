@@ -26,6 +26,24 @@ fully hash-locked or bitwise cross-platform build guarantee.
 and output directory. Smoke removes explicit initializer fields before calling
 the public parser, then requires the actual default to be physical-prefix with
 H=2, K=4, rho=0.7 and 32 rollout evaluations. No private paper wrapper is used.
+This verifies the public source default, not the current manuscript
+configuration: the latter explicitly selects `physical_prefix_ga` with
+`init_engine=ga`.
+
+For a current-source run with GA initialization, make a separate copy of the
+generated configuration, set `init_strategy=physical_prefix_ga` and
+`init_engine=ga`, and remove `initial_lookahead`, `init_pop` and `init_gens`.
+The parser accepts initialization controls under `initial_ga`. Its defaults
+match the main study's initialization budget: H=2, rho=0.7, population 8, two
+elites, crossover probability 0.25, at most 32 unique mappings, six generations,
+three non-improving generations and 320 proposals. The physical prefix has an
+independent inner budget of 32 encoding evaluations and disables inner
+look-ahead. Dynamic H=8 settings remain separate. See
+[the configuration class](../ZAC_zzx/zzx/physical_initial_ga.py) and the frozen
+[main-study protocol](../ZAC_zzx/results/physical_ga_main_v1/protocol.json).
+Selecting those controls on a new wheel does not recreate the historical
+native/runtime closure, and the default-checking smoke deliberately does not
+serve as a benchmark driver for this alternative.
 
 The actual ZAIR must pass replay, physical and zero-ghost checks, as well as
 QASM-derived per-qubit 1Q/CZ ordering. This last check is not a unitary matrix
@@ -49,10 +67,14 @@ python3 scripts/portable_reproduce.py audit-artifacts
 ```
 
 The allowlisted export contains source, toy QASM, architecture, the original
-accepted results, the six current Chinese publication inputs in
-`ZAC_zzx/results/default_initial_v1/paper_exports/`, and manuscript source
-formats. It excludes `.git`, build
-products, environments, archives, historical raw runs and third-party PDFs.
+accepted results, manuscript source formats and the six registered companion
+publication files used by the active paper. The current bundle is
+`ZAC_zzx/results/physical_ga_main_v1/paper_exports/`; the previous
+`default_initial_v1` bundle remains supported for historical manuscript inputs.
+The current six files are `ga_main_values.json`, `ga_main_values.tex`,
+`main_rows.csv`, `analysis_units.csv`, `mechanism.csv` and
+`representative_cases.tex`. The export excludes `.git`, build products,
+environments, archives, historical raw runs and third-party PDFs.
 `portable_source_manifest.json` records relative paths and SHA-256 digests.
 Uncommitted source is identified by content, not mislabeled as a published Git
 release. Keep the upstream license notice included in the export.
@@ -70,11 +92,14 @@ every original trace or independently re-establish all statistical claims.
 The published commit/release identity is the external trust anchor; checksums
 are not signatures.
 
-The current Chinese main results use a separate six-file publication bundle.
-Export integrity binds those files to their recorded hashes; it does not
-replace the author's strict raw-evidence audit. The original accepted package
-remains unchanged. See the [data inventory](DATA_AND_CODE.md) for the mapping
-from files to the abstract, tables and figure panel.
+The current bilingual main results use the separate `physical_ga_main_v1`
+publication bundle. Source export carries the six companion files needed for
+the paper and records their hashes; `audit-artifacts` still checks only the
+original 14-file accepted package. Neither check replaces the author's strict
+raw-evidence audit of the new study. The full current bundle includes
+provenance, per-run outcomes, failures and model-domain exclusions; see the
+[data inventory](DATA_AND_CODE.md). The original accepted package and previous
+`default_initial_v1` exports remain unchanged.
 
 ## Render the bundled paper
 
@@ -89,18 +114,32 @@ python3 scripts/render_bundled_paper.py --name render-v1
 Install XeLaTeX, BibTeX and Poppler (`pdfinfo`) first. Sources use TeX Gyre,
 Fandol, TikZ/PGFPlots, IEEEtran and their declared LaTeX packages. The renderer
 copies the sources into a new `IEEE_conference_template/build/bundled-render/`
-directory, records bundled macro hashes, carries the six publication inputs at
-their repository-relative location, adapts the generated Fig. 3 path and builds
-figure, bibliography and main PDF. It checks the source-export hashes
+directory, records bundled macro hashes, carries the six registered publication
+inputs, adapts their paths and the generated framework figure (current Fig. 2),
+and builds the figure, bibliography and Chinese main PDF. It checks the
+source-export hashes
 when present. It never runs numerical generators or replaces original sources.
 The report says `historical_evidence_validated=false`; visual inspection and
 scientific QA remain separate. Consult the dated [validation record](PORTABLE_VALIDATION.md)
 for the exact source and tested scope, rather than treating an earlier render as
-validation of later changes. English alignment is a separate pending task.
+validation of later changes. This source-only helper currently builds Chinese
+only; the English manuscript is aligned, but its author-side build is
+`make paper-en`, with shared Chinese and historical-evidence checks.
 
-This local source-only export is not the Overleaf export. The latter still
-needs publication-bundle path handling before the next online synchronization;
-see [Overleaf synchronization](REPOSITORY_MAP.md#overleaf-同步).
+This local source-only export is separate from the minimal Overleaf export
+prepared by `scripts/prepare_overleaf_sync.py`. Overleaf adapts registered
+figure/data inputs without changing desktop source paths. The 2026-09-20
+synchronization was verified at `5cd7151`; this is a dated record, not a claim
+about subsequent online edits. See
+[Overleaf synchronization](REPOSITORY_MAP.md#overleaf-同步).
+
+Paper generators, verifiers and tests live in `scripts/paper/`. Writing notes,
+provenance metadata, retired figures/tables and template references live in
+`docs/paper/`. The manuscript directory contains only required source inputs,
+one README and ignored `build/` outputs. Framework PDFs are built independently
+for Chinese and English before the corresponding main paper. The current
+clean, anonymous layout is six English body pages plus one references page;
+Chinese uses six pages with natural pagination.
 
 ## Recompute experiments
 
@@ -113,7 +152,8 @@ The toy demo is not the ZAC18/QMAP154 benchmark matrix. Full recomputation needs
 4. The appropriate native runtime and verifier. Historical accepted runs
    require their ABI8/ABI9 identities, not a new wheel labeled with old hashes.
 5. ZAC and the specific routing-aware QMAP source/patch/environment for baseline
-   comparisons.
+   comparisons. The current physical-GA main study reuses the declared baseline
+   records; it does not relabel newly compiled baselines as the accepted runs.
 6. Every outcome, including failures/timeouts, with the prescribed cohort and
    scoring rules. Do not replace failed inputs with aliases or tune on validation.
 
@@ -166,8 +206,18 @@ immutable configuration/protocol and prints the regular `ZAC_zzx/run.py`
 command. It **does not run** the benchmark. `--dataset qmap154` or `all` selects
 the other fixed queue. The public frontend is fail-fast, not a fault-tolerant
 formal coordinator; every emitted trace needs independent verification against
-its corresponding canonical QASM. A current-default run is not a replay of the
-accepted historical configuration, and preparation never promotes results.
+its corresponding canonical QASM. A current-default run uses `physical_prefix`,
+so it is neither a replay of the
+current paper's explicit GA initialization nor the original accepted historical
+configuration. Preparation never promotes results.
+
+The current manuscript main study is defined by
+`ZAC_zzx/experiments_v2/physical_ga_main_study.py` and its frozen protocol under
+`ZAC_zzx/results/physical_ga_main_v1/`; the independent initialization pilot has
+a separate corrected-driver protocol. Their reports preserve failed and
+out-of-domain outcomes and distinguish parallel quality runs from historical
+serial timing. Full benchmark inputs, raw traces and frozen environments are
+local dependencies rather than a complete public deposit.
 
 Historical formal drivers remain under `ZAC_zzx/experiments_v2/`. Their
 machine-bound native/baseline/runtime closure and a fully portable bounded

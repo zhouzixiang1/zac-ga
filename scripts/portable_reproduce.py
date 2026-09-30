@@ -45,6 +45,28 @@ PUBLICATION_INPUTS = {
     "../" + (PUBLICATION_BUNDLE / name).as_posix(): "publication/default_initial_v1/" + name
     for name in ("default_initial_values.tex", "representative_cases.tex")
 }
+# Keep the original bundle constants for callers rendering historical sources.
+# Every external TeX input and its six-file evidence companion are registered;
+# this does not authorize arbitrary parent-directory paths.
+GA_PUBLICATION_BUNDLE = Path("ZAC_zzx/results/physical_ga_main_v1/paper_exports")
+GA_PUBLICATION_FILES = ("ga_main_values.json", "ga_main_values.tex", "main_rows.csv",
+                        "analysis_units.csv", "mechanism.csv", "representative_cases.tex")
+GA_PUBLICATION_INPUTS = {
+    "../" + (GA_PUBLICATION_BUNDLE / name).as_posix(): "publication/physical_ga_main_v1/" + name
+    for name in ("ga_main_values.tex", "representative_cases.tex")
+}
+PUBLICATION_BUNDLES = (
+    (PUBLICATION_BUNDLE, PUBLICATION_FILES, PUBLICATION_INPUTS),
+    (GA_PUBLICATION_BUNDLE, GA_PUBLICATION_FILES, GA_PUBLICATION_INPUTS),
+)
+REGISTERED_PUBLICATION_INPUTS = {
+    original: destination
+    for _, _, inputs in PUBLICATION_BUNDLES for original, destination in inputs.items()
+}
+PUBLICATION_DESTINATIONS = {
+    (directory / name).as_posix(): "publication/" + directory.parent.name + "/" + name
+    for directory, names, _ in PUBLICATION_BUNDLES for name in names
+}
 
 
 def sha(path):
@@ -91,7 +113,7 @@ def new_output(root, name):
 
 
 def publication_files(root):
-    """Return the exact companion bundle when the Chinese manuscript uses it.
+    """Return the registered companion bundle used by the Chinese manuscript.
 
     This is a source-packaging contract, not a waiver of the independent
     historical-evidence audit. Older manuscripts and toy fixtures without these
@@ -103,18 +125,21 @@ def publication_files(root):
     source = re.sub(r"(?<!\\)%[^\n]*", "", main.read_text(encoding="utf-8"))
     inputs = re.findall(r"\\(?:input|include)\s*\{([^}]+)\}", source)
     for name in inputs:
-        if name in PUBLICATION_INPUTS:
+        if name in REGISTERED_PUBLICATION_INPUTS:
             continue
         # Do not resolve arbitrary parent paths against the filesystem.
         safe_relative(name)
         if "\\" in name or name != Path(name).as_posix():
             raise ValueError("noncanonical manuscript input path")
-    referenced = [name for name in inputs if name in PUBLICATION_INPUTS]
+    referenced = [name for name in inputs if name in REGISTERED_PUBLICATION_INPUTS]
     if not referenced:
         return []
-    if sorted(referenced) != sorted(PUBLICATION_INPUTS):
-        raise ValueError("the publication bundle requires both exact TeX inputs once")
-    files = [(PUBLICATION_BUNDLE / name).as_posix() for name in PUBLICATION_FILES]
+    selected = [(directory, names) for directory, names, registered in PUBLICATION_BUNDLES
+                if sorted(referenced) == sorted(registered)]
+    if len(selected) != 1:
+        raise ValueError("one publication bundle requires both exact TeX inputs once")
+    directory, names = selected[0]
+    files = [(directory / name).as_posix() for name in names]
     for name in files:
         if not local_file(root, name).is_file():
             raise ValueError(f"required publication source file is missing: {name}")
